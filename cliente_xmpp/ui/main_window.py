@@ -13,6 +13,7 @@ from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginPanel
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
+    ChatActivityLoadFinished,
     ChatActivityLoaded,
     MessageHistoryLoaded,
     MessageReceived,
@@ -34,6 +35,8 @@ class MainWindow(wx.Frame):
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.chat_names_by_jid: dict[str, str] = {}
+        self.roster_jids: set[str] = set()
+        self.loaded_chat_summaries = 0
         self.current_jid = ""
 
         self.login_panel = LoginPanel(self, self.settings_store.load_connection())
@@ -170,9 +173,12 @@ class MainWindow(wx.Frame):
                 wx.MessageBox(message, "XMPP")
             case RosterLoaded(chats=chats):
                 self._update_chat_names(chats)
-                self.chat_list.set_chats(self._sort_chats_by_recency(chats))
-                self.status_bar.SetStatusText(f"{len(chats)} chats cargados")
-                self._select_first_chat()
+                self.roster_jids = {chat.jid for chat in chats}
+                self.loaded_chat_summaries = 0
+                self.chat_list.set_chats([])
+                self.status_bar.SetStatusText(
+                    f"Buscando chats con mensajes entre {len(chats)} contactos..."
+                )
             case MessageReceived(message=message):
                 self._store_message(message)
                 self._ensure_chat_for_message(message)
@@ -181,7 +187,10 @@ class MainWindow(wx.Frame):
                     and self.conversation.current_chat
                     and self.conversation.current_chat.jid == message.chat_jid
                 )
-                self._update_chat_from_message(message, mark_unread=not current_chat_is_open)
+                self._update_chat_from_message(
+                    message,
+                    mark_unread=not message.outgoing and not current_chat_is_open,
+                )
                 self._refresh_chat_order()
                 if current_chat_is_open:
                     self.conversation.append_message(message)
@@ -194,11 +203,33 @@ class MainWindow(wx.Frame):
                 if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
                     self._load_conversation(self.conversation.current_chat)
                 self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
-            case ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at, preview=preview):
-                if sent_at:
-                    self._update_chat_activity(chat_jid, sent_at.timestamp())
-                    self._update_chat_summary(chat_jid, preview=preview, sent_at=sent_at)
+            case ChatActivityLoaded(
+                chat_jid=chat_jid,
+                sent_at=sent_at,
+                preview=preview,
+                unread_count=unread_count,
+            ):
+                if sent_at or preview or unread_count is not None:
+                    if sent_at:
+                        self._update_chat_activity(chat_jid, sent_at.timestamp())
+                    added = not self.chat_list.has_chat(chat_jid)
+                    self._update_chat_summary(
+                        chat_jid,
+                        preview=preview,
+                        sent_at=sent_at,
+                        unread_count=unread_count,
+                    )
                     self._refresh_chat_order()
+                    if added:
+                        self.loaded_chat_summaries += 1
+                    self.status_bar.SetStatusText(
+                        f"{self.loaded_chat_summaries} chats con mensajes cargados"
+                    )
+            case ChatActivityLoadFinished(loaded_count=loaded_count):
+                self.loaded_chat_summaries = max(self.loaded_chat_summaries, loaded_count)
+                self.status_bar.SetStatusText(
+                    f"{self.loaded_chat_summaries} chats con mensajes cargados"
+                )
 
     def _set_connected_ui(self, connected: bool) -> None:
         self.login_panel.Show(not connected)
@@ -305,6 +336,7 @@ class MainWindow(wx.Frame):
         preview: str = "",
         sent_at: datetime | None = None,
         unread_delta: int = 0,
+        unread_count: int | None = None,
         mark_read: bool = False,
     ) -> None:
         chats = self.chat_list.chats()
@@ -316,7 +348,12 @@ class MainWindow(wx.Frame):
                 Chat(
                     jid=chat.jid,
                     name=chat.name,
-                    unread_count=0 if mark_read else chat.unread_count + unread_delta,
+                    unread_count=self._next_unread_count(
+                        chat.unread_count,
+                        unread_delta=unread_delta,
+                        unread_count=unread_count,
+                        mark_read=mark_read,
+                    ),
                     last_message_preview=preview or chat.last_message_preview,
                     last_message_at=sent_at or chat.last_message_at,
                 )
@@ -327,12 +364,32 @@ class MainWindow(wx.Frame):
             Chat(
                 jid=chat_jid,
                 name=self._display_name_for_jid(chat_jid),
-                unread_count=0 if mark_read else unread_delta,
+                unread_count=self._next_unread_count(
+                    0,
+                    unread_delta=unread_delta,
+                    unread_count=unread_count,
+                    mark_read=mark_read,
+                ),
                 last_message_preview=preview,
                 last_message_at=sent_at,
             )
         )
-        self.chat_names_by_jid.setdefault(chat_jid, chat_jid)
+        self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
+
+    @staticmethod
+    def _next_unread_count(
+        current: int,
+        unread_delta: int = 0,
+        unread_count: int | None = None,
+        mark_read: bool = False,
+    ) -> int:
+        if mark_read:
+            return 0
+
+        if unread_count is not None:
+            return unread_count
+
+        return current + unread_delta
 
     def _show_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()

@@ -4,12 +4,14 @@ import asyncio
 import threading
 from collections.abc import Callable
 from datetime import datetime
+from xml.etree import ElementTree as ET
 
 from slixmpp import ClientXMPP
 
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.xmpp.events import (
+    ChatActivityLoadFinished,
     ChatActivityLoaded,
     MessageHistoryLoaded,
     MessageReceived,
@@ -21,6 +23,10 @@ from cliente_xmpp.xmpp.events import (
 )
 
 EventHandler = Callable[[XmppEvent], None]
+INBOX_NS = "urn:xmpp:inbox:1"
+MAM_NS = "urn:xmpp:mam:2"
+FORWARD_NS = "urn:xmpp:forward:0"
+CLIENT_NS = "jabber:client"
 
 
 class BridgeXmppClient(ClientXMPP):
@@ -34,14 +40,18 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("disconnected", self._on_disconnected)
         self.add_event_handler("failed_auth", self._on_failed_auth)
         self.add_event_handler("message", self._on_message)
+        self.add_event_handler("carbon_received", self._on_carbon_received)
+        self.add_event_handler("carbon_sent", self._on_carbon_sent)
 
     async def _on_session_start(self, _event: object) -> None:
         self.send_presence()
         await self.get_roster()
         self._emit(XmppConnected())
+        await self._enable_carbons()
         chats = self._build_roster_chats()
         self._emit(RosterLoaded(chats))
         asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
+        asyncio.create_task(self.load_inbox())
 
     def _on_disconnected(self, _event: object) -> None:
         self._emit(XmppDisconnected())
@@ -52,6 +62,7 @@ class BridgeXmppClient(ClientXMPP):
         self._emit(XmppError("No se pudo autenticar con el servidor XMPP."))
 
     def _on_message(self, msg: object) -> None:
+        self._emit_inbox_entry(msg)
         if msg["type"] not in ("chat", "normal"):
             return
 
@@ -70,6 +81,12 @@ class BridgeXmppClient(ClientXMPP):
                 )
             )
         )
+
+    def _on_carbon_received(self, msg: object) -> None:
+        self._emit_message_from_stanza(msg["carbon_received"], outgoing=False)
+
+    def _on_carbon_sent(self, msg: object) -> None:
+        self._emit_message_from_stanza(msg["carbon_sent"], outgoing=True)
 
     def _build_roster_chats(self) -> list[Chat]:
         chats: list[Chat] = []
@@ -99,8 +116,8 @@ class BridgeXmppClient(ClientXMPP):
             self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
 
     async def load_recent_activity(self, roster_jids: set[str], limit: int = 1000) -> None:
+        loaded_chat_jids: set[str] = set()
         try:
-            loaded_chat_jids: set[str] = set()
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
                 preview = self._message_body_from_mam_result(result)
@@ -128,6 +145,23 @@ class BridgeXmppClient(ClientXMPP):
                     break
         except Exception:
             pass
+        finally:
+            self._emit(ChatActivityLoadFinished(loaded_count=len(loaded_chat_jids)))
+
+    async def load_inbox(self) -> None:
+        try:
+            iq = self.make_iq_get(ito=self.boundjid.bare)
+            inbox = ET.Element(f"{{{INBOX_NS}}}inbox", {"messages": "true"})
+            iq.append(inbox)
+            await iq.send(timeout=10)
+        except Exception:
+            pass
+
+    async def _enable_carbons(self) -> None:
+        try:
+            await self["xep_0280"].enable()
+        except Exception:
+            pass
 
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
         body = self._message_body_from_mam_result(result)
@@ -145,6 +179,94 @@ class BridgeXmppClient(ClientXMPP):
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
         )
+
+    def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
+        if stanza["type"] not in ("chat", "normal"):
+            return
+
+        body = str(stanza["body"] or "").strip()
+        if not body:
+            return
+
+        chat_jid = str(stanza["to"].bare if outgoing else stanza["from"].bare)
+        sender_jid = "Yo" if outgoing else chat_jid
+        self._emit(
+            MessageReceived(
+                Message(
+                    chat_jid=chat_jid,
+                    sender_jid=sender_jid,
+                    body=body,
+                    outgoing=outgoing,
+                )
+            )
+        )
+
+    def _emit_inbox_entry(self, msg: object) -> None:
+        entry = self._inbox_entry_from_stanza(msg)
+        if entry is None:
+            return
+
+        chat_jid, unread_count, preview, sent_at = entry
+        self._emit(
+            ChatActivityLoaded(
+                chat_jid=chat_jid,
+                sent_at=sent_at,
+                preview=preview,
+                unread_count=unread_count,
+            )
+        )
+
+    def _inbox_entry_from_stanza(self, msg: object) -> tuple[str, int, str, datetime | None] | None:
+        xml = msg.xml
+        entry = xml.find(f"{{{INBOX_NS}}}entry")
+        if entry is None:
+            return None
+
+        chat_jid = entry.attrib.get("jid", "")
+        if not chat_jid:
+            return None
+
+        unread_count = self._int_or_zero(entry.attrib.get("unread", "0"))
+        result = entry.find(f"{{{MAM_NS}}}result")
+        if result is None:
+            result = xml.find(f"{{{MAM_NS}}}result")
+
+        preview = ""
+        sent_at = None
+        if result is not None:
+            message = self._forwarded_message_from_xml(result)
+            if message is not None:
+                body = message.find(f"{{{CLIENT_NS}}}body")
+                preview = (body.text or "").strip() if body is not None else ""
+            sent_at = self._forwarded_delay_from_xml(result)
+
+        return chat_jid, unread_count, preview, sent_at
+
+    @staticmethod
+    def _forwarded_message_from_xml(result: ET.Element) -> ET.Element | None:
+        forwarded = result.find(f"{{{FORWARD_NS}}}forwarded")
+        if forwarded is None:
+            return None
+
+        return forwarded.find(f"{{{CLIENT_NS}}}message")
+
+    @staticmethod
+    def _forwarded_delay_from_xml(result: ET.Element) -> datetime | None:
+        forwarded = result.find(f"{{{FORWARD_NS}}}forwarded")
+        if forwarded is None:
+            return None
+
+        for child in forwarded:
+            if child.tag.endswith("}delay"):
+                stamp = child.attrib.get("stamp", "")
+                if not stamp:
+                    return None
+                try:
+                    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+
+        return None
 
     def _chat_jid_from_mam_result(self, result: object) -> str:
         forwarded = result["mam_result"]["forwarded"]
@@ -166,6 +288,13 @@ class BridgeXmppClient(ClientXMPP):
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         return str(stanza["body"] or "").strip()
+
+    @staticmethod
+    def _int_or_zero(value: str) -> int:
+        try:
+            return int(value)
+        except ValueError:
+            return 0
 
     @staticmethod
     def _roster_item_name(item: object) -> str:
@@ -239,7 +368,7 @@ class XmppService:
             asyncio.set_event_loop(self._loop)
 
             self._client = BridgeXmppClient(settings, password, self._emit)
-            plugins = ("xep_0030", "xep_0199", "xep_0313")
+            plugins = ("xep_0030", "xep_0199", "xep_0297", "xep_0280", "xep_0313")
             for plugin in plugins:
                 self._client.register_plugin(plugin)
 

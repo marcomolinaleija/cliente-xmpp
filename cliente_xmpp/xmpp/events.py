@@ -42,6 +42,12 @@ class ChatActivityLoaded:
     chat_jid: str
     sent_at: datetime | None
     preview: str = ""
+    unread_count: int | None = None
+
+
+@dataclass(slots=True)
+class ChatActivityLoadFinished:
+    loaded_count: int
 
 
 XmppEvent = (
@@ -52,4 +58,5 @@ XmppEvent = (
     | MessageReceived
     | MessageHistoryLoaded
     | ChatActivityLoaded
+    | ChatActivityLoadFinished
 )

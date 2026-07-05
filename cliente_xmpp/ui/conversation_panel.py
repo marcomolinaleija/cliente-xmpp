@@ -27,12 +27,8 @@ class ConversationPanel(wx.Panel):
         self.send_button.Enable(True)
 
     def append_message(self, message: Message) -> None:
-        prefix = "Yo" if message.outgoing else self.resolve_display_name(message.sender_jid)
-        timestamp = message.sent_at.strftime("%H:%M")
         index = self.messages.GetItemCount()
-        self.messages.InsertItem(index, prefix)
-        self.messages.SetItem(index, 1, message.body)
-        self.messages.SetItem(index, 2, timestamp)
+        self.messages.InsertItem(index, self._format_message_row(message))
         self.messages.EnsureVisible(index)
 
     def focus_composer(self) -> None:
@@ -52,9 +48,7 @@ class ConversationPanel(wx.Panel):
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(header, 0, wx.EXPAND)
         box.Add(self.messages, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, 12)
-        self.messages.InsertColumn(0, "Usuario", width=180)
-        self.messages.InsertColumn(1, "Mensaje", width=520)
-        self.messages.InsertColumn(2, "Hora", width=90)
+        self.messages.InsertColumn(0, "Mensajes", width=820)
 
         box.Add(wx.StaticText(self, label="Mensaje:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
 
@@ -69,3 +63,18 @@ class ConversationPanel(wx.Panel):
 
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)
         self.SetSizer(box)
+
+    def _format_message_row(self, message: Message) -> str:
+        timestamp = self._format_message_time(message)
+        if message.outgoing:
+            return f"Tu {message.body} {timestamp} Entregado."
+
+        sender = self.resolve_display_name(message.sender_jid)
+        return f"{sender} {message.body}, {timestamp}"
+
+    def _format_message_time(self, message: Message) -> str:
+        hour = message.sent_at.hour
+        minute = message.sent_at.minute
+        suffix = "a. m." if hour < 12 else "p. m."
+        hour_12 = hour % 12 or 12
+        return f"{hour_12}:{minute:02d} {suffix}"

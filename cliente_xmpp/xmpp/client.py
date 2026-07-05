@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable
+from datetime import datetime
 
 from slixmpp import ClientXMPP
 
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.xmpp.events import (
+    MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
     XmppConnected,
@@ -74,6 +76,42 @@ class BridgeXmppClient(ClientXMPP):
             chats.append(Chat(jid=jid, name=name))
         return chats
 
+    async def load_history(self, chat_jid: str, limit: int | None = None) -> None:
+        try:
+            archived_messages: list[Message] = []
+            mam = self["xep_0313"]
+            async for result in mam.iterate(
+                with_jid=chat_jid,
+                reverse=True,
+                rsm={"max": 100},
+                total=limit,
+            ):
+                message = self._message_from_mam_result(chat_jid, result)
+                if message:
+                    archived_messages.append(message)
+
+            archived_messages.sort(key=lambda message: message.sent_at)
+            self._emit(MessageHistoryLoaded(chat_jid=chat_jid, messages=archived_messages))
+        except Exception as exc:
+            self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
+
+    def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        body = str(stanza["body"] or "").strip()
+        if not body:
+            return None
+
+        sender_jid = str(stanza["from"].bare)
+        outgoing = sender_jid == self.boundjid.bare
+        return Message(
+            chat_jid=chat_jid,
+            sender_jid="Yo" if outgoing else sender_jid,
+            body=body,
+            sent_at=forwarded["delay"]["stamp"] or datetime.now(),
+            outgoing=outgoing,
+        )
+
     @staticmethod
     def _roster_item_name(item: object) -> str:
         if isinstance(item, dict):
@@ -118,13 +156,24 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
+    def load_history(self, chat_jid: str, limit: int | None = None) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def load() -> None:
+            if self._client:
+                self._loop.create_task(self._client.load_history(chat_jid, limit))
+
+        self._loop.call_soon_threadsafe(load)
+
     def _run_client(self, settings: ConnectionSettings, password: str) -> None:
         try:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
 
             self._client = BridgeXmppClient(settings, password, self._emit)
-            plugins = ("xep_0030", "xep_0199")
+            plugins = ("xep_0030", "xep_0199", "xep_0313")
             for plugin in plugins:
                 self._client.register_plugin(plugin)
 

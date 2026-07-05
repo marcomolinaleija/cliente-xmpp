@@ -9,10 +9,12 @@ class ChatListPanel(wx.Panel):
     def __init__(self, parent: wx.Window) -> None:
         super().__init__(parent)
         self.list_box = wx.ListBox(self)
+        self.open_button = wx.Button(self, label="Abrir")
         self._chats: list[Chat] = []
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.list_box, 1, wx.EXPAND)
+        box.Add(self.open_button, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
         self.SetSizer(box)
 
     def set_chats(self, chats: list[Chat]) -> None:

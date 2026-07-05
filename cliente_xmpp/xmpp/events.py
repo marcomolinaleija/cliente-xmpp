@@ -30,5 +30,17 @@ class MessageReceived:
     message: Message
 
 
-XmppEvent = XmppConnected | XmppDisconnected | XmppError | RosterLoaded | MessageReceived
+@dataclass(slots=True)
+class MessageHistoryLoaded:
+    chat_jid: str
+    messages: list[Message]
 
+
+XmppEvent = (
+    XmppConnected
+    | XmppDisconnected
+    | XmppError
+    | RosterLoaded
+    | MessageReceived
+    | MessageHistoryLoaded
+)

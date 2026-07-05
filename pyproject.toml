@@ -1,0 +1,21 @@
+[project]
+name = "cliente-xmpp"
+version = "0.1.0"
+description = "Cliente Windows en Python/wx para usar un bridge XMPP de WhatsApp."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "slixmpp>=1.10.0",
+    "wxPython>=4.2.2",
+]
+
+[project.scripts]
+cliente-xmpp = "cliente_xmpp.app.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

@@ -12,9 +12,8 @@ class ConversationPanel(wx.Panel):
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.messages = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE)
-        self.compose = wx.TextCtrl(self, style=wx.TE_MULTILINE)
-        self.send_button = wx.Button(self, label="Enviar")
-        self.send_button.Enable(False)
+        self.compose: wx.TextCtrl
+        self.send_button: wx.Button
 
         self._layout()
 
@@ -36,13 +35,20 @@ class ConversationPanel(wx.Panel):
         return body
 
     def _layout(self) -> None:
-        composer = wx.BoxSizer(wx.HORIZONTAL)
-        composer.Add(self.compose, 1, wx.EXPAND | wx.RIGHT, 8)
-        composer.Add(self.send_button, 0, wx.EXPAND)
-
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.title, 0, wx.ALL, 12)
         box.Add(self.messages, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, 12)
+
+        box.Add(wx.StaticText(self, label="Mensaje:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
+
+        composer = wx.BoxSizer(wx.HORIZONTAL)
+        self.compose = wx.TextCtrl(self, style=wx.TE_MULTILINE)
+        self.compose.SetToolTip("Escribe el mensaje para el chat seleccionado.")
+        composer.Add(self.compose, 1, wx.EXPAND | wx.RIGHT, 8)
+
+        self.send_button = wx.Button(self, label="Enviar")
+        self.send_button.Enable(False)
+        composer.Add(self.send_button, 0, wx.EXPAND)
+
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)
         self.SetSizer(box)
-

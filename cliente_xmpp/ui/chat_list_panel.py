@@ -35,5 +35,15 @@ class ChatListPanel(wx.Panel):
             return None
         return self._chats[index]
 
+    def select_first(self) -> Chat | None:
+        if not self._chats:
+            return None
+
+        self.list_box.SetSelection(0)
+        return self._chats[0]
+
+    def focus(self) -> None:
+        self.list_box.SetFocus()
+
     def has_chat(self, jid: str) -> bool:
         return any(chat.jid == jid for chat in self._chats)

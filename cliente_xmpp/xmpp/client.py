@@ -40,6 +40,8 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_disconnected(self, _event: object) -> None:
         self._emit(XmppDisconnected())
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
 
     def _on_failed_auth(self, _event: object) -> None:
         self._emit(XmppError("No se pudo autenticar con el servidor XMPP."))
@@ -68,9 +70,19 @@ class BridgeXmppClient(ClientXMPP):
         chats: list[Chat] = []
         for jid in sorted(self.client_roster.keys()):
             item = self.client_roster[jid]
-            name = item.get("name") or jid
+            name = self._roster_item_name(item) or jid
             chats.append(Chat(jid=jid, name=name))
         return chats
+
+    @staticmethod
+    def _roster_item_name(item: object) -> str:
+        if isinstance(item, dict):
+            return str(item.get("name") or "")
+
+        try:
+            return str(item["name"] or "")
+        except (KeyError, TypeError):
+            return ""
 
 
 class XmppService:
@@ -100,28 +112,30 @@ class XmppService:
             self._emit(XmppError("No hay una conexion XMPP activa."))
             return
 
-        self._loop.call_soon_threadsafe(
-            self._client.send_message,
-            mto=to_jid,
-            mbody=body,
-            mtype="chat",
-        )
+        def send() -> None:
+            if self._client:
+                self._client.send_message(mto=to_jid, mbody=body, mtype="chat")
+
+        self._loop.call_soon_threadsafe(send)
 
     def _run_client(self, settings: ConnectionSettings, password: str) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
 
-        self._client = BridgeXmppClient(settings, password, self._emit)
-        plugins = ("xep_0030", "xep_0199")
-        for plugin in plugins:
-            self._client.register_plugin(plugin)
+            self._client = BridgeXmppClient(settings, password, self._emit)
+            plugins = ("xep_0030", "xep_0199")
+            for plugin in plugins:
+                self._client.register_plugin(plugin)
 
-        connected = self._client.connect(
-            address=(settings.host, settings.port) if settings.host else None,
-            use_ssl=False,
-        )
-        if not connected:
-            self._emit(XmppError("No se pudo abrir la conexion con el servidor XMPP."))
-            return
+            if settings.host:
+                self._client.connect(settings.host, settings.port)
+            else:
+                self._client.connect()
 
-        self._client.process(forever=True)
+            self._loop.run_forever()
+        except Exception as exc:
+            self._emit(XmppError(f"Error en la conexion XMPP: {exc}"))
+        finally:
+            self._client = None
+            self._loop = None

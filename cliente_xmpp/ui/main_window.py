@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import wx
 
 from cliente_xmpp.config.settings import SettingsStore
@@ -134,6 +136,7 @@ class MainWindow(wx.Frame):
 
         message = Message(chat_jid=chat.jid, sender_jid="me", body=body, outgoing=True)
         self._store_message(message)
+        self._update_chat_from_message(message)
         self.conversation.append_message(message)
         self._refresh_chat_order(chat.jid)
         self.xmpp.send_message(chat.jid, body)
@@ -173,20 +176,28 @@ class MainWindow(wx.Frame):
             case MessageReceived(message=message):
                 self._store_message(message)
                 self._ensure_chat_for_message(message)
+                current_chat_is_open = (
+                    self.conversation.IsShown()
+                    and self.conversation.current_chat
+                    and self.conversation.current_chat.jid == message.chat_jid
+                )
+                self._update_chat_from_message(message, mark_unread=not current_chat_is_open)
                 self._refresh_chat_order()
-                if self.conversation.current_chat and self.conversation.current_chat.jid == message.chat_jid:
+                if current_chat_is_open:
                     self.conversation.append_message(message)
             case MessageHistoryLoaded(chat_jid=chat_jid, messages=messages):
                 self.history_loaded_chats.add(chat_jid)
                 self.messages_by_chat[chat_jid] = messages + self.messages_by_chat.get(chat_jid, [])
                 self._update_chat_activity_from_messages(chat_jid, messages)
+                self._update_chat_preview_from_messages(chat_jid, messages)
                 self._refresh_chat_order()
                 if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
                     self._load_conversation(self.conversation.current_chat)
                 self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
-            case ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at):
+            case ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at, preview=preview):
                 if sent_at:
                     self._update_chat_activity(chat_jid, sent_at.timestamp())
+                    self._update_chat_summary(chat_jid, preview=preview, sent_at=sent_at)
                     self._refresh_chat_order()
 
     def _set_connected_ui(self, connected: bool) -> None:
@@ -206,7 +217,14 @@ class MainWindow(wx.Frame):
         if self.chat_list.has_chat(message.chat_jid):
             return
 
-        self.chat_list.upsert_chat(Chat(jid=message.chat_jid, name=message.chat_jid))
+        self.chat_list.upsert_chat(
+            Chat(
+                jid=message.chat_jid,
+                name=message.chat_jid,
+                last_message_preview=message.body,
+                last_message_at=message.sent_at,
+            )
+        )
         self.chat_names_by_jid[message.chat_jid] = message.chat_jid
 
     def _select_first_chat(self) -> None:
@@ -266,6 +284,56 @@ class MainWindow(wx.Frame):
         if current is None or timestamp > current:
             self.latest_message_timestamps_by_chat[chat_jid] = timestamp
 
+    def _update_chat_preview_from_messages(self, chat_jid: str, messages: list[Message]) -> None:
+        if not messages:
+            return
+
+        latest_message = max(messages, key=lambda message: message.sent_at)
+        self._update_chat_from_message(latest_message)
+
+    def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
+        self._update_chat_summary(
+            message.chat_jid,
+            preview=message.body,
+            sent_at=message.sent_at,
+            unread_delta=1 if mark_unread else 0,
+        )
+
+    def _update_chat_summary(
+        self,
+        chat_jid: str,
+        preview: str = "",
+        sent_at: datetime | None = None,
+        unread_delta: int = 0,
+        mark_read: bool = False,
+    ) -> None:
+        chats = self.chat_list.chats()
+        for chat in chats:
+            if chat.jid != chat_jid:
+                continue
+
+            self.chat_list.upsert_chat(
+                Chat(
+                    jid=chat.jid,
+                    name=chat.name,
+                    unread_count=0 if mark_read else chat.unread_count + unread_delta,
+                    last_message_preview=preview or chat.last_message_preview,
+                    last_message_at=sent_at or chat.last_message_at,
+                )
+            )
+            return
+
+        self.chat_list.upsert_chat(
+            Chat(
+                jid=chat_jid,
+                name=self._display_name_for_jid(chat_jid),
+                unread_count=0 if mark_read else unread_delta,
+                last_message_preview=preview,
+                last_message_at=sent_at,
+            )
+        )
+        self.chat_names_by_jid.setdefault(chat_jid, chat_jid)
+
     def _show_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()
         if not chat:
@@ -273,6 +341,7 @@ class MainWindow(wx.Frame):
             return
 
         self._load_conversation(chat)
+        self._update_chat_summary(chat.jid, mark_read=True)
         self.chat_list.Hide()
         self.conversation.Show()
         self.content_panel.Layout()

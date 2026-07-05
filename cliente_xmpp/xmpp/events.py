@@ -41,6 +41,7 @@ class MessageHistoryLoaded:
 class ChatActivityLoaded:
     chat_jid: str
     sent_at: datetime | None
+    preview: str = ""
 
 
 XmppEvent = (

@@ -10,6 +10,7 @@ class Chat:
     name: str
     unread_count: int = 0
     last_message_preview: str = ""
+    last_message_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -19,4 +20,3 @@ class Message:
     body: str
     sent_at: datetime = field(default_factory=datetime.now)
     outgoing: bool = False
-

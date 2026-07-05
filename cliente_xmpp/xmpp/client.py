@@ -39,11 +39,9 @@ class BridgeXmppClient(ClientXMPP):
         self.send_presence()
         await self.get_roster()
         self._emit(XmppConnected())
-        try:
-            await asyncio.wait_for(self.load_recent_activity(), timeout=8)
-        except TimeoutError:
-            pass
-        self._emit(RosterLoaded(self._build_roster_chats()))
+        chats = self._build_roster_chats()
+        self._emit(RosterLoaded(chats))
+        asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
 
     def _on_disconnected(self, _event: object) -> None:
         self._emit(XmppDisconnected())
@@ -100,25 +98,34 @@ class BridgeXmppClient(ClientXMPP):
         except Exception as exc:
             self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
 
-    async def load_recent_activity(self, limit: int = 1000) -> None:
+    async def load_recent_activity(self, roster_jids: set[str], limit: int = 1000) -> None:
         try:
-            activity_by_chat: dict[str, datetime] = {}
+            loaded_chat_jids: set[str] = set()
             mam = self["xep_0313"]
-            async for result in mam.iterate(reverse=True, rsm={"max": 100}, total=limit):
-                if not self._message_body_from_mam_result(result):
+            async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
+                preview = self._message_body_from_mam_result(result)
+                if not preview:
                     continue
 
                 chat_jid = self._chat_jid_from_mam_result(result)
                 sent_at = self._sent_at_from_mam_result(result)
-                if not chat_jid or not sent_at:
+                if not chat_jid or not sent_at or chat_jid in loaded_chat_jids:
                     continue
 
-                current = activity_by_chat.get(chat_jid)
-                if current is None or sent_at > current:
-                    activity_by_chat[chat_jid] = sent_at
+                if roster_jids and chat_jid not in roster_jids:
+                    continue
 
-            for chat_jid, sent_at in activity_by_chat.items():
-                self._emit(ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at))
+                loaded_chat_jids.add(chat_jid)
+                self._emit(
+                    ChatActivityLoaded(
+                        chat_jid=chat_jid,
+                        sent_at=sent_at,
+                        preview=preview,
+                    )
+                )
+
+                if loaded_chat_jids == roster_jids:
+                    break
         except Exception:
             pass
 
@@ -215,14 +222,14 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(load)
 
-    def load_recent_activity(self, limit: int = 1000) -> None:
+    def load_recent_activity(self, roster_jids: set[str] | None = None, limit: int = 1000) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexion XMPP activa."))
             return
 
         def load() -> None:
             if self._client:
-                self._loop.create_task(self._client.load_recent_activity(limit))
+                self._loop.create_task(self._client.load_recent_activity(roster_jids or set(), limit))
 
         self._loop.call_soon_threadsafe(load)
 

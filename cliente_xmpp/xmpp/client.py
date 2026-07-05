@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from collections.abc import Callable
 from datetime import datetime
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from slixmpp import ClientXMPP
@@ -27,6 +29,9 @@ INBOX_NS = "urn:xmpp:inbox:1"
 MAM_NS = "urn:xmpp:mam:2"
 FORWARD_NS = "urn:xmpp:forward:0"
 CLIENT_NS = "jabber:client"
+OOB_NS = "jabber:x:oob"
+AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
+URL_PATTERN = re.compile(r"https?://\S+")
 
 
 class BridgeXmppClient(ClientXMPP):
@@ -67,7 +72,8 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(msg["body"] or "").strip()
-        if not body:
+        audio_url = self._audio_url_from_stanza(msg)
+        if not body and not audio_url:
             return
 
         bare_jid = str(msg["from"].bare)
@@ -76,8 +82,9 @@ class BridgeXmppClient(ClientXMPP):
                 Message(
                     chat_jid=bare_jid,
                     sender_jid=bare_jid,
-                    body=body,
+                    body=body or "Audio recibido",
                     outgoing=False,
+                    audio_url=audio_url,
                 )
             )
         )
@@ -121,7 +128,8 @@ class BridgeXmppClient(ClientXMPP):
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
                 preview = self._message_body_from_mam_result(result)
-                if not preview:
+                audio_url = self._audio_url_from_mam_result(result)
+                if not preview and not audio_url:
                     continue
 
                 chat_jid = self._chat_jid_from_mam_result(result)
@@ -137,7 +145,7 @@ class BridgeXmppClient(ClientXMPP):
                     ChatActivityLoaded(
                         chat_jid=chat_jid,
                         sent_at=sent_at,
-                        preview=preview,
+                        preview=preview or "Audio recibido",
                     )
                 )
 
@@ -165,7 +173,8 @@ class BridgeXmppClient(ClientXMPP):
 
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
         body = self._message_body_from_mam_result(result)
-        if not body:
+        audio_url = self._audio_url_from_mam_result(result)
+        if not body and not audio_url:
             return None
 
         forwarded = result["mam_result"]["forwarded"]
@@ -175,9 +184,10 @@ class BridgeXmppClient(ClientXMPP):
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
-            body=body,
+            body=body or "Audio recibido",
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
+            audio_url=audio_url,
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -185,7 +195,8 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(stanza["body"] or "").strip()
-        if not body:
+        audio_url = self._audio_url_from_stanza(stanza)
+        if not body and not audio_url:
             return
 
         chat_jid = str(stanza["to"].bare if outgoing else stanza["from"].bare)
@@ -195,8 +206,9 @@ class BridgeXmppClient(ClientXMPP):
                 Message(
                     chat_jid=chat_jid,
                     sender_jid=sender_jid,
-                    body=body,
+                    body=body or "Audio recibido",
                     outgoing=outgoing,
+                    audio_url=audio_url,
                 )
             )
         )
@@ -238,6 +250,8 @@ class BridgeXmppClient(ClientXMPP):
             if message is not None:
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
+                if not preview:
+                    preview = "Audio recibido" if self._audio_url_from_xml(message) else ""
             sent_at = self._forwarded_delay_from_xml(result)
 
         return chat_jid, unread_count, preview, sent_at
@@ -288,6 +302,36 @@ class BridgeXmppClient(ClientXMPP):
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         return str(stanza["body"] or "").strip()
+
+    def _audio_url_from_mam_result(self, result: object) -> str:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        return self._audio_url_from_stanza(stanza)
+
+    def _audio_url_from_stanza(self, stanza: object) -> str:
+        for url in self._urls_from_text(str(stanza["body"] or "")):
+            if self._is_audio_url(url):
+                return url
+
+        return self._audio_url_from_xml(stanza.xml)
+
+    @classmethod
+    def _audio_url_from_xml(cls, xml: ET.Element) -> str:
+        for url_node in xml.findall(f".//{{{OOB_NS}}}url"):
+            url = (url_node.text or "").strip()
+            if cls._is_audio_url(url):
+                return url
+
+        return ""
+
+    @staticmethod
+    def _urls_from_text(text: str) -> list[str]:
+        return [match.group(0).rstrip(").,;]") for match in URL_PATTERN.finditer(text)]
+
+    @staticmethod
+    def _is_audio_url(url: str) -> bool:
+        path = urlparse(url).path.lower()
+        return path.endswith(AUDIO_EXTENSIONS)
 
     @staticmethod
     def _int_or_zero(value: str) -> int:

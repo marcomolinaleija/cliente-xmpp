@@ -85,6 +85,8 @@ class MainWindow(wx.Frame):
         self.chat_list.open_button.Bind(wx.EVT_BUTTON, self._on_open_selected_chat)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_send_message)
+        self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
+        self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         self.Bind(EVT_XMPP_EVENT, self._on_xmpp_event)
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -143,6 +145,19 @@ class MainWindow(wx.Frame):
         self.conversation.append_message(message)
         self._refresh_chat_order(chat.jid)
         self.xmpp.send_message(chat.jid, body)
+
+    def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
+            self._on_send_message(wx.CommandEvent())
+            return
+
+        event.Skip()
+
+    def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_audio():
+            return
+
+        event.Skip()
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
         self._handle_xmpp_event(event.event)

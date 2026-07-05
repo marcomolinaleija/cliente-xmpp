@@ -78,7 +78,7 @@ class ChatListPanel(wx.Panel):
     @staticmethod
     def _format_status(chat: Chat) -> str:
         if chat.unread_count <= 0:
-            return "Leido"
+            return ""
 
         if chat.unread_count == 1:
             return "1 mensaje no leido"

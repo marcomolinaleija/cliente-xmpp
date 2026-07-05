@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import wx
+import webbrowser
 from collections.abc import Callable
+
+import wx
 
 from cliente_xmpp.models.chat import Chat, Message
 
@@ -11,6 +13,7 @@ class ConversationPanel(wx.Panel):
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
         self.current_chat: Chat | None = None
+        self._messages: list[Message] = []
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.back_button = wx.Button(self, label="Volver")
@@ -24,10 +27,12 @@ class ConversationPanel(wx.Panel):
         self.current_chat = chat
         self.title.SetLabel(chat.name)
         self.messages.DeleteAllItems()
+        self._messages = []
         self.send_button.Enable(True)
 
     def append_message(self, message: Message) -> None:
         index = self.messages.GetItemCount()
+        self._messages.append(message)
         self.messages.InsertItem(index, self._format_message_row(message))
         self.messages.EnsureVisible(index)
 
@@ -39,6 +44,17 @@ class ConversationPanel(wx.Panel):
         if body:
             self.compose.Clear()
         return body
+
+    def play_selected_audio(self) -> bool:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._messages):
+            return False
+
+        audio_url = self._messages[index].audio_url
+        if not audio_url:
+            return False
+
+        return webbrowser.open(audio_url)
 
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
@@ -66,11 +82,12 @@ class ConversationPanel(wx.Panel):
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)
+        body = f"[Audio] {message.body}" if message.audio_url else message.body
         if message.outgoing:
-            return f"Tu {message.body} {timestamp} Entregado."
+            return f"Tu {body} {timestamp} Entregado."
 
         sender = self.resolve_display_name(message.sender_jid)
-        return f"{sender} {message.body}, {timestamp}"
+        return f"{sender} {body}, {timestamp}"
 
     def _format_message_time(self, message: Message) -> str:
         hour = message.sent_at.hour

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from cliente_xmpp.models.chat import Chat, Message
 
@@ -36,6 +37,12 @@ class MessageHistoryLoaded:
     messages: list[Message]
 
 
+@dataclass(slots=True)
+class ChatActivityLoaded:
+    chat_jid: str
+    sent_at: datetime | None
+
+
 XmppEvent = (
     XmppConnected
     | XmppDisconnected
@@ -43,4 +50,5 @@ XmppEvent = (
     | RosterLoaded
     | MessageReceived
     | MessageHistoryLoaded
+    | ChatActivityLoaded
 )

@@ -11,6 +11,7 @@ from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginPanel
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
+    ChatActivityLoaded,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -28,6 +29,7 @@ class MainWindow(wx.Frame):
         self.settings_store = SettingsStore()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
+        self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.current_jid = ""
@@ -133,6 +135,7 @@ class MainWindow(wx.Frame):
         message = Message(chat_jid=chat.jid, sender_jid="me", body=body, outgoing=True)
         self._store_message(message)
         self.conversation.append_message(message)
+        self._refresh_chat_order(chat.jid)
         self.xmpp.send_message(chat.jid, body)
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
@@ -164,20 +167,27 @@ class MainWindow(wx.Frame):
                 wx.MessageBox(message, "XMPP")
             case RosterLoaded(chats=chats):
                 self._update_chat_names(chats)
-                self.chat_list.set_chats(chats)
+                self.chat_list.set_chats(self._sort_chats_by_recency(chats))
                 self.status_bar.SetStatusText(f"{len(chats)} chats cargados")
                 self._select_first_chat()
             case MessageReceived(message=message):
                 self._store_message(message)
                 self._ensure_chat_for_message(message)
+                self._refresh_chat_order()
                 if self.conversation.current_chat and self.conversation.current_chat.jid == message.chat_jid:
                     self.conversation.append_message(message)
             case MessageHistoryLoaded(chat_jid=chat_jid, messages=messages):
                 self.history_loaded_chats.add(chat_jid)
                 self.messages_by_chat[chat_jid] = messages + self.messages_by_chat.get(chat_jid, [])
+                self._update_chat_activity_from_messages(chat_jid, messages)
+                self._refresh_chat_order()
                 if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
                     self._load_conversation(self.conversation.current_chat)
                 self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
+            case ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at):
+                if sent_at:
+                    self._update_chat_activity(chat_jid, sent_at.timestamp())
+                    self._refresh_chat_order()
 
     def _set_connected_ui(self, connected: bool) -> None:
         self.login_panel.Show(not connected)
@@ -190,6 +200,7 @@ class MainWindow(wx.Frame):
 
     def _store_message(self, message: Message) -> None:
         self.messages_by_chat.setdefault(message.chat_jid, []).append(message)
+        self._update_chat_activity(message.chat_jid, message.sent_at.timestamp())
 
     def _ensure_chat_for_message(self, message: Message) -> None:
         if self.chat_list.has_chat(message.chat_jid):
@@ -208,6 +219,52 @@ class MainWindow(wx.Frame):
         self.conversation.set_chat(chat)
         for message in self.messages_by_chat.get(chat.jid, []):
             self.conversation.append_message(message)
+
+    def _refresh_chat_order(self, selected_jid: str = "") -> None:
+        selected_chat = self.chat_list.selected_chat()
+        selected_jid = selected_jid or (selected_chat.jid if selected_chat else "")
+        if not selected_jid and self.conversation.current_chat:
+            selected_jid = self.conversation.current_chat.jid
+        self.chat_list.set_chats(
+            self._sort_chats_by_recency(self.chat_list.chats()),
+            selected_jid=selected_jid,
+        )
+
+    def _sort_chats_by_recency(self, chats: list[Chat]) -> list[Chat]:
+        return sorted(chats, key=self._chat_recency_key)
+
+    def _chat_recency_key(self, chat: Chat) -> tuple[int, float, str]:
+        latest = self._latest_message_timestamp(chat.jid)
+        if latest is None:
+            return (1, 0, chat.name.casefold())
+
+        return (0, -latest, chat.name.casefold())
+
+    def _latest_message_timestamp(self, chat_jid: str) -> float | None:
+        latest = self.latest_message_timestamps_by_chat.get(chat_jid)
+        messages = self.messages_by_chat.get(chat_jid, [])
+        if not messages:
+            return latest
+
+        message_latest = max(message.sent_at.timestamp() for message in messages)
+        if latest is None:
+            return message_latest
+
+        return max(latest, message_latest)
+
+    def _update_chat_activity_from_messages(self, chat_jid: str, messages: list[Message]) -> None:
+        if not messages:
+            return
+
+        self._update_chat_activity(
+            chat_jid,
+            max(message.sent_at.timestamp() for message in messages),
+        )
+
+    def _update_chat_activity(self, chat_jid: str, timestamp: float) -> None:
+        current = self.latest_message_timestamps_by_chat.get(chat_jid)
+        if current is None or timestamp > current:
+            self.latest_message_timestamps_by_chat[chat_jid] = timestamp
 
     def _show_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()

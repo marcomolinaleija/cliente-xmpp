@@ -10,6 +10,7 @@ from slixmpp import ClientXMPP
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.xmpp.events import (
+    ChatActivityLoaded,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -38,6 +39,10 @@ class BridgeXmppClient(ClientXMPP):
         self.send_presence()
         await self.get_roster()
         self._emit(XmppConnected())
+        try:
+            await asyncio.wait_for(self.load_recent_activity(), timeout=8)
+        except TimeoutError:
+            pass
         self._emit(RosterLoaded(self._build_roster_chats()))
 
     def _on_disconnected(self, _event: object) -> None:
@@ -95,22 +100,65 @@ class BridgeXmppClient(ClientXMPP):
         except Exception as exc:
             self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
 
+    async def load_recent_activity(self, limit: int = 1000) -> None:
+        try:
+            activity_by_chat: dict[str, datetime] = {}
+            mam = self["xep_0313"]
+            async for result in mam.iterate(reverse=True, rsm={"max": 100}, total=limit):
+                if not self._message_body_from_mam_result(result):
+                    continue
+
+                chat_jid = self._chat_jid_from_mam_result(result)
+                sent_at = self._sent_at_from_mam_result(result)
+                if not chat_jid or not sent_at:
+                    continue
+
+                current = activity_by_chat.get(chat_jid)
+                if current is None or sent_at > current:
+                    activity_by_chat[chat_jid] = sent_at
+
+            for chat_jid, sent_at in activity_by_chat.items():
+                self._emit(ChatActivityLoaded(chat_jid=chat_jid, sent_at=sent_at))
+        except Exception:
+            pass
+
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
-        forwarded = result["mam_result"]["forwarded"]
-        stanza = forwarded["stanza"]
-        body = str(stanza["body"] or "").strip()
+        body = self._message_body_from_mam_result(result)
         if not body:
             return None
 
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
         sender_jid = str(stanza["from"].bare)
         outgoing = sender_jid == self.boundjid.bare
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
             body=body,
-            sent_at=forwarded["delay"]["stamp"] or datetime.now(),
+            sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
         )
+
+    def _chat_jid_from_mam_result(self, result: object) -> str:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        from_jid = stanza["from"]
+        to_jid = stanza["to"]
+        if str(from_jid.bare) == self.boundjid.bare:
+            return str(to_jid.bare)
+
+        return str(from_jid.bare)
+
+    @staticmethod
+    def _sent_at_from_mam_result(result: object) -> datetime | None:
+        forwarded = result["mam_result"]["forwarded"]
+        return forwarded["delay"]["stamp"]
+
+    @staticmethod
+    def _message_body_from_mam_result(result: object) -> str:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        return str(stanza["body"] or "").strip()
 
     @staticmethod
     def _roster_item_name(item: object) -> str:
@@ -164,6 +212,17 @@ class XmppService:
         def load() -> None:
             if self._client:
                 self._loop.create_task(self._client.load_history(chat_jid, limit))
+
+        self._loop.call_soon_threadsafe(load)
+
+    def load_recent_activity(self, limit: int = 1000) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def load() -> None:
+            if self._client:
+                self._loop.create_task(self._client.load_recent_activity(limit))
 
         self._loop.call_soon_threadsafe(load)
 

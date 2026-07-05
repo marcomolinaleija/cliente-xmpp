@@ -17,9 +17,11 @@ class ChatListPanel(wx.Panel):
         box.Add(self.open_button, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
         self.SetSizer(box)
 
-    def set_chats(self, chats: list[Chat]) -> None:
-        self._chats = chats
+    def set_chats(self, chats: list[Chat], selected_jid: str = "") -> None:
+        self._chats = list(chats)
         self.list_box.Set([chat.name for chat in chats])
+        if selected_jid:
+            self.select_chat_by_jid(selected_jid)
 
     def upsert_chat(self, chat: Chat) -> None:
         for index, current in enumerate(self._chats):
@@ -44,8 +46,19 @@ class ChatListPanel(wx.Panel):
         self.list_box.SetSelection(0)
         return self._chats[0]
 
+    def select_chat_by_jid(self, jid: str) -> Chat | None:
+        for index, chat in enumerate(self._chats):
+            if chat.jid == jid:
+                self.list_box.SetSelection(index)
+                return chat
+
+        return None
+
     def focus(self) -> None:
         self.list_box.SetFocus()
 
     def has_chat(self, jid: str) -> bool:
         return any(chat.jid == jid for chat in self._chats)
+
+    def chats(self) -> list[Chat]:
+        return list(self._chats)

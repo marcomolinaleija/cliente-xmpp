@@ -12,7 +12,7 @@ from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class MessageStore:
@@ -25,7 +25,7 @@ class MessageStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT jid, name, unread_count, last_message_preview, last_message_at
+                SELECT jid, name, custom_name, unread_count, last_message_preview, last_message_at
                 FROM chats
                 WHERE account_jid = ?
                 ORDER BY COALESCE(last_message_at, '') DESC, name COLLATE NOCASE
@@ -36,7 +36,8 @@ class MessageStore:
         return [
             Chat(
                 jid=str(row["jid"]),
-                name=str(row["name"] or row["jid"]),
+                name=str(row["custom_name"] or row["name"] or row["jid"]),
+                custom_name=str(row["custom_name"] or ""),
                 unread_count=int(row["unread_count"] or 0),
                 last_message_preview=str(row["last_message_preview"] or ""),
                 last_message_at=_datetime_from_db(row["last_message_at"]),
@@ -100,6 +101,49 @@ class MessageStore:
             for chat in chats:
                 self._upsert_chat(conn, account_jid, chat)
 
+    def rename_chat(self, account_jid: str, chat_jid: str, name: str) -> None:
+        now = _datetime_to_db(datetime.now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chats (
+                    account_jid, jid, name, custom_name, unread_count,
+                    last_message_preview, last_message_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 0, '', NULL, ?)
+                ON CONFLICT(account_jid, jid) DO UPDATE SET
+                    custom_name = excluded.custom_name,
+                    updated_at = excluded.updated_at
+                """,
+                (account_jid, chat_jid, name, name, now),
+            )
+
+    def update_message_media_local_path(
+        self,
+        account_jid: str,
+        message: Message,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE messages
+                SET media_local_path = ?, media_size = ?, media_mime = COALESCE(
+                    NULLIF(?, ''),
+                    media_mime
+                ), media_filename = COALESCE(NULLIF(?, ''), media_filename)
+                WHERE account_jid = ? AND chat_jid = ? AND message_key = ?
+                """,
+                (
+                    message.media_local_path,
+                    message.media_size,
+                    message.media_mime,
+                    message.media_filename,
+                    account_jid,
+                    message.chat_jid,
+                    _message_key(message),
+                ),
+            )
+
     def upsert_messages(self, account_jid: str, messages: list[Message]) -> None:
         if not messages:
             return
@@ -119,6 +163,7 @@ class MessageStore:
                     account_jid TEXT NOT NULL,
                     jid TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    custom_name TEXT NOT NULL DEFAULT '',
                     unread_count INTEGER NOT NULL DEFAULT 0,
                     last_message_preview TEXT NOT NULL DEFAULT '',
                     last_message_at TEXT,
@@ -140,6 +185,7 @@ class MessageStore:
                     media_kind TEXT NOT NULL DEFAULT '',
                     media_mime TEXT NOT NULL DEFAULT '',
                     media_filename TEXT NOT NULL DEFAULT '',
+                    media_size INTEGER NOT NULL DEFAULT 0,
                     media_local_path TEXT NOT NULL DEFAULT '',
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
@@ -153,6 +199,7 @@ class MessageStore:
                 """
             )
             self._ensure_message_columns(conn)
+            self._ensure_chat_columns(conn)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -173,6 +220,7 @@ class MessageStore:
             "media_kind": "TEXT NOT NULL DEFAULT ''",
             "media_mime": "TEXT NOT NULL DEFAULT ''",
             "media_filename": "TEXT NOT NULL DEFAULT ''",
+            "media_size": "INTEGER NOT NULL DEFAULT 0",
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
         }
@@ -180,13 +228,21 @@ class MessageStore:
             if column not in existing_columns:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
 
+    def _ensure_chat_columns(self, conn: sqlite3.Connection) -> None:
+        existing_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(chats)").fetchall()
+        }
+        if "custom_name" not in existing_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN custom_name TEXT NOT NULL DEFAULT ''")
+
     def _upsert_chat(self, conn: sqlite3.Connection, account_jid: str, chat: Chat) -> None:
         now = _datetime_to_db(datetime.now())
+        display_name = chat.custom_name or chat.name
         last_message_preview = chat.last_message_preview
         last_message_at = chat.last_message_at
         existing = conn.execute(
             """
-            SELECT last_message_preview, last_message_at
+            SELECT last_message_preview, last_message_at, custom_name
             FROM chats
             WHERE account_jid = ? AND jid = ?
             """,
@@ -204,12 +260,13 @@ class MessageStore:
         conn.execute(
             """
             INSERT INTO chats (
-                account_jid, jid, name, unread_count, last_message_preview,
+                account_jid, jid, name, custom_name, unread_count, last_message_preview,
                 last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = excluded.name,
+                custom_name = COALESCE(NULLIF(excluded.custom_name, ''), chats.custom_name),
                 unread_count = excluded.unread_count,
                 last_message_preview = COALESCE(
                     NULLIF(excluded.last_message_preview, ''),
@@ -221,7 +278,8 @@ class MessageStore:
             (
                 account_jid,
                 chat.jid,
-                chat.name,
+                display_name,
+                chat.custom_name,
                 chat.unread_count,
                 last_message_preview,
                 _datetime_to_db(last_message_at),
@@ -241,10 +299,10 @@ class MessageStore:
             INSERT INTO messages (
                 account_jid, chat_jid, message_key, message_id, sender_jid, body,
                 sent_at, outgoing, audio_url, media_url, media_kind, media_mime,
-                media_filename, media_local_path, starred, reactions_json,
+                media_filename, media_size, media_local_path, starred, reactions_json,
                 reply_quote, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
@@ -259,6 +317,7 @@ class MessageStore:
                     NULLIF(excluded.media_filename, ''),
                     messages.media_filename
                 ),
+                media_size = COALESCE(NULLIF(excluded.media_size, 0), messages.media_size),
                 media_local_path = COALESCE(
                     NULLIF(excluded.media_local_path, ''),
                     messages.media_local_path
@@ -281,6 +340,7 @@ class MessageStore:
                 message.media_kind,
                 message.media_mime,
                 message.media_filename,
+                message.media_size,
                 message.media_local_path,
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
@@ -331,7 +391,7 @@ class MessageStore:
                 message.chat_jid,
                 name,
                 unread_count,
-                message.body,
+                _message_preview(message),
                 _datetime_to_db(message.sent_at),
                 now,
             ),
@@ -356,6 +416,37 @@ def _message_key(message: Message) -> str:
     return f"hash:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
+def _message_preview(message: Message) -> str:
+    if not message.media_url:
+        return message.body
+
+    label = {
+        "audio": "audio",
+        "image": "foto",
+        "video": "video",
+        "file": "archivo",
+    }.get(message.media_kind, "archivo")
+    details = [label]
+    if message.media_filename:
+        details.append(message.media_filename)
+    if message.media_size > 0:
+        details.append(_format_size(message.media_size))
+    return ", ".join(details)
+
+
+def _format_size(size: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+    return f"{size} B"
+
+
 def _message_from_row(row: sqlite3.Row) -> Message:
     return Message(
         chat_jid=str(row["chat_jid"]),
@@ -368,6 +459,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_kind=str(row["media_kind"] or ""),
         media_mime=str(row["media_mime"] or ""),
         media_filename=str(row["media_filename"] or ""),
+        media_size=int(row["media_size"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
         message_id=str(row["message_id"] or ""),
         starred=bool(row["starred"]),

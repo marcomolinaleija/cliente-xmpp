@@ -8,6 +8,7 @@ from datetime import datetime
 class Chat:
     jid: str
     name: str
+    custom_name: str = ""
     unread_count: int = 0
     last_message_preview: str = ""
     last_message_at: datetime | None = None
@@ -25,6 +26,7 @@ class Message:
     media_kind: str = ""
     media_mime: str = ""
     media_filename: str = ""
+    media_size: int = 0
     media_local_path: str = ""
     message_id: str = ""
     starred: bool = False

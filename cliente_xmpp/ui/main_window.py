@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import threading
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -9,6 +11,14 @@ from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.notification import NewMessageSound
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
+from cliente_xmpp.integrations import rayoai
+from cliente_xmpp.media.downloads import (
+    DownloadedMedia,
+    download_media,
+    has_media,
+    local_media_path,
+    media_description,
+)
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListPanel
@@ -105,6 +115,7 @@ class MainWindow(wx.Frame):
         self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
+        self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
         self.chat_list.open_button.Bind(wx.EVT_BUTTON, self._on_open_selected_chat)
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
@@ -175,6 +186,59 @@ class MainWindow(wx.Frame):
     def _on_open_selected_chat(self, _event: wx.Event) -> None:
         self._show_selected_chat()
 
+    def _on_chat_list_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_F2:
+            self._rename_selected_chat()
+            return
+
+        event.Skip()
+
+    def _rename_selected_chat(self) -> None:
+        chat = self.chat_list.selected_chat()
+        if not chat:
+            self.status_bar.SetStatusText("Selecciona un chat para renombrarlo")
+            return
+
+        dialog = wx.TextEntryDialog(
+            self,
+            "Nuevo nombre para este contacto:",
+            "Renombrar contacto",
+            chat.name,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            name = dialog.GetValue().strip()
+        finally:
+            dialog.Destroy()
+
+        if not name:
+            self.status_bar.SetStatusText("El nombre no puede quedar vacío")
+            return
+
+        renamed_chat = Chat(
+            jid=chat.jid,
+            name=name,
+            custom_name=name,
+            unread_count=chat.unread_count,
+            last_message_preview=chat.last_message_preview,
+            last_message_at=chat.last_message_at,
+        )
+        self.chat_names_by_jid[chat.jid] = name
+        self.chat_list.upsert_chat(renamed_chat)
+        self._refresh_chat_order(selected_jid=chat.jid)
+        if self.conversation.current_chat and self.conversation.current_chat.jid == chat.jid:
+            self.conversation.set_chat(renamed_chat)
+            self.conversation.set_messages(self.messages_by_chat.get(chat.jid, []))
+        if self.current_jid:
+            try:
+                self.message_store.rename_chat(self.current_jid, chat.jid, name)
+            except Exception:
+                self.status_bar.SetStatusText("No se pudo guardar el nombre del contacto")
+                return
+
+        self.status_bar.SetStatusText(f"Contacto renombrado: {name}")
+
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
         if key_code == wx.WXK_RETURN and self.chat_list.IsShown():
@@ -244,6 +308,12 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            message = self.conversation.selected_message()
+            if message and has_media(message) and message.media_kind != "audio":
+                self._open_or_download_media(message)
+                return
+
         if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
             if self.conversation.open_selected_message_reader():
                 return
@@ -268,8 +338,26 @@ class MainWindow(wx.Frame):
         menu = wx.Menu()
         reply_item = menu.Append(wx.ID_ANY, "Responder")
         copy_item = menu.Append(wx.ID_ANY, "Copiar texto")
-        play_item = menu.Append(wx.ID_ANY, "Reproducir audio")
-        play_item.Enable(bool(message.audio_url))
+        media_item: wx.MenuItem | None = None
+        copy_file_item: wx.MenuItem | None = None
+        describe_item: wx.MenuItem | None = None
+        play_item: wx.MenuItem | None = None
+        if has_media(message):
+            media_label = "Abrir archivo" if local_media_path(message) else "Descargar archivo"
+            if message.media_kind == "image":
+                media_label = "Abrir foto" if local_media_path(message) else "Descargar foto"
+            elif message.media_kind == "video":
+                media_label = "Abrir video" if local_media_path(message) else "Descargar video"
+            elif message.media_kind == "audio":
+                media_label = "Reproducir audio" if message.audio_url else media_label
+            media_item = menu.Append(wx.ID_ANY, media_label)
+            copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
+            copy_file_item.Enable(local_media_path(message) is not None)
+            if message.media_kind in {"image", "video"}:
+                describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
+        else:
+            play_item = menu.Append(wx.ID_ANY, "Reproducir audio")
+            play_item.Enable(False)
 
         reaction_menu = wx.Menu()
         reaction_items: list[tuple[wx.MenuItem, str]] = []
@@ -282,7 +370,33 @@ class MainWindow(wx.Frame):
 
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
-        self.Bind(wx.EVT_MENU, lambda _event: self.conversation.play_selected_audio(), play_item)
+        if media_item:
+            if message.media_kind == "audio":
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self.conversation.play_selected_audio(),
+                    media_item,
+                )
+            else:
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self._open_or_download_media(message),
+                    media_item,
+                )
+        if copy_file_item:
+            self.Bind(wx.EVT_MENU, lambda _event: self._copy_media_file(message), copy_file_item)
+        if describe_item:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._describe_media_with_rayoai(message),
+                describe_item,
+            )
+        if play_item:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self.conversation.play_selected_audio(),
+                play_item,
+            )
         self.Bind(wx.EVT_MENU, lambda _event: self._toggle_starred_message(message), star_item)
         for item, reaction in reaction_items:
             self.Bind(
@@ -309,6 +423,102 @@ class MainWindow(wx.Frame):
             wx.TheClipboard.SetData(wx.TextDataObject(message.body))
         finally:
             wx.TheClipboard.Close()
+
+    def _open_or_download_media(self, message: Message) -> None:
+        path = local_media_path(message)
+        if path:
+            self._open_media_path(path)
+            return
+
+        self._download_media(message)
+
+    def _download_media(self, message: Message, send_to_rayoai: bool = False) -> None:
+        if not self.current_jid:
+            self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
+            return
+
+        self.status_bar.SetStatusText(f"Descargando {media_description(message)}...")
+
+        def worker() -> None:
+            try:
+                downloaded = download_media(message, self.current_jid)
+            except Exception as exc:
+                wx.CallAfter(
+                    self.status_bar.SetStatusText,
+                    f"No se pudo descargar el archivo: {exc}",
+                )
+                return
+
+            wx.CallAfter(self._finish_media_download, message, downloaded, send_to_rayoai)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_media_download(
+        self,
+        message: Message,
+        downloaded: DownloadedMedia,
+        send_to_rayoai: bool,
+    ) -> None:
+        message.media_local_path = str(downloaded.path)
+        message.media_size = downloaded.size
+        message.media_mime = downloaded.mime or message.media_mime
+        message.media_filename = downloaded.filename or message.media_filename
+        self._persist_message_media_path(message)
+        self.conversation.refresh_message(message)
+        self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
+        if send_to_rayoai:
+            self._send_media_to_rayoai(message)
+
+    def _persist_message_media_path(self, message: Message) -> None:
+        if not self.current_jid:
+            return
+
+        try:
+            self.message_store.update_message_media_local_path(self.current_jid, message)
+        except Exception:
+            return
+
+    def _copy_media_file(self, message: Message) -> None:
+        path = local_media_path(message)
+        if path is None:
+            self.status_bar.SetStatusText("Descarga el archivo antes de copiarlo")
+            return
+
+        if not wx.TheClipboard.Open():
+            return
+
+        try:
+            data = wx.FileDataObject()
+            data.AddFile(str(path))
+            wx.TheClipboard.SetData(data)
+            self.status_bar.SetStatusText(f"Archivo copiado: {path.name}")
+        finally:
+            wx.TheClipboard.Close()
+
+    def _describe_media_with_rayoai(self, message: Message) -> None:
+        if local_media_path(message) is None:
+            self._download_media(message, send_to_rayoai=True)
+            return
+
+        self._send_media_to_rayoai(message)
+
+    def _send_media_to_rayoai(self, message: Message) -> None:
+        path = local_media_path(message)
+        if path is None:
+            self.status_bar.SetStatusText("Descarga el archivo antes de enviarlo a RayoAI")
+            return
+
+        if rayoai.send_open_path(path):
+            self.status_bar.SetStatusText("Archivo enviado a RayoAI")
+            return
+
+        self.status_bar.SetStatusText("No se pudo enviar a RayoAI. Verifica que esté abierto.")
+
+    def _open_media_path(self, path: object) -> None:
+        try:
+            os.startfile(path)
+        except OSError as exc:
+            self.status_bar.SetStatusText(f"No se pudo abrir el archivo: {exc}")
 
     def _toggle_starred_message(self, message: Message) -> None:
         message.starred = not message.starred
@@ -479,7 +689,7 @@ class MainWindow(wx.Frame):
 
     def _merge_messages(self, chat_jid: str, messages: list[Message]) -> None:
         merged = self.messages_by_chat.get(chat_jid, []) + messages
-        seen: set[tuple[str, str, str, bool, str, str]] = set()
+        seen: set[tuple[str, str, str, bool, str, str, str]] = set()
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
             key = (
@@ -488,6 +698,7 @@ class MainWindow(wx.Frame):
                 message.body,
                 message.outgoing,
                 message.audio_url,
+                message.media_url,
                 message.reply_quote,
             )
             if key in seen:
@@ -704,12 +915,17 @@ class MainWindow(wx.Frame):
                 chats_by_jid[message.chat_jid] = chat
 
             if self._summary_preview_can_update(chat.last_message_at, message.sent_at):
-                chat.last_message_preview = message.body
+                chat.last_message_preview = (
+                    media_description(message) if has_media(message) else message.body
+                )
                 chat.last_message_at = message.sent_at
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:
-            if chat.jid in self.chat_names_by_jid:
+            if chat.custom_name:
+                chat.name = chat.custom_name
+                self.chat_names_by_jid[chat.jid] = chat.custom_name
+            elif chat.jid in self.chat_names_by_jid:
                 chat.name = self._display_name_for_jid(chat.jid)
         return chats
 
@@ -815,9 +1031,10 @@ class MainWindow(wx.Frame):
         self._update_chat_from_message(latest_message)
 
     def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
+        preview = media_description(message) if has_media(message) else message.body
         self._update_chat_summary(
             message.chat_jid,
-            preview=message.body,
+            preview=preview,
             sent_at=message.sent_at,
             unread_delta=1 if mark_unread else 0,
         )
@@ -839,6 +1056,7 @@ class MainWindow(wx.Frame):
             updated_chat = Chat(
                 jid=chat.jid,
                 name=chat.name,
+                custom_name=chat.custom_name,
                 unread_count=self._next_unread_count(
                     chat.unread_count,
                     unread_delta=unread_delta,

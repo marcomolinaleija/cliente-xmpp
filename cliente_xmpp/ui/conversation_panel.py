@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.player import MpvAudioPlayer, MpvPlaybackError
+from cliente_xmpp.media.downloads import local_media_path, media_description
 from cliente_xmpp.models.chat import Chat, Message
 
 
@@ -21,6 +23,8 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index: int | None = None
         self._reply_quote_prefix = ""
         self._audio_durations_by_url: dict[str, float] = {}
+        self._thumbnail_indexes_by_path: dict[str, int] = {}
+        self._thumbnail_images = wx.ImageList(48, 48)
         self._audio_player = MpvAudioPlayer()
         self._speaker = NvdaSpeaker()
 
@@ -172,6 +176,11 @@ class ConversationPanel(wx.Panel):
                 continue
 
             self.messages.SetItem(index, 0, self._format_message_row(message))
+            image_index = self._thumbnail_index_for_message(message)
+            if image_index >= 0:
+                item = self.messages.GetItem(index)
+                item.SetImage(image_index)
+                self.messages.SetItem(item)
             self._resize_message_column_to_content()
             return
 
@@ -211,6 +220,7 @@ class ConversationPanel(wx.Panel):
         box.Add(header, 0, wx.EXPAND)
         box.Add(self.messages, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, 12)
         self.messages.InsertColumn(0, "Mensajes", width=820)
+        self.messages.AssignImageList(self._thumbnail_images, wx.IMAGE_LIST_SMALL)
 
         box.Add(wx.StaticText(self, label="Mensaje:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
 
@@ -244,7 +254,11 @@ class ConversationPanel(wx.Panel):
     def _append_message_row(self, message: Message) -> int:
         index = self.messages.GetItemCount()
         self._message_rows.append(message)
-        self.messages.InsertItem(index, self._format_message_row(message))
+        image_index = self._thumbnail_index_for_message(message)
+        if image_index >= 0:
+            self.messages.InsertItem(index, self._format_message_row(message), image_index)
+        else:
+            self.messages.InsertItem(index, self._format_message_row(message))
         return index
 
     def _insert_unread_marker(self) -> None:
@@ -334,6 +348,9 @@ class ConversationPanel(wx.Panel):
         return self._format_message_row(row)
 
     def _format_message_body(self, message: Message) -> str:
+        if message.media_url and message.media_kind != "audio":
+            return media_description(message)
+
         if not message.audio_url:
             return message.body
 
@@ -342,6 +359,33 @@ class ConversationPanel(wx.Panel):
             return "Mensaje de voz"
 
         return f"Mensaje de voz ({self._format_duration(duration)})"
+
+    def _thumbnail_index_for_message(self, message: Message) -> int:
+        if message.media_kind != "image":
+            return -1
+
+        path = local_media_path(message)
+        if path is None:
+            return -1
+
+        return self._thumbnail_index_for_path(path)
+
+    def _thumbnail_index_for_path(self, path: Path) -> int:
+        key = str(path)
+        if key in self._thumbnail_indexes_by_path:
+            return self._thumbnail_indexes_by_path[key]
+
+        try:
+            image = wx.Image(key)
+            if not image.IsOk():
+                return -1
+            image = image.Scale(48, 48, wx.IMAGE_QUALITY_HIGH)
+            index = self._thumbnail_images.Add(wx.Bitmap(image))
+        except Exception:
+            return -1
+
+        self._thumbnail_indexes_by_path[key] = index
+        return index
 
     def _format_message_time(self, message: Message) -> str:
         hour = message.sent_at.hour

@@ -199,13 +199,16 @@ class MainWindow(wx.Frame):
             reply_to_jid = (
                 self.current_jid if self.reply_context.outgoing else self.reply_context.sender_jid
             )
+            fallback_end = self.conversation.reply_fallback_end(body)
             self.xmpp.send_reply(
                 chat.jid,
                 body,
                 reply_to_jid,
                 self.reply_context.message_id,
+                fallback_end=fallback_end,
             )
             self.reply_context = None
+            self.conversation.clear_reply_quote()
         else:
             self.xmpp.send_message(chat.jid, body)
 
@@ -730,6 +733,8 @@ class MainWindow(wx.Frame):
             self._request_history_page(chat.jid)
 
     def _show_chat_list(self) -> None:
+        self.reply_context = None
+        self.conversation.clear_reply_quote()
         self.conversation.clear_unread_marker()
         self.conversation.Hide()
         self.chat_list.Show()

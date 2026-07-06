@@ -32,6 +32,7 @@ CLIENT_NS = "jabber:client"
 OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
+FALLBACK_NS = "urn:xmpp:fallback:0"
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 URL_PATTERN = re.compile(r"https?://\S+")
 
@@ -115,18 +116,26 @@ class BridgeXmppClient(ClientXMPP):
         older: bool = False,
     ) -> None:
         try:
-            archived_messages: list[Message] = []
-            mam = self["xep_0313"]
-            async for result in mam.iterate(
-                with_jid=chat_jid,
-                end=before,
-                reverse=True,
-                rsm={"max": 100},
-                total=limit,
+            archived_messages = await self._load_history_page(
+                chat_jid,
+                limit=limit,
+                before=before,
+                with_jid_filter=True,
+            )
+            filtered_count = len(archived_messages)
+            if not older and self._history_page_needs_unfiltered_fallback(
+                archived_messages,
+                limit,
             ):
-                message = self._message_from_mam_result(chat_jid, result)
-                if message:
-                    archived_messages.append(message)
+                unfiltered_messages = await self._load_history_page(
+                    chat_jid,
+                    limit=limit,
+                    before=before,
+                    with_jid_filter=False,
+                )
+                archived_messages = self._deduplicate_messages(
+                    archived_messages + unfiltered_messages
+                )
 
             archived_messages.sort(key=lambda message: message.sent_at)
             self._emit(
@@ -134,11 +143,80 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid=chat_jid,
                     messages=archived_messages,
                     older=older,
-                    complete=limit is not None and len(archived_messages) < limit,
+                    complete=limit is not None and filtered_count < limit,
                 )
             )
         except Exception as exc:
             self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
+
+    async def _load_history_page(
+        self,
+        chat_jid: str,
+        limit: int | None,
+        before: datetime | None,
+        with_jid_filter: bool,
+    ) -> list[Message]:
+        mam = self["xep_0313"]
+        messages: list[Message] = []
+        page_size = limit if with_jid_filter and limit is not None else 100
+        total = limit if with_jid_filter else max((limit or 20) * 25, 200)
+
+        async for result in mam.iterate(
+            jid=self.boundjid.bare,
+            with_jid=chat_jid if with_jid_filter else None,
+            end=before,
+            reverse=True,
+            rsm={"max": min(page_size, 100)},
+            total=total,
+        ):
+            result_chat_jid = chat_jid if with_jid_filter else self._chat_jid_from_mam_result(
+                result
+            )
+            if result_chat_jid != chat_jid:
+                continue
+
+            message = self._message_from_mam_result(result_chat_jid, result)
+            if message:
+                messages.append(message)
+
+            if limit is not None and len(messages) >= limit:
+                break
+
+        return messages
+
+    @staticmethod
+    def _history_page_needs_unfiltered_fallback(
+        messages: list[Message],
+        limit: int | None,
+    ) -> bool:
+        if limit is None:
+            return False
+
+        if len(messages) < limit:
+            return True
+
+        return all(message.outgoing for message in messages)
+
+    @staticmethod
+    def _deduplicate_messages(messages: list[Message]) -> list[Message]:
+        seen: set[tuple[str, str, str, str, bool, str]] = set()
+        unique_messages: list[Message] = []
+        for message in messages:
+            key = (
+                message.message_id,
+                message.sent_at.isoformat(),
+                message.sender_jid,
+                message.body,
+                message.outgoing,
+                message.audio_url,
+            )
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique_messages.append(message)
+
+        return unique_messages
 
     async def preload_histories(
         self,
@@ -218,7 +296,7 @@ class BridgeXmppClient(ClientXMPP):
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
-            message_id=str(stanza["id"] or ""),
+            message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -434,6 +512,7 @@ class XmppService:
         body: str,
         reply_to_jid: str,
         reply_to_id: str,
+        fallback_end: int = 0,
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexion XMPP activa."))
@@ -454,6 +533,17 @@ class XmppService:
                         },
                     )
                 )
+            if fallback_end > 0:
+                fallback = ET.Element(
+                    f"{{{FALLBACK_NS}}}fallback",
+                    {"for": REPLY_NS},
+                )
+                ET.SubElement(
+                    fallback,
+                    f"{{{FALLBACK_NS}}}body",
+                    {"start": "0", "end": str(fallback_end)},
+                )
+                msg.append(fallback)
             msg.send()
 
         self._loop.call_soon_threadsafe(send)

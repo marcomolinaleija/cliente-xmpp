@@ -19,6 +19,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index: int | None = None
         self._focus_target_index: int | None = None
+        self._reply_quote_prefix = ""
         self._audio_durations_by_url: dict[str, float] = {}
         self._audio_player = MpvAudioPlayer()
         self._speaker = NvdaSpeaker()
@@ -41,6 +42,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index = None
         self._focus_target_index = None
+        self._reply_quote_prefix = ""
         self.send_button.Enable(True)
         self.load_older_button.Enable(True)
 
@@ -116,11 +118,28 @@ class ConversationPanel(wx.Panel):
 
     def insert_reply_quote(self, message: Message) -> None:
         sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
-        body = message.body.replace("\n", " ")
-        quote = f"> {sender}: {body}\n"
-        self.compose.SetValue(f"{quote}{self.compose.GetValue()}")
+        quote = self._format_reply_quote(sender, message.body)
+        self._reply_quote_prefix = quote
+        current_body = self.compose.GetValue()
+        if current_body.startswith(quote):
+            self.compose.SetFocus()
+            return
+
+        self.compose.SetValue(f"{quote}{current_body}")
         self.compose.SetInsertionPointEnd()
         self.compose.SetFocus()
+
+    def reply_fallback_end(self, body: str) -> int:
+        if not self._reply_quote_prefix:
+            return 0
+
+        if not body.startswith(self._reply_quote_prefix):
+            return 0
+
+        return len(self._reply_quote_prefix)
+
+    def clear_reply_quote(self) -> None:
+        self._reply_quote_prefix = ""
 
     def selected_message(self) -> Message | None:
         index = self.messages.GetFirstSelected()
@@ -217,6 +236,12 @@ class ConversationPanel(wx.Panel):
             return None
 
         return max(0, message_count - unread_count)
+
+    @staticmethod
+    def _format_reply_quote(sender: str, body: str) -> str:
+        quoted_lines = body.splitlines() or [body]
+        quoted_body = "\n".join(f"> {line}" if line else ">" for line in quoted_lines)
+        return f"> {sender}:\n{quoted_body}\n"
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)

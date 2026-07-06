@@ -81,15 +81,17 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         bare_jid = str(msg["from"].bare)
+        display_body, reply_quote = self._message_display_parts(body, audio_url, msg.xml)
         self._emit(
             MessageReceived(
                 Message(
                     chat_jid=bare_jid,
                     sender_jid=bare_jid,
-                    body=self._message_body_for_display(body, audio_url),
+                    body=display_body,
                     outgoing=False,
                     audio_url=audio_url,
                     message_id=str(msg["id"] or ""),
+                    reply_quote=reply_quote,
                 )
             )
         )
@@ -114,6 +116,7 @@ class BridgeXmppClient(ClientXMPP):
         limit: int | None = None,
         before: datetime | None = None,
         older: bool = False,
+        allow_unfiltered_fallback: bool = True,
     ) -> None:
         try:
             archived_messages = await self._load_history_page(
@@ -123,9 +126,10 @@ class BridgeXmppClient(ClientXMPP):
                 with_jid_filter=True,
             )
             filtered_count = len(archived_messages)
-            if not older and self._history_page_needs_unfiltered_fallback(
-                archived_messages,
-                limit,
+            if (
+                allow_unfiltered_fallback
+                and not older
+                and self._history_page_needs_unfiltered_fallback(archived_messages, limit)
             ):
                 unfiltered_messages = await self._load_history_page(
                     chat_jid,
@@ -159,10 +163,9 @@ class BridgeXmppClient(ClientXMPP):
         mam = self["xep_0313"]
         messages: list[Message] = []
         page_size = limit if with_jid_filter and limit is not None else 100
-        total = limit if with_jid_filter else max((limit or 20) * 25, 200)
+        total = limit if with_jid_filter else max((limit or 20) * 8, 100)
 
         async for result in mam.iterate(
-            jid=self.boundjid.bare,
             with_jid=chat_jid if with_jid_filter else None,
             end=before,
             reverse=True,
@@ -199,7 +202,7 @@ class BridgeXmppClient(ClientXMPP):
 
     @staticmethod
     def _deduplicate_messages(messages: list[Message]) -> list[Message]:
-        seen: set[tuple[str, str, str, str, bool, str]] = set()
+        seen: set[tuple[str, str, str, str, bool, str, str]] = set()
         unique_messages: list[Message] = []
         for message in messages:
             key = (
@@ -209,6 +212,7 @@ class BridgeXmppClient(ClientXMPP):
                 message.body,
                 message.outgoing,
                 message.audio_url,
+                message.reply_quote,
             )
             if key in seen:
                 continue
@@ -226,7 +230,11 @@ class BridgeXmppClient(ClientXMPP):
     ) -> None:
         async def preload(chat_jid: str) -> None:
             async with self._history_preload_semaphore:
-                await self.load_history(chat_jid, limit=limit)
+                await self.load_history(
+                    chat_jid,
+                    limit=limit,
+                    allow_unfiltered_fallback=False,
+                )
 
         await asyncio.gather(*(preload(chat_jid) for chat_jid in chat_jids))
 
@@ -289,14 +297,16 @@ class BridgeXmppClient(ClientXMPP):
         stanza = forwarded["stanza"]
         sender_jid = str(stanza["from"].bare)
         outgoing = sender_jid == self.boundjid.bare
+        display_body, reply_quote = self._message_display_parts(body, audio_url, stanza.xml)
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
-            body=self._message_body_for_display(body, audio_url),
+            body=display_body,
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
+            reply_quote=reply_quote,
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -310,15 +320,17 @@ class BridgeXmppClient(ClientXMPP):
 
         chat_jid = str(stanza["to"].bare if outgoing else stanza["from"].bare)
         sender_jid = "Yo" if outgoing else chat_jid
+        display_body, reply_quote = self._message_display_parts(body, audio_url, stanza.xml)
         self._emit(
             MessageReceived(
                 Message(
                     chat_jid=chat_jid,
                     sender_jid=sender_jid,
-                    body=self._message_body_for_display(body, audio_url),
+                    body=display_body,
                     outgoing=outgoing,
                     audio_url=audio_url,
                     message_id=str(stanza["id"] or ""),
+                    reply_quote=reply_quote,
                 )
             )
         )
@@ -436,6 +448,60 @@ class BridgeXmppClient(ClientXMPP):
             return "Mensaje de voz"
 
         return body
+
+    @classmethod
+    def _message_display_parts(
+        cls,
+        body: str,
+        audio_url: str,
+        xml: ET.Element,
+    ) -> tuple[str, str]:
+        reply_quote = ""
+        display_body = body
+        fallback_bounds = cls._reply_fallback_bounds_from_xml(xml)
+        if fallback_bounds is not None:
+            start, end = fallback_bounds
+            start = max(0, min(start, len(body)))
+            end = max(start, min(end, len(body)))
+            reply_quote = cls._reply_quote_from_fallback(body[start:end])
+            display_body = f"{body[:start]}{body[end:]}".strip()
+
+        return cls._message_body_for_display(display_body, audio_url), reply_quote
+
+    @staticmethod
+    def _reply_fallback_bounds_from_xml(xml: ET.Element) -> tuple[int, int] | None:
+        for fallback in xml.findall(f".//{{{FALLBACK_NS}}}fallback"):
+            if fallback.attrib.get("for") != REPLY_NS:
+                continue
+
+            body = fallback.find(f"{{{FALLBACK_NS}}}body")
+            if body is None:
+                continue
+
+            try:
+                start = int(body.attrib.get("start", "0"))
+                end = int(body.attrib["end"])
+            except (KeyError, ValueError):
+                continue
+
+            return start, end
+
+        return None
+
+    @staticmethod
+    def _reply_quote_from_fallback(fallback_text: str) -> str:
+        quote_lines: list[str] = []
+        for line in fallback_text.splitlines():
+            line = line.strip()
+            if line.startswith(">"):
+                line = line[1:].lstrip()
+            if line:
+                quote_lines.append(line)
+
+        if len(quote_lines) > 1 and quote_lines[0].endswith(":"):
+            quote_lines = quote_lines[1:]
+
+        return " ".join(quote_lines).strip()
 
     @classmethod
     def _audio_url_from_xml(cls, xml: ET.Element) -> str:

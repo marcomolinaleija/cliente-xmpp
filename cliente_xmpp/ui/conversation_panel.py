@@ -284,14 +284,20 @@ class ConversationPanel(wx.Panel):
         body = self._format_message_body(message)
         starred = "Destacado. " if message.starred else ""
         reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
+        reply = self._format_reply_summary(message)
         if message.outgoing:
+            if reply:
+                return f"{starred}Tú, {body}, {reply}, {timestamp} Entregado.{reactions}"
             return f"{starred}Tú {body} {timestamp} Entregado.{reactions}"
 
         sender = self.resolve_display_name(message.sender_jid)
+        if reply:
+            return f"{starred}{sender}, {body}, {reply}, {timestamp}.{reactions}"
+
         return f"{starred}{sender} {body}, {timestamp}.{reactions}"
 
     def _format_message_for_reader(self, message: Message) -> str:
-        sender = "TÃº" if message.outgoing else self.resolve_display_name(message.sender_jid)
+        sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
         timestamp = self._format_message_time(message)
         body = self._format_message_body(message)
         metadata = f"{sender} {timestamp}"
@@ -300,12 +306,30 @@ class ConversationPanel(wx.Panel):
         if message.reactions:
             metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
 
+        reply = self._format_reply_summary(message)
+        if reply:
+            return f"{metadata}\n{reply}\n\n{body}"
+
         return f"{metadata}\n\n{body}"
+
+    def _format_reply_summary(self, message: Message) -> str:
+        if not message.reply_quote:
+            return ""
+
+        return f"respondiendo a: {self._truncate_reply_quote(message.reply_quote)}"
+
+    @staticmethod
+    def _truncate_reply_quote(quote: str, max_length: int = 300) -> str:
+        quote = " ".join(quote.split())
+        if len(quote) <= max_length:
+            return quote
+
+        return f"{quote[: max_length - 3]}..."
 
     def _format_row_for_tooltip(self, index: int) -> str:
         row = self._message_rows[index]
         if row is None:
-            return "No leÃ­dos"
+            return "No leídos"
 
         return self._format_message_row(row)
 

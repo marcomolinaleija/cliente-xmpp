@@ -24,3 +24,4 @@ class Message:
     message_id: str = ""
     starred: bool = False
     reactions: tuple[str, ...] = ()
+    reply_quote: str = ""

@@ -12,7 +12,7 @@ from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MessageStore:
@@ -127,15 +127,22 @@ class MessageStore:
             conn.execute(
                 """
                 UPDATE messages
-                SET media_local_path = ?, media_size = ?, media_mime = COALESCE(
-                    NULLIF(?, ''),
-                    media_mime
-                ), media_filename = COALESCE(NULLIF(?, ''), media_filename)
+                SET media_local_path = ?, media_size = ?,
+                    media_duration_seconds = COALESCE(
+                        NULLIF(?, 0),
+                        media_duration_seconds
+                    ),
+                    media_mime = COALESCE(
+                        NULLIF(?, ''),
+                        media_mime
+                    ),
+                    media_filename = COALESCE(NULLIF(?, ''), media_filename)
                 WHERE account_jid = ? AND chat_jid = ? AND message_key = ?
                 """,
                 (
                     message.media_local_path,
                     message.media_size,
+                    message.media_duration_seconds,
                     message.media_mime,
                     message.media_filename,
                     account_jid,
@@ -143,6 +150,7 @@ class MessageStore:
                     _message_key(message),
                 ),
             )
+            self._upsert_message_chat_summary(conn, account_jid, message)
 
     def upsert_messages(self, account_jid: str, messages: list[Message]) -> None:
         if not messages:
@@ -186,6 +194,7 @@ class MessageStore:
                     media_mime TEXT NOT NULL DEFAULT '',
                     media_filename TEXT NOT NULL DEFAULT '',
                     media_size INTEGER NOT NULL DEFAULT 0,
+                    media_duration_seconds REAL NOT NULL DEFAULT 0,
                     media_local_path TEXT NOT NULL DEFAULT '',
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
@@ -221,6 +230,7 @@ class MessageStore:
             "media_mime": "TEXT NOT NULL DEFAULT ''",
             "media_filename": "TEXT NOT NULL DEFAULT ''",
             "media_size": "INTEGER NOT NULL DEFAULT 0",
+            "media_duration_seconds": "REAL NOT NULL DEFAULT 0",
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
         }
@@ -299,10 +309,10 @@ class MessageStore:
             INSERT INTO messages (
                 account_jid, chat_jid, message_key, message_id, sender_jid, body,
                 sent_at, outgoing, audio_url, media_url, media_kind, media_mime,
-                media_filename, media_size, media_local_path, starred, reactions_json,
-                reply_quote, received_at
+                media_filename, media_size, media_duration_seconds, media_local_path,
+                starred, reactions_json, reply_quote, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
@@ -318,6 +328,10 @@ class MessageStore:
                     messages.media_filename
                 ),
                 media_size = COALESCE(NULLIF(excluded.media_size, 0), messages.media_size),
+                media_duration_seconds = COALESCE(
+                    NULLIF(excluded.media_duration_seconds, 0),
+                    messages.media_duration_seconds
+                ),
                 media_local_path = COALESCE(
                     NULLIF(excluded.media_local_path, ''),
                     messages.media_local_path
@@ -341,6 +355,7 @@ class MessageStore:
                 message.media_mime,
                 message.media_filename,
                 message.media_size,
+                message.media_duration_seconds,
                 message.media_local_path,
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
@@ -363,11 +378,21 @@ class MessageStore:
             """,
             (account_jid, message.chat_jid),
         ).fetchone()
-        if existing and not _should_replace_summary(
-            message.sent_at,
-            _datetime_from_db(existing["last_message_at"]),
-        ):
+
+        latest = conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE account_jid = ? AND chat_jid = ?
+            ORDER BY sent_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (account_jid, message.chat_jid),
+        ).fetchone()
+        if latest is None:
             return
+
+        latest_message = _message_from_row(latest)
 
         now = _datetime_to_db(datetime.now())
         name = str(existing["name"] or message.chat_jid) if existing else message.chat_jid
@@ -391,8 +416,8 @@ class MessageStore:
                 message.chat_jid,
                 name,
                 unread_count,
-                _message_preview(message),
-                _datetime_to_db(message.sent_at),
+                _message_preview(latest_message),
+                _datetime_to_db(latest_message.sent_at),
                 now,
             ),
         )
@@ -420,13 +445,20 @@ def _message_preview(message: Message) -> str:
     if not message.media_url:
         return message.body
 
+    if message.media_kind == "audio":
+        if message.media_duration_seconds > 0:
+            return f"voz, {_format_duration(message.media_duration_seconds)}"
+
+        return "voz"
+
     label = {
-        "audio": "audio",
         "image": "foto",
         "video": "video",
         "file": "archivo",
     }.get(message.media_kind, "archivo")
     details = [label]
+    if message.media_kind == "audio" and message.media_duration_seconds > 0:
+        details.append(_format_duration(message.media_duration_seconds))
     if message.media_filename:
         details.append(message.media_filename)
     if message.media_size > 0:
@@ -447,6 +479,23 @@ def _format_size(size: int) -> str:
     return f"{size} B"
 
 
+def _format_duration(duration_seconds: float) -> str:
+    total_seconds = max(0, round(duration_seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    parts: list[str] = []
+    if minutes == 1:
+        parts.append("1 minuto")
+    elif minutes > 1:
+        parts.append(f"{minutes} minutos")
+
+    if seconds == 1:
+        parts.append("1 segundo")
+    elif seconds > 1 or not parts:
+        parts.append(f"{seconds} segundos")
+
+    return " ".join(parts)
+
+
 def _message_from_row(row: sqlite3.Row) -> Message:
     return Message(
         chat_jid=str(row["chat_jid"]),
@@ -460,6 +509,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_mime=str(row["media_mime"] or ""),
         media_filename=str(row["media_filename"] or ""),
         media_size=int(row["media_size"] or 0),
+        media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
         message_id=str(row["message_id"] or ""),
         starred=bool(row["starred"]),

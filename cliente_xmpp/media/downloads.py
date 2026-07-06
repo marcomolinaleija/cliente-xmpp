@@ -68,6 +68,12 @@ def media_size_label(size: int) -> str:
 
 
 def media_description(message: Message) -> str:
+    if message.media_kind == "audio":
+        if message.media_duration_seconds > 0:
+            return f"voz, {format_duration(message.media_duration_seconds)}"
+
+        return "voz"
+
     kind = {
         "audio": "audio",
         "image": "foto",
@@ -75,6 +81,30 @@ def media_description(message: Message) -> str:
         "file": "archivo",
     }.get(message.media_kind, "archivo")
     return f"{kind}, {media_display_name(message)}, {media_size_label(message.media_size)}"
+
+
+def audio_description(message: Message) -> str:
+    if message.media_duration_seconds > 0:
+        return f"Mensaje de voz, {format_duration(message.media_duration_seconds)}"
+
+    return "Mensaje de voz"
+
+
+def format_duration(duration_seconds: float) -> str:
+    total_seconds = max(0, round(duration_seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    parts: list[str] = []
+    if minutes == 1:
+        parts.append("1 minuto")
+    elif minutes > 1:
+        parts.append(f"{minutes} minutos")
+
+    if seconds == 1:
+        parts.append("1 segundo")
+    elif seconds > 1 or not parts:
+        parts.append(f"{seconds} segundos")
+
+    return " ".join(parts)
 
 
 def local_media_path(message: Message) -> Path | None:

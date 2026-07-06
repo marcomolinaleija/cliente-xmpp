@@ -12,6 +12,12 @@ from xml.etree import ElementTree as ET
 
 from slixmpp import ClientXMPP
 
+from cliente_xmpp.audio.duration import media_duration_seconds
+from cliente_xmpp.audio.opus import (
+    VOICE_NOTE_MIME,
+    VOICE_NOTE_UPLOAD_MIME,
+    convert_to_voice_note,
+)
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.xmpp.events import (
@@ -37,10 +43,24 @@ REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
 FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
+SIMS_NS = "urn:xmpp:sims:1"
+REFERENCE_NS = "urn:xmpp:reference:0"
+JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
+EXPLICIT_MIME_TYPES = {
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".oga": "audio/ogg",
+    ".ogg": VOICE_NOTE_MIME,
+    ".opus": "audio/ogg; codecs=opus",
+    ".wav": "audio/wav",
+    ".weba": "audio/webm",
+}
 URL_PATTERN = re.compile(r"https?://\S+")
 
 
@@ -83,7 +103,14 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(msg["body"] or "").strip()
-        media_url, media_kind, media_mime, media_filename, media_size = self._media_from_stanza(msg)
+        (
+            media_url,
+            media_kind,
+            media_mime,
+            media_filename,
+            media_size,
+            media_duration,
+        ) = self._media_from_stanza(msg)
         audio_url = media_url if media_kind == "audio" else ""
         if not body and not media_url:
             return
@@ -110,6 +137,7 @@ class BridgeXmppClient(ClientXMPP):
                     media_mime=media_mime,
                     media_filename=media_filename,
                     media_size=media_size,
+                    media_duration_seconds=media_duration,
                     message_id=str(msg["id"] or ""),
                     reply_quote=reply_quote,
                 )
@@ -146,7 +174,6 @@ class BridgeXmppClient(ClientXMPP):
                 before=before,
                 with_jid_filter=True,
             )
-            filtered_count = len(archived_messages)
             if (
                 allow_unfiltered_fallback
                 and not older
@@ -163,12 +190,13 @@ class BridgeXmppClient(ClientXMPP):
                 )
 
             archived_messages.sort(key=lambda message: message.sent_at)
+            loaded_count = len(archived_messages)
             self._emit(
                 MessageHistoryLoaded(
                     chat_jid=chat_jid,
                     messages=archived_messages,
                     older=older,
-                    complete=limit is not None and filtered_count < limit,
+                    complete=limit is not None and loaded_count < limit,
                     background=background,
                 )
             )
@@ -255,7 +283,7 @@ class BridgeXmppClient(ClientXMPP):
                 await self.load_history(
                     chat_jid,
                     limit=limit,
-                    allow_unfiltered_fallback=False,
+                    allow_unfiltered_fallback=True,
                     background=True,
                 )
 
@@ -267,7 +295,7 @@ class BridgeXmppClient(ClientXMPP):
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
                 preview = self._message_body_from_mam_result(result)
-                media_url, media_kind, _, _, media_size = self._media_from_mam_result(result)
+                media_url, media_kind, _, _, media_size, _ = self._media_from_mam_result(result)
                 if not preview and not media_url:
                     continue
 
@@ -318,9 +346,14 @@ class BridgeXmppClient(ClientXMPP):
 
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
         body = self._message_body_from_mam_result(result)
-        media_url, media_kind, media_mime, media_filename, media_size = self._media_from_mam_result(
-            result
-        )
+        (
+            media_url,
+            media_kind,
+            media_mime,
+            media_filename,
+            media_size,
+            media_duration,
+        ) = self._media_from_mam_result(result)
         audio_url = media_url if media_kind == "audio" else ""
         if not body and not media_url:
             return None
@@ -349,6 +382,7 @@ class BridgeXmppClient(ClientXMPP):
             media_mime=media_mime,
             media_filename=media_filename,
             media_size=media_size,
+            media_duration_seconds=media_duration,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             reply_quote=reply_quote,
         )
@@ -358,9 +392,14 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(stanza["body"] or "").strip()
-        media_url, media_kind, media_mime, media_filename, media_size = self._media_from_stanza(
-            stanza
-        )
+        (
+            media_url,
+            media_kind,
+            media_mime,
+            media_filename,
+            media_size,
+            media_duration,
+        ) = self._media_from_stanza(stanza)
         audio_url = media_url if media_kind == "audio" else ""
         if not body and not media_url:
             return
@@ -388,6 +427,7 @@ class BridgeXmppClient(ClientXMPP):
                     media_mime=media_mime,
                     media_filename=media_filename,
                     media_size=media_size,
+                    media_duration_seconds=media_duration,
                     message_id=str(stanza["id"] or ""),
                     reply_quote=reply_quote,
                 )
@@ -431,7 +471,7 @@ class BridgeXmppClient(ClientXMPP):
             if message is not None:
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
-                media_url, media_kind, _, _, media_size = self._media_from_xml(message)
+                media_url, media_kind, _, _, media_size, _ = self._media_from_xml(message)
                 if media_url:
                     preview = self._message_body_for_display(
                         preview,
@@ -491,25 +531,25 @@ class BridgeXmppClient(ClientXMPP):
         stanza = forwarded["stanza"]
         return str(stanza["body"] or "").strip()
 
-    def _media_from_mam_result(self, result: object) -> tuple[str, str, str, str, int]:
+    def _media_from_mam_result(self, result: object) -> tuple[str, str, str, str, int, float]:
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         return self._media_from_stanza(stanza)
 
-    def _media_from_stanza(self, stanza: object) -> tuple[str, str, str, str, int]:
+    def _media_from_stanza(self, stanza: object) -> tuple[str, str, str, str, int, float]:
         body = str(stanza["body"] or "")
-        media_url, media_kind, media_mime, media_filename, media_size = self._media_from_xml(
-            stanza.xml
+        media_url, media_kind, media_mime, media_filename, media_size, media_duration = (
+            self._media_from_xml(stanza.xml)
         )
         if media_url:
-            return media_url, media_kind, media_mime, media_filename, media_size
+            return media_url, media_kind, media_mime, media_filename, media_size, media_duration
 
         for url in self._urls_from_text(body):
             media_kind = self._media_kind_from_url(url)
             if media_kind:
-                return url, media_kind, "", self._filename_from_url(url), 0
+                return url, media_kind, "", self._filename_from_url(url), 0, 0.0
 
-        return "", "", "", "", 0
+        return "", "", "", "", 0, 0.0
 
     @classmethod
     def _message_body_for_display(
@@ -610,10 +650,11 @@ class BridgeXmppClient(ClientXMPP):
         return " ".join(quote_lines).strip()
 
     @classmethod
-    def _media_from_xml(cls, xml: ET.Element) -> tuple[str, str, str, str, int]:
+    def _media_from_xml(cls, xml: ET.Element) -> tuple[str, str, str, str, int, float]:
         media_mime = cls._media_mime_from_xml(xml)
         media_filename = cls._media_filename_from_xml(xml)
         media_size = cls._media_size_from_xml(xml)
+        media_duration = cls._media_duration_from_xml(xml)
 
         for url_node in xml.findall(f".//{{{OOB_NS}}}url"):
             url = (url_node.text or "").strip()
@@ -625,6 +666,7 @@ class BridgeXmppClient(ClientXMPP):
                     media_mime,
                     media_filename or cls._filename_from_url(url),
                     media_size,
+                    media_duration,
                 )
 
         for node in xml.iter():
@@ -636,9 +678,9 @@ class BridgeXmppClient(ClientXMPP):
                 media_kind = cls._media_kind_from_mime_or_url(media_mime, url)
                 if media_kind:
                     filename = media_filename or cls._filename_from_url(url)
-                    return url, media_kind, media_mime, filename, media_size
+                    return url, media_kind, media_mime, filename, media_size, media_duration
 
-        return "", "", media_mime, media_filename, media_size
+        return "", "", media_mime, media_filename, media_size, media_duration
 
     @staticmethod
     def _media_mime_from_xml(xml: ET.Element) -> str:
@@ -681,17 +723,40 @@ class BridgeXmppClient(ClientXMPP):
 
         return 0
 
+    @classmethod
+    def _media_duration_from_xml(cls, xml: ET.Element) -> float:
+        for node in xml.iter():
+            local_name = node.tag.rsplit("}", 1)[-1]
+            if local_name in {"duration", "playtime"} and node.text:
+                duration = cls._float_or_zero(node.text.strip())
+                if duration > 0:
+                    return duration
+            for attribute in ("duration", "playtime"):
+                duration = cls._float_or_zero(node.attrib.get(attribute, "").strip())
+                if duration > 0:
+                    return duration
+
+        return 0.0
+
+    @staticmethod
+    def _float_or_zero(value: str) -> float:
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+
     @staticmethod
     def _urls_from_text(text: str) -> list[str]:
         return [match.group(0).rstrip(").,;]") for match in URL_PATTERN.finditer(text)]
 
     @classmethod
     def _media_kind_from_mime_or_url(cls, mime: str, url: str) -> str:
-        if mime.startswith("audio/"):
+        normalized_mime = mime.split(";", 1)[0].strip().lower()
+        if normalized_mime.startswith("audio/"):
             return "audio"
-        if mime.startswith("image/"):
+        if normalized_mime.startswith("image/"):
             return "image"
-        if mime.startswith("video/"):
+        if normalized_mime.startswith("video/"):
             return "video"
 
         return cls._media_kind_from_url(url)
@@ -746,18 +811,33 @@ class BridgeXmppClient(ClientXMPP):
         except (KeyError, TypeError):
             return ""
 
+    @staticmethod
+    def _mime_type_for_file(file_path: Path) -> str:
+        suffix = file_path.suffix.lower()
+        if suffix in EXPLICIT_MIME_TYPES:
+            return EXPLICIT_MIME_TYPES[suffix]
+
+        return mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+
     async def send_file(self, to_jid: str, path: str) -> Message:
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
 
-        size = file_path.stat().st_size
-        mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        mime = self._mime_type_for_file(file_path)
         media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
+        upload_mime = mime
+        if media_kind == "audio":
+            file_path = convert_to_voice_note(file_path)
+            mime = VOICE_NOTE_MIME
+            upload_mime = VOICE_NOTE_UPLOAD_MIME
+
+        size = file_path.stat().st_size
+        duration = media_duration_seconds(file_path) if media_kind == "audio" else 0.0
         get_url = await self["xep_0363"].upload_file(
             file_path,
             size=size,
-            content_type=mime,
+            content_type=upload_mime,
             timeout=60,
         )
 
@@ -769,6 +849,8 @@ class BridgeXmppClient(ClientXMPP):
             filename=file_path.name,
             size=size,
             mime=mime,
+            media_kind=media_kind,
+            duration=duration,
         )
         message.send()
         body = self._message_body_for_display("", get_url, media_kind, file_path.name, size)
@@ -784,6 +866,7 @@ class BridgeXmppClient(ClientXMPP):
             media_mime=mime,
             media_filename=file_path.name,
             media_size=size,
+            media_duration_seconds=duration,
             media_local_path=str(file_path),
             message_id=message_id,
         )
@@ -798,23 +881,65 @@ class BridgeXmppClient(ClientXMPP):
         filename: str,
         size: int,
         mime: str,
+        media_kind: str,
+        duration: float = 0.0,
     ) -> None:
         oob = ET.Element(f"{{{OOB_NS}}}x")
         url_node = ET.SubElement(oob, f"{{{OOB_NS}}}url")
         url_node.text = url
         message.append(oob)
 
-        file_sharing = ET.Element(f"{{{SFS_NS}}}file-sharing")
+        disposition = "inline" if media_kind in {"audio", "image", "video"} else "attachment"
+        file_sharing = ET.Element(f"{{{SFS_NS}}}file-sharing", {"disposition": disposition})
         file_node = ET.SubElement(file_sharing, f"{{{FILE_METADATA_NS}}}file")
         media_type = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}media-type")
         media_type.text = mime
         name = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}name")
         name.text = filename
+        if media_kind == "audio":
+            desc = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}desc")
+            desc.text = "Voice message"
+            if duration > 0:
+                duration_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}duration")
+                duration_node.text = str(round(duration, 3))
         size_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}size")
         size_node.text = str(size)
         sources = ET.SubElement(file_sharing, f"{{{SFS_NS}}}sources")
         ET.SubElement(sources, f"{{{URL_DATA_NS}}}url-data", {"target": url})
         message.append(file_sharing)
+
+        fallback = ET.Element(f"{{{FALLBACK_NS}}}fallback", {"for": SFS_NS})
+        ET.SubElement(fallback, f"{{{FALLBACK_NS}}}body")
+        message.append(fallback)
+
+        sims_reference = ET.Element(
+            f"{{{REFERENCE_NS}}}reference",
+            {"type": "data", "uri": url},
+        )
+        media_sharing = ET.SubElement(sims_reference, f"{{{SIMS_NS}}}media-sharing")
+        sims_file = ET.SubElement(media_sharing, f"{{{JINGLE_FILE_TRANSFER_NS}}}file")
+        sims_media_type = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}media-type")
+        sims_media_type.text = mime
+        sims_name = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}name")
+        sims_name.text = filename
+        if media_kind == "audio":
+            sims_desc = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}desc")
+            sims_desc.text = "Voice message"
+            if duration > 0:
+                sims_duration = ET.SubElement(
+                    sims_file,
+                    f"{{{JINGLE_FILE_TRANSFER_NS}}}duration",
+                )
+                sims_duration.text = str(round(duration, 3))
+        sims_size = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}size")
+        sims_size.text = str(size)
+        sims_sources = ET.SubElement(media_sharing, f"{{{SIMS_NS}}}sources")
+        ET.SubElement(
+            sims_sources,
+            f"{{{REFERENCE_NS}}}reference",
+            {"type": "data", "uri": url},
+        )
+        message.append(sims_reference)
 
 
 class XmppService:

@@ -6,8 +6,14 @@ from pathlib import Path
 import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
+from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.player import MpvAudioPlayer, MpvPlaybackError
-from cliente_xmpp.media.downloads import local_media_path, media_description
+from cliente_xmpp.media.downloads import (
+    audio_description,
+    format_duration,
+    local_media_path,
+    media_description,
+)
 from cliente_xmpp.models.chat import Chat, Message
 
 
@@ -435,11 +441,18 @@ class ConversationPanel(wx.Panel):
         if not message.audio_url:
             return message.body
 
+        path = local_media_path(message)
+        if message.media_duration_seconds <= 0 and path is not None:
+            message.media_duration_seconds = media_duration_seconds(path)
+
+        if message.media_duration_seconds > 0:
+            return audio_description(message)
+
         duration = self._audio_durations_by_url.get(message.audio_url)
         if duration is None:
             return "Mensaje de voz"
 
-        return f"Mensaje de voz ({self._format_duration(duration)})"
+        return f"Mensaje de voz, {format_duration(duration)}"
 
     def _thumbnail_index_for_message(self, message: Message) -> int:
         if message.media_kind != "image":
@@ -501,6 +514,7 @@ class ConversationPanel(wx.Panel):
             return
 
         self._audio_durations_by_url[audio_url] = duration
+        message.media_duration_seconds = duration
         self.messages.SetItem(index, 0, self._format_message_row(message))
         self._resize_message_column_to_content()
 

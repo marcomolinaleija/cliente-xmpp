@@ -27,6 +27,7 @@ class Message:
     media_mime: str = ""
     media_filename: str = ""
     media_size: int = 0
+    media_duration_seconds: float = 0.0
     media_local_path: str = ""
     message_id: str = ""
     starred: bool = False

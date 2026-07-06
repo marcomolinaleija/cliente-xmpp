@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
+from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.notification import NewMessageSound
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
@@ -65,6 +66,7 @@ class MainWindow(wx.Frame):
         self.background_history_queued_chats: set[str] = set()
         self.background_history_loading_chat = ""
         self.preloaded_history_chats: set[str] = set()
+        self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.roster_jids: set[str] = set()
         self.loaded_chat_summaries = 0
@@ -542,24 +544,40 @@ class MainWindow(wx.Frame):
 
         self._download_media(message)
 
-    def _download_media(self, message: Message, send_to_rayoai: bool = False) -> None:
+    def _download_media(
+        self,
+        message: Message,
+        send_to_rayoai: bool = False,
+        silent: bool = False,
+    ) -> None:
         if not self.current_jid:
-            self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
+            if not silent:
+                self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
             return
 
-        self.status_bar.SetStatusText(f"Descargando {media_description(message)}...")
+        if not silent:
+            self.status_bar.SetStatusText(f"Descargando {media_description(message)}...")
 
         def worker() -> None:
             try:
                 downloaded = download_media(message, self.current_jid)
             except Exception as exc:
-                wx.CallAfter(
-                    self.status_bar.SetStatusText,
-                    f"No se pudo descargar el archivo: {exc}",
-                )
+                if not silent:
+                    wx.CallAfter(
+                        self.status_bar.SetStatusText,
+                        f"No se pudo descargar el archivo: {exc}",
+                    )
+                if silent:
+                    wx.CallAfter(self._discard_auto_audio_download, message)
                 return
 
-            wx.CallAfter(self._finish_media_download, message, downloaded, send_to_rayoai)
+            wx.CallAfter(
+                self._finish_media_download,
+                message,
+                downloaded,
+                send_to_rayoai,
+                silent,
+            )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -568,16 +586,27 @@ class MainWindow(wx.Frame):
         message: Message,
         downloaded: DownloadedMedia,
         send_to_rayoai: bool,
+        silent: bool = False,
     ) -> None:
         message.media_local_path = str(downloaded.path)
         message.media_size = downloaded.size
         message.media_mime = downloaded.mime or message.media_mime
         message.media_filename = downloaded.filename or message.media_filename
+        if message.media_kind == "audio":
+            message.media_duration_seconds = media_duration_seconds(downloaded.path)
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
-        self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
+        self._update_chat_from_message(message)
+        self._refresh_chat_order(message.chat_jid)
+        if silent:
+            self._discard_auto_audio_download(message)
+        else:
+            self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
         if send_to_rayoai:
             self._send_media_to_rayoai(message)
+
+    def _discard_auto_audio_download(self, message: Message) -> None:
+        self.auto_downloading_audio_keys.discard(self._auto_audio_download_key(message))
 
     def _persist_message_media_path(self, message: Message) -> None:
         if not self.current_jid:
@@ -587,6 +616,29 @@ class MainWindow(wx.Frame):
             self.message_store.update_message_media_local_path(self.current_jid, message)
         except Exception:
             return
+
+    def _auto_download_audio_messages(self, messages: list[Message]) -> None:
+        for message in messages:
+            self._auto_download_audio_message(message)
+
+    def _auto_download_audio_message(self, message: Message) -> None:
+        if message.media_kind != "audio" or not message.audio_url:
+            return
+
+        if message.outgoing or local_media_path(message) is not None:
+            return
+
+        key = self._auto_audio_download_key(message)
+        if key in self.auto_downloading_audio_keys:
+            return
+
+        self.auto_downloading_audio_keys.add(key)
+        self._download_media(message, silent=True)
+
+    @staticmethod
+    def _auto_audio_download_key(message: Message) -> tuple[str, str]:
+        stable_id = message.message_id or message.audio_url
+        return message.chat_jid, stable_id
 
     def _copy_media_file(self, message: Message) -> None:
         path = local_media_path(message)
@@ -688,7 +740,7 @@ class MainWindow(wx.Frame):
                     f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
                 )
             case MessageReceived(message=message):
-                self._store_message(message)
+                message, added_message = self._store_message(message)
                 self._ensure_chat_for_message(message)
                 current_chat_is_open = (
                     self.conversation.IsShown()
@@ -701,7 +753,11 @@ class MainWindow(wx.Frame):
                 )
                 self._refresh_chat_order()
                 if current_chat_is_open:
-                    self.conversation.append_message(message)
+                    if added_message:
+                        self.conversation.append_message(message)
+                    else:
+                        self.conversation.refresh_message(message)
+                self._auto_download_audio_message(message)
                 self._select_first_chat_if_needed()
                 self._speak_incoming_message(message)
                 self._play_new_message_sound(message)
@@ -767,11 +823,13 @@ class MainWindow(wx.Frame):
         if complete and not empty_preview_chat:
             self.history_exhausted_chats.add(chat_jid)
 
+        self._normalize_audio_metadata_for_messages(messages)
         self._merge_messages(chat_jid, messages)
         self._persist_messages(messages)
         if messages:
             self._update_chat_activity_from_messages(chat_jid, messages)
             self._update_chat_preview_from_messages(chat_jid, messages)
+            self._auto_download_audio_messages(messages)
         self._refresh_chat_order()
         if (
             not background
@@ -800,25 +858,58 @@ class MainWindow(wx.Frame):
 
     def _merge_messages(self, chat_jid: str, messages: list[Message]) -> None:
         merged = self.messages_by_chat.get(chat_jid, []) + messages
-        seen: set[tuple[str, str, str, bool, str, str, str]] = set()
+        indexes_by_key: dict[tuple[object, ...], int] = {}
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
-            key = (
-                message.sent_at.isoformat(),
-                message.sender_jid,
-                message.body,
-                message.outgoing,
-                message.audio_url,
-                message.media_url,
-                message.reply_quote,
-            )
-            if key in seen:
+            key = self._message_merge_key(message)
+            existing_index = indexes_by_key.get(key)
+            if existing_index is not None:
+                self._merge_message_metadata(unique_messages[existing_index], message)
                 continue
 
-            seen.add(key)
+            indexes_by_key[key] = len(unique_messages)
             unique_messages.append(message)
 
         self.messages_by_chat[chat_jid] = unique_messages
+
+    @staticmethod
+    def _message_merge_key(message: Message) -> tuple[object, ...]:
+        if message.message_id:
+            return "id", message.message_id
+
+        return (
+            "payload",
+            message.sent_at.isoformat(),
+            message.sender_jid,
+            message.body,
+            message.outgoing,
+            message.audio_url,
+            message.media_url,
+            message.reply_quote,
+        )
+
+    @staticmethod
+    def _merge_message_metadata(target: Message, incoming: Message) -> None:
+        if not target.body and incoming.body:
+            target.body = incoming.body
+        if not target.audio_url and incoming.audio_url:
+            target.audio_url = incoming.audio_url
+        if not target.media_url and incoming.media_url:
+            target.media_url = incoming.media_url
+        if not target.media_kind and incoming.media_kind:
+            target.media_kind = incoming.media_kind
+        if not target.media_mime and incoming.media_mime:
+            target.media_mime = incoming.media_mime
+        if not target.media_filename and incoming.media_filename:
+            target.media_filename = incoming.media_filename
+        if target.media_size <= 0 and incoming.media_size > 0:
+            target.media_size = incoming.media_size
+        if target.media_duration_seconds <= 0 and incoming.media_duration_seconds > 0:
+            target.media_duration_seconds = incoming.media_duration_seconds
+        if not target.media_local_path and incoming.media_local_path:
+            target.media_local_path = incoming.media_local_path
+        if not target.reply_quote and incoming.reply_quote:
+            target.reply_quote = incoming.reply_quote
 
     def _request_history_page(
         self,
@@ -948,21 +1039,41 @@ class MainWindow(wx.Frame):
             self._show_chat_list()
         self.Layout()
 
-    def _store_message(self, message: Message) -> None:
-        self.messages_by_chat.setdefault(message.chat_jid, []).append(message)
+    def _store_message(self, message: Message) -> tuple[Message, bool]:
+        self._normalize_audio_metadata(message)
+        existing_keys = {
+            self._message_merge_key(existing)
+            for existing in self.messages_by_chat.get(message.chat_jid, [])
+        }
+        message_key = self._message_merge_key(message)
+        self._merge_messages(message.chat_jid, [message])
+        stored_message = self._message_by_merge_key(message.chat_jid, message_key) or message
         self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
-        self._persist_messages([message])
+        self._persist_messages([stored_message])
+        return stored_message, message_key not in existing_keys
+
+    def _message_by_merge_key(
+        self,
+        chat_jid: str,
+        key: tuple[object, ...],
+    ) -> Message | None:
+        for message in self.messages_by_chat.get(chat_jid, []):
+            if self._message_merge_key(message) == key:
+                return message
+
+        return None
 
     def _ensure_chat_for_message(self, message: Message) -> None:
         if self.chat_list.has_chat(message.chat_jid):
             return
 
         name = self._display_name_for_jid(message.chat_jid)
+        preview = media_description(message) if has_media(message) else message.body
         self.chat_list.upsert_chat(
             Chat(
                 jid=message.chat_jid,
                 name=name,
-                last_message_preview=message.body,
+                last_message_preview=preview,
                 last_message_at=message.sent_at,
             )
         )
@@ -988,7 +1099,8 @@ class MainWindow(wx.Frame):
             return
 
         sender = self._speakable_chat_name(message.chat_jid)
-        preview = " ".join(message.body.split())
+        preview = media_description(message) if has_media(message) else message.body
+        preview = " ".join(preview.split())
         if len(preview) > 160:
             preview = f"{preview[:157]}..."
         self.speaker.speak(f"Mensaje de {sender}: {preview}")
@@ -1016,6 +1128,8 @@ class MainWindow(wx.Frame):
 
         chats_by_jid = {chat.jid: chat for chat in chats}
         for message in latest_messages:
+            if self._normalize_audio_metadata(message):
+                self._persist_messages([message])
             chat = chats_by_jid.get(message.chat_jid)
             if chat is None:
                 chat = Chat(
@@ -1025,11 +1139,16 @@ class MainWindow(wx.Frame):
                 chats.append(chat)
                 chats_by_jid[message.chat_jid] = chat
 
-            if self._summary_preview_can_update(chat.last_message_at, message.sent_at):
+            if self._summary_preview_can_update(
+                chat.last_message_at,
+                message.sent_at,
+                allow_equal=True,
+            ):
                 chat.last_message_preview = (
                     media_description(message) if has_media(message) else message.body
                 )
                 chat.last_message_at = message.sent_at
+                self._persist_chat(chat)
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:
@@ -1050,6 +1169,7 @@ class MainWindow(wx.Frame):
             return
 
         if cached_messages:
+            self._normalize_audio_metadata_for_messages(cached_messages)
             self._merge_messages(chat_jid, cached_messages)
             self._update_chat_activity_from_messages(chat_jid, cached_messages)
             self._update_chat_preview_from_messages(chat_jid, cached_messages)
@@ -1071,6 +1191,27 @@ class MainWindow(wx.Frame):
             self.message_store.upsert_messages(self.current_jid, messages)
         except Exception:
             return
+
+    def _normalize_audio_metadata_for_messages(self, messages: list[Message]) -> None:
+        changed_messages = [
+            message for message in messages if self._normalize_audio_metadata(message)
+        ]
+        self._persist_messages(changed_messages)
+
+    def _normalize_audio_metadata(self, message: Message) -> bool:
+        if message.media_kind != "audio" or message.media_duration_seconds > 0:
+            return False
+
+        path = local_media_path(message)
+        if path is None:
+            return False
+
+        duration = media_duration_seconds(path)
+        if duration <= 0:
+            return False
+
+        message.media_duration_seconds = duration
+        return True
 
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
         self._load_cached_messages_for_chat(chat.jid)
@@ -1138,8 +1279,14 @@ class MainWindow(wx.Frame):
         if not messages:
             return
 
-        latest_message = max(messages, key=self._message_timestamp)
+        latest_message = self._latest_message_from_sequence(messages)
         self._update_chat_from_message(latest_message)
+
+    def _latest_message_from_sequence(self, messages: list[Message]) -> Message:
+        return max(
+            enumerate(messages),
+            key=lambda item: (self._message_timestamp(item[1]), item[0]),
+        )[1]
 
     def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
         preview = media_description(message) if has_media(message) else message.body
@@ -1148,6 +1295,7 @@ class MainWindow(wx.Frame):
             preview=preview,
             sent_at=message.sent_at,
             unread_delta=1 if mark_unread else 0,
+            force_preview=True,
         )
 
     def _update_chat_summary(
@@ -1158,6 +1306,7 @@ class MainWindow(wx.Frame):
         unread_delta: int = 0,
         unread_count: int | None = None,
         mark_read: bool = False,
+        force_preview: bool = False,
     ) -> None:
         chats = self.chat_list.chats()
         for chat in chats:
@@ -1174,8 +1323,17 @@ class MainWindow(wx.Frame):
                     unread_count=unread_count,
                     mark_read=mark_read,
                 ),
-                last_message_preview=self._next_chat_preview(chat, preview, sent_at),
-                last_message_at=self._next_chat_timestamp(chat, sent_at),
+                last_message_preview=self._next_chat_preview(
+                    chat,
+                    preview,
+                    sent_at,
+                    force_preview=force_preview,
+                ),
+                last_message_at=self._next_chat_timestamp(
+                    chat,
+                    sent_at,
+                    force_preview=force_preview,
+                ),
             )
             self.chat_list.upsert_chat(updated_chat)
             self._persist_chat(updated_chat)
@@ -1198,9 +1356,22 @@ class MainWindow(wx.Frame):
         self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
 
     @classmethod
-    def _next_chat_preview(cls, chat: Chat, preview: str, sent_at: datetime | None) -> str:
+    def _next_chat_preview(
+        cls,
+        chat: Chat,
+        preview: str,
+        sent_at: datetime | None,
+        force_preview: bool = False,
+    ) -> str:
         if not preview:
             return chat.last_message_preview
+
+        if force_preview and cls._summary_preview_can_update(
+            chat.last_message_at,
+            sent_at,
+            allow_equal=True,
+        ):
+            return preview
 
         if cls._summary_preview_can_update(chat.last_message_at, sent_at):
             return preview
@@ -1208,11 +1379,20 @@ class MainWindow(wx.Frame):
         return chat.last_message_preview
 
     @classmethod
-    def _next_chat_timestamp(cls, chat: Chat, sent_at: datetime | None) -> datetime | None:
+    def _next_chat_timestamp(
+        cls,
+        chat: Chat,
+        sent_at: datetime | None,
+        force_preview: bool = False,
+    ) -> datetime | None:
         if sent_at is None:
             return chat.last_message_at
 
-        if cls._summary_preview_can_update(chat.last_message_at, sent_at):
+        if cls._summary_preview_can_update(
+            chat.last_message_at,
+            sent_at,
+            allow_equal=force_preview,
+        ):
             return sent_at
 
         return chat.last_message_at
@@ -1222,6 +1402,7 @@ class MainWindow(wx.Frame):
         cls,
         current_sent_at: datetime | None,
         incoming_sent_at: datetime | None,
+        allow_equal: bool = False,
     ) -> bool:
         if incoming_sent_at is None:
             return current_sent_at is None
@@ -1234,7 +1415,10 @@ class MainWindow(wx.Frame):
         if incoming_timestamp is None:
             return False
 
-        return incoming_timestamp >= current_timestamp
+        if allow_equal:
+            return incoming_timestamp >= current_timestamp
+
+        return incoming_timestamp > current_timestamp
 
     @staticmethod
     def _datetime_timestamp(value: datetime | None) -> float | None:

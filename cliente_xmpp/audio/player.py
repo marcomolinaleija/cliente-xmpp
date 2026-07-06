@@ -17,14 +17,14 @@ class MpvPlaybackError(RuntimeError):
 
 
 class MpvAudioPlayer:
-    def __init__(self, video: bool = False) -> None:
+    def __init__(self, video: bool = False, speed: float = 1.0) -> None:
         self._video = video
         self._dll: ctypes.CDLL | None = None
         self._dll_directory: object | None = None
         self._handle: ctypes.c_void_p | None = None
         self._current_url = ""
         self._paused = False
-        self._speed = 1.0
+        self._speed = self._nearest_speed(speed)
 
     def play(self, url: str) -> PlaybackStatus:
         if not url:
@@ -56,16 +56,29 @@ class MpvAudioPlayer:
             key=lambda index: abs(AUDIO_SPEEDS[index] - self._speed),
         )
         next_speed = AUDIO_SPEEDS[(current_index + 1) % len(AUDIO_SPEEDS)]
-        self._set_double_property(handle, "speed", next_speed)
-        self._speed = next_speed
+        self.set_speed(next_speed)
         return next_speed
+
+    def set_speed(self, speed: float) -> None:
+        self._speed = self._nearest_speed(speed)
+        if self._handle:
+            self._set_double_property(self._handle, "speed", self._speed)
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def is_finished(self, url: str) -> bool:
+        if not self._handle or url != self._current_url:
+            return False
+
+        return self._playback_finished(self._handle)
 
     def stop(self) -> None:
         if self._handle:
             self._command(self._handle, ["stop"])
         self._current_url = ""
         self._paused = False
-        self._speed = 1.0
 
     def current_duration_seconds(self, url: str) -> float | None:
         if not self._handle or url != self._current_url:
@@ -79,7 +92,6 @@ class MpvAudioPlayer:
         self._handle = None
         self._current_url = ""
         self._paused = False
-        self._speed = 1.0
 
     def _ensure_handle(self) -> ctypes.c_void_p:
         if self._handle:
@@ -151,8 +163,11 @@ class MpvAudioPlayer:
         self._command(handle, ["loadfile", url, "replace"])
         self._current_url = url
         self._paused = False
-        self._speed = 1.0
         self._set_double_property(handle, "speed", self._speed)
+
+    @staticmethod
+    def _nearest_speed(speed: float) -> float:
+        return min(AUDIO_SPEEDS, key=lambda supported: abs(supported - speed))
 
     def _playback_finished(self, handle: ctypes.c_void_p) -> bool:
         return self._get_flag_property(handle, "idle-active") or self._get_flag_property(

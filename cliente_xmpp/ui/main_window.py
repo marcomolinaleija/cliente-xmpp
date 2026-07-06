@@ -99,7 +99,12 @@ class MainWindow(wx.Frame):
         self.content_panel = wx.Panel(self.workspace_panel)
         self.content_box = wx.BoxSizer(wx.VERTICAL)
         self.chat_list = ChatListPanel(self.content_panel)
-        self.conversation = ConversationPanel(self.content_panel, self._display_name_for_jid)
+        self.conversation = ConversationPanel(
+            self.content_panel,
+            self._display_name_for_jid,
+            initial_audio_speed=self.settings_store.load_audio_speed(),
+            on_audio_speed_changed=self._save_audio_speed,
+        )
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
         self.content_box.Add(self.conversation, 1, wx.EXPAND)
         self.content_panel.SetSizer(self.content_box)
@@ -163,6 +168,12 @@ class MainWindow(wx.Frame):
             return
 
         self.credential_store.delete_password(login.settings.jid)
+
+    def _save_audio_speed(self, speed: float) -> None:
+        try:
+            self.settings_store.save_audio_speed(speed)
+        except Exception:
+            return
 
     def _schedule_auto_connect(self) -> None:
         if not self.connection_settings.auto_connect:

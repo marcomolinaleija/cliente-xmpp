@@ -8,6 +8,7 @@ from typing import Literal
 
 PlaybackStatus = Literal["playing", "paused"]
 MPV_FORMAT_FLAG = 3
+MPV_FORMAT_DOUBLE = 5
 
 
 class MpvPlaybackError(RuntimeError):
@@ -44,6 +45,12 @@ class MpvAudioPlayer:
             self._command(self._handle, ["stop"])
         self._current_url = ""
         self._paused = False
+
+    def current_duration_seconds(self, url: str) -> float | None:
+        if not self._handle or url != self._current_url:
+            return None
+
+        return self._get_double_property(self._handle, "duration")
 
     def close(self) -> None:
         if self._handle and self._dll:
@@ -133,6 +140,19 @@ class MpvAudioPlayer:
             return False
 
         return bool(value.value)
+
+    def _get_double_property(self, handle: ctypes.c_void_p, name: str) -> float | None:
+        value = ctypes.c_double()
+        code = self._ensure_dll().mpv_get_property(
+            handle,
+            name.encode("utf-8"),
+            MPV_FORMAT_DOUBLE,
+            ctypes.byref(value),
+        )
+        if code < 0 or value.value <= 0:
+            return None
+
+        return float(value.value)
 
     def _check_error(self, code: int) -> None:
         if code >= 0:

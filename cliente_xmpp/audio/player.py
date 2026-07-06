@@ -9,6 +9,7 @@ from typing import Literal
 PlaybackStatus = Literal["playing", "paused"]
 MPV_FORMAT_FLAG = 3
 MPV_FORMAT_DOUBLE = 5
+AUDIO_SPEEDS = (1.0, 1.5, 2.0)
 
 
 class MpvPlaybackError(RuntimeError):
@@ -22,6 +23,7 @@ class MpvAudioPlayer:
         self._handle: ctypes.c_void_p | None = None
         self._current_url = ""
         self._paused = False
+        self._speed = 1.0
 
     def play(self, url: str) -> PlaybackStatus:
         if not url:
@@ -40,11 +42,29 @@ class MpvAudioPlayer:
         self._load_url(handle, url)
         return "playing"
 
+    def cycle_speed(self, url: str) -> float:
+        if not url:
+            raise MpvPlaybackError("No hay URL de audio para cambiar la velocidad.")
+
+        handle = self._ensure_handle()
+        if url != self._current_url or self._playback_finished(handle):
+            self._load_url(handle, url)
+
+        current_index = min(
+            range(len(AUDIO_SPEEDS)),
+            key=lambda index: abs(AUDIO_SPEEDS[index] - self._speed),
+        )
+        next_speed = AUDIO_SPEEDS[(current_index + 1) % len(AUDIO_SPEEDS)]
+        self._set_double_property(handle, "speed", next_speed)
+        self._speed = next_speed
+        return next_speed
+
     def stop(self) -> None:
         if self._handle:
             self._command(self._handle, ["stop"])
         self._current_url = ""
         self._paused = False
+        self._speed = 1.0
 
     def current_duration_seconds(self, url: str) -> float | None:
         if not self._handle or url != self._current_url:
@@ -58,6 +78,7 @@ class MpvAudioPlayer:
         self._handle = None
         self._current_url = ""
         self._paused = False
+        self._speed = 1.0
 
     def _ensure_handle(self) -> ctypes.c_void_p:
         if self._handle:
@@ -103,6 +124,13 @@ class MpvAudioPlayer:
             ctypes.c_void_p,
         ]
         dll.mpv_get_property.restype = ctypes.c_int
+        dll.mpv_set_property.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        dll.mpv_set_property.restype = ctypes.c_int
         dll.mpv_error_string.argtypes = [ctypes.c_int]
         dll.mpv_error_string.restype = ctypes.c_char_p
         dll.mpv_terminate_destroy.argtypes = [ctypes.c_void_p]
@@ -121,6 +149,8 @@ class MpvAudioPlayer:
         self._command(handle, ["loadfile", url, "replace"])
         self._current_url = url
         self._paused = False
+        self._speed = 1.0
+        self._set_double_property(handle, "speed", self._speed)
 
     def _playback_finished(self, handle: ctypes.c_void_p) -> bool:
         return self._get_flag_property(handle, "idle-active") or self._get_flag_property(
@@ -153,6 +183,17 @@ class MpvAudioPlayer:
             return None
 
         return float(value.value)
+
+    def _set_double_property(self, handle: ctypes.c_void_p, name: str, value: float) -> None:
+        property_value = ctypes.c_double(value)
+        self._check_error(
+            self._ensure_dll().mpv_set_property(
+                handle,
+                name.encode("utf-8"),
+                MPV_FORMAT_DOUBLE,
+                ctypes.byref(property_value),
+            )
+        )
 
     def _check_error(self, code: int) -> None:
         if code >= 0:

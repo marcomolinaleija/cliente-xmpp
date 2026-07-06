@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import re
 import threading
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
@@ -33,6 +35,9 @@ OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
+FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
+SFS_NS = "urn:xmpp:sfs:0"
+URL_DATA_NS = "http://jabber.org/protocol/url-data"
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
@@ -741,6 +746,71 @@ class BridgeXmppClient(ClientXMPP):
         except (KeyError, TypeError):
             return ""
 
+    async def send_audio_file(self, to_jid: str, path: str) -> Message:
+        file_path = Path(path)
+        if not file_path.exists():
+            raise FileNotFoundError(path)
+
+        size = file_path.stat().st_size
+        mime = mimetypes.guess_type(file_path.name)[0] or "audio/ogg"
+        get_url = await self["xep_0363"].upload_file(
+            file_path,
+            size=size,
+            content_type=mime,
+            timeout=60,
+        )
+
+        message = self.make_message(mto=to_jid, mbody=get_url, mtype="chat")
+        message_id = str(message["id"] or "")
+        self._append_file_metadata(
+            message,
+            url=get_url,
+            filename=file_path.name,
+            size=size,
+            mime=mime,
+        )
+        message.send()
+        return Message(
+            chat_jid=to_jid,
+            sender_jid="Yo",
+            body="Mensaje de voz",
+            sent_at=datetime.now(),
+            outgoing=True,
+            audio_url=get_url,
+            media_url=get_url,
+            media_kind="audio",
+            media_mime=mime,
+            media_filename=file_path.name,
+            media_size=size,
+            media_local_path=str(file_path),
+            message_id=message_id,
+        )
+
+    @staticmethod
+    def _append_file_metadata(
+        message: object,
+        url: str,
+        filename: str,
+        size: int,
+        mime: str,
+    ) -> None:
+        oob = ET.Element(f"{{{OOB_NS}}}x")
+        url_node = ET.SubElement(oob, f"{{{OOB_NS}}}url")
+        url_node.text = url
+        message.append(oob)
+
+        file_sharing = ET.Element(f"{{{SFS_NS}}}file-sharing")
+        file_node = ET.SubElement(file_sharing, f"{{{FILE_METADATA_NS}}}file")
+        media_type = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}media-type")
+        media_type.text = mime
+        name = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}name")
+        name.text = filename
+        size_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}size")
+        size_node.text = str(size)
+        sources = ET.SubElement(file_sharing, f"{{{SFS_NS}}}sources")
+        ET.SubElement(sources, f"{{{URL_DATA_NS}}}url-data", {"target": url})
+        message.append(file_sharing)
+
 
 class XmppService:
     def __init__(self, emit: EventHandler) -> None:
@@ -839,6 +909,29 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
+    def send_audio_file(self, to_jid: str, path: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        async def send() -> None:
+            if not self._client:
+                return
+
+            try:
+                message = await self._client.send_audio_file(to_jid, path)
+            except Exception as exc:
+                self._emit(XmppError(f"No se pudo enviar el audio: {exc}"))
+                return
+
+            self._emit(MessageReceived(message))
+
+        def schedule() -> None:
+            if self._loop:
+                self._loop.create_task(send())
+
+        self._loop.call_soon_threadsafe(schedule)
+
     def load_history(
         self,
         chat_jid: str,
@@ -903,7 +996,15 @@ class XmppService:
             asyncio.set_event_loop(self._loop)
 
             self._client = BridgeXmppClient(settings, password, self._emit)
-            plugins = ("xep_0030", "xep_0199", "xep_0297", "xep_0280", "xep_0313")
+            plugins = (
+                "xep_0030",
+                "xep_0128",
+                "xep_0199",
+                "xep_0297",
+                "xep_0280",
+                "xep_0313",
+                "xep_0363",
+            )
             for plugin in plugins:
                 self._client.register_plugin(plugin)
 

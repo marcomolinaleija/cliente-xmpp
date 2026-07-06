@@ -33,6 +33,7 @@ class ConversationPanel(wx.Panel):
         self.back_button = wx.Button(self, label="Volver")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
+        self.audio_button: wx.Button
         self.send_button: wx.Button
 
         self._layout()
@@ -48,6 +49,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = None
         self._reply_quote_prefix = ""
         self.send_button.Enable(True)
+        self.audio_button.Enable(True)
         self.load_older_button.Enable(True)
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
@@ -207,6 +209,25 @@ class ConversationPanel(wx.Panel):
 
         return True
 
+    def cycle_selected_audio_speed(self) -> float | None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._message_rows):
+            return None
+
+        message = self._message_rows[index]
+        if message is None or not message.audio_url:
+            return None
+
+        try:
+            speed = self._audio_player.cycle_speed(message.audio_url)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Audio")
+            return None
+
+        self._speaker.speak(f"Velocidad {speed:g}x")
+        self._schedule_audio_duration_update(index, message.audio_url)
+        return speed
+
     def close_audio(self) -> None:
         self._audio_player.close()
 
@@ -231,6 +252,9 @@ class ConversationPanel(wx.Panel):
 
         self.send_button = wx.Button(self, label="Enviar")
         self.send_button.Enable(False)
+        self.audio_button = wx.Button(self, label="Audio...")
+        self.audio_button.Enable(False)
+        composer.Add(self.audio_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.send_button, 0, wx.EXPAND)
 
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)

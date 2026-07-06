@@ -120,6 +120,7 @@ class MainWindow(wx.Frame):
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_send_message)
+        self.conversation.audio_button.Bind(wx.EVT_BUTTON, self._on_send_audio)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
         self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
         self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
@@ -300,6 +301,31 @@ class MainWindow(wx.Frame):
 
         self._request_history_page(chat.jid, older=True)
 
+    def _on_send_audio(self, _event: wx.CommandEvent) -> None:
+        chat = self.conversation.current_chat
+        if not chat:
+            return
+
+        wildcard = (
+            "Audio (*.ogg;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac)|"
+            "*.ogg;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac|Todos los archivos (*.*)|*.*"
+        )
+        dialog = wx.FileDialog(
+            self,
+            "Selecciona un audio para enviar",
+            wildcard=wildcard,
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            path = dialog.GetPath()
+        finally:
+            dialog.Destroy()
+
+        self.status_bar.SetStatusText("Subiendo audio...")
+        self.xmpp.send_audio_file(chat.jid, path)
+
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
         if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
             self._on_send_message(wx.CommandEvent())
@@ -308,6 +334,12 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == ord("S"):
+            speed = self.conversation.cycle_selected_audio_speed()
+            if speed is not None:
+                self.status_bar.SetStatusText(f"Velocidad de audio: {speed:g}x")
+                return
+
         if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
             message = self.conversation.selected_message()
             if message and has_media(message) and message.media_kind != "audio":

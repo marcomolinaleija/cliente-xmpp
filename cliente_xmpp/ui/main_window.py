@@ -418,7 +418,10 @@ class MainWindow(wx.Frame):
             self._update_chat_preview_from_messages(chat_jid, messages)
         self._refresh_chat_order()
         if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
-            self._load_conversation(self.conversation.current_chat)
+            self._load_conversation(
+                self.conversation.current_chat,
+                unread_count=self.conversation.unread_marker_count(),
+            )
             self._refresh_load_older_button(chat_jid)
 
         if older:
@@ -577,10 +580,12 @@ class MainWindow(wx.Frame):
 
         return self._fallback_display_name_for_jid(jid)
 
-    def _load_conversation(self, chat: Chat) -> None:
+    def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
         self.conversation.set_chat(chat)
-        for message in self.messages_by_chat.get(chat.jid, []):
-            self.conversation.append_message(message)
+        self.conversation.set_messages(
+            self.messages_by_chat.get(chat.jid, []),
+            unread_count=unread_count,
+        )
         self._refresh_load_older_button(chat.jid)
 
     def _refresh_chat_order(self, selected_jid: str = "") -> None:
@@ -711,7 +716,7 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("Selecciona un chat para abrirlo")
             return
 
-        self._load_conversation(chat)
+        self._load_conversation(chat, unread_count=chat.unread_count)
         self._update_chat_summary(chat.jid, mark_read=True)
         self.chat_list.Hide()
         self.conversation.Show()
@@ -725,6 +730,7 @@ class MainWindow(wx.Frame):
             self._request_history_page(chat.jid)
 
     def _show_chat_list(self) -> None:
+        self.conversation.clear_unread_marker()
         self.conversation.Hide()
         self.chat_list.Show()
         self.content_panel.Layout()

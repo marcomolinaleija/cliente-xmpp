@@ -15,6 +15,8 @@ class ConnectionSettings:
     host: str = ""
     port: int = 5222
     use_tls: bool = True
+    remember_password: bool = False
+    auto_connect: bool = False
 
 
 class SettingsStore:
@@ -32,10 +34,11 @@ class SettingsStore:
             host=str(connection.get("host", "")),
             port=int(connection.get("port", 5222)),
             use_tls=bool(connection.get("use_tls", True)),
+            remember_password=bool(connection.get("remember_password", False)),
+            auto_connect=bool(connection.get("auto_connect", False)),
         )
 
     def save_connection(self, settings: ConnectionSettings) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"connection": asdict(settings)}
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-

@@ -4,13 +4,14 @@ from datetime import datetime
 
 import wx
 
+from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.chat_list_panel import ChatListPanel
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
-from cliente_xmpp.ui.login_panel import LoginPanel
+from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoadFinished,
@@ -30,6 +31,8 @@ class MainWindow(wx.Frame):
         super().__init__(None, title="Cliente XMPP", size=(980, 700))
 
         self.settings_store = SettingsStore()
+        self.credential_store = CredentialStore()
+        self.connection_settings = self.settings_store.load_connection()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
@@ -39,7 +42,7 @@ class MainWindow(wx.Frame):
         self.loaded_chat_summaries = 0
         self.current_jid = ""
 
-        self.login_panel = LoginPanel(self, self.settings_store.load_connection())
+        self.login_panel = LoginPanel(self, self.connection_settings)
         self.workspace_panel: wx.Panel
         self.content_panel: wx.Panel
         self.content_box: wx.BoxSizer
@@ -50,8 +53,10 @@ class MainWindow(wx.Frame):
 
         self._layout()
         self._bind_events()
+        self._load_saved_password()
         self._set_connected_ui(False)
         self.status_bar.SetStatusText("Desconectado")
+        self._schedule_auto_connect()
 
     def _layout(self) -> None:
         self.workspace_panel = wx.Panel(self)
@@ -98,10 +103,41 @@ class MainWindow(wx.Frame):
             return
 
         self.settings_store.save_connection(login.settings)
+        self._save_login_password(login)
         self.current_jid = login.settings.jid
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
+
+    def _load_saved_password(self) -> None:
+        if not self.connection_settings.remember_password:
+            return
+
+        password = self.credential_store.get_password(self.connection_settings.jid)
+        if password:
+            self.login_panel.set_password(password)
+
+    def _save_login_password(self, login: LoginData) -> None:
+        if login.remember_password:
+            self.credential_store.save_password(login.settings.jid, login.password)
+            return
+
+        self.credential_store.delete_password(login.settings.jid)
+
+    def _schedule_auto_connect(self) -> None:
+        if not self.connection_settings.auto_connect:
+            return
+
+        if not self.connection_settings.remember_password:
+            return
+
+        if not self.login_panel.get_login_data().password:
+            self.status_bar.SetStatusText(
+                "No hay contraseña guardada para conectar automáticamente"
+            )
+            return
+
+        wx.CallAfter(self._on_connect, wx.CommandEvent())
 
     def _on_disconnect(self, _event: wx.CommandEvent) -> None:
         self.connection_header.set_status("Desconectando...")

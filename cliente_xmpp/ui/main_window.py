@@ -4,6 +4,7 @@ from datetime import datetime
 
 import wx
 
+from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.models.chat import Chat, Message
@@ -33,6 +34,7 @@ class MainWindow(wx.Frame):
         self.settings_store = SettingsStore()
         self.credential_store = CredentialStore()
         self.connection_settings = self.settings_store.load_connection()
+        self.speaker = NvdaSpeaker()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
@@ -246,6 +248,8 @@ class MainWindow(wx.Frame):
                 self._refresh_chat_order()
                 if current_chat_is_open:
                     self.conversation.append_message(message)
+                self._select_first_chat_if_needed()
+                self._speak_incoming_message(message)
             case MessageHistoryLoaded(chat_jid=chat_jid, messages=messages):
                 self.history_loaded_chats.add(chat_jid)
                 self.messages_by_chat[chat_jid] = messages + self.messages_by_chat.get(chat_jid, [])
@@ -274,6 +278,7 @@ class MainWindow(wx.Frame):
                     self._refresh_chat_order()
                     if added:
                         self.loaded_chat_summaries += 1
+                    self._select_first_chat_if_needed()
                     self.status_bar.SetStatusText(
                         f"{self.loaded_chat_summaries} chats con mensajes cargados"
                     )
@@ -300,21 +305,49 @@ class MainWindow(wx.Frame):
         if self.chat_list.has_chat(message.chat_jid):
             return
 
+        name = self._display_name_for_jid(message.chat_jid)
         self.chat_list.upsert_chat(
             Chat(
                 jid=message.chat_jid,
-                name=message.chat_jid,
+                name=name,
                 last_message_preview=message.body,
                 last_message_at=message.sent_at,
             )
         )
-        self.chat_names_by_jid[message.chat_jid] = message.chat_jid
+        self.chat_names_by_jid.setdefault(message.chat_jid, name)
 
     def _select_first_chat(self) -> None:
         chat = self.chat_list.select_first()
         if chat:
             self._load_conversation(chat)
             self.chat_list.focus()
+
+    def _select_first_chat_if_needed(self) -> None:
+        if not self.chat_list.IsShown():
+            return
+
+        if self.chat_list.selected_chat():
+            return
+
+        self._select_first_chat()
+
+    def _speak_incoming_message(self, message: Message) -> None:
+        if message.outgoing:
+            return
+
+        sender = self._speakable_chat_name(message.chat_jid)
+        self.speaker.speak(f"Mensaje de {sender}")
+
+    def _speakable_chat_name(self, jid: str) -> str:
+        for chat in self.chat_list.chats():
+            if chat.jid == jid and chat.name and chat.name != jid:
+                return chat.name
+
+        name = self.chat_names_by_jid.get(jid, "")
+        if name and name != jid:
+            return name
+
+        return self._fallback_display_name_for_jid(jid)
 
     def _load_conversation(self, chat: Chat) -> None:
         self.conversation.set_chat(chat)
@@ -476,10 +509,17 @@ class MainWindow(wx.Frame):
 
     def _display_name_for_jid(self, jid: str) -> str:
         if jid in self.chat_names_by_jid:
-            return self.chat_names_by_jid[jid]
+            name = self.chat_names_by_jid[jid]
+            if name and name != jid:
+                return name
 
-        local_part = jid.split("@", 1)[0]
-        if jid.endswith("@whatsapp.xmpp.marco-ml.com") and local_part:
+        return self._fallback_display_name_for_jid(jid)
+
+    @staticmethod
+    def _fallback_display_name_for_jid(jid: str) -> str:
+        bare_jid = jid.split("/", 1)[0]
+        local_part = bare_jid.split("@", 1)[0]
+        if bare_jid.endswith("@whatsapp.xmpp.marco-ml.com") and local_part:
             return local_part.removeprefix("+")
 
-        return jid
+        return bare_jid

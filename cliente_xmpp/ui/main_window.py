@@ -9,6 +9,7 @@ import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.notification import NewMessageSound
+from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.integrations import rayoai
@@ -69,6 +70,7 @@ class MainWindow(wx.Frame):
         self.loaded_chat_summaries = 0
         self.reply_context: Message | None = None
         self.current_jid = ""
+        self.audio_recorder = MciAudioRecorder()
 
         self.login_panel = LoginPanel(self, self.connection_settings)
         self.workspace_panel: wx.Panel
@@ -119,8 +121,11 @@ class MainWindow(wx.Frame):
         self.chat_list.open_button.Bind(wx.EVT_BUTTON, self._on_open_selected_chat)
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
-        self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_send_message)
-        self.conversation.audio_button.Bind(wx.EVT_BUTTON, self._on_send_audio)
+        self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
+        self.conversation.attach_button.Bind(wx.EVT_BUTTON, self._on_attach_file)
+        self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
+        self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
+        self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
         self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
         self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
@@ -255,6 +260,17 @@ class MainWindow(wx.Frame):
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:
         self._show_chat_list()
 
+    def _on_primary_send_action(self, _event: wx.CommandEvent) -> None:
+        if self.audio_recorder.is_recording:
+            self._stop_recording_and_send()
+            return
+
+        if self.conversation.has_composed_text():
+            self._on_send_message(wx.CommandEvent())
+            return
+
+        self._start_recording()
+
     def _on_send_message(self, _event: wx.CommandEvent) -> None:
         chat = self.conversation.current_chat
         body = self.conversation.consume_composed_message()
@@ -290,6 +306,10 @@ class MainWindow(wx.Frame):
         else:
             self.xmpp.send_message(chat.jid, body)
 
+    def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
+        self.conversation.update_send_button_state(self.audio_recorder.is_recording)
+        event.Skip()
+
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
         chat = self.conversation.current_chat
         if not chat:
@@ -301,19 +321,15 @@ class MainWindow(wx.Frame):
 
         self._request_history_page(chat.jid, older=True)
 
-    def _on_send_audio(self, _event: wx.CommandEvent) -> None:
+    def _on_attach_file(self, _event: wx.CommandEvent) -> None:
         chat = self.conversation.current_chat
         if not chat:
             return
 
-        wildcard = (
-            "Audio (*.ogg;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac)|"
-            "*.ogg;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac|Todos los archivos (*.*)|*.*"
-        )
         dialog = wx.FileDialog(
             self,
-            "Selecciona un audio para enviar",
-            wildcard=wildcard,
+            "Selecciona un archivo para adjuntar",
+            wildcard="Todos los archivos (*.*)|*.*",
             style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
         )
         try:
@@ -323,12 +339,67 @@ class MainWindow(wx.Frame):
         finally:
             dialog.Destroy()
 
+        self.status_bar.SetStatusText("Subiendo archivo...")
+        self.xmpp.send_file(chat.jid, path)
+
+    def _start_recording(self) -> None:
+        if not self.conversation.current_chat:
+            return
+
+        try:
+            self.audio_recorder.start()
+        except AudioRecordingError as exc:
+            wx.MessageBox(str(exc), "Grabacion")
+            return
+
+        self.conversation.set_recording_state(True)
+        self.status_bar.SetStatusText("Grabando audio...")
+        self.speaker.speak("Grabando audio")
+
+    def _on_pause_recording(self, _event: wx.CommandEvent) -> None:
+        if not self.audio_recorder.is_recording:
+            return
+
+        try:
+            if self.audio_recorder.is_paused:
+                self.audio_recorder.resume()
+                self.status_bar.SetStatusText("Grabando audio...")
+                self.speaker.speak("Grabando")
+            else:
+                self.audio_recorder.pause()
+                self.status_bar.SetStatusText("Grabacion pausada")
+                self.speaker.speak("Pausado")
+        except AudioRecordingError as exc:
+            wx.MessageBox(str(exc), "Grabacion")
+            return
+
+        self.conversation.set_recording_state(True, self.audio_recorder.is_paused)
+
+    def _on_cancel_recording(self, _event: wx.CommandEvent) -> None:
+        self.audio_recorder.cancel()
+        self.conversation.set_recording_state(False)
+        self.status_bar.SetStatusText("Grabacion cancelada")
+        self.speaker.speak("Cancelado")
+
+    def _stop_recording_and_send(self) -> None:
+        chat = self.conversation.current_chat
+        if not chat:
+            return
+
+        try:
+            path = self.audio_recorder.stop_and_save()
+        except AudioRecordingError as exc:
+            wx.MessageBox(str(exc), "Grabacion")
+            self.conversation.set_recording_state(False)
+            return
+
+        self.conversation.set_recording_state(False)
         self.status_bar.SetStatusText("Subiendo audio...")
-        self.xmpp.send_audio_file(chat.jid, path)
+        self.xmpp.send_file(chat.jid, str(path))
 
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
         if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
-            self._on_send_message(wx.CommandEvent())
+            self._on_primary_send_action(wx.CommandEvent())
             return
 
         event.Skip()
@@ -340,9 +411,16 @@ class MainWindow(wx.Frame):
                 self.status_bar.SetStatusText(f"Velocidad de audio: {speed:g}x")
                 return
 
+        if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_video():
+            return
+
         if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
             message = self.conversation.selected_message()
-            if message and has_media(message) and message.media_kind != "audio":
+            if (
+                message
+                and has_media(message)
+                and message.media_kind not in {"audio", "video"}
+            ):
                 self._open_or_download_media(message)
                 return
 
@@ -575,6 +653,7 @@ class MainWindow(wx.Frame):
 
     def _on_close(self, event: wx.CloseEvent) -> None:
         self.conversation.close_audio()
+        self.audio_recorder.cancel()
         self.xmpp.disconnect()
         event.Skip()
 

@@ -26,6 +26,7 @@ class ConversationPanel(wx.Panel):
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
         self._audio_player = MpvAudioPlayer()
+        self._video_player = MpvAudioPlayer(video=True)
         self._speaker = NvdaSpeaker()
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
@@ -33,8 +34,10 @@ class ConversationPanel(wx.Panel):
         self.back_button = wx.Button(self, label="Volver")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
-        self.audio_button: wx.Button
+        self.attach_button: wx.Button
         self.send_button: wx.Button
+        self.pause_recording_button: wx.Button
+        self.cancel_recording_button: wx.Button
 
         self._layout()
 
@@ -49,7 +52,9 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = None
         self._reply_quote_prefix = ""
         self.send_button.Enable(True)
-        self.audio_button.Enable(True)
+        self.attach_button.Enable(True)
+        self.set_recording_state(False)
+        self.update_send_button_state()
         self.load_older_button.Enable(True)
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
@@ -122,7 +127,30 @@ class ConversationPanel(wx.Panel):
         body = self.compose.GetValue().strip()
         if body:
             self.compose.Clear()
+            self.update_send_button_state()
         return body
+
+    def has_composed_text(self) -> bool:
+        return bool(self.compose.GetValue().strip())
+
+    def update_send_button_state(self, recording: bool = False, paused: bool = False) -> None:
+        if recording:
+            self.send_button.SetLabel("&Detener y enviar")
+            self.pause_recording_button.SetLabel("Reanudar" if paused else "Pausar")
+            return
+
+        if self.has_composed_text():
+            self.send_button.SetLabel("&Enviar")
+        else:
+            self.send_button.SetLabel("&Grabar audio")
+
+    def set_recording_state(self, recording: bool, paused: bool = False) -> None:
+        self.compose.Enable(not recording)
+        self.attach_button.Enable(not recording)
+        self.pause_recording_button.Show(recording)
+        self.cancel_recording_button.Show(recording)
+        self.update_send_button_state(recording, paused)
+        self.Layout()
 
     def insert_reply_quote(self, message: Message) -> None:
         sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
@@ -209,6 +237,28 @@ class ConversationPanel(wx.Panel):
 
         return True
 
+    def play_selected_video(self) -> bool:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._message_rows):
+            return False
+
+        message = self._message_rows[index]
+        if message is None or message.media_kind != "video":
+            return False
+
+        source = str(local_media_path(message) or message.media_url)
+        if not source:
+            return False
+
+        try:
+            status = self._video_player.play(source)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Video")
+            return True
+
+        self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
+        return True
+
     def cycle_selected_audio_speed(self) -> float | None:
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
@@ -230,6 +280,7 @@ class ConversationPanel(wx.Panel):
 
     def close_audio(self) -> None:
         self._audio_player.close()
+        self._video_player.close()
 
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
@@ -252,9 +303,15 @@ class ConversationPanel(wx.Panel):
 
         self.send_button = wx.Button(self, label="Enviar")
         self.send_button.Enable(False)
-        self.audio_button = wx.Button(self, label="Audio...")
-        self.audio_button.Enable(False)
-        composer.Add(self.audio_button, 0, wx.EXPAND | wx.RIGHT, 8)
+        self.attach_button = wx.Button(self, label="&Adjuntar")
+        self.attach_button.Enable(False)
+        self.pause_recording_button = wx.Button(self, label="Pausar")
+        self.cancel_recording_button = wx.Button(self, label="Cancelar")
+        self.pause_recording_button.Hide()
+        self.cancel_recording_button.Hide()
+        composer.Add(self.attach_button, 0, wx.EXPAND | wx.RIGHT, 8)
+        composer.Add(self.pause_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
+        composer.Add(self.cancel_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.send_button, 0, wx.EXPAND)
 
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)

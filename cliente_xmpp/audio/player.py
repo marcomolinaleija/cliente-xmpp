@@ -17,7 +17,8 @@ class MpvPlaybackError(RuntimeError):
 
 
 class MpvAudioPlayer:
-    def __init__(self) -> None:
+    def __init__(self, video: bool = False) -> None:
+        self._video = video
         self._dll: ctypes.CDLL | None = None
         self._dll_directory: object | None = None
         self._handle: ctypes.c_void_p | None = None
@@ -89,7 +90,8 @@ class MpvAudioPlayer:
         if not handle:
             raise MpvPlaybackError("No se pudo crear el reproductor MPV.")
 
-        self._check_error(dll.mpv_set_option_string(handle, b"video", b"no"))
+        if not self._video:
+            self._check_error(dll.mpv_set_option_string(handle, b"video", b"no"))
         self._check_error(dll.mpv_set_option_string(handle, b"terminal", b"no"))
         self._check_error(dll.mpv_initialize(handle))
         self._handle = handle

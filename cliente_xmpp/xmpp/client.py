@@ -746,13 +746,14 @@ class BridgeXmppClient(ClientXMPP):
         except (KeyError, TypeError):
             return ""
 
-    async def send_audio_file(self, to_jid: str, path: str) -> Message:
+    async def send_file(self, to_jid: str, path: str) -> Message:
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
 
         size = file_path.stat().st_size
-        mime = mimetypes.guess_type(file_path.name)[0] or "audio/ogg"
+        mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
         get_url = await self["xep_0363"].upload_file(
             file_path,
             size=size,
@@ -770,21 +771,25 @@ class BridgeXmppClient(ClientXMPP):
             mime=mime,
         )
         message.send()
+        body = self._message_body_for_display("", get_url, media_kind, file_path.name, size)
         return Message(
             chat_jid=to_jid,
             sender_jid="Yo",
-            body="Mensaje de voz",
+            body=body,
             sent_at=datetime.now(),
             outgoing=True,
-            audio_url=get_url,
+            audio_url=get_url if media_kind == "audio" else "",
             media_url=get_url,
-            media_kind="audio",
+            media_kind=media_kind,
             media_mime=mime,
             media_filename=file_path.name,
             media_size=size,
             media_local_path=str(file_path),
             message_id=message_id,
         )
+
+    async def send_audio_file(self, to_jid: str, path: str) -> Message:
+        return await self.send_file(to_jid, path)
 
     @staticmethod
     def _append_file_metadata(
@@ -909,7 +914,7 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
-    def send_audio_file(self, to_jid: str, path: str) -> None:
+    def send_file(self, to_jid: str, path: str) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexion XMPP activa."))
             return
@@ -919,9 +924,9 @@ class XmppService:
                 return
 
             try:
-                message = await self._client.send_audio_file(to_jid, path)
+                message = await self._client.send_file(to_jid, path)
             except Exception as exc:
-                self._emit(XmppError(f"No se pudo enviar el audio: {exc}"))
+                self._emit(XmppError(f"No se pudo enviar el archivo: {exc}"))
                 return
 
             self._emit(MessageReceived(message))
@@ -931,6 +936,9 @@ class XmppService:
                 self._loop.create_task(send())
 
         self._loop.call_soon_threadsafe(schedule)
+
+    def send_audio_file(self, to_jid: str, path: str) -> None:
+        self.send_file(to_jid, path)
 
     def load_history(
         self,

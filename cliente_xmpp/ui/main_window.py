@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
+from cliente_xmpp.audio.notification import NewMessageSound
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.models.chat import Chat, Message
@@ -15,8 +16,8 @@ from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
-    ChatActivityLoadFinished,
     ChatActivityLoaded,
+    ChatActivityLoadFinished,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -25,6 +26,10 @@ from cliente_xmpp.xmpp.events import (
     XmppError,
     XmppEvent,
 )
+
+HISTORY_PAGE_SIZE = 20
+PRELOAD_CHAT_LIMIT = 20
+PRELOAD_CONCURRENCY = 4
 
 
 class MainWindow(wx.Frame):
@@ -35,10 +40,14 @@ class MainWindow(wx.Frame):
         self.credential_store = CredentialStore()
         self.connection_settings = self.settings_store.load_connection()
         self.speaker = NvdaSpeaker()
+        self.new_message_sound = NewMessageSound()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
+        self.history_exhausted_chats: set[str] = set()
+        self.history_loading_chats: set[str] = set()
+        self.preloaded_history_chats: set[str] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.roster_jids: set[str] = set()
         self.loaded_chat_summaries = 0
@@ -90,6 +99,7 @@ class MainWindow(wx.Frame):
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.open_button.Bind(wx.EVT_BUTTON, self._on_open_selected_chat)
+        self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_send_message)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
@@ -184,6 +194,17 @@ class MainWindow(wx.Frame):
         self._refresh_chat_order(chat.jid)
         self.xmpp.send_message(chat.jid, body)
 
+    def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
+        chat = self.conversation.current_chat
+        if not chat:
+            return
+
+        if chat.jid in self.history_exhausted_chats:
+            self.status_bar.SetStatusText("No hay mensajes anteriores")
+            return
+
+        self._request_history_page(chat.jid, older=True)
+
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
         if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
             self._on_send_message(wx.CommandEvent())
@@ -250,15 +271,14 @@ class MainWindow(wx.Frame):
                     self.conversation.append_message(message)
                 self._select_first_chat_if_needed()
                 self._speak_incoming_message(message)
-            case MessageHistoryLoaded(chat_jid=chat_jid, messages=messages):
-                self.history_loaded_chats.add(chat_jid)
-                self.messages_by_chat[chat_jid] = messages + self.messages_by_chat.get(chat_jid, [])
-                self._update_chat_activity_from_messages(chat_jid, messages)
-                self._update_chat_preview_from_messages(chat_jid, messages)
-                self._refresh_chat_order()
-                if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
-                    self._load_conversation(self.conversation.current_chat)
-                self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
+                self._play_new_message_sound(message)
+            case MessageHistoryLoaded(
+                chat_jid=chat_jid,
+                messages=messages,
+                older=older,
+                complete=complete,
+            ):
+                self._handle_message_history_loaded(chat_jid, messages, older, complete)
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
@@ -279,14 +299,129 @@ class MainWindow(wx.Frame):
                     if added:
                         self.loaded_chat_summaries += 1
                     self._select_first_chat_if_needed()
+                    self._preload_recent_histories()
                     self.status_bar.SetStatusText(
                         f"{self.loaded_chat_summaries} chats con mensajes cargados"
                     )
             case ChatActivityLoadFinished(loaded_count=loaded_count):
                 self.loaded_chat_summaries = max(self.loaded_chat_summaries, loaded_count)
+                self._preload_recent_histories()
                 self.status_bar.SetStatusText(
                     f"{self.loaded_chat_summaries} chats con mensajes cargados"
                 )
+
+    def _handle_message_history_loaded(
+        self,
+        chat_jid: str,
+        messages: list[Message],
+        older: bool,
+        complete: bool,
+    ) -> None:
+        self.history_loaded_chats.add(chat_jid)
+        self.history_loading_chats.discard(chat_jid)
+        if complete:
+            self.history_exhausted_chats.add(chat_jid)
+
+        self._merge_messages(chat_jid, messages)
+        if messages:
+            self._update_chat_activity_from_messages(chat_jid, messages)
+            self._update_chat_preview_from_messages(chat_jid, messages)
+        self._refresh_chat_order()
+        if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
+            self._load_conversation(self.conversation.current_chat)
+            self._refresh_load_older_button(chat_jid)
+
+        if older:
+            loaded_count = len(messages)
+            self.status_bar.SetStatusText(f"{loaded_count} mensajes anteriores cargados")
+        elif chat_jid in self.preloaded_history_chats:
+            self.status_bar.SetStatusText("Historial reciente precargado")
+        else:
+            self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
+
+    def _merge_messages(self, chat_jid: str, messages: list[Message]) -> None:
+        merged = self.messages_by_chat.get(chat_jid, []) + messages
+        seen: set[tuple[str, str, str, bool, str]] = set()
+        unique_messages: list[Message] = []
+        for message in sorted(merged, key=lambda current: current.sent_at):
+            key = (
+                message.sent_at.isoformat(),
+                message.sender_jid,
+                message.body,
+                message.outgoing,
+                message.audio_url,
+            )
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique_messages.append(message)
+
+        self.messages_by_chat[chat_jid] = unique_messages
+
+    def _request_history_page(self, chat_jid: str, older: bool = False) -> None:
+        if chat_jid in self.history_loading_chats:
+            return
+
+        before = self._oldest_message_time(chat_jid) if older else None
+        if older and before is None:
+            older = False
+
+        if before:
+            before = before - timedelta(microseconds=1)
+
+        self.history_loading_chats.add(chat_jid)
+        self._refresh_load_older_button(chat_jid)
+        self.xmpp.load_history(
+            chat_jid,
+            limit=HISTORY_PAGE_SIZE,
+            before=before,
+            older=older,
+        )
+
+    def _preload_recent_histories(self) -> None:
+        chats = self._sort_chats_by_recency(self.chat_list.chats())[:PRELOAD_CHAT_LIMIT]
+        chat_jids = [
+            chat.jid
+            for chat in chats
+            if chat.jid not in self.preloaded_history_chats
+            and chat.jid not in self.history_loading_chats
+            and chat.jid not in self.history_loaded_chats
+        ]
+        if not chat_jids:
+            return
+
+        self.preloaded_history_chats.update(chat_jids)
+        self.history_loading_chats.update(chat_jids)
+        self.xmpp.preload_histories(
+            chat_jids,
+            limit=HISTORY_PAGE_SIZE,
+            concurrency=PRELOAD_CONCURRENCY,
+        )
+
+    def _oldest_message_time(self, chat_jid: str) -> datetime | None:
+        messages = self.messages_by_chat.get(chat_jid, [])
+        if not messages:
+            return None
+
+        return min(message.sent_at for message in messages)
+
+    def _refresh_load_older_button(self, chat_jid: str) -> None:
+        loading = chat_jid in self.history_loading_chats
+        exhausted = chat_jid in self.history_exhausted_chats
+        self.conversation.load_older_button.Enable(not loading and not exhausted)
+        if loading:
+            self.conversation.load_older_button.SetLabel("Cargando mensajes...")
+        elif exhausted:
+            self.conversation.load_older_button.SetLabel("No hay mensajes anteriores")
+        else:
+            self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
+
+    def _play_new_message_sound(self, message: Message) -> None:
+        if message.outgoing:
+            return
+
+        self.new_message_sound.play()
 
     def _set_connected_ui(self, connected: bool) -> None:
         self.login_panel.Show(not connected)
@@ -353,6 +488,7 @@ class MainWindow(wx.Frame):
         self.conversation.set_chat(chat)
         for message in self.messages_by_chat.get(chat.jid, []):
             self.conversation.append_message(message)
+        self._refresh_load_older_button(chat.jid)
 
     def _refresh_chat_order(self, selected_jid: str = "") -> None:
         selected_chat = self.chat_list.selected_chat()
@@ -492,8 +628,8 @@ class MainWindow(wx.Frame):
         self.conversation.focus_composer()
         self.status_bar.SetStatusText(f"Chat abierto: {chat.name}")
         if chat.jid not in self.history_loaded_chats:
-            self.status_bar.SetStatusText(f"Cargando todo el historial de {chat.name}...")
-            self.xmpp.load_history(chat.jid)
+            self.status_bar.SetStatusText(f"Cargando los últimos {HISTORY_PAGE_SIZE} mensajes...")
+            self._request_history_page(chat.jid)
 
     def _show_chat_list(self) -> None:
         self.conversation.Hide()

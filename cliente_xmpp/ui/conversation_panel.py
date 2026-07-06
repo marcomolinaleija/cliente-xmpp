@@ -20,6 +20,7 @@ class ConversationPanel(wx.Panel):
         self._speaker = NvdaSpeaker()
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
+        self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
@@ -33,6 +34,7 @@ class ConversationPanel(wx.Panel):
         self.messages.DeleteAllItems()
         self._messages = []
         self.send_button.Enable(True)
+        self.load_older_button.Enable(True)
 
     def append_message(self, message: Message) -> None:
         index = self.messages.GetItemCount()
@@ -74,6 +76,7 @@ class ConversationPanel(wx.Panel):
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
         header.Add(self.title, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
+        header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
         header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
 
         box = wx.BoxSizer(wx.VERTICAL)

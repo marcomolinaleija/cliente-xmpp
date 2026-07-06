@@ -4,7 +4,6 @@ import wx
 
 from cliente_xmpp.xmpp.events import XmppEvent
 
-
 wxEVT_XMPP_EVENT = wx.NewEventType()
 EVT_XMPP_EVENT = wx.PyEventBinder(wxEVT_XMPP_EVENT, 1)
 

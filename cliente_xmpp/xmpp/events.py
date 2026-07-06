@@ -35,6 +35,8 @@ class MessageReceived:
 class MessageHistoryLoaded:
     chat_jid: str
     messages: list[Message]
+    older: bool = False
+    complete: bool = False
 
 
 @dataclass(slots=True)

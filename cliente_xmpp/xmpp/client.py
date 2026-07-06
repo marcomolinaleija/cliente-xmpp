@@ -13,8 +13,8 @@ from slixmpp import ClientXMPP
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.xmpp.events import (
-    ChatActivityLoadFinished,
     ChatActivityLoaded,
+    ChatActivityLoadFinished,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -39,6 +39,7 @@ class BridgeXmppClient(ClientXMPP):
         super().__init__(settings.jid, password)
         self.settings = settings
         self._emit = emit
+        self._history_preload_semaphore = asyncio.Semaphore(4)
         self.force_starttls = settings.use_tls
 
         self.add_event_handler("session_start", self._on_session_start)
@@ -103,12 +104,19 @@ class BridgeXmppClient(ClientXMPP):
             chats.append(Chat(jid=jid, name=name))
         return chats
 
-    async def load_history(self, chat_jid: str, limit: int | None = None) -> None:
+    async def load_history(
+        self,
+        chat_jid: str,
+        limit: int | None = None,
+        before: datetime | None = None,
+        older: bool = False,
+    ) -> None:
         try:
             archived_messages: list[Message] = []
             mam = self["xep_0313"]
             async for result in mam.iterate(
                 with_jid=chat_jid,
+                end=before,
                 reverse=True,
                 rsm={"max": 100},
                 total=limit,
@@ -118,9 +126,28 @@ class BridgeXmppClient(ClientXMPP):
                     archived_messages.append(message)
 
             archived_messages.sort(key=lambda message: message.sent_at)
-            self._emit(MessageHistoryLoaded(chat_jid=chat_jid, messages=archived_messages))
+            self._emit(
+                MessageHistoryLoaded(
+                    chat_jid=chat_jid,
+                    messages=archived_messages,
+                    older=older,
+                    complete=limit is not None and len(archived_messages) < limit,
+                )
+            )
         except Exception as exc:
             self._emit(XmppError(f"No se pudo cargar el historial de {chat_jid}: {exc}"))
+
+    async def preload_histories(
+        self,
+        chat_jids: list[str],
+        limit: int = 20,
+        concurrency: int = 4,
+    ) -> None:
+        async def preload(chat_jid: str) -> None:
+            async with self._history_preload_semaphore:
+                await self.load_history(chat_jid, limit=limit)
+
+        await asyncio.gather(*(preload(chat_jid) for chat_jid in chat_jids))
 
     async def load_recent_activity(self, roster_jids: set[str], limit: int = 1000) -> None:
         loaded_chat_jids: set[str] = set()
@@ -396,16 +423,39 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
-    def load_history(self, chat_jid: str, limit: int | None = None) -> None:
+    def load_history(
+        self,
+        chat_jid: str,
+        limit: int | None = None,
+        before: datetime | None = None,
+        older: bool = False,
+    ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexion XMPP activa."))
             return
 
         def load() -> None:
             if self._client:
-                self._loop.create_task(self._client.load_history(chat_jid, limit))
+                self._loop.create_task(self._client.load_history(chat_jid, limit, before, older))
 
         self._loop.call_soon_threadsafe(load)
+
+    def preload_histories(
+        self,
+        chat_jids: list[str],
+        limit: int = 20,
+        concurrency: int = 4,
+    ) -> None:
+        if not self._client or not self._loop:
+            return
+
+        def preload() -> None:
+            if self._client:
+                self._loop.create_task(
+                    self._client.preload_histories(chat_jids, limit, concurrency)
+                )
+
+        self._loop.call_soon_threadsafe(preload)
 
     def load_recent_activity(self, roster_jids: set[str] | None = None, limit: int = 1000) -> None:
         if not self._client or not self._loop:
@@ -414,7 +464,9 @@ class XmppService:
 
         def load() -> None:
             if self._client:
-                self._loop.create_task(self._client.load_recent_activity(roster_jids or set(), limit))
+                self._loop.create_task(
+                    self._client.load_recent_activity(roster_jids or set(), limit)
+                )
 
         self._loop.call_soon_threadsafe(load)
 

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
-
 
 APP_DIR = Path.home() / ".cliente-xmpp"
 SETTINGS_PATH = APP_DIR / "settings.json"

@@ -81,9 +81,9 @@ class ChatListPanel(wx.Panel):
             return ""
 
         if chat.unread_count == 1:
-            return "1 mensaje no leido"
+            return "1 mensaje no leído"
 
-        return f"{chat.unread_count} mensajes no leidos"
+        return f"{chat.unread_count} mensajes no leídos"
 
     @staticmethod
     def _truncate_preview(preview: str, max_length: int = 200) -> str:

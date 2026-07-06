@@ -21,3 +21,6 @@ class Message:
     sent_at: datetime = field(default_factory=datetime.now)
     outgoing: bool = False
     audio_url: str = ""
+    message_id: str = ""
+    starred: bool = False
+    reactions: tuple[str, ...] = ()

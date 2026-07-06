@@ -51,6 +51,29 @@ class ConversationPanel(wx.Panel):
             self.compose.Clear()
         return body
 
+    def insert_reply_quote(self, message: Message) -> None:
+        sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
+        body = message.body.replace("\n", " ")
+        quote = f"> {sender}: {body}\n"
+        self.compose.SetValue(f"{quote}{self.compose.GetValue()}")
+        self.compose.SetInsertionPointEnd()
+        self.compose.SetFocus()
+
+    def selected_message(self) -> Message | None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._messages):
+            return None
+
+        return self._messages[index]
+
+    def refresh_message(self, message: Message) -> None:
+        for index, current in enumerate(self._messages):
+            if current is not message:
+                continue
+
+            self.messages.SetItem(index, 0, self._format_message_row(message))
+            return
+
     def play_selected_audio(self) -> bool:
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._messages):
@@ -101,11 +124,13 @@ class ConversationPanel(wx.Panel):
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)
         body = self._format_message_body(message)
+        starred = "Destacado. " if message.starred else ""
+        reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
         if message.outgoing:
-            return f"Tú {body} {timestamp} Entregado."
+            return f"{starred}Tú {body} {timestamp} Entregado.{reactions}"
 
         sender = self.resolve_display_name(message.sender_jid)
-        return f"{sender} {body}, {timestamp}"
+        return f"{starred}{sender} {body}, {timestamp}.{reactions}"
 
     def _format_message_body(self, message: Message) -> str:
         if not message.audio_url:

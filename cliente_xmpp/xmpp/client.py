@@ -30,6 +30,8 @@ MAM_NS = "urn:xmpp:mam:2"
 FORWARD_NS = "urn:xmpp:forward:0"
 CLIENT_NS = "jabber:client"
 OOB_NS = "jabber:x:oob"
+REACTIONS_NS = "urn:xmpp:reactions:0"
+REPLY_NS = "urn:xmpp:reply:0"
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 URL_PATTERN = re.compile(r"https?://\S+")
 
@@ -86,6 +88,7 @@ class BridgeXmppClient(ClientXMPP):
                     body=self._message_body_for_display(body, audio_url),
                     outgoing=False,
                     audio_url=audio_url,
+                    message_id=str(msg["id"] or ""),
                 )
             )
         )
@@ -215,6 +218,7 @@ class BridgeXmppClient(ClientXMPP):
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
+            message_id=str(stanza["id"] or ""),
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -236,6 +240,7 @@ class BridgeXmppClient(ClientXMPP):
                     body=self._message_body_for_display(body, audio_url),
                     outgoing=outgoing,
                     audio_url=audio_url,
+                    message_id=str(stanza["id"] or ""),
                 )
             )
         )
@@ -420,6 +425,58 @@ class XmppService:
         def send() -> None:
             if self._client:
                 self._client.send_message(mto=to_jid, mbody=body, mtype="chat")
+
+        self._loop.call_soon_threadsafe(send)
+
+    def send_reply(
+        self,
+        to_jid: str,
+        body: str,
+        reply_to_jid: str,
+        reply_to_id: str,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            msg = self._client.make_message(mto=to_jid, mbody=body, mtype="chat")
+            if reply_to_id:
+                msg.append(
+                    ET.Element(
+                        f"{{{REPLY_NS}}}reply",
+                        {
+                            "to": reply_to_jid,
+                            "id": reply_to_id,
+                        },
+                    )
+                )
+            msg.send()
+
+        self._loop.call_soon_threadsafe(send)
+
+    def send_reaction(self, to_jid: str, message_id: str, reaction: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        if not message_id:
+            self._emit(XmppError("No se puede reaccionar: el mensaje no tiene ID XMPP."))
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            msg = self._client.make_message(mto=to_jid, mtype="chat")
+            reactions = ET.Element(f"{{{REACTIONS_NS}}}reactions", {"id": message_id})
+            reaction_node = ET.SubElement(reactions, f"{{{REACTIONS_NS}}}reaction")
+            reaction_node.text = reaction
+            msg.append(reactions)
+            msg.send()
 
         self._loop.call_soon_threadsafe(send)
 

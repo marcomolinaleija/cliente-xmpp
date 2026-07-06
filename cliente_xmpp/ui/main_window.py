@@ -51,6 +51,7 @@ class MainWindow(wx.Frame):
         self.chat_names_by_jid: dict[str, str] = {}
         self.roster_jids: set[str] = set()
         self.loaded_chat_summaries = 0
+        self.reply_context: Message | None = None
         self.current_jid = ""
 
         self.login_panel = LoginPanel(self, self.connection_settings)
@@ -104,6 +105,8 @@ class MainWindow(wx.Frame):
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_send_message)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
         self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
+        self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
+        self.conversation.messages.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_message_right_click)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         self.Bind(EVT_XMPP_EVENT, self._on_xmpp_event)
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -192,7 +195,19 @@ class MainWindow(wx.Frame):
         self._update_chat_from_message(message)
         self.conversation.append_message(message)
         self._refresh_chat_order(chat.jid)
-        self.xmpp.send_message(chat.jid, body)
+        if self.reply_context:
+            reply_to_jid = (
+                self.current_jid if self.reply_context.outgoing else self.reply_context.sender_jid
+            )
+            self.xmpp.send_reply(
+                chat.jid,
+                body,
+                reply_to_jid,
+                self.reply_context.message_id,
+            )
+            self.reply_context = None
+        else:
+            self.xmpp.send_message(chat.jid, body)
 
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
         chat = self.conversation.current_chat
@@ -217,6 +232,81 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    def _on_message_context_menu(self, event: wx.ContextMenuEvent) -> None:
+        self._show_message_context_menu()
+
+    def _on_message_right_click(self, event: wx.ListEvent) -> None:
+        self.conversation.messages.Select(event.GetIndex())
+        self._show_message_context_menu()
+
+    def _show_message_context_menu(self) -> None:
+        message = self.conversation.selected_message()
+        if not message:
+            return
+
+        menu = wx.Menu()
+        reply_item = menu.Append(wx.ID_ANY, "Responder")
+        copy_item = menu.Append(wx.ID_ANY, "Copiar texto")
+        play_item = menu.Append(wx.ID_ANY, "Reproducir audio")
+        play_item.Enable(bool(message.audio_url))
+
+        reaction_menu = wx.Menu()
+        reaction_items: list[tuple[wx.MenuItem, str]] = []
+        for reaction in ("👍", "❤️", "😂", "😮", "😢", "🙏"):
+            reaction_items.append((reaction_menu.Append(wx.ID_ANY, reaction), reaction))
+        menu.AppendSubMenu(reaction_menu, "Reaccionar")
+
+        star_label = "No destacar" if message.starred else "Destacar"
+        star_item = menu.Append(wx.ID_ANY, star_label)
+
+        self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self.conversation.play_selected_audio(), play_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._toggle_starred_message(message), star_item)
+        for item, reaction in reaction_items:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event, selected_reaction=reaction: self._react_to_message(
+                    message,
+                    selected_reaction,
+                ),
+                item,
+            )
+
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def _reply_to_message(self, message: Message) -> None:
+        self.reply_context = message
+        self.conversation.insert_reply_quote(message)
+
+    def _copy_message_text(self, message: Message) -> None:
+        if not wx.TheClipboard.Open():
+            return
+
+        try:
+            wx.TheClipboard.SetData(wx.TextDataObject(message.body))
+        finally:
+            wx.TheClipboard.Close()
+
+    def _toggle_starred_message(self, message: Message) -> None:
+        message.starred = not message.starred
+        self.conversation.refresh_message(message)
+
+    def _react_to_message(self, message: Message, reaction: str) -> None:
+        chat = self.conversation.current_chat
+        if not chat:
+            return
+
+        if not message.message_id:
+            self.status_bar.SetStatusText("No se puede reaccionar: el mensaje no tiene ID XMPP")
+            return
+
+        if reaction not in message.reactions:
+            message.reactions = (*message.reactions, reaction)
+        self.conversation.refresh_message(message)
+        self.xmpp.send_reaction(chat.jid, message.message_id, reaction)
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
         self._handle_xmpp_event(event.event)
@@ -471,7 +561,10 @@ class MainWindow(wx.Frame):
             return
 
         sender = self._speakable_chat_name(message.chat_jid)
-        self.speaker.speak(f"Mensaje de {sender}")
+        preview = " ".join(message.body.split())
+        if len(preview) > 160:
+            preview = f"{preview[:157]}..."
+        self.speaker.speak(f"Mensaje de {sender}: {preview}")
 
     def _speakable_chat_name(self, jid: str) -> str:
         for chat in self.chat_list.chats():

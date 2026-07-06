@@ -21,6 +21,11 @@ class Message:
     sent_at: datetime = field(default_factory=datetime.now)
     outgoing: bool = False
     audio_url: str = ""
+    media_url: str = ""
+    media_kind: str = ""
+    media_mime: str = ""
+    media_filename: str = ""
+    media_local_path: str = ""
     message_id: str = ""
     starred: bool = False
     reactions: tuple[str, ...] = ()

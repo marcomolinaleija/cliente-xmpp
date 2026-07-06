@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta
 
 import wx
@@ -9,6 +10,7 @@ from cliente_xmpp.audio.notification import NewMessageSound
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListPanel
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
@@ -29,7 +31,7 @@ from cliente_xmpp.xmpp.events import (
 
 HISTORY_PAGE_SIZE = 20
 PRELOAD_CHAT_LIMIT = 20
-PRELOAD_CONCURRENCY = 4
+BACKGROUND_SYNC_DELAY_MS = 350
 
 
 class MainWindow(wx.Frame):
@@ -41,12 +43,16 @@ class MainWindow(wx.Frame):
         self.connection_settings = self.settings_store.load_connection()
         self.speaker = NvdaSpeaker()
         self.new_message_sound = NewMessageSound()
+        self.message_store = MessageStore()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.history_exhausted_chats: set[str] = set()
         self.history_loading_chats: set[str] = set()
+        self.background_history_queue: deque[str] = deque()
+        self.background_history_queued_chats: set[str] = set()
+        self.background_history_loading_chat = ""
         self.preloaded_history_chats: set[str] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.roster_jids: set[str] = set()
@@ -353,10 +359,12 @@ class MainWindow(wx.Frame):
             case RosterLoaded(chats=chats):
                 self._update_chat_names(chats)
                 self.roster_jids = {chat.jid for chat in chats}
-                self.loaded_chat_summaries = 0
-                self.chat_list.set_chats([])
+                cached_chats = self._load_cached_chats()
+                self.loaded_chat_summaries = len(cached_chats)
+                self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+                self._select_first_chat_if_needed()
                 self.status_bar.SetStatusText(
-                    f"Buscando chats con mensajes entre {len(chats)} contactos..."
+                    f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
                 )
             case MessageReceived(message=message):
                 self._store_message(message)
@@ -381,8 +389,9 @@ class MainWindow(wx.Frame):
                 messages=messages,
                 older=older,
                 complete=complete,
+                background=background,
             ):
-                self._handle_message_history_loaded(chat_jid, messages, older, complete)
+                self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
@@ -420,8 +429,13 @@ class MainWindow(wx.Frame):
         messages: list[Message],
         older: bool,
         complete: bool,
+        background: bool = False,
     ) -> None:
-        self.history_loading_chats.discard(chat_jid)
+        if background:
+            self.background_history_loading_chat = ""
+            self.background_history_queued_chats.discard(chat_jid)
+        else:
+            self.history_loading_chats.discard(chat_jid)
         empty_preview_chat = not messages and self._chat_has_preview(chat_jid)
         if empty_preview_chat:
             self.history_loaded_chats.discard(chat_jid)
@@ -433,16 +447,27 @@ class MainWindow(wx.Frame):
             self.history_exhausted_chats.add(chat_jid)
 
         self._merge_messages(chat_jid, messages)
+        self._persist_messages(messages)
         if messages:
             self._update_chat_activity_from_messages(chat_jid, messages)
             self._update_chat_preview_from_messages(chat_jid, messages)
         self._refresh_chat_order()
-        if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
+        if (
+            not background
+            and self.conversation.current_chat
+            and self.conversation.current_chat.jid == chat_jid
+        ):
             self._load_conversation(
                 self.conversation.current_chat,
                 unread_count=self.conversation.unread_marker_count(),
             )
             self._refresh_load_older_button(chat_jid)
+
+        if background:
+            if messages and not complete:
+                self._enqueue_background_history_sync([chat_jid])
+            wx.CallLater(BACKGROUND_SYNC_DELAY_MS, self._pump_background_history_sync)
+            return
 
         if older:
             loaded_count = len(messages)
@@ -456,7 +481,7 @@ class MainWindow(wx.Frame):
         merged = self.messages_by_chat.get(chat_jid, []) + messages
         seen: set[tuple[str, str, str, bool, str, str]] = set()
         unique_messages: list[Message] = []
-        for message in sorted(merged, key=lambda current: current.sent_at):
+        for message in sorted(merged, key=self._message_timestamp):
             key = (
                 message.sent_at.isoformat(),
                 message.sender_jid,
@@ -473,8 +498,13 @@ class MainWindow(wx.Frame):
 
         self.messages_by_chat[chat_jid] = unique_messages
 
-    def _request_history_page(self, chat_jid: str, older: bool = False) -> None:
-        if chat_jid in self.history_loading_chats:
+    def _request_history_page(
+        self,
+        chat_jid: str,
+        older: bool = False,
+        background: bool = False,
+    ) -> None:
+        if not background and chat_jid in self.history_loading_chats:
             return
 
         before = self._oldest_message_time(chat_jid) if older else None
@@ -484,14 +514,17 @@ class MainWindow(wx.Frame):
         if before:
             before = before - timedelta(microseconds=1)
 
-        self.history_loading_chats.add(chat_jid)
-        self.preloaded_history_chats.discard(chat_jid)
-        self._refresh_load_older_button(chat_jid)
+        if not background:
+            self.history_loading_chats.add(chat_jid)
+            self.preloaded_history_chats.discard(chat_jid)
+            self._refresh_load_older_button(chat_jid)
         self.xmpp.load_history(
             chat_jid,
             limit=HISTORY_PAGE_SIZE,
             before=before,
             older=older,
+            allow_unfiltered_fallback=not background,
+            background=background,
         )
 
     def _chat_has_preview(self, chat_jid: str) -> bool:
@@ -513,6 +546,38 @@ class MainWindow(wx.Frame):
             message.outgoing for message in messages
         )
 
+    def _enqueue_background_history_sync(self, chat_jids: list[str]) -> None:
+        for chat_jid in chat_jids:
+            if chat_jid in self.history_exhausted_chats:
+                continue
+            if chat_jid == self.background_history_loading_chat:
+                continue
+            if chat_jid in self.background_history_queued_chats:
+                continue
+
+            self.background_history_queue.append(chat_jid)
+            self.background_history_queued_chats.add(chat_jid)
+
+        self._pump_background_history_sync()
+
+    def _pump_background_history_sync(self) -> None:
+        if self.background_history_loading_chat:
+            return
+
+        while self.background_history_queue:
+            chat_jid = self.background_history_queue.popleft()
+            self.background_history_queued_chats.discard(chat_jid)
+            if chat_jid in self.history_exhausted_chats:
+                continue
+
+            self.background_history_loading_chat = chat_jid
+            self._request_history_page(
+                chat_jid,
+                older=bool(self._oldest_message_time(chat_jid)),
+                background=True,
+            )
+            return
+
     def _preload_recent_histories(self) -> None:
         chats = self._sort_chats_by_recency(self.chat_list.chats())[:PRELOAD_CHAT_LIMIT]
         chat_jids = [
@@ -526,18 +591,14 @@ class MainWindow(wx.Frame):
             return
 
         self.preloaded_history_chats.update(chat_jids)
-        self.xmpp.preload_histories(
-            chat_jids,
-            limit=HISTORY_PAGE_SIZE,
-            concurrency=PRELOAD_CONCURRENCY,
-        )
+        self._enqueue_background_history_sync(chat_jids)
 
     def _oldest_message_time(self, chat_jid: str) -> datetime | None:
         messages = self.messages_by_chat.get(chat_jid, [])
         if not messages:
             return None
 
-        return min(message.sent_at for message in messages)
+        return min(messages, key=self._message_timestamp).sent_at
 
     def _refresh_load_older_button(self, chat_jid: str) -> None:
         loading = chat_jid in self.history_loading_chats
@@ -567,7 +628,8 @@ class MainWindow(wx.Frame):
 
     def _store_message(self, message: Message) -> None:
         self.messages_by_chat.setdefault(message.chat_jid, []).append(message)
-        self._update_chat_activity(message.chat_jid, message.sent_at.timestamp())
+        self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
+        self._persist_messages([message])
 
     def _ensure_chat_for_message(self, message: Message) -> None:
         if self.chat_list.has_chat(message.chat_jid):
@@ -620,7 +682,71 @@ class MainWindow(wx.Frame):
 
         return self._fallback_display_name_for_jid(jid)
 
+    def _load_cached_chats(self) -> list[Chat]:
+        if not self.current_jid:
+            return []
+
+        try:
+            chats = self.message_store.load_chats(self.current_jid)
+            latest_messages = self.message_store.load_latest_messages(self.current_jid)
+        except Exception:
+            return []
+
+        chats_by_jid = {chat.jid: chat for chat in chats}
+        for message in latest_messages:
+            chat = chats_by_jid.get(message.chat_jid)
+            if chat is None:
+                chat = Chat(
+                    jid=message.chat_jid,
+                    name=self._display_name_for_jid(message.chat_jid),
+                )
+                chats.append(chat)
+                chats_by_jid[message.chat_jid] = chat
+
+            if self._summary_preview_can_update(chat.last_message_at, message.sent_at):
+                chat.last_message_preview = message.body
+                chat.last_message_at = message.sent_at
+            self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
+
+        for chat in chats:
+            if chat.jid in self.chat_names_by_jid:
+                chat.name = self._display_name_for_jid(chat.jid)
+        return chats
+
+    def _load_cached_messages_for_chat(self, chat_jid: str) -> None:
+        if not self.current_jid:
+            return
+
+        try:
+            cached_messages = self.message_store.load_recent_messages(self.current_jid, chat_jid)
+        except Exception:
+            return
+
+        if cached_messages:
+            self._merge_messages(chat_jid, cached_messages)
+            self._update_chat_activity_from_messages(chat_jid, cached_messages)
+            self._update_chat_preview_from_messages(chat_jid, cached_messages)
+
+    def _persist_chat(self, chat: Chat) -> None:
+        if not self.current_jid:
+            return
+
+        try:
+            self.message_store.upsert_chat(self.current_jid, chat)
+        except Exception:
+            return
+
+    def _persist_messages(self, messages: list[Message]) -> None:
+        if not self.current_jid or not messages:
+            return
+
+        try:
+            self.message_store.upsert_messages(self.current_jid, messages)
+        except Exception:
+            return
+
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
+        self._load_cached_messages_for_chat(chat.jid)
         self.conversation.set_chat(chat)
         self.conversation.set_messages(
             self.messages_by_chat.get(chat.jid, []),
@@ -654,11 +780,18 @@ class MainWindow(wx.Frame):
         if not messages:
             return latest
 
-        message_latest = max(message.sent_at.timestamp() for message in messages)
+        message_latest = max(self._message_timestamp(message) for message in messages)
         if latest is None:
             return message_latest
 
         return max(latest, message_latest)
+
+    @staticmethod
+    def _message_timestamp(message: Message) -> float:
+        try:
+            return message.sent_at.timestamp()
+        except (OSError, ValueError):
+            return 0
 
     def _update_chat_activity_from_messages(self, chat_jid: str, messages: list[Message]) -> None:
         if not messages:
@@ -666,7 +799,7 @@ class MainWindow(wx.Frame):
 
         self._update_chat_activity(
             chat_jid,
-            max(message.sent_at.timestamp() for message in messages),
+            max(self._message_timestamp(message) for message in messages),
         )
 
     def _update_chat_activity(self, chat_jid: str, timestamp: float) -> None:
@@ -678,7 +811,7 @@ class MainWindow(wx.Frame):
         if not messages:
             return
 
-        latest_message = max(messages, key=lambda message: message.sent_at)
+        latest_message = max(messages, key=self._message_timestamp)
         self._update_chat_from_message(latest_message)
 
     def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
@@ -703,37 +836,86 @@ class MainWindow(wx.Frame):
             if chat.jid != chat_jid:
                 continue
 
-            self.chat_list.upsert_chat(
-                Chat(
-                    jid=chat.jid,
-                    name=chat.name,
-                    unread_count=self._next_unread_count(
-                        chat.unread_count,
-                        unread_delta=unread_delta,
-                        unread_count=unread_count,
-                        mark_read=mark_read,
-                    ),
-                    last_message_preview=preview or chat.last_message_preview,
-                    last_message_at=sent_at or chat.last_message_at,
-                )
-            )
-            return
-
-        self.chat_list.upsert_chat(
-            Chat(
-                jid=chat_jid,
-                name=self._display_name_for_jid(chat_jid),
+            updated_chat = Chat(
+                jid=chat.jid,
+                name=chat.name,
                 unread_count=self._next_unread_count(
-                    0,
+                    chat.unread_count,
                     unread_delta=unread_delta,
                     unread_count=unread_count,
                     mark_read=mark_read,
                 ),
-                last_message_preview=preview,
-                last_message_at=sent_at,
+                last_message_preview=self._next_chat_preview(chat, preview, sent_at),
+                last_message_at=self._next_chat_timestamp(chat, sent_at),
             )
+            self.chat_list.upsert_chat(updated_chat)
+            self._persist_chat(updated_chat)
+            return
+
+        updated_chat = Chat(
+            jid=chat_jid,
+            name=self._display_name_for_jid(chat_jid),
+            unread_count=self._next_unread_count(
+                0,
+                unread_delta=unread_delta,
+                unread_count=unread_count,
+                mark_read=mark_read,
+            ),
+            last_message_preview=preview,
+            last_message_at=sent_at,
         )
+        self.chat_list.upsert_chat(updated_chat)
+        self._persist_chat(updated_chat)
         self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
+
+    @classmethod
+    def _next_chat_preview(cls, chat: Chat, preview: str, sent_at: datetime | None) -> str:
+        if not preview:
+            return chat.last_message_preview
+
+        if cls._summary_preview_can_update(chat.last_message_at, sent_at):
+            return preview
+
+        return chat.last_message_preview
+
+    @classmethod
+    def _next_chat_timestamp(cls, chat: Chat, sent_at: datetime | None) -> datetime | None:
+        if sent_at is None:
+            return chat.last_message_at
+
+        if cls._summary_preview_can_update(chat.last_message_at, sent_at):
+            return sent_at
+
+        return chat.last_message_at
+
+    @classmethod
+    def _summary_preview_can_update(
+        cls,
+        current_sent_at: datetime | None,
+        incoming_sent_at: datetime | None,
+    ) -> bool:
+        if incoming_sent_at is None:
+            return current_sent_at is None
+
+        current_timestamp = cls._datetime_timestamp(current_sent_at)
+        if current_timestamp is None:
+            return True
+
+        incoming_timestamp = cls._datetime_timestamp(incoming_sent_at)
+        if incoming_timestamp is None:
+            return False
+
+        return incoming_timestamp >= current_timestamp
+
+    @staticmethod
+    def _datetime_timestamp(value: datetime | None) -> float | None:
+        if value is None:
+            return None
+
+        try:
+            return value.timestamp()
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _next_unread_count(

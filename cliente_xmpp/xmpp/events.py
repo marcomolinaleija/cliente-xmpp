@@ -37,6 +37,7 @@ class MessageHistoryLoaded:
     messages: list[Message]
     older: bool = False
     complete: bool = False
+    background: bool = False
 
 
 @dataclass(slots=True)

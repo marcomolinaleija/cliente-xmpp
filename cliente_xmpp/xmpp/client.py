@@ -34,6 +34,8 @@ REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
+IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
+VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
 URL_PATTERN = re.compile(r"https?://\S+")
 
 
@@ -76,12 +78,18 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(msg["body"] or "").strip()
-        audio_url = self._audio_url_from_stanza(msg)
-        if not body and not audio_url:
+        media_url, media_kind, media_mime, media_filename = self._media_from_stanza(msg)
+        audio_url = media_url if media_kind == "audio" else ""
+        if not body and not media_url:
             return
 
         bare_jid = str(msg["from"].bare)
-        display_body, reply_quote = self._message_display_parts(body, audio_url, msg.xml)
+        display_body, reply_quote = self._message_display_parts(
+            body,
+            media_url,
+            media_kind,
+            msg.xml,
+        )
         self._emit(
             MessageReceived(
                 Message(
@@ -90,6 +98,10 @@ class BridgeXmppClient(ClientXMPP):
                     body=display_body,
                     outgoing=False,
                     audio_url=audio_url,
+                    media_url=media_url,
+                    media_kind=media_kind,
+                    media_mime=media_mime,
+                    media_filename=media_filename,
                     message_id=str(msg["id"] or ""),
                     reply_quote=reply_quote,
                 )
@@ -117,6 +129,7 @@ class BridgeXmppClient(ClientXMPP):
         before: datetime | None = None,
         older: bool = False,
         allow_unfiltered_fallback: bool = True,
+        background: bool = False,
     ) -> None:
         try:
             archived_messages = await self._load_history_page(
@@ -148,6 +161,7 @@ class BridgeXmppClient(ClientXMPP):
                     messages=archived_messages,
                     older=older,
                     complete=limit is not None and filtered_count < limit,
+                    background=background,
                 )
             )
         except Exception as exc:
@@ -234,6 +248,7 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid,
                     limit=limit,
                     allow_unfiltered_fallback=False,
+                    background=True,
                 )
 
         await asyncio.gather(*(preload(chat_jid) for chat_jid in chat_jids))
@@ -244,8 +259,8 @@ class BridgeXmppClient(ClientXMPP):
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
                 preview = self._message_body_from_mam_result(result)
-                audio_url = self._audio_url_from_mam_result(result)
-                if not preview and not audio_url:
+                media_url, media_kind, _, _ = self._media_from_mam_result(result)
+                if not preview and not media_url:
                     continue
 
                 chat_jid = self._chat_jid_from_mam_result(result)
@@ -261,7 +276,7 @@ class BridgeXmppClient(ClientXMPP):
                     ChatActivityLoaded(
                         chat_jid=chat_jid,
                         sent_at=sent_at,
-                        preview=self._message_body_for_display(preview, audio_url),
+                        preview=self._message_body_for_display(preview, media_url, media_kind),
                     )
                 )
 
@@ -289,15 +304,21 @@ class BridgeXmppClient(ClientXMPP):
 
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
         body = self._message_body_from_mam_result(result)
-        audio_url = self._audio_url_from_mam_result(result)
-        if not body and not audio_url:
+        media_url, media_kind, media_mime, media_filename = self._media_from_mam_result(result)
+        audio_url = media_url if media_kind == "audio" else ""
+        if not body and not media_url:
             return None
 
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         sender_jid = str(stanza["from"].bare)
         outgoing = sender_jid == self.boundjid.bare
-        display_body, reply_quote = self._message_display_parts(body, audio_url, stanza.xml)
+        display_body, reply_quote = self._message_display_parts(
+            body,
+            media_url,
+            media_kind,
+            stanza.xml,
+        )
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
@@ -305,6 +326,10 @@ class BridgeXmppClient(ClientXMPP):
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
+            media_url=media_url,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             reply_quote=reply_quote,
         )
@@ -314,13 +339,19 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         body = str(stanza["body"] or "").strip()
-        audio_url = self._audio_url_from_stanza(stanza)
-        if not body and not audio_url:
+        media_url, media_kind, media_mime, media_filename = self._media_from_stanza(stanza)
+        audio_url = media_url if media_kind == "audio" else ""
+        if not body and not media_url:
             return
 
         chat_jid = str(stanza["to"].bare if outgoing else stanza["from"].bare)
         sender_jid = "Yo" if outgoing else chat_jid
-        display_body, reply_quote = self._message_display_parts(body, audio_url, stanza.xml)
+        display_body, reply_quote = self._message_display_parts(
+            body,
+            media_url,
+            media_kind,
+            stanza.xml,
+        )
         self._emit(
             MessageReceived(
                 Message(
@@ -329,6 +360,10 @@ class BridgeXmppClient(ClientXMPP):
                     body=display_body,
                     outgoing=outgoing,
                     audio_url=audio_url,
+                    media_url=media_url,
+                    media_kind=media_kind,
+                    media_mime=media_mime,
+                    media_filename=media_filename,
                     message_id=str(stanza["id"] or ""),
                     reply_quote=reply_quote,
                 )
@@ -372,9 +407,9 @@ class BridgeXmppClient(ClientXMPP):
             if message is not None:
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
-                audio_url = self._audio_url_from_xml(message)
-                if audio_url:
-                    preview = self._message_body_for_display(preview, audio_url)
+                media_url, media_kind, _, _ = self._media_from_xml(message)
+                if media_url:
+                    preview = self._message_body_for_display(preview, media_url, media_kind)
             sent_at = self._forwarded_delay_from_xml(result)
 
         return chat_jid, unread_count, preview, sent_at
@@ -426,26 +461,42 @@ class BridgeXmppClient(ClientXMPP):
         stanza = forwarded["stanza"]
         return str(stanza["body"] or "").strip()
 
-    def _audio_url_from_mam_result(self, result: object) -> str:
+    def _media_from_mam_result(self, result: object) -> tuple[str, str, str, str]:
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
-        return self._audio_url_from_stanza(stanza)
+        return self._media_from_stanza(stanza)
 
-    def _audio_url_from_stanza(self, stanza: object) -> str:
-        for url in self._urls_from_text(str(stanza["body"] or "")):
-            if self._is_audio_url(url):
-                return url
+    def _media_from_stanza(self, stanza: object) -> tuple[str, str, str, str]:
+        body = str(stanza["body"] or "")
+        media_url, media_kind, media_mime, media_filename = self._media_from_xml(stanza.xml)
+        if media_url:
+            return media_url, media_kind, media_mime, media_filename
 
-        return self._audio_url_from_xml(stanza.xml)
+        for url in self._urls_from_text(body):
+            media_kind = self._media_kind_from_url(url)
+            if media_kind:
+                return url, media_kind, "", self._filename_from_url(url)
+
+        return "", "", "", ""
 
     @classmethod
-    def _message_body_for_display(cls, body: str, audio_url: str) -> str:
+    def _message_body_for_display(cls, body: str, media_url: str, media_kind: str) -> str:
         body = body.strip()
-        if not audio_url:
+        if not media_url:
             return body
 
-        if not body or audio_url in cls._urls_from_text(body):
-            return "Mensaje de voz"
+        if body and media_url not in cls._urls_from_text(body):
+            return body
+
+        match media_kind:
+            case "audio":
+                return "Mensaje de voz"
+            case "image":
+                return "Imagen"
+            case "video":
+                return "Video"
+            case _:
+                return "Archivo"
 
         return body
 
@@ -453,7 +504,8 @@ class BridgeXmppClient(ClientXMPP):
     def _message_display_parts(
         cls,
         body: str,
-        audio_url: str,
+        media_url: str,
+        media_kind: str,
         xml: ET.Element,
     ) -> tuple[str, str]:
         reply_quote = ""
@@ -466,7 +518,7 @@ class BridgeXmppClient(ClientXMPP):
             reply_quote = cls._reply_quote_from_fallback(body[start:end])
             display_body = f"{body[:start]}{body[end:]}".strip()
 
-        return cls._message_body_for_display(display_body, audio_url), reply_quote
+        return cls._message_body_for_display(display_body, media_url, media_kind), reply_quote
 
     @staticmethod
     def _reply_fallback_bounds_from_xml(xml: ET.Element) -> tuple[int, int] | None:
@@ -504,11 +556,52 @@ class BridgeXmppClient(ClientXMPP):
         return " ".join(quote_lines).strip()
 
     @classmethod
-    def _audio_url_from_xml(cls, xml: ET.Element) -> str:
+    def _media_from_xml(cls, xml: ET.Element) -> tuple[str, str, str, str]:
+        media_mime = cls._media_mime_from_xml(xml)
+        media_filename = cls._media_filename_from_xml(xml)
+
         for url_node in xml.findall(f".//{{{OOB_NS}}}url"):
             url = (url_node.text or "").strip()
-            if cls._is_audio_url(url):
-                return url
+            media_kind = cls._media_kind_from_mime_or_url(media_mime, url)
+            if media_kind:
+                return url, media_kind, media_mime, media_filename or cls._filename_from_url(url)
+
+        for node in xml.iter():
+            for attribute in ("uri", "url"):
+                url = node.attrib.get(attribute, "").strip()
+                if not url.startswith(("http://", "https://")):
+                    continue
+
+                media_kind = cls._media_kind_from_mime_or_url(media_mime, url)
+                if media_kind:
+                    filename = media_filename or cls._filename_from_url(url)
+                    return url, media_kind, media_mime, filename
+
+        return "", "", media_mime, media_filename
+
+    @staticmethod
+    def _media_mime_from_xml(xml: ET.Element) -> str:
+        for node in xml.iter():
+            local_name = node.tag.rsplit("}", 1)[-1]
+            if local_name in {"media-type", "mime-type"} and node.text:
+                return node.text.strip()
+            for attribute in ("media-type", "mime-type", "content-type"):
+                value = node.attrib.get(attribute, "").strip()
+                if value:
+                    return value
+
+        return ""
+
+    @staticmethod
+    def _media_filename_from_xml(xml: ET.Element) -> str:
+        for node in xml.iter():
+            local_name = node.tag.rsplit("}", 1)[-1]
+            if local_name == "name" and node.text:
+                return node.text.strip()
+            for attribute in ("name", "filename"):
+                value = node.attrib.get(attribute, "").strip()
+                if value:
+                    return value
 
         return ""
 
@@ -516,10 +609,36 @@ class BridgeXmppClient(ClientXMPP):
     def _urls_from_text(text: str) -> list[str]:
         return [match.group(0).rstrip(").,;]") for match in URL_PATTERN.finditer(text)]
 
+    @classmethod
+    def _media_kind_from_mime_or_url(cls, mime: str, url: str) -> str:
+        if mime.startswith("audio/"):
+            return "audio"
+        if mime.startswith("image/"):
+            return "image"
+        if mime.startswith("video/"):
+            return "video"
+
+        return cls._media_kind_from_url(url)
+
     @staticmethod
-    def _is_audio_url(url: str) -> bool:
+    def _media_kind_from_url(url: str) -> str:
         path = urlparse(url).path.lower()
-        return path.endswith(AUDIO_EXTENSIONS)
+        if path.endswith(AUDIO_EXTENSIONS):
+            return "audio"
+        if path.endswith(IMAGE_EXTENSIONS):
+            return "image"
+        if path.endswith(VIDEO_EXTENSIONS):
+            return "video"
+
+        return "file" if path else ""
+
+    @staticmethod
+    def _filename_from_url(url: str) -> str:
+        path = urlparse(url).path.rstrip("/")
+        if not path:
+            return ""
+
+        return path.rsplit("/", 1)[-1]
 
     @staticmethod
     def _int_or_zero(value: str) -> int:
@@ -642,6 +761,8 @@ class XmppService:
         limit: int | None = None,
         before: datetime | None = None,
         older: bool = False,
+        allow_unfiltered_fallback: bool = True,
+        background: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexion XMPP activa."))
@@ -649,7 +770,16 @@ class XmppService:
 
         def load() -> None:
             if self._client:
-                self._loop.create_task(self._client.load_history(chat_jid, limit, before, older))
+                self._loop.create_task(
+                    self._client.load_history(
+                        chat_jid,
+                        limit,
+                        before,
+                        older,
+                        allow_unfiltered_fallback,
+                        background,
+                    )
+                )
 
         self._loop.call_soon_threadsafe(load)
 

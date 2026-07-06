@@ -163,6 +163,7 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        self.conversation.close_audio()
         self.xmpp.disconnect()
         event.Skip()
 

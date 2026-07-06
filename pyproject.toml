@@ -12,10 +12,12 @@ dependencies = [
 [project.scripts]
 cliente-xmpp = "cliente_xmpp.app.main:main"
 
+[tool.setuptools.package-data]
+cliente_xmpp = ["lib/*.dll"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-

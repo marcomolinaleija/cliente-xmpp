@@ -82,7 +82,7 @@ class BridgeXmppClient(ClientXMPP):
                 Message(
                     chat_jid=bare_jid,
                     sender_jid=bare_jid,
-                    body=body or "Audio recibido",
+                    body=self._message_body_for_display(body, audio_url),
                     outgoing=False,
                     audio_url=audio_url,
                 )
@@ -145,7 +145,7 @@ class BridgeXmppClient(ClientXMPP):
                     ChatActivityLoaded(
                         chat_jid=chat_jid,
                         sent_at=sent_at,
-                        preview=preview or "Audio recibido",
+                        preview=self._message_body_for_display(preview, audio_url),
                     )
                 )
 
@@ -184,7 +184,7 @@ class BridgeXmppClient(ClientXMPP):
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
-            body=body or "Audio recibido",
+            body=self._message_body_for_display(body, audio_url),
             sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
@@ -206,7 +206,7 @@ class BridgeXmppClient(ClientXMPP):
                 Message(
                     chat_jid=chat_jid,
                     sender_jid=sender_jid,
-                    body=body or "Audio recibido",
+                    body=self._message_body_for_display(body, audio_url),
                     outgoing=outgoing,
                     audio_url=audio_url,
                 )
@@ -250,8 +250,9 @@ class BridgeXmppClient(ClientXMPP):
             if message is not None:
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
-                if not preview:
-                    preview = "Audio recibido" if self._audio_url_from_xml(message) else ""
+                audio_url = self._audio_url_from_xml(message)
+                if audio_url:
+                    preview = self._message_body_for_display(preview, audio_url)
             sent_at = self._forwarded_delay_from_xml(result)
 
         return chat_jid, unread_count, preview, sent_at
@@ -314,6 +315,17 @@ class BridgeXmppClient(ClientXMPP):
                 return url
 
         return self._audio_url_from_xml(stanza.xml)
+
+    @classmethod
+    def _message_body_for_display(cls, body: str, audio_url: str) -> str:
+        body = body.strip()
+        if not audio_url:
+            return body
+
+        if not body or audio_url in cls._urls_from_text(body):
+            return "Mensaje de voz"
+
+        return body
 
     @classmethod
     def _audio_url_from_xml(cls, xml: ET.Element) -> str:

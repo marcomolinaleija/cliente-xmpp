@@ -8,6 +8,7 @@ venv/
 .env
 config.local.*
 settings.local.*
+cliente_xmpp/lib/
 
 # Build artifacts
 build/
@@ -17,4 +18,3 @@ dist/
 # Editor
 .vscode/
 .idea/
-

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import webbrowser
 from collections.abc import Callable
 
 import wx
 
+from cliente_xmpp.accessibility.speaker import NvdaSpeaker
+from cliente_xmpp.audio.player import MpvAudioPlayer, MpvPlaybackError
 from cliente_xmpp.models.chat import Chat, Message
 
 
@@ -14,6 +15,8 @@ class ConversationPanel(wx.Panel):
         self.resolve_display_name = resolve_display_name
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
+        self._audio_player = MpvAudioPlayer()
+        self._speaker = NvdaSpeaker()
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.back_button = wx.Button(self, label="Volver")
@@ -54,7 +57,17 @@ class ConversationPanel(wx.Panel):
         if not audio_url:
             return False
 
-        return webbrowser.open(audio_url)
+        try:
+            status = self._audio_player.play(audio_url)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Audio")
+        else:
+            self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
+
+        return True
+
+    def close_audio(self) -> None:
+        self._audio_player.close()
 
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
@@ -82,9 +95,9 @@ class ConversationPanel(wx.Panel):
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)
-        body = f"[Audio] {message.body}" if message.audio_url else message.body
+        body = "Mensaje de voz" if message.audio_url else message.body
         if message.outgoing:
-            return f"Tu {body} {timestamp} Entregado."
+            return f"Tú {body} {timestamp} Entregado."
 
         sender = self.resolve_display_name(message.sender_jid)
         return f"{sender} {body}, {timestamp}"

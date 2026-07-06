@@ -71,6 +71,7 @@ class ConversationPanel(wx.Panel):
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
+        self._resize_message_column_to_content()
         if self.messages.HasFocus():
             wx.CallAfter(self.focus_default_message_item)
 
@@ -79,6 +80,7 @@ class ConversationPanel(wx.Panel):
         index = self._append_message_row(message)
         if self._unread_marker_index is None:
             self._focus_target_index = index
+        self._resize_message_column_to_content()
         self.messages.EnsureVisible(index)
 
     def focus_composer(self) -> None:
@@ -141,6 +143,22 @@ class ConversationPanel(wx.Panel):
     def clear_reply_quote(self) -> None:
         self._reply_quote_prefix = ""
 
+    def open_selected_message_reader(self) -> bool:
+        message = self.selected_message()
+        if message is None:
+            return False
+
+        dialog = MessageReaderDialog(
+            self,
+            title="Mensaje",
+            body=self._format_message_for_reader(message),
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+        return True
+
     def selected_message(self) -> Message | None:
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
@@ -154,6 +172,7 @@ class ConversationPanel(wx.Panel):
                 continue
 
             self.messages.SetItem(index, 0, self._format_message_row(message))
+            self._resize_message_column_to_content()
             return
 
     def play_selected_audio(self) -> bool:
@@ -207,10 +226,19 @@ class ConversationPanel(wx.Panel):
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)
         self.SetSizer(box)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
+        self.messages.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._on_message_item_focused)
 
     def _on_messages_focus(self, event: wx.FocusEvent) -> None:
         if self.messages.GetFirstSelected() == wx.NOT_FOUND:
             wx.CallAfter(self.focus_default_message_item)
+        event.Skip()
+
+    def _on_message_item_focused(self, event: wx.ListEvent) -> None:
+        index = event.GetIndex()
+        if index != wx.NOT_FOUND and index < len(self._message_rows):
+            text = self._format_row_for_tooltip(index)
+            if text:
+                self.messages.SetToolTip(text)
         event.Skip()
 
     def _append_message_row(self, message: Message) -> int:
@@ -223,6 +251,14 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_index = self.messages.GetItemCount()
         self._message_rows.append(None)
         self.messages.InsertItem(self._unread_marker_index, "No leídos")
+
+    def _resize_message_column_to_content(self) -> None:
+        if self.messages.GetItemCount() <= 0:
+            self.messages.SetColumnWidth(0, 820)
+            return
+
+        self.messages.SetColumnWidth(0, wx.LIST_AUTOSIZE)
+        self.messages.SetColumnWidth(0, max(self.messages.GetColumnWidth(0), 820))
 
     def _clear_message_selection(self) -> None:
         selected = self.messages.GetFirstSelected()
@@ -253,6 +289,25 @@ class ConversationPanel(wx.Panel):
 
         sender = self.resolve_display_name(message.sender_jid)
         return f"{starred}{sender} {body}, {timestamp}.{reactions}"
+
+    def _format_message_for_reader(self, message: Message) -> str:
+        sender = "TÃº" if message.outgoing else self.resolve_display_name(message.sender_jid)
+        timestamp = self._format_message_time(message)
+        body = self._format_message_body(message)
+        metadata = f"{sender} {timestamp}"
+        if message.starred:
+            metadata = f"Destacado. {metadata}"
+        if message.reactions:
+            metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
+
+        return f"{metadata}\n\n{body}"
+
+    def _format_row_for_tooltip(self, index: int) -> str:
+        row = self._message_rows[index]
+        if row is None:
+            return "No leÃ­dos"
+
+        return self._format_message_row(row)
 
     def _format_message_body(self, message: Message) -> str:
         if not message.audio_url:
@@ -298,9 +353,31 @@ class ConversationPanel(wx.Panel):
 
         self._audio_durations_by_url[audio_url] = duration
         self.messages.SetItem(index, 0, self._format_message_row(message))
+        self._resize_message_column_to_content()
 
     @staticmethod
     def _format_duration(duration_seconds: float) -> str:
         total_seconds = max(0, round(duration_seconds))
         minutes, seconds = divmod(total_seconds, 60)
         return f"{minutes}:{seconds:02d}"
+
+
+class MessageReaderDialog(wx.Dialog):
+    def __init__(self, parent: wx.Window, title: str, body: str) -> None:
+        super().__init__(parent, title=title, size=(720, 520))
+
+        text = wx.TextCtrl(
+            self,
+            value=body,
+            style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        text.SetInsertionPoint(0)
+
+        close_button = wx.Button(self, wx.ID_OK, "Cerrar")
+
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(text, 1, wx.ALL | wx.EXPAND, 12)
+        box.Add(close_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_RIGHT, 12)
+        self.SetSizer(box)
+        self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_OK), close_button)
+        wx.CallAfter(text.SetFocus)

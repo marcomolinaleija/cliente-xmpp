@@ -231,6 +231,10 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            if self.conversation.open_selected_message_reader():
+                return
+
         if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_audio():
             return
 

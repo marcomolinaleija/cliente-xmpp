@@ -93,6 +93,9 @@ class ConversationPanel(wx.Panel):
         self.load_older_button.Enable(True)
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
+        previous_focus_index = self.messages.GetFirstSelected()
+        previous_focus_key = self._row_focus_key(previous_focus_index)
+        had_message_focus = self.messages.HasFocus()
         self.messages.DeleteAllItems()
         self._messages = list(messages)
         self._message_rows = []
@@ -117,23 +120,30 @@ class ConversationPanel(wx.Panel):
         if marker_message_index == len(self._messages) and self._unread_marker_count > 0:
             self._insert_unread_marker()
 
-        if self._unread_marker_index is not None:
+        if had_message_focus and previous_focus_index != wx.NOT_FOUND:
+            self._focus_target_index = self._row_index_for_focus_key(
+                previous_focus_key,
+                fallback_index=previous_focus_index,
+            )
+        elif self._unread_marker_index is not None:
             self._focus_target_index = self._unread_marker_index
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
         self._resize_message_column_to_content()
-        if self.messages.HasFocus():
+        if had_message_focus:
             wx.CallAfter(self.focus_default_message_item)
 
     def append_message(self, message: Message) -> None:
+        follow_new_message = self._should_follow_appended_message()
         self._insert_date_separator_if_needed(message, self._last_message_date())
         self._messages.append(message)
         index = self._append_message_row(message)
         if self._unread_marker_index is None:
             self._focus_target_index = index
         self._resize_message_column_to_content()
-        self.messages.EnsureVisible(index)
+        if follow_new_message:
+            self.messages.EnsureVisible(index)
 
     def focus_composer(self) -> None:
         self.compose.SetFocus()
@@ -147,6 +157,10 @@ class ConversationPanel(wx.Panel):
             return
 
         index = min(self._focus_target_index, item_count - 1)
+        if self.messages.GetFirstSelected() == index:
+            self.messages.EnsureVisible(index)
+            return
+
         self._clear_message_selection()
         self.messages.SetItemState(
             index,
@@ -449,6 +463,59 @@ class ConversationPanel(wx.Panel):
 
         row = self._message_rows[index]
         return row if isinstance(row, Message) else None
+
+    def _row_focus_key(self, index: int) -> tuple[object, ...] | None:
+        if index == wx.NOT_FOUND or index < 0 or index >= len(self._message_rows):
+            return None
+
+        row = self._message_rows[index]
+        if isinstance(row, Message):
+            return self._message_focus_key(row)
+        if isinstance(row, str):
+            return ("row", row)
+        return None
+
+    def _row_index_for_focus_key(
+        self,
+        key: tuple[object, ...] | None,
+        fallback_index: int,
+    ) -> int | None:
+        if not self._message_rows:
+            return None
+
+        if key is not None:
+            for index, row in enumerate(self._message_rows):
+                if isinstance(row, Message) and key == self._message_focus_key(row):
+                    return index
+                if isinstance(row, str) and key == ("row", row):
+                    return index
+
+        return min(fallback_index, len(self._message_rows) - 1)
+
+    @staticmethod
+    def _message_focus_key(message: Message) -> tuple[object, ...]:
+        if message.message_id:
+            return ("id", message.message_id)
+
+        return (
+            "message",
+            message.sent_at.isoformat(),
+            message.sender_jid,
+            message.body,
+            message.outgoing,
+            message.media_url,
+            message.reply_quote,
+        )
+
+    def _should_follow_appended_message(self) -> bool:
+        if not self.messages.HasFocus():
+            return True
+
+        selected = self.messages.GetFirstSelected()
+        if selected == wx.NOT_FOUND:
+            return True
+
+        return selected >= self.messages.GetItemCount() - 1
 
     def _append_message_row(self, message: Message) -> int:
         index = self.messages.GetItemCount()

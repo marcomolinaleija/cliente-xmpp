@@ -12,7 +12,7 @@ from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 class MessageStore:
@@ -25,7 +25,9 @@ class MessageStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT jid, name, custom_name, unread_count, last_message_preview, last_message_at
+                SELECT
+                    jid, name, custom_name, is_group, notifications_muted,
+                    unread_count, last_message_preview, last_message_at
                 FROM chats
                 WHERE account_jid = ?
                 ORDER BY COALESCE(last_message_at, '') DESC, name COLLATE NOCASE
@@ -38,6 +40,8 @@ class MessageStore:
                 jid=str(row["jid"]),
                 name=str(row["custom_name"] or row["name"] or row["jid"]),
                 custom_name=str(row["custom_name"] or ""),
+                is_group=bool(row["is_group"]),
+                notifications_muted=bool(row["notifications_muted"]),
                 unread_count=int(row["unread_count"] or 0),
                 last_message_preview=str(row["last_message_preview"] or ""),
                 last_message_at=_datetime_from_db(row["last_message_at"]),
@@ -118,6 +122,18 @@ class MessageStore:
                 (account_jid, chat_jid, name, name, now),
             )
 
+    def set_chat_group_flag(self, account_jid: str, chat_jid: str, is_group: bool) -> None:
+        now = _datetime_to_db(datetime.now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE chats
+                SET is_group = ?, updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (int(is_group), now, account_jid, chat_jid),
+            )
+
     def update_message_media_local_path(
         self,
         account_jid: str,
@@ -172,6 +188,8 @@ class MessageStore:
                     jid TEXT NOT NULL,
                     name TEXT NOT NULL,
                     custom_name TEXT NOT NULL DEFAULT '',
+                    is_group INTEGER NOT NULL DEFAULT 0,
+                    notifications_muted INTEGER NOT NULL DEFAULT 0,
                     unread_count INTEGER NOT NULL DEFAULT 0,
                     last_message_preview TEXT NOT NULL DEFAULT '',
                     last_message_at TEXT,
@@ -244,6 +262,12 @@ class MessageStore:
         }
         if "custom_name" not in existing_columns:
             conn.execute("ALTER TABLE chats ADD COLUMN custom_name TEXT NOT NULL DEFAULT ''")
+        if "is_group" not in existing_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0")
+        if "notifications_muted" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN notifications_muted INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _upsert_chat(self, conn: sqlite3.Connection, account_jid: str, chat: Chat) -> None:
         now = _datetime_to_db(datetime.now())
@@ -252,7 +276,8 @@ class MessageStore:
         last_message_at = chat.last_message_at
         existing = conn.execute(
             """
-            SELECT last_message_preview, last_message_at, custom_name
+            SELECT last_message_preview, last_message_at, custom_name, is_group,
+                notifications_muted
             FROM chats
             WHERE account_jid = ? AND jid = ?
             """,
@@ -266,17 +291,32 @@ class MessageStore:
                 last_message_at = existing_at
             elif not last_message_preview:
                 last_message_preview = existing_preview
+            is_group = chat.is_group or bool(existing["is_group"])
+            notifications_muted = chat.notifications_muted or bool(
+                existing["notifications_muted"]
+            )
+        else:
+            is_group = chat.is_group
+            notifications_muted = chat.notifications_muted
 
         conn.execute(
             """
             INSERT INTO chats (
-                account_jid, jid, name, custom_name, unread_count, last_message_preview,
-                last_message_at, updated_at
+                account_jid, jid, name, custom_name, is_group, notifications_muted,
+                unread_count, last_message_preview, last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = excluded.name,
                 custom_name = COALESCE(NULLIF(excluded.custom_name, ''), chats.custom_name),
+                is_group = CASE
+                    WHEN excluded.is_group = 1 OR chats.is_group = 1 THEN 1
+                    ELSE 0
+                END,
+                notifications_muted = CASE
+                    WHEN excluded.notifications_muted = 1 OR chats.notifications_muted = 1 THEN 1
+                    ELSE 0
+                END,
                 unread_count = excluded.unread_count,
                 last_message_preview = COALESCE(
                     NULLIF(excluded.last_message_preview, ''),
@@ -290,6 +330,8 @@ class MessageStore:
                 chat.jid,
                 display_name,
                 chat.custom_name,
+                int(is_group),
+                int(notifications_muted),
                 chat.unread_count,
                 last_message_preview,
                 _datetime_to_db(last_message_at),
@@ -372,7 +414,7 @@ class MessageStore:
     ) -> None:
         existing = conn.execute(
             """
-            SELECT name, unread_count, last_message_at
+            SELECT name, unread_count, last_message_at, is_group, notifications_muted
             FROM chats
             WHERE account_jid = ? AND jid = ?
             """,
@@ -397,15 +439,22 @@ class MessageStore:
         now = _datetime_to_db(datetime.now())
         name = str(existing["name"] or message.chat_jid) if existing else message.chat_jid
         unread_count = int(existing["unread_count"] or 0) if existing else 0
+        is_group = bool(existing["is_group"]) if existing else message.chat_is_group
+        notifications_muted = bool(existing["notifications_muted"]) if existing else False
         conn.execute(
             """
             INSERT INTO chats (
-                account_jid, jid, name, unread_count, last_message_preview,
-                last_message_at, updated_at
+                account_jid, jid, name, is_group, notifications_muted, unread_count,
+                last_message_preview, last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = chats.name,
+                is_group = CASE
+                    WHEN excluded.is_group = 1 OR chats.is_group = 1 THEN 1
+                    ELSE 0
+                END,
+                notifications_muted = chats.notifications_muted,
                 unread_count = chats.unread_count,
                 last_message_preview = excluded.last_message_preview,
                 last_message_at = excluded.last_message_at,
@@ -415,6 +464,8 @@ class MessageStore:
                 account_jid,
                 message.chat_jid,
                 name,
+                int(is_group),
+                int(notifications_muted),
                 unread_count,
                 _message_preview(latest_message),
                 _datetime_to_db(latest_message.sent_at),

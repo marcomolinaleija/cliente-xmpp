@@ -9,6 +9,8 @@ class Chat:
     jid: str
     name: str
     custom_name: str = ""
+    is_group: bool = False
+    notifications_muted: bool = False
     unread_count: int = 0
     last_message_preview: str = ""
     last_message_at: datetime | None = None
@@ -30,6 +32,7 @@ class Message:
     media_duration_seconds: float = 0.0
     media_local_path: str = ""
     message_id: str = ""
+    chat_is_group: bool = False
     starred: bool = False
     reactions: tuple[str, ...] = ()
     reply_quote: str = ""

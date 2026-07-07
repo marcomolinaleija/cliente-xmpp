@@ -34,6 +34,7 @@ from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
+    ChatsDiscovered,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -242,6 +243,8 @@ class MainWindow(wx.Frame):
             jid=chat.jid,
             name=name,
             custom_name=name,
+            is_group=chat.is_group,
+            notifications_muted=chat.notifications_muted,
             unread_count=chat.unread_count,
             last_message_preview=chat.last_message_preview,
             last_message_at=chat.last_message_at,
@@ -300,6 +303,7 @@ class MainWindow(wx.Frame):
             sender_jid="me",
             body=display_body,
             outgoing=True,
+            chat_is_group=chat.is_group,
             reply_quote=self.reply_context.body if self.reply_context else "",
         )
         self._store_message(message)
@@ -316,11 +320,12 @@ class MainWindow(wx.Frame):
                 reply_to_jid,
                 self.reply_context.message_id,
                 fallback_end=fallback_end,
+                is_group=chat.is_group,
             )
             self.reply_context = None
             self.conversation.clear_reply_quote()
         else:
-            self.xmpp.send_message(chat.jid, body)
+            self.xmpp.send_message(chat.jid, body, is_group=chat.is_group)
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
         self.conversation.update_send_button_state(self.audio_recorder.is_recording)
@@ -382,7 +387,7 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(f"Subiendo {len(files)} archivos...")
 
         for path in files:
-            self.xmpp.send_file(chat.jid, str(path))
+            self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
 
     @staticmethod
     def _clipboard_file_paths() -> list[Path]:
@@ -454,7 +459,7 @@ class MainWindow(wx.Frame):
 
         self.conversation.set_recording_state(False)
         self.status_bar.SetStatusText("Subiendo audio...")
-        self.xmpp.send_file(chat.jid, str(path))
+        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
 
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
         if (
@@ -769,7 +774,12 @@ class MainWindow(wx.Frame):
         if reaction not in message.reactions:
             message.reactions = (*message.reactions, reaction)
         self.conversation.refresh_message(message)
-        self.xmpp.send_reaction(chat.jid, message.message_id, reaction)
+        self.xmpp.send_reaction(
+            chat.jid,
+            message.message_id,
+            reaction,
+            is_group=chat.is_group,
+        )
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
         self._handle_xmpp_event(event.event)
@@ -804,12 +814,18 @@ class MainWindow(wx.Frame):
                 self._update_chat_names(chats)
                 self.roster_jids = {chat.jid for chat in chats}
                 cached_chats = self._load_cached_chats()
+                self.xmpp.monitor_group_chats(
+                    [chat.jid for chat in cached_chats if chat.is_group]
+                )
                 self.loaded_chat_summaries = len(cached_chats)
                 self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
                 self._select_first_chat_if_needed()
                 self.status_bar.SetStatusText(
                     f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
                 )
+            case ChatsDiscovered(chats=chats):
+                self._upsert_discovered_chats(chats)
+                self._preload_recent_histories()
             case MessageReceived(message=message):
                 message, added_message = self._store_message(message)
                 self._ensure_chat_for_message(message)
@@ -845,6 +861,7 @@ class MainWindow(wx.Frame):
                 sent_at=sent_at,
                 preview=preview,
                 unread_count=unread_count,
+                is_group=is_group,
             ):
                 if sent_at or preview or unread_count is not None:
                     if sent_at:
@@ -855,6 +872,7 @@ class MainWindow(wx.Frame):
                         preview=preview,
                         sent_at=sent_at,
                         unread_count=unread_count,
+                        is_group=is_group,
                     )
                     self._refresh_chat_order()
                     if added:
@@ -1096,7 +1114,7 @@ class MainWindow(wx.Frame):
             self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
 
     def _play_new_message_sound(self, message: Message) -> None:
-        if message.outgoing:
+        if message.outgoing or self._chat_notifications_muted(message.chat_jid):
             return
 
         self.new_message_sound.play()
@@ -1144,6 +1162,8 @@ class MainWindow(wx.Frame):
             Chat(
                 jid=message.chat_jid,
                 name=name,
+                is_group=message.chat_is_group,
+                notifications_muted=self._chat_notifications_muted(message.chat_jid),
                 last_message_preview=preview,
                 last_message_at=message.sent_at,
             )
@@ -1166,10 +1186,12 @@ class MainWindow(wx.Frame):
         self._select_first_chat()
 
     def _speak_incoming_message(self, message: Message) -> None:
-        if message.outgoing:
+        if message.outgoing or self._chat_notifications_muted(message.chat_jid):
             return
 
         sender = self._speakable_chat_name(message.chat_jid)
+        if message.chat_is_group and message.sender_jid:
+            sender = f"{self._display_name_for_jid(message.sender_jid)} en {sender}"
         preview = media_description(message) if has_media(message) else message.body
         preview = " ".join(preview.split())
         if len(preview) > 160:
@@ -1206,6 +1228,7 @@ class MainWindow(wx.Frame):
                 chat = Chat(
                     jid=message.chat_jid,
                     name=self._display_name_for_jid(message.chat_jid),
+                    is_group=message.chat_is_group,
                 )
                 chats.append(chat)
                 chats_by_jid[message.chat_jid] = chat
@@ -1223,6 +1246,9 @@ class MainWindow(wx.Frame):
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:
+            if chat.is_group and not self._jid_may_be_group_chat(chat.jid):
+                chat.is_group = False
+                self.message_store.set_chat_group_flag(self.current_jid, chat.jid, False)
             if chat.custom_name:
                 chat.name = chat.custom_name
                 self.chat_names_by_jid[chat.jid] = chat.custom_name
@@ -1309,9 +1335,19 @@ class MainWindow(wx.Frame):
     def _chat_recency_key(self, chat: Chat) -> tuple[int, float, str]:
         latest = self._latest_message_timestamp(chat.jid)
         if latest is None:
-            return (1, 0, chat.name.casefold())
+            no_preview_rank = 1 if chat.is_group else 2
+            return (no_preview_rank, 0, chat.name.casefold())
 
         return (0, -latest, chat.name.casefold())
+
+    @staticmethod
+    def _jid_may_be_group_chat(jid: str) -> bool:
+        bare_jid = jid.split("/", 1)[0]
+        if "@" not in bare_jid:
+            return False
+
+        local_part = bare_jid.split("@", 1)[0]
+        return bool(local_part and not local_part.startswith("+"))
 
     def _latest_message_timestamp(self, chat_jid: str) -> float | None:
         latest = self.latest_message_timestamps_by_chat.get(chat_jid)
@@ -1367,6 +1403,7 @@ class MainWindow(wx.Frame):
             sent_at=message.sent_at,
             unread_delta=1 if mark_unread else 0,
             force_preview=True,
+            is_group=message.chat_is_group,
         )
 
     def _update_chat_summary(
@@ -1378,6 +1415,7 @@ class MainWindow(wx.Frame):
         unread_count: int | None = None,
         mark_read: bool = False,
         force_preview: bool = False,
+        is_group: bool = False,
     ) -> None:
         chats = self.chat_list.chats()
         for chat in chats:
@@ -1388,6 +1426,8 @@ class MainWindow(wx.Frame):
                 jid=chat.jid,
                 name=chat.name,
                 custom_name=chat.custom_name,
+                is_group=chat.is_group or is_group,
+                notifications_muted=chat.notifications_muted,
                 unread_count=self._next_unread_count(
                     chat.unread_count,
                     unread_delta=unread_delta,
@@ -1413,6 +1453,8 @@ class MainWindow(wx.Frame):
         updated_chat = Chat(
             jid=chat_jid,
             name=self._display_name_for_jid(chat_jid),
+            is_group=is_group,
+            notifications_muted=self._chat_notifications_muted(chat_jid),
             unread_count=self._next_unread_count(
                 0,
                 unread_delta=unread_delta,
@@ -1522,6 +1564,8 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("Selecciona un chat para abrirlo")
             return
 
+        if chat.is_group:
+            self.xmpp.join_group_chat(chat.jid)
         self._load_conversation(chat, unread_count=chat.unread_count)
         self._update_chat_summary(chat.jid, mark_read=True)
         self.chat_list.Hide()
@@ -1550,6 +1594,49 @@ class MainWindow(wx.Frame):
         self.Layout()
         self.chat_list.focus()
 
+    def _upsert_discovered_chats(self, chats: list[Chat]) -> None:
+        if not chats:
+            return
+
+        added = 0
+        for chat in chats:
+            existing = self._chat_by_jid(chat.jid)
+            if existing is not None:
+                merged_chat = Chat(
+                    jid=existing.jid,
+                    name=existing.custom_name or chat.name or existing.name,
+                    custom_name=existing.custom_name,
+                    is_group=existing.is_group or chat.is_group,
+                    notifications_muted=existing.notifications_muted
+                    or chat.notifications_muted,
+                    unread_count=existing.unread_count,
+                    last_message_preview=existing.last_message_preview,
+                    last_message_at=existing.last_message_at,
+                )
+            else:
+                merged_chat = chat
+                added += 1
+
+            self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
+            self.chat_list.upsert_chat(merged_chat)
+            self._persist_chat(merged_chat)
+
+        self.loaded_chat_summaries += added
+        self._refresh_chat_order()
+        self._select_first_chat_if_needed()
+        self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
+
+    def _chat_by_jid(self, jid: str) -> Chat | None:
+        for chat in self.chat_list.chats():
+            if chat.jid == jid:
+                return chat
+
+        return None
+
+    def _chat_notifications_muted(self, jid: str) -> bool:
+        chat = self._chat_by_jid(jid)
+        return bool(chat and chat.notifications_muted)
+
     def _update_chat_names(self, chats: list[Chat]) -> None:
         for chat in chats:
             self.chat_names_by_jid[chat.jid] = chat.name
@@ -1564,9 +1651,12 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _fallback_display_name_for_jid(jid: str) -> str:
-        bare_jid = jid.split("/", 1)[0]
+        bare_jid, separator, resource = jid.partition("/")
+        if separator and resource:
+            return resource
+
         local_part = bare_jid.split("@", 1)[0]
-        if bare_jid.endswith("@whatsapp.xmpp.marco-ml.com") and local_part:
+        if local_part.startswith("+"):
             return local_part.removeprefix("+")
 
         return bare_jid

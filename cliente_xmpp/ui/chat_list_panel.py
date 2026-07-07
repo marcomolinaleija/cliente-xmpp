@@ -66,14 +66,15 @@ class ChatListPanel(wx.Panel):
         return list(self._chats)
 
     def _format_chat_row(self, chat: Chat) -> str:
+        name = chat.name
         status = self._format_status(chat)
         preview = self._truncate_preview(chat.last_message_preview)
         time = self._format_time(chat.last_message_at)
         details = " | ".join(part for part in (status, preview, time) if part)
         if not details:
-            return chat.name
+            return name
 
-        return f"{chat.name} | {details}"
+        return f"{name} | {details}"
 
     @staticmethod
     def _format_status(chat: Chat) -> str:

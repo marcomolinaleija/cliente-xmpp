@@ -27,6 +27,11 @@ class RosterLoaded:
 
 
 @dataclass(slots=True)
+class ChatsDiscovered:
+    chats: list[Chat]
+
+
+@dataclass(slots=True)
 class MessageReceived:
     message: Message
 
@@ -46,6 +51,7 @@ class ChatActivityLoaded:
     sent_at: datetime | None
     preview: str = ""
     unread_count: int | None = None
+    is_group: bool = False
 
 
 @dataclass(slots=True)
@@ -58,6 +64,7 @@ XmppEvent = (
     | XmppDisconnected
     | XmppError
     | RosterLoaded
+    | ChatsDiscovered
     | MessageReceived
     | MessageHistoryLoaded
     | ChatActivityLoaded

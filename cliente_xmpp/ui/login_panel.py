@@ -79,7 +79,7 @@ class LoginPanel(wx.Panel):
 
         self.use_tls = wx.CheckBox(self, label="Exigir STARTTLS")
         self.use_tls.SetValue(self.settings.use_tls)
-        self.use_tls.SetToolTip("Usar STARTTLS para cifrar la conexion XMPP.")
+        self.use_tls.SetToolTip("Usar STARTTLS para cifrar la conexión XMPP.")
         box.Add(self.use_tls, 0, wx.ALL | wx.EXPAND, 10)
 
         self.remember_password = wx.CheckBox(self, label="Recordar contraseña")

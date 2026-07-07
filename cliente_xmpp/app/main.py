@@ -7,7 +7,7 @@ from cliente_xmpp.ui.main_window import MainWindow
 
 class ClienteXmppApp(wx.App):
     def OnInit(self) -> bool:
-        self.SetAppName("Cliente XMPP")
+        self.SetAppName("whatsapp-CAN")
         window = MainWindow()
         window.Show()
         return True
@@ -20,4 +20,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

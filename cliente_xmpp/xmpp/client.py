@@ -776,11 +776,15 @@ class BridgeXmppClient(ClientXMPP):
             media_size,
             stanza.xml,
         )
+        sent_at = self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
+        if sent_at is None:
+            return None
+
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
             body=display_body,
-            sent_at=self._sent_at_from_mam_result(result) or datetime.now(),
+            sent_at=sent_at,
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,
@@ -1032,8 +1036,21 @@ class BridgeXmppClient(ClientXMPP):
 
     @staticmethod
     def _sent_at_from_mam_result(result: object) -> datetime | None:
-        forwarded = result["mam_result"]["forwarded"]
-        return forwarded["delay"]["stamp"]
+        try:
+            stamp = result["mam_result"]["forwarded"]["delay"]["stamp"]
+        except Exception:
+            return None
+
+        if isinstance(stamp, datetime):
+            return stamp
+
+        if not stamp:
+            return None
+
+        try:
+            return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     @staticmethod
     def _sent_at_from_stanza_delay(stanza: object) -> datetime | None:
@@ -1498,7 +1515,7 @@ class XmppService:
 
     def send_message(self, to_jid: str, body: str, is_group: bool = False) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         def send() -> None:
@@ -1520,7 +1537,7 @@ class XmppService:
         is_group: bool = False,
     ) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         def send() -> None:
@@ -1564,7 +1581,7 @@ class XmppService:
         is_group: bool = False,
     ) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         if not message_id:
@@ -1589,7 +1606,7 @@ class XmppService:
 
     def send_file(self, to_jid: str, path: str, is_group: bool = False) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         async def send() -> None:
@@ -1647,7 +1664,7 @@ class XmppService:
         background: bool = False,
     ) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         def load() -> None:
@@ -1684,7 +1701,7 @@ class XmppService:
 
     def load_recent_activity(self, roster_jids: set[str] | None = None, limit: int = 1000) -> None:
         if not self._client or not self._loop:
-            self._emit(XmppError("No hay una conexion XMPP activa."))
+            self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         def load() -> None:
@@ -1731,7 +1748,7 @@ class XmppService:
 
             self._loop.run_forever()
         except Exception as exc:
-            self._emit(XmppError(f"Error en la conexion XMPP: {exc}"))
+            self._emit(XmppError(f"Error en la conexión XMPP: {exc}"))
         finally:
             self._client = None
             self._loop = None

@@ -51,7 +51,7 @@ BACKGROUND_SYNC_DELAY_MS = 350
 
 class MainWindow(wx.Frame):
     def __init__(self) -> None:
-        super().__init__(None, title="Cliente XMPP", size=(980, 700))
+        super().__init__(None, title="whatsapp-CAN", size=(980, 700))
 
         self.settings_store = SettingsStore()
         self.credential_store = CredentialStore()
@@ -94,7 +94,7 @@ class MainWindow(wx.Frame):
         self._load_saved_password()
         if self._can_auto_connect():
             self._set_startup_wait_ui()
-            self.status_bar.SetStatusText("Conectando automaticamente...")
+            self.status_bar.SetStatusText("Conectando automáticamente...")
             wx.CallAfter(self.speaker.speak, "Bienvenido a WhatsApp CAN. Espera por favor...")
         else:
             self._set_connected_ui(False)
@@ -109,7 +109,7 @@ class MainWindow(wx.Frame):
             value="Bienvenido a WhatsApp CAN.\nEspera por favor...",
             style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE,
         )
-        self.startup_message.SetToolTip("Conectando automaticamente.")
+        self.startup_message.SetToolTip("Conectando automáticamente.")
         startup_box.AddStretchSpacer(1)
         startup_box.Add(self.startup_message, 0, wx.ALL | wx.EXPAND, 32)
         startup_box.AddStretchSpacer(1)
@@ -409,7 +409,7 @@ class MainWindow(wx.Frame):
     def _send_files_to_chat(self, chat: Chat, paths: list[Path]) -> None:
         files = [path for path in paths if path.is_file()]
         if not files:
-            self.status_bar.SetStatusText("El portapapeles no contiene archivos validos")
+            self.status_bar.SetStatusText("El portapapeles no contiene archivos válidos")
             return
 
         if len(files) == 1:
@@ -444,7 +444,7 @@ class MainWindow(wx.Frame):
         try:
             self.audio_recorder.start()
         except AudioRecordingError as exc:
-            wx.MessageBox(str(exc), "Grabacion")
+            wx.MessageBox(str(exc), "Grabación")
             return
 
         self.conversation.set_recording_state(True)
@@ -462,10 +462,10 @@ class MainWindow(wx.Frame):
                 self.speaker.speak("Grabando")
             else:
                 self.audio_recorder.pause()
-                self.status_bar.SetStatusText("Grabacion pausada")
+                self.status_bar.SetStatusText("Grabación pausada")
                 self.speaker.speak("Pausado")
         except AudioRecordingError as exc:
-            wx.MessageBox(str(exc), "Grabacion")
+            wx.MessageBox(str(exc), "Grabación")
             return
 
         self.conversation.set_recording_state(True, self.audio_recorder.is_paused)
@@ -473,7 +473,7 @@ class MainWindow(wx.Frame):
     def _on_cancel_recording(self, _event: wx.CommandEvent) -> None:
         self.audio_recorder.cancel()
         self.conversation.set_recording_state(False)
-        self.status_bar.SetStatusText("Grabacion cancelada")
+        self.status_bar.SetStatusText("Grabación cancelada")
         self.speaker.speak("Cancelado")
 
     def _stop_recording_and_send(self) -> None:
@@ -484,7 +484,7 @@ class MainWindow(wx.Frame):
         try:
             path = self.audio_recorder.stop_and_save()
         except AudioRecordingError as exc:
-            wx.MessageBox(str(exc), "Grabacion")
+            wx.MessageBox(str(exc), "Grabación")
             self.conversation.set_recording_state(False)
             return
 

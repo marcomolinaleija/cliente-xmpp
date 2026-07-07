@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import date, datetime
 from pathlib import Path
 
 import wx
@@ -17,6 +18,23 @@ from cliente_xmpp.media.downloads import (
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
 
+DATE_SEPARATOR_PREFIX = "date:"
+UNREAD_MARKER_ROW = "unread"
+MONTH_NAMES = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
 
 class ConversationPanel(wx.Panel):
     def __init__(
@@ -31,7 +49,7 @@ class ConversationPanel(wx.Panel):
         self.on_audio_speed_changed = on_audio_speed_changed
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
-        self._message_rows: list[Message | None] = []
+        self._message_rows: list[Message | str] = []
         self._unread_marker_count = 0
         self._unread_marker_index: int | None = None
         self._focus_target_index: int | None = None
@@ -86,7 +104,12 @@ class ConversationPanel(wx.Panel):
             len(self._messages),
             self._unread_marker_count,
         )
+        previous_message_date: date | None = None
         for message_index, message in enumerate(self._messages):
+            previous_message_date = self._insert_date_separator_if_needed(
+                message,
+                previous_message_date,
+            )
             if marker_message_index == message_index:
                 self._insert_unread_marker()
             self._append_message_row(message)
@@ -104,6 +127,7 @@ class ConversationPanel(wx.Panel):
             wx.CallAfter(self.focus_default_message_item)
 
     def append_message(self, message: Message) -> None:
+        self._insert_date_separator_if_needed(message, self._last_message_date())
         self._messages.append(message)
         index = self._append_message_row(message)
         if self._unread_marker_index is None:
@@ -215,7 +239,8 @@ class ConversationPanel(wx.Panel):
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return None
 
-        return self._message_rows[index]
+        row = self._message_rows[index]
+        return row if isinstance(row, Message) else None
 
     def refresh_message(self, message: Message) -> None:
         for index, current in enumerate(self._message_rows):
@@ -248,7 +273,7 @@ class ConversationPanel(wx.Panel):
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return False
 
-        message = self._message_rows[index]
+        message = self._message_at_row(index)
         if message is None:
             return False
 
@@ -276,7 +301,7 @@ class ConversationPanel(wx.Panel):
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return False
 
-        message = self._message_rows[index]
+        message = self._message_at_row(index)
         if message is None or message.media_kind != "video":
             return False
 
@@ -298,7 +323,7 @@ class ConversationPanel(wx.Panel):
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return None
 
-        message = self._message_rows[index]
+        message = self._message_at_row(index)
         if message is None or not message.audio_url:
             return None
 
@@ -320,7 +345,7 @@ class ConversationPanel(wx.Panel):
             self._audio_autoplay_timer.Stop()
             return
 
-        message = self._message_rows[index]
+        message = self._message_at_row(index)
         if message is None or not message.audio_url:
             self._audio_autoplay_timer.Stop()
             return
@@ -328,13 +353,8 @@ class ConversationPanel(wx.Panel):
         if not self._audio_player.is_finished(message.audio_url):
             return
 
-        next_index = index + 1
-        if next_index >= len(self._message_rows):
-            self._audio_autoplay_timer.Stop()
-            return
-
-        next_message = self._message_rows[next_index]
-        if next_message is None or not next_message.audio_url:
+        next_index, next_message = self._next_audio_message(index + 1)
+        if next_index is None or next_message is None:
             self._audio_autoplay_timer.Stop()
             return
 
@@ -355,6 +375,14 @@ class ConversationPanel(wx.Panel):
         self._current_audio_row_index = next_index
         self._speaker.speak("Reproduciendo")
         self._schedule_audio_duration_update(next_index, next_message.audio_url)
+
+    def _next_audio_message(self, start_index: int) -> tuple[int | None, Message | None]:
+        for index in range(start_index, len(self._message_rows)):
+            message = self._message_at_row(index)
+            if message is not None and message.audio_url:
+                return index, message
+
+        return None, None
 
     def close_audio(self) -> None:
         self._audio_autoplay_timer.Stop()
@@ -415,6 +443,13 @@ class ConversationPanel(wx.Panel):
                 self.messages.SetToolTip(text)
         event.Skip()
 
+    def _message_at_row(self, index: int) -> Message | None:
+        if index < 0 or index >= len(self._message_rows):
+            return None
+
+        row = self._message_rows[index]
+        return row if isinstance(row, Message) else None
+
     def _append_message_row(self, message: Message) -> int:
         index = self.messages.GetItemCount()
         self._message_rows.append(message)
@@ -427,10 +462,33 @@ class ConversationPanel(wx.Panel):
 
         return index
 
+    def _insert_date_separator_if_needed(
+        self,
+        message: Message,
+        previous_message_date: date | None,
+    ) -> date:
+        message_date = self._message_local_datetime(message).date()
+        if message_date != previous_message_date:
+            self._insert_date_separator(message_date)
+        return message_date
+
+    def _insert_date_separator(self, message_date: date) -> None:
+        index = self.messages.GetItemCount()
+        self._message_rows.append(f"{DATE_SEPARATOR_PREFIX}{message_date.isoformat()}")
+        self.messages.InsertItem(index, self._format_date_separator(message_date))
+        self.messages.SetItemTextColour(index, YELLOW)
+        self.messages.SetItemBackgroundColour(index, NAVY_BLUE)
+
+    def _last_message_date(self) -> date | None:
+        for message in reversed(self._messages):
+            return self._message_local_datetime(message).date()
+
+        return None
+
     def _insert_unread_marker(self) -> None:
         self._unread_marker_index = self.messages.GetItemCount()
-        self._message_rows.append(None)
-        self.messages.InsertItem(self._unread_marker_index, "No leidos")
+        self._message_rows.append(UNREAD_MARKER_ROW)
+        self.messages.InsertItem(self._unread_marker_index, "No leídos")
 
         self._style_message_item(self._unread_marker_index)
 
@@ -502,8 +560,12 @@ class ConversationPanel(wx.Panel):
 
     def _format_row_for_tooltip(self, index: int) -> str:
         row = self._message_rows[index]
-        if row is None:
+        if row == UNREAD_MARKER_ROW:
             return "No leídos"
+        if isinstance(row, str) and row.startswith(DATE_SEPARATOR_PREFIX):
+            return self.messages.GetItemText(index)
+        if not isinstance(row, Message):
+            return ""
 
         return self._format_message_row(row)
 
@@ -555,11 +617,32 @@ class ConversationPanel(wx.Panel):
         return index
 
     def _format_message_time(self, message: Message) -> str:
-        hour = message.sent_at.hour
-        minute = message.sent_at.minute
+        sent_at = self._message_local_datetime(message)
+        hour = sent_at.hour
+        minute = sent_at.minute
         suffix = "a. m." if hour < 12 else "p. m."
         hour_12 = hour % 12 or 12
         return f"{hour_12}:{minute:02d} {suffix}"
+
+    @staticmethod
+    def _message_local_datetime(message: Message) -> datetime:
+        if message.sent_at.tzinfo is None:
+            return message.sent_at
+
+        return message.sent_at.astimezone()
+
+    @classmethod
+    def _format_date_separator(cls, message_date: date) -> str:
+        today = date.today()
+        if message_date == today:
+            return "Hoy"
+        if (today - message_date).days == 1:
+            return "Ayer"
+
+        label = f"{message_date.day} de {MONTH_NAMES[message_date.month - 1]}"
+        if message_date.year != today.year:
+            return f"{label} de {message_date.year}"
+        return label
 
     def _schedule_audio_duration_update(
         self,
@@ -576,7 +659,7 @@ class ConversationPanel(wx.Panel):
         if index >= len(self._message_rows):
             return
 
-        message = self._message_rows[index]
+        message = self._message_at_row(index)
         if message is None:
             return
 

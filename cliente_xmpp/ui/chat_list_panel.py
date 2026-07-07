@@ -20,8 +20,22 @@ class ChatListPanel(wx.Panel):
         self.SetSizer(box)
 
     def set_chats(self, chats: list[Chat], selected_jid: str = "") -> None:
+        selected_jid = selected_jid or self._selected_chat_jid()
+        previous_jids = [chat.jid for chat in self._chats]
+        next_jids = [chat.jid for chat in chats]
+        rows = [self._format_chat_row(chat) for chat in chats]
+
+        if previous_jids == next_jids and self.list_box.GetCount() == len(rows):
+            self._chats = list(chats)
+            for index, row in enumerate(rows):
+                if self.list_box.GetString(index) != row:
+                    self.list_box.SetString(index, row)
+            if selected_jid:
+                self.select_chat_by_jid(selected_jid)
+            return
+
         self._chats = list(chats)
-        self.list_box.Set([self._format_chat_row(chat) for chat in chats])
+        self.list_box.Set(rows)
         if selected_jid:
             self.select_chat_by_jid(selected_jid)
 
@@ -37,21 +51,27 @@ class ChatListPanel(wx.Panel):
 
     def selected_chat(self) -> Chat | None:
         index = self.list_box.GetSelection()
-        if index == wx.NOT_FOUND:
+        if index == wx.NOT_FOUND or index >= len(self._chats):
             return None
         return self._chats[index]
+
+    def _selected_chat_jid(self) -> str:
+        chat = self.selected_chat()
+        return chat.jid if chat else ""
 
     def select_first(self) -> Chat | None:
         if not self._chats:
             return None
 
-        self.list_box.SetSelection(0)
+        if self.list_box.GetSelection() != 0:
+            self.list_box.SetSelection(0)
         return self._chats[0]
 
     def select_chat_by_jid(self, jid: str) -> Chat | None:
         for index, chat in enumerate(self._chats):
             if chat.jid == jid:
-                self.list_box.SetSelection(index)
+                if self.list_box.GetSelection() != index:
+                    self.list_box.SetSelection(index)
                 return chat
 
         return None

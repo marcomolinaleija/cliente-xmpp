@@ -89,10 +89,11 @@ class ChatListPanel(wx.Panel):
 
         self.force_refresh_visible()
 
-    def force_refresh_visible(self) -> None:
+    def force_refresh_visible(self, selected_jid: str = "") -> None:
         self._visible_stale = False
         self._set_items(
             [ChatListItem(chat=chat) for chat in self._chats],
+            selected_jid=selected_jid,
             preserve_focused_order=False,
             force=True,
         )

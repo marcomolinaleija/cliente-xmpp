@@ -681,12 +681,19 @@ class ConversationPanel(wx.Panel):
         return self._thumbnail_index_for_path(path)
 
     def _thumbnail_index_for_path(self, path: Path) -> int:
+        if not path.is_file():
+            return -1
+
         key = str(path)
         if key in self._thumbnail_indexes_by_path:
             return self._thumbnail_indexes_by_path[key]
 
         try:
-            image = wx.Image(key)
+            no_log = wx.LogNull()
+            try:
+                image = wx.Image(key)
+            finally:
+                del no_log
             if not image.IsOk():
                 return -1
             image = image.Scale(48, 48, wx.IMAGE_QUALITY_HIGH)

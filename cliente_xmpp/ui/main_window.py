@@ -1204,6 +1204,11 @@ class MainWindow(wx.Frame):
                     mark_unread=not message.outgoing and not current_chat_is_open,
                 )
                 self._refresh_chat_order(preserve_focused_order=False)
+                if self.chat_list.IsShown() and not self.chat_list.is_searching:
+                    selected_chat = self.chat_list.selected_chat()
+                    self.chat_list.force_refresh_visible(
+                        selected_chat.jid if selected_chat else ""
+                    )
                 if current_chat_is_open:
                     if added_message:
                         self.conversation.append_message(message)

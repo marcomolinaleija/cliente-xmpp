@@ -173,6 +173,16 @@ class ConversationPanel(wx.Panel):
         )
         self.messages.EnsureVisible(index)
 
+    def focus_message(self, message: Message) -> None:
+        key = self._message_focus_key(message)
+        index = self._row_index_for_focus_key(key, fallback_index=len(self._message_rows) - 1)
+        if index is None:
+            return
+
+        self._focus_target_index = index
+        self.focus_default_message_item()
+        self.messages.SetFocus()
+
     def clear_unread_marker(self) -> None:
         if self._unread_marker_index is None:
             return

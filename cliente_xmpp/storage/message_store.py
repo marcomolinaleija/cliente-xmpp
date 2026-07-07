@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -97,6 +98,53 @@ class MessageStore:
             ).fetchall()
 
         return [_message_from_row(row) for row in rows]
+
+    def search_messages(
+        self,
+        account_jid: str,
+        query: str,
+        limit: int = 200,
+    ) -> list[Message]:
+        terms = _search_terms(query)
+        if not terms:
+            return []
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT messages.*, chats.name AS chat_name, chats.custom_name AS chat_custom_name
+                FROM messages
+                LEFT JOIN chats
+                    ON chats.account_jid = messages.account_jid
+                    AND chats.jid = messages.chat_jid
+                WHERE messages.account_jid = ?
+                ORDER BY messages.sent_at DESC, messages.rowid DESC
+                """,
+                (account_jid,),
+            ).fetchall()
+
+        matches: list[Message] = []
+        for row in rows:
+            message = _message_from_row(row)
+            haystack = _normalize_search_text(
+                " ".join(
+                    (
+                        message.body,
+                        message.reply_quote,
+                        message.media_filename,
+                        message.sender_jid,
+                        message.chat_jid,
+                        str(row["chat_name"] or ""),
+                        str(row["chat_custom_name"] or ""),
+                    )
+                )
+            )
+            if all(term in haystack for term in terms):
+                matches.append(message)
+                if len(matches) >= limit:
+                    break
+
+        return list(reversed(matches))
 
     def upsert_chat(self, account_jid: str, chat: Chat) -> None:
         with self._connect() as conn:
@@ -829,6 +877,19 @@ def _datetime_from_db(value: object) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _search_terms(query: str) -> list[str]:
+    return [
+        term
+        for term in _normalize_search_text(query).split()
+        if term
+    ]
+
+
+def _normalize_search_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
 
 
 def _datetime_timestamp(value: datetime | None) -> float | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import unicodedata
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -25,7 +26,7 @@ from cliente_xmpp.media.downloads import (
 )
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.storage.message_store import MessageStore
-from cliente_xmpp.ui.chat_list_panel import ChatListPanel
+from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
@@ -51,6 +52,7 @@ BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
+SEARCH_RESULT_LIMIT = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +163,8 @@ class MainWindow(wx.Frame):
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
-        self.chat_list.open_button.Bind(wx.EVT_BUTTON, self._on_open_selected_chat)
+        self.chat_list.search_ctrl.Bind(wx.EVT_TEXT, self._on_search_text_changed)
+        self.chat_list.search_ctrl.Bind(wx.EVT_KEY_DOWN, self._on_search_key_down)
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
@@ -251,6 +254,9 @@ class MainWindow(wx.Frame):
         if self.chat_list.is_updating:
             return
 
+        if self.chat_list.is_searching:
+            return
+
         chat = self.chat_list.selected_chat()
         if not chat:
             return
@@ -261,8 +267,27 @@ class MainWindow(wx.Frame):
         self._show_selected_chat()
 
     def _on_chat_list_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self._clear_chat_search(focus_list=True)
+            return
+
         if event.GetKeyCode() == wx.WXK_F2:
             self._rename_selected_chat()
+            return
+
+        event.Skip()
+
+    def _on_search_text_changed(self, event: wx.CommandEvent) -> None:
+        self._apply_chat_search()
+        event.Skip()
+
+    def _on_search_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            self._show_selected_chat()
+            return
+
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self._clear_chat_search(focus_list=True)
             return
 
         event.Skip()
@@ -314,9 +339,165 @@ class MainWindow(wx.Frame):
                 return
 
         self.status_bar.SetStatusText(f"Contacto renombrado: {name}")
+        self._apply_chat_search()
+
+    def _focus_chat_search(self) -> None:
+        if self.conversation.IsShown():
+            self._show_chat_list()
+        self.chat_list.focus_search()
+        self.status_bar.SetStatusText("Buscar chats y mensajes")
+
+    def _clear_chat_search(self, focus_list: bool = False) -> None:
+        if self.chat_list.search_ctrl.GetValue():
+            self.chat_list.search_ctrl.ChangeValue("")
+        self.chat_list.clear_search_results()
+        if focus_list:
+            self.chat_list.focus()
+        self.status_bar.SetStatusText("Lista de chats")
+
+    def _apply_chat_search(self) -> None:
+        query = self.chat_list.search_ctrl.GetValue().strip()
+        if not query:
+            selected_chat = self.chat_list.selected_chat()
+            self.chat_list.clear_search_results(
+                selected_jid=selected_chat.jid if selected_chat else ""
+            )
+            return
+
+        terms = self._search_terms(query)
+        if not terms:
+            self.chat_list.clear_search_results()
+            return
+
+        chats_by_jid = {chat.jid: chat for chat in self.chat_list.chats()}
+        contact_results = [
+            ChatListItem(chat=chat)
+            for chat in self._sort_chats_by_recency(chats_by_jid.values())
+            if self._chat_matches_search(chat, terms)
+        ]
+        message_results = self._message_search_results(terms, chats_by_jid)
+        results = contact_results + message_results
+        self.chat_list.set_search_results(results)
+        if results and self.chat_list.list_box.GetSelection() == wx.NOT_FOUND:
+            self.chat_list.select_first()
+        self.status_bar.SetStatusText(f"{len(results)} resultados")
+
+    def _message_search_results(
+        self,
+        terms: list[str],
+        chats_by_jid: dict[str, Chat],
+    ) -> list[ChatListItem]:
+        messages_by_key: dict[tuple[object, ...], Message] = {}
+        for messages in self.messages_by_chat.values():
+            for message in messages:
+                chat = chats_by_jid.get(message.chat_jid)
+                if self._message_matches_search(message, terms, chat):
+                    messages_by_key[self._message_search_key(message)] = message
+
+        if self.current_jid:
+            try:
+                cached_messages = self.message_store.search_messages(
+                    self.current_jid,
+                    " ".join(terms),
+                    limit=SEARCH_RESULT_LIMIT,
+                )
+            except Exception:
+                cached_messages = []
+            for message in cached_messages:
+                chat = chats_by_jid.get(message.chat_jid)
+                if self._message_matches_search(message, terms, chat):
+                    messages_by_key.setdefault(self._message_search_key(message), message)
+
+        messages = sorted(
+            messages_by_key.values(),
+            key=self._message_timestamp,
+            reverse=True,
+        )[:SEARCH_RESULT_LIMIT]
+        results: list[ChatListItem] = []
+        for message in messages:
+            chat = chats_by_jid.get(message.chat_jid) or self._chat_for_message(message)
+            results.append(ChatListItem(chat=chat, message=message))
+        return results
+
+    def _message_search_key(self, message: Message) -> tuple[object, ...]:
+        return message.chat_jid, *self._message_merge_key(message)
+
+    def _chat_for_message(self, message: Message) -> Chat:
+        name = self._display_name_for_jid(message.chat_jid)
+        return Chat(
+            jid=message.chat_jid,
+            name=name,
+            is_group=message.chat_is_group or self._jid_may_be_group_chat(message.chat_jid),
+            notifications_muted=self._chat_notifications_muted(message.chat_jid),
+            last_message_preview=media_description(message) if has_media(message) else message.body,
+            last_message_at=message.sent_at,
+        )
+
+    def _chat_matches_search(self, chat: Chat, terms: list[str]) -> bool:
+        haystack = self._normalize_search_text(
+            " ".join(
+                (
+                    chat.name,
+                    chat.custom_name,
+                    chat.jid,
+                    self._fallback_display_name_for_jid(chat.jid),
+                    chat.last_message_preview,
+                )
+            )
+        )
+        digits = self._digits_only(chat.jid)
+        return all(term in haystack or term in digits for term in terms)
+
+    def _message_matches_search(
+        self,
+        message: Message,
+        terms: list[str],
+        chat: Chat | None = None,
+    ) -> bool:
+        haystack = self._normalize_search_text(
+            " ".join(
+                (
+                    chat.name if chat else "",
+                    chat.custom_name if chat else "",
+                    message.body,
+                    message.reply_quote,
+                    message.media_filename,
+                    message.sender_jid,
+                    message.chat_jid,
+                )
+            )
+        )
+        digits = self._digits_only(f"{message.sender_jid} {message.chat_jid}")
+        return all(term in haystack or term in digits for term in terms)
+
+    @classmethod
+    def _search_terms(cls, query: str) -> list[str]:
+        return [
+            term
+            for term in cls._normalize_search_text(query).split()
+            if term
+        ]
+
+    @staticmethod
+    def _normalize_search_text(text: str) -> str:
+        decomposed = unicodedata.normalize("NFKD", text.casefold())
+        return "".join(
+            character for character in decomposed if not unicodedata.combining(character)
+        )
+
+    @staticmethod
+    def _digits_only(text: str) -> str:
+        return "".join(character for character in text if character.isdigit())
+
+    def _search_is_active(self) -> bool:
+        return bool(self.chat_list.search_ctrl.GetValue().strip())
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        if self._is_find_shortcut(event):
+            self._focus_chat_search()
+            return
+
         if key_code == wx.WXK_RETURN and self.chat_list.IsShown():
             self._show_selected_chat()
             return
@@ -326,6 +507,11 @@ class MainWindow(wx.Frame):
                 self._cancel_reply()
                 return
             self._show_chat_list()
+            self._clear_chat_search(focus_list=True)
+            return
+
+        if key_code == wx.WXK_ESCAPE and self.chat_list.IsShown():
+            self._clear_chat_search(focus_list=True)
             return
 
         event.Skip()
@@ -596,6 +782,15 @@ class MainWindow(wx.Frame):
         key_code = event.GetKeyCode()
         unicode_key = event.GetUnicodeKey()
         return key_code in (ord("V"), ord("v")) or unicode_key in (ord("V"), ord("v"))
+
+    @staticmethod
+    def _is_find_shortcut(event: wx.KeyEvent) -> bool:
+        if not event.ControlDown() or event.AltDown():
+            return False
+
+        key_code = event.GetKeyCode()
+        unicode_key = event.GetUnicodeKey()
+        return key_code in (ord("F"), ord("f")) or unicode_key in (ord("F"), ord("f"))
 
     @staticmethod
     def _is_enter_without_shift(event: wx.KeyEvent) -> bool:
@@ -953,14 +1148,15 @@ class MainWindow(wx.Frame):
                 self._update_chat_names(chats)
                 self.roster_jids = {chat.jid for chat in chats}
                 cached_chats = self._load_cached_chats()
+                available_chats = self._merge_chat_lists(chats, cached_chats)
                 self.xmpp.monitor_group_chats(
-                    [chat.jid for chat in cached_chats if chat.is_group]
+                    [chat.jid for chat in available_chats if chat.is_group]
                 )
-                self.loaded_chat_summaries = len(cached_chats)
-                self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+                self.loaded_chat_summaries = len(available_chats)
+                self.chat_list.set_chats(self._sort_chats_by_recency(available_chats))
                 self._select_first_chat_if_needed()
                 self.status_bar.SetStatusText(
-                    f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
+                    f"{self.loaded_chat_summaries} chats disponibles. Buscando actualizaciones..."
                 )
             case ChatsDiscovered(chats=chats):
                 self._upsert_discovered_chats(chats)
@@ -1466,6 +1662,29 @@ class MainWindow(wx.Frame):
                 chat.name = self._display_name_for_jid(chat.jid)
         return chats
 
+    @staticmethod
+    def _merge_chat_lists(primary: list[Chat], secondary: list[Chat]) -> list[Chat]:
+        chats_by_jid: dict[str, Chat] = {chat.jid: chat for chat in primary}
+        for chat in secondary:
+            existing = chats_by_jid.get(chat.jid)
+            if existing is None:
+                chats_by_jid[chat.jid] = chat
+                continue
+
+            chats_by_jid[chat.jid] = Chat(
+                jid=chat.jid,
+                name=chat.custom_name or chat.name or existing.name,
+                custom_name=chat.custom_name,
+                is_group=chat.is_group or existing.is_group,
+                notifications_muted=chat.notifications_muted
+                or existing.notifications_muted,
+                unread_count=chat.unread_count,
+                last_message_preview=chat.last_message_preview,
+                last_message_at=chat.last_message_at,
+            )
+
+        return list(chats_by_jid.values())
+
     def _load_cached_messages_for_chat(self, chat_jid: str) -> None:
         if not self.current_jid:
             return
@@ -1543,6 +1762,8 @@ class MainWindow(wx.Frame):
             selected_jid=selected_jid,
             preserve_focused_order=preserve_focused_order,
         )
+        if self._search_is_active():
+            self._apply_chat_search()
 
     def _sort_chats_by_recency(self, chats: list[Chat]) -> list[Chat]:
         return sorted(chats, key=self._chat_recency_key)
@@ -1774,10 +1995,16 @@ class MainWindow(wx.Frame):
         return current + unread_delta
 
     def _show_selected_chat(self) -> None:
-        chat = self.chat_list.selected_chat()
+        item = self.chat_list.selected_item()
+        chat = item.chat if item is not None else self.chat_list.selected_chat()
         if not chat:
             self.status_bar.SetStatusText("Selecciona un chat para abrirlo")
             return
+
+        target_message = item.message if item is not None else None
+        if target_message is not None:
+            self._merge_messages(chat.jid, [target_message])
+            self._update_chat_activity(chat.jid, self._message_timestamp(target_message))
 
         if chat.is_group:
             self.xmpp.join_group_chat(chat.jid)
@@ -1788,7 +2015,10 @@ class MainWindow(wx.Frame):
         self.content_panel.Layout()
         self.workspace_panel.Layout()
         self.Layout()
-        self.conversation.focus_composer()
+        if target_message is not None:
+            self.conversation.focus_message(target_message)
+        else:
+            self.conversation.focus_composer()
         self.status_bar.SetStatusText(f"Chat abierto: {chat.name}")
         needs_history = (
             chat.jid not in self.history_loaded_chats

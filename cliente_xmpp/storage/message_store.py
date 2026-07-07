@@ -13,7 +13,7 @@ from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 5
-MESSAGE_DUPLICATE_WINDOW_SECONDS = 10
+MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 
 
 class MessageStore:
@@ -360,7 +360,11 @@ class MessageStore:
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
-                body = excluded.body,
+                body = CASE
+                    WHEN excluded.reply_quote != '' THEN excluded.body
+                    WHEN messages.reply_quote != '' THEN messages.body
+                    ELSE excluded.body
+                END,
                 sent_at = excluded.sent_at,
                 outgoing = excluded.outgoing,
                 audio_url = COALESCE(NULLIF(excluded.audio_url, ''), messages.audio_url),
@@ -522,6 +526,7 @@ def _find_duplicate_message_row(
             AND media_url = ?
             AND media_kind = ?
             AND reply_quote = ?
+            AND (? != '' OR message_id != '')
             AND sent_at BETWEEN ? AND ?
         ORDER BY ABS(strftime('%s', sent_at) - strftime('%s', ?))
         LIMIT 1
@@ -536,6 +541,7 @@ def _find_duplicate_message_row(
             message.media_url,
             message.media_kind,
             message.reply_quote,
+            message.message_id,
             start,
             end,
             _datetime_to_db(sent_at),

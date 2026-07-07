@@ -641,7 +641,7 @@ class ConversationPanel(wx.Panel):
             return media_description(message)
 
         if not message.audio_url:
-            return message.body
+            return self._body_without_reply_fallback(message)
 
         path = local_media_path(message)
         if message.media_duration_seconds <= 0 and path is not None:
@@ -655,6 +655,23 @@ class ConversationPanel(wx.Panel):
             return "Mensaje de voz"
 
         return f"Mensaje de voz, {format_duration(duration)}"
+
+    @staticmethod
+    def _body_without_reply_fallback(message: Message) -> str:
+        if not message.reply_quote or not message.body.lstrip().startswith(">"):
+            return message.body
+
+        lines = message.body.splitlines()
+        body_start = 0
+        while body_start < len(lines):
+            line = lines[body_start].strip()
+            if not line or line.startswith(">"):
+                body_start += 1
+                continue
+            break
+
+        clean_body = "\n".join(lines[body_start:]).strip()
+        return clean_body or message.body
 
     def _thumbnail_index_for_message(self, message: Message) -> int:
         if message.media_kind != "image":

@@ -28,9 +28,13 @@ class ChatListPanel(wx.Panel):
         selected_jid = selected_jid or self._selected_chat_jid()
         if preserve_focused_order and self.list_box.HasFocus() and self._chats:
             chats = self._preserve_current_order(chats)
-            rows = [self._format_chat_row(chat) for chat in chats]
-            self._chats = list(chats)
-            self._sync_rows_incrementally(rows)
+            self._sync_chats_incrementally(chats)
+            if selected_jid:
+                self.select_chat_by_jid(selected_jid)
+            return
+
+        if self.list_box.HasFocus() and self._chats:
+            self._sync_chats_incrementally(chats)
             if selected_jid:
                 self.select_chat_by_jid(selected_jid)
             return
@@ -73,19 +77,37 @@ class ChatListPanel(wx.Panel):
         ordered.extend(chats_by_jid.values())
         return ordered
 
-    def _sync_rows_incrementally(self, rows: list[str]) -> None:
-        current_count = self.list_box.GetCount()
-        common_count = min(current_count, len(rows))
+    def _sync_chats_incrementally(self, chats: list[Chat]) -> None:
+        self.list_box.Freeze()
+        try:
+            for target_index, chat in enumerate(chats):
+                row = self._format_chat_row(chat)
+                current_index = self._chat_index(chat.jid, start=target_index)
+                if current_index == target_index:
+                    self._chats[target_index] = chat
+                    if self.list_box.GetString(target_index) != row:
+                        self.list_box.SetString(target_index, row)
+                    continue
 
-        for index in range(common_count):
-            if self.list_box.GetString(index) != rows[index]:
-                self.list_box.SetString(index, rows[index])
+                if current_index is not None:
+                    self.list_box.Delete(current_index)
+                    self._chats.pop(current_index)
 
-        for index in range(current_count - 1, len(rows) - 1, -1):
-            self.list_box.Delete(index)
+                self._chats.insert(target_index, chat)
+                self.list_box.Insert(row, target_index)
 
-        for row in rows[current_count:]:
-            self.list_box.Append(row)
+            for index in range(len(self._chats) - 1, len(chats) - 1, -1):
+                self.list_box.Delete(index)
+                self._chats.pop(index)
+        finally:
+            self.list_box.Thaw()
+
+    def _chat_index(self, jid: str, start: int = 0) -> int | None:
+        for index in range(start, len(self._chats)):
+            if self._chats[index].jid == jid:
+                return index
+
+        return None
 
     def selected_chat(self) -> Chat | None:
         index = self.list_box.GetSelection()

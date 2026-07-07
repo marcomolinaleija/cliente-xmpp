@@ -47,7 +47,7 @@ from cliente_xmpp.xmpp.events import (
 HISTORY_PAGE_SIZE = 20
 PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
-MESSAGE_DUPLICATE_WINDOW_SECONDS = 10
+MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 
 
 class MainWindow(wx.Frame):
@@ -1038,6 +1038,8 @@ class MainWindow(wx.Frame):
     ) -> int | None:
         for index in indexes_by_content.get(cls._message_content_key(message), []):
             candidate = unique_messages[index]
+            if not message.message_id and not candidate.message_id:
+                continue
             if (
                 abs(cls._message_timestamp(candidate) - cls._message_timestamp(message))
                 <= MESSAGE_DUPLICATE_WINDOW_SECONDS
@@ -1050,6 +1052,9 @@ class MainWindow(wx.Frame):
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
         if not target.message_id and incoming.message_id:
             target.message_id = incoming.message_id
+        if incoming.reply_quote and not target.reply_quote:
+            target.body = incoming.body
+            target.reply_quote = incoming.reply_quote
         if not target.body and incoming.body:
             target.body = incoming.body
         if not target.audio_url and incoming.audio_url:
@@ -1068,8 +1073,6 @@ class MainWindow(wx.Frame):
             target.media_duration_seconds = incoming.media_duration_seconds
         if not target.media_local_path and incoming.media_local_path:
             target.media_local_path = incoming.media_local_path
-        if not target.reply_quote and incoming.reply_quote:
-            target.reply_quote = incoming.reply_quote
 
     def _request_full_history(self, chat_jid: str) -> None:
         if chat_jid in self.history_loading_chats:

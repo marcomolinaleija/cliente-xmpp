@@ -472,6 +472,12 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if (
+            event.GetKeyCode() == wx.WXK_LEFT
+            and self.conversation.speak_selected_text_message()
+        ):
+            return
+
         if event.GetKeyCode() == ord("S"):
             speed = self.conversation.cycle_selected_audio_speed()
             if speed is not None:

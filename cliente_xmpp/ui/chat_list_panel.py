@@ -14,11 +14,16 @@ class ChatListPanel(wx.Panel):
         self.open_button = wx.Button(self, label="Abrir")
         self._chats: list[Chat] = []
         self._last_selected_jid = ""
+        self._updating = False
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.list_box, 1, wx.EXPAND)
         box.Add(self.open_button, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
         self.SetSizer(box)
+
+    @property
+    def is_updating(self) -> bool:
+        return self._updating
 
     def set_chats(
         self,
@@ -79,8 +84,10 @@ class ChatListPanel(wx.Panel):
         return ordered
 
     def _sync_chats_incrementally(self, chats: list[Chat]) -> None:
+        self._updating = True
         self.list_box.Freeze()
         try:
+            self.list_box.SetSelection(wx.NOT_FOUND)
             for target_index, chat in enumerate(chats):
                 row = self._format_chat_row(chat)
                 current_index = self._chat_index(chat.jid, start=target_index)
@@ -102,6 +109,7 @@ class ChatListPanel(wx.Panel):
                 self._chats.pop(index)
         finally:
             self.list_box.Thaw()
+            self._updating = False
 
     def _chat_index(self, jid: str, start: int = 0) -> int | None:
         for index in range(start, len(self._chats)):

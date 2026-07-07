@@ -236,6 +236,9 @@ class MainWindow(wx.Frame):
         if not self.chat_list.IsShown():
             return
 
+        if self.chat_list.is_updating:
+            return
+
         chat = self.chat_list.selected_chat()
         if not chat:
             return
@@ -307,6 +310,9 @@ class MainWindow(wx.Frame):
             return
 
         if key_code == wx.WXK_ESCAPE and self.conversation.IsShown():
+            if self.reply_context:
+                self._cancel_reply()
+                return
             self._show_chat_list()
             return
 
@@ -332,12 +338,10 @@ class MainWindow(wx.Frame):
         if not chat or not body:
             return
 
-        fallback_end = self.conversation.reply_fallback_end(body) if self.reply_context else 0
-        display_body = body[fallback_end:].lstrip("\r\n") if fallback_end else body
         message = Message(
             chat_jid=chat.jid,
             sender_jid="me",
-            body=display_body,
+            body=body,
             outgoing=True,
             chat_is_group=chat.is_group,
             reply_quote=self.reply_context.body if self.reply_context else "",
@@ -352,7 +356,7 @@ class MainWindow(wx.Frame):
             )
             self.xmpp.send_reply(
                 chat.jid,
-                display_body,
+                body,
                 reply_to_jid,
                 self.reply_context.message_id,
                 fallback_end=0,
@@ -638,6 +642,10 @@ class MainWindow(wx.Frame):
     def _reply_to_message(self, message: Message) -> None:
         self.reply_context = message
         self.conversation.insert_reply_quote(message)
+
+    def _cancel_reply(self) -> None:
+        self.reply_context = None
+        self.conversation.clear_reply_quote()
 
     def _copy_message_text(self, message: Message) -> None:
         if not wx.TheClipboard.Open():

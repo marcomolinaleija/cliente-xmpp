@@ -53,7 +53,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index: int | None = None
         self._focus_target_index: int | None = None
-        self._reply_quote_prefix = ""
+        self._replying = False
         self._audio_durations_by_url: dict[str, float] = {}
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
@@ -85,7 +85,8 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index = None
         self._focus_target_index = None
-        self._reply_quote_prefix = ""
+        self._replying = False
+        self.compose_label.SetLabel("Mensaje:")
         self.send_button.Enable(True)
         self.attach_button.Enable(True)
         self.set_recording_state(False)
@@ -212,28 +213,16 @@ class ConversationPanel(wx.Panel):
 
     def insert_reply_quote(self, message: Message) -> None:
         sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
-        quote = self._format_reply_quote(sender, message.body)
-        self._reply_quote_prefix = quote
-        current_body = self.compose.GetValue()
-        if current_body.startswith(quote):
-            self.compose.SetFocus()
-            return
-
-        self.compose.SetValue(f"{quote}{current_body}")
-        self.compose.SetInsertionPointEnd()
+        self._replying = True
+        self.compose_label.SetLabel(f"Respondiendo a {sender}:")
         self.compose.SetFocus()
 
-    def reply_fallback_end(self, body: str) -> int:
-        if not self._reply_quote_prefix:
-            return 0
-
-        if not body.startswith(self._reply_quote_prefix):
-            return 0
-
-        return len(self._reply_quote_prefix)
-
     def clear_reply_quote(self) -> None:
-        self._reply_quote_prefix = ""
+        self._replying = False
+        self.compose_label.SetLabel("Mensaje:")
+
+    def has_reply_context(self) -> bool:
+        return self._replying
 
     def open_selected_message_reader(self) -> bool:
         message = self.selected_message()
@@ -421,7 +410,8 @@ class ConversationPanel(wx.Panel):
         self.messages.InsertColumn(0, "Mensajes", width=820)
         self.messages.AssignImageList(self._thumbnail_images, wx.IMAGE_LIST_SMALL)
 
-        box.Add(wx.StaticText(self, label="Mensaje:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
+        self.compose_label = wx.StaticText(self, label="Mensaje:")
+        box.Add(self.compose_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
 
         composer = wx.BoxSizer(wx.HORIZONTAL)
         self.compose = wx.TextCtrl(self, style=wx.TE_MULTILINE)
@@ -582,12 +572,6 @@ class ConversationPanel(wx.Panel):
             return None
 
         return max(0, message_count - unread_count)
-
-    @staticmethod
-    def _format_reply_quote(sender: str, body: str) -> str:
-        quoted_lines = body.splitlines() or [body]
-        quoted_body = "\n".join(f"> {line}" if line else ">" for line in quoted_lines)
-        return f"> {sender}:\n{quoted_body}\n"
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)

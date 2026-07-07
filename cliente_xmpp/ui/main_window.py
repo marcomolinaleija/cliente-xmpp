@@ -1114,7 +1114,7 @@ class MainWindow(wx.Frame):
             self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
 
     def _play_new_message_sound(self, message: Message) -> None:
-        if message.outgoing or self._chat_notifications_muted(message.chat_jid):
+        if message.outgoing or self._message_notifications_muted(message):
             return
 
         self.new_message_sound.play()
@@ -1186,7 +1186,7 @@ class MainWindow(wx.Frame):
         self._select_first_chat()
 
     def _speak_incoming_message(self, message: Message) -> None:
-        if message.outgoing or self._chat_notifications_muted(message.chat_jid):
+        if message.outgoing or self._message_notifications_muted(message):
             return
 
         sender = self._speakable_chat_name(message.chat_jid)
@@ -1636,6 +1636,13 @@ class MainWindow(wx.Frame):
     def _chat_notifications_muted(self, jid: str) -> bool:
         chat = self._chat_by_jid(jid)
         return bool(chat and chat.notifications_muted)
+
+    def _message_notifications_muted(self, message: Message) -> bool:
+        chat = self._chat_by_jid(message.chat_jid)
+        if chat is not None and chat.is_group:
+            return True
+
+        return message.chat_is_group or self._chat_notifications_muted(message.chat_jid)
 
     def _update_chat_names(self, chats: list[Chat]) -> None:
         for chat in chats:

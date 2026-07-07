@@ -26,6 +26,7 @@ class ChatListPanel(wx.Panel):
         self._last_selected_jid = ""
         self._updating = False
         self._searching = False
+        self._visible_stale = False
 
         self.search_label = wx.StaticText(self, label="Buscar:")
         self.search_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
@@ -59,6 +60,9 @@ class ChatListPanel(wx.Panel):
         self._chats = list(chats)
         if self._searching:
             return
+        if self.list_box.HasFocus() and self._items:
+            self._visible_stale = True
+            return
 
         self._set_items(
             [ChatListItem(chat=chat) for chat in chats],
@@ -77,18 +81,34 @@ class ChatListPanel(wx.Panel):
             selected_jid=selected_jid,
             preserve_focused_order=False,
         )
+        self._visible_stale = False
+
+    def refresh_visible_if_stale(self) -> None:
+        if not self._visible_stale:
+            return
+
+        self.force_refresh_visible()
+
+    def force_refresh_visible(self) -> None:
+        self._visible_stale = False
+        self._set_items(
+            [ChatListItem(chat=chat) for chat in self._chats],
+            preserve_focused_order=False,
+            force=True,
+        )
 
     def _set_items(
         self,
         items: list[ChatListItem],
         selected_jid: str = "",
         preserve_focused_order: bool = True,
+        force: bool = False,
     ) -> None:
         selected_jid = selected_jid or self._selected_chat_jid()
         if preserve_focused_order and self.list_box.HasFocus() and self._items:
             items = self._preserve_current_order(items)
 
-        if self.list_box.HasFocus() and self._items:
+        if not force and self.list_box.HasFocus() and self._items:
             self._sync_items_incrementally(items, selected_jid)
             return
 
@@ -118,10 +138,16 @@ class ChatListPanel(wx.Panel):
         for index, current in enumerate(self._chats):
             if current.jid == chat.jid:
                 self._chats[index] = chat
+                if self.list_box.HasFocus():
+                    self._visible_stale = True
+                    return
                 self._update_visible_chat(chat)
                 return
 
         self._chats.append(chat)
+        if self.list_box.HasFocus():
+            self._visible_stale = True
+            return
         if not self._searching:
             item = ChatListItem(chat=chat)
             self._items.append(item)

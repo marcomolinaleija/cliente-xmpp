@@ -53,6 +53,7 @@ MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
 SEARCH_RESULT_LIMIT = 200
+INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,8 @@ class MainWindow(wx.Frame):
         self.chat_names_by_jid: dict[str, str] = {}
         self.searchable_chats_by_jid: dict[str, Chat] = {}
         self.roster_jids: set[str] = set()
+        self.loading_initial_chat_activity = False
+        self.pending_chat_activity: dict[str, ChatActivityLoaded] = {}
         self.loaded_chat_summaries = 0
         self.reply_context: Message | None = None
         self.current_jid = ""
@@ -258,11 +261,7 @@ class MainWindow(wx.Frame):
         if self.chat_list.is_searching:
             return
 
-        chat = self.chat_list.selected_chat()
-        if not chat:
-            return
-
-        self._load_conversation(chat)
+        self.chat_list.selected_chat()
 
     def _on_open_selected_chat(self, _event: wx.Event) -> None:
         self._show_selected_chat()
@@ -1166,17 +1165,34 @@ class MainWindow(wx.Frame):
                 self.xmpp.monitor_group_chats(
                     [chat.jid for chat in cached_chats if chat.is_group]
                 )
+                self.loading_initial_chat_activity = True
+                self.pending_chat_activity = {}
                 self.loaded_chat_summaries = len(cached_chats)
                 self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
-                self._select_first_chat_if_needed()
+                if not self.chat_list.selected_chat():
+                    self.chat_list.select_first()
+                self.chat_list.focus()
                 self.status_bar.SetStatusText(
-                    f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
+                    f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
+                )
+                wx.CallLater(
+                    INITIAL_CHAT_LOAD_FALLBACK_MS,
+                    self._finish_initial_chat_loading_if_needed,
                 )
             case ChatsDiscovered(chats=chats):
                 self._upsert_discovered_chats(chats)
                 self._preload_recent_histories()
             case MessageReceived(message=message):
                 message, added_message = self._store_message(message)
+                if self.loading_initial_chat_activity:
+                    self.pending_chat_activity[message.chat_jid] = ChatActivityLoaded(
+                        chat_jid=message.chat_jid,
+                        sent_at=message.sent_at,
+                        preview=media_description(message) if has_media(message) else message.body,
+                        is_group=message.chat_is_group,
+                    )
+                    return
+
                 self._ensure_chat_for_message(message)
                 current_chat_is_open = (
                     self.conversation.IsShown()
@@ -1213,6 +1229,12 @@ class MainWindow(wx.Frame):
                 is_group=is_group,
             ):
                 if sent_at or preview or unread_count is not None:
+                    if self.loading_initial_chat_activity:
+                        self.pending_chat_activity[chat_jid] = event
+                        if sent_at:
+                            self._update_chat_activity(chat_jid, sent_at.timestamp())
+                        return
+
                     if sent_at:
                         self._update_chat_activity(chat_jid, sent_at.timestamp())
                     added = not self.chat_list.has_chat(chat_jid)
@@ -1232,6 +1254,10 @@ class MainWindow(wx.Frame):
                         f"{self.loaded_chat_summaries} chats con mensajes cargados"
                     )
             case ChatActivityLoadFinished(loaded_count=loaded_count):
+                if self.loading_initial_chat_activity:
+                    self._finish_initial_chat_loading(loaded_count)
+                    return
+
                 self.loaded_chat_summaries = max(self.loaded_chat_summaries, loaded_count)
                 self._preload_recent_histories()
                 self.status_bar.SetStatusText(
@@ -1593,7 +1619,6 @@ class MainWindow(wx.Frame):
     def _select_first_chat(self) -> None:
         chat = self.chat_list.select_first()
         if chat:
-            self._load_conversation(chat)
             self.chat_list.focus()
 
     def _select_first_chat_if_needed(self) -> None:
@@ -1628,6 +1653,48 @@ class MainWindow(wx.Frame):
             return name
 
         return self._fallback_display_name_for_jid(jid)
+
+    def _finish_initial_chat_loading(self, loaded_count: int) -> None:
+        self.loading_initial_chat_activity = False
+        cached_chats = self._load_cached_chats()
+        chats_by_jid = {chat.jid: chat for chat in cached_chats}
+
+        for activity in self.pending_chat_activity.values():
+            chat = chats_by_jid.get(activity.chat_jid)
+            if chat is None:
+                chat = Chat(
+                    jid=activity.chat_jid,
+                    name=self._display_name_for_jid(activity.chat_jid),
+                    is_group=activity.is_group,
+                )
+
+            updated_chat = self._updated_chat_summary(
+                chat,
+                preview=activity.preview,
+                sent_at=activity.sent_at,
+                unread_count=activity.unread_count,
+                is_group=activity.is_group,
+            )
+            chats_by_jid[activity.chat_jid] = updated_chat
+            self._persist_chat(updated_chat)
+
+        self.pending_chat_activity = {}
+        chats = self._sort_chats_by_recency(list(chats_by_jid.values()))
+        self.loaded_chat_summaries = max(len(chats), loaded_count)
+        self._set_searchable_chats(
+            self._merge_chat_lists(list(self.searchable_chats_by_jid.values()), chats)
+        )
+        self.chat_list.set_chats(chats, preserve_focused_order=False)
+        self.chat_list.force_refresh_visible()
+        if not self.chat_list.selected_chat():
+            self.chat_list.select_first()
+            self.chat_list.focus()
+        self._preload_recent_histories()
+        self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats cargados")
+
+    def _finish_initial_chat_loading_if_needed(self) -> None:
+        if self.loading_initial_chat_activity:
+            self._finish_initial_chat_loading(len(self.pending_chat_activity))
 
     def _load_cached_chats(self) -> list[Chat]:
         if not self.current_jid:
@@ -2072,6 +2139,7 @@ class MainWindow(wx.Frame):
         self.conversation.clear_unread_marker()
         self.conversation.Hide()
         self.chat_list.Show()
+        self.chat_list.refresh_visible_if_stale()
         self.content_panel.Layout()
         self.workspace_panel.Layout()
         self.Layout()
@@ -2084,6 +2152,12 @@ class MainWindow(wx.Frame):
         added = 0
         for chat in chats:
             existing = self._chat_by_jid(chat.jid)
+            if existing is None and self.loading_initial_chat_activity:
+                self.chat_names_by_jid[chat.jid] = chat.name
+                self._upsert_searchable_chat(chat)
+                self._persist_chat(chat)
+                continue
+
             if existing is not None:
                 merged_chat = Chat(
                     jid=existing.jid,

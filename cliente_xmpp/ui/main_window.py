@@ -316,10 +316,10 @@ class MainWindow(wx.Frame):
             )
             self.xmpp.send_reply(
                 chat.jid,
-                body,
+                display_body,
                 reply_to_jid,
                 self.reply_context.message_id,
-                fallback_end=fallback_end,
+                fallback_end=0,
                 is_group=chat.is_group,
             )
             self.reply_context = None

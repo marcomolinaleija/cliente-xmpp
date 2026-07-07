@@ -596,7 +596,7 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid=chat_jid,
                     messages=archived_messages,
                     older=older,
-                    complete=limit is not None and loaded_count < limit,
+                    complete=limit is not None and loaded_count == 0,
                     background=background,
                 )
             )
@@ -612,8 +612,8 @@ class BridgeXmppClient(ClientXMPP):
     ) -> list[Message]:
         mam = self["xep_0313"]
         messages: list[Message] = []
-        page_size = limit if with_jid_filter and limit is not None else 100
-        total = limit if with_jid_filter else max((limit or 20) * 8, 100)
+        page_size = 100
+        total = max((limit or 20) * 10, 100)
 
         async for result in mam.iterate(
             with_jid=chat_jid if with_jid_filter else None,

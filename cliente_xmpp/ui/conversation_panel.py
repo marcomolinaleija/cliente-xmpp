@@ -588,7 +588,7 @@ class ConversationPanel(wx.Panel):
         if reply:
             return f"{starred}{sender}, {body}, {reply}, {timestamp}.{reactions}"
 
-        return f"{starred}{sender} {body}, {timestamp}.{reactions}"
+        return f"{starred}{sender} {body} {timestamp}.{reactions}"
 
     def _format_message_for_reader(self, message: Message) -> str:
         sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)

@@ -34,15 +34,9 @@ class ChatListPanel(wx.Panel):
         selected_jid = selected_jid or self._selected_chat_jid()
         if preserve_focused_order and self.list_box.HasFocus() and self._chats:
             chats = self._preserve_current_order(chats)
-            self._sync_chats_incrementally(chats)
-            if selected_jid:
-                self.select_chat_by_jid(selected_jid)
-            return
 
         if self.list_box.HasFocus() and self._chats:
-            self._sync_chats_incrementally(chats)
-            if selected_jid:
-                self.select_chat_by_jid(selected_jid)
+            self._sync_chats_incrementally(chats, selected_jid)
             return
 
         previous_jids = [chat.jid for chat in self._chats]
@@ -58,10 +52,14 @@ class ChatListPanel(wx.Panel):
                 self.select_chat_by_jid(selected_jid)
             return
 
-        self._chats = list(chats)
-        self.list_box.Set(rows)
-        if selected_jid:
-            self.select_chat_by_jid(selected_jid)
+        self.list_box.Freeze()
+        try:
+            self._chats = list(chats)
+            self.list_box.Set(rows)
+            if selected_jid:
+                self.select_chat_by_jid(selected_jid)
+        finally:
+            self.list_box.Thaw()
 
     def upsert_chat(self, chat: Chat) -> None:
         for index, current in enumerate(self._chats):
@@ -83,11 +81,14 @@ class ChatListPanel(wx.Panel):
         ordered.extend(chats_by_jid.values())
         return ordered
 
-    def _sync_chats_incrementally(self, chats: list[Chat]) -> None:
+    def _sync_chats_incrementally(
+        self,
+        chats: list[Chat],
+        selected_jid: str = "",
+    ) -> None:
         self._updating = True
         self.list_box.Freeze()
         try:
-            self.list_box.SetSelection(wx.NOT_FOUND)
             for target_index, chat in enumerate(chats):
                 row = self._format_chat_row(chat)
                 current_index = self._chat_index(chat.jid, start=target_index)
@@ -107,6 +108,13 @@ class ChatListPanel(wx.Panel):
             for index in range(len(self._chats) - 1, len(chats) - 1, -1):
                 self.list_box.Delete(index)
                 self._chats.pop(index)
+
+            if selected_jid:
+                for index, chat in enumerate(self._chats):
+                    if chat.jid == selected_jid:
+                        self.list_box.SetSelection(index)
+                        self._last_selected_jid = selected_jid
+                        break
         finally:
             self.list_box.Thaw()
             self._updating = False

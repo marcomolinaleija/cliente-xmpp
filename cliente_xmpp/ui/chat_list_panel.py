@@ -19,9 +19,14 @@ class ChatListPanel(wx.Panel):
         box.Add(self.open_button, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
         self.SetSizer(box)
 
-    def set_chats(self, chats: list[Chat], selected_jid: str = "") -> None:
+    def set_chats(
+        self,
+        chats: list[Chat],
+        selected_jid: str = "",
+        preserve_focused_order: bool = True,
+    ) -> None:
         selected_jid = selected_jid or self._selected_chat_jid()
-        if self.list_box.HasFocus() and self._chats:
+        if preserve_focused_order and self.list_box.HasFocus() and self._chats:
             chats = self._preserve_current_order(chats)
             rows = [self._format_chat_row(chat) for chat in chats]
             self._chats = list(chats)

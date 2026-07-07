@@ -5,7 +5,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from cliente_xmpp.config.settings import APP_DIR
@@ -13,6 +13,7 @@ from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 5
+MESSAGE_DUPLICATE_WINDOW_SECONDS = 10
 
 
 class MessageStore:
@@ -346,6 +347,7 @@ class MessageStore:
         message: Message,
     ) -> None:
         now = _datetime_to_db(datetime.now())
+        message_key = _message_key_for_upsert(conn, account_jid, message)
         conn.execute(
             """
             INSERT INTO messages (
@@ -385,7 +387,7 @@ class MessageStore:
             (
                 account_jid,
                 message.chat_jid,
-                _message_key(message),
+                message_key,
                 message.message_id,
                 message.sender_jid,
                 message.body,
@@ -474,6 +476,73 @@ class MessageStore:
         )
 
 
+def _message_key_for_upsert(
+    conn: sqlite3.Connection,
+    account_jid: str,
+    message: Message,
+) -> str:
+    if message.message_id:
+        existing = conn.execute(
+            """
+            SELECT message_key
+            FROM messages
+            WHERE account_jid = ? AND chat_jid = ? AND message_id = ?
+            LIMIT 1
+            """,
+            (account_jid, message.chat_jid, message.message_id),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["message_key"])
+
+    duplicate = _find_duplicate_message_row(conn, account_jid, message)
+    if duplicate is not None:
+        return str(duplicate["message_key"])
+
+    return _message_key(message)
+
+
+def _find_duplicate_message_row(
+    conn: sqlite3.Connection,
+    account_jid: str,
+    message: Message,
+) -> sqlite3.Row | None:
+    sent_at = message.sent_at
+    start = _datetime_to_db(sent_at - timedelta(seconds=MESSAGE_DUPLICATE_WINDOW_SECONDS))
+    end = _datetime_to_db(sent_at + timedelta(seconds=MESSAGE_DUPLICATE_WINDOW_SECONDS))
+    return conn.execute(
+        """
+        SELECT message_key
+        FROM messages
+        WHERE account_jid = ?
+            AND chat_jid = ?
+            AND sender_jid = ?
+            AND body = ?
+            AND outgoing = ?
+            AND audio_url = ?
+            AND media_url = ?
+            AND media_kind = ?
+            AND reply_quote = ?
+            AND sent_at BETWEEN ? AND ?
+        ORDER BY ABS(strftime('%s', sent_at) - strftime('%s', ?))
+        LIMIT 1
+        """,
+        (
+            account_jid,
+            message.chat_jid,
+            message.sender_jid,
+            message.body,
+            int(message.outgoing),
+            message.audio_url,
+            message.media_url,
+            message.media_kind,
+            message.reply_quote,
+            start,
+            end,
+            _datetime_to_db(sent_at),
+        ),
+    ).fetchone()
+
+
 def _message_key(message: Message) -> str:
     if message.message_id:
         return f"id:{message.message_id}"
@@ -486,6 +555,7 @@ def _message_key(message: Message) -> str:
             str(message.outgoing),
             message.audio_url,
             message.media_url,
+            message.media_kind,
             message.reply_quote,
         )
     )

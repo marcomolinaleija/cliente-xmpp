@@ -47,6 +47,7 @@ from cliente_xmpp.xmpp.events import (
 HISTORY_PAGE_SIZE = 20
 PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
+MESSAGE_DUPLICATE_WINDOW_SECONDS = 10
 
 
 class MainWindow(wx.Frame):
@@ -876,7 +877,7 @@ class MainWindow(wx.Frame):
                     message,
                     mark_unread=not message.outgoing and not current_chat_is_open,
                 )
-                self._refresh_chat_order()
+                self._refresh_chat_order(preserve_focused_order=False)
                 if current_chat_is_open:
                     if added_message:
                         self.conversation.append_message(message)
@@ -986,15 +987,25 @@ class MainWindow(wx.Frame):
     def _merge_messages(self, chat_jid: str, messages: list[Message]) -> None:
         merged = self.messages_by_chat.get(chat_jid, []) + messages
         indexes_by_key: dict[tuple[object, ...], int] = {}
+        indexes_by_content: dict[tuple[object, ...], list[int]] = {}
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
             key = self._message_merge_key(message)
             existing_index = indexes_by_key.get(key)
+            if existing_index is None:
+                existing_index = self._matching_content_message_index(
+                    message,
+                    indexes_by_content,
+                    unique_messages,
+                )
             if existing_index is not None:
                 self._merge_message_metadata(unique_messages[existing_index], message)
+                indexes_by_key[key] = existing_index
                 continue
 
             indexes_by_key[key] = len(unique_messages)
+            content_key = self._message_content_key(message)
+            indexes_by_content.setdefault(content_key, []).append(len(unique_messages))
             unique_messages.append(message)
 
         self.messages_by_chat[chat_jid] = unique_messages
@@ -1004,19 +1015,41 @@ class MainWindow(wx.Frame):
         if message.message_id:
             return "id", message.message_id
 
+        return "payload", message.sent_at.isoformat(), *MainWindow._message_content_key(message)
+
+    @staticmethod
+    def _message_content_key(message: Message) -> tuple[object, ...]:
         return (
-            "payload",
-            message.sent_at.isoformat(),
             message.sender_jid,
             message.body,
             message.outgoing,
             message.audio_url,
             message.media_url,
+            message.media_kind,
             message.reply_quote,
         )
 
+    @classmethod
+    def _matching_content_message_index(
+        cls,
+        message: Message,
+        indexes_by_content: dict[tuple[object, ...], list[int]],
+        unique_messages: list[Message],
+    ) -> int | None:
+        for index in indexes_by_content.get(cls._message_content_key(message), []):
+            candidate = unique_messages[index]
+            if (
+                abs(cls._message_timestamp(candidate) - cls._message_timestamp(message))
+                <= MESSAGE_DUPLICATE_WINDOW_SECONDS
+            ):
+                return index
+
+        return None
+
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
+        if not target.message_id and incoming.message_id:
+            target.message_id = incoming.message_id
         if not target.body and incoming.body:
             target.body = incoming.body
         if not target.audio_url and incoming.audio_url:
@@ -1374,7 +1407,11 @@ class MainWindow(wx.Frame):
         )
         self._refresh_load_older_button(chat.jid)
 
-    def _refresh_chat_order(self, selected_jid: str = "") -> None:
+    def _refresh_chat_order(
+        self,
+        selected_jid: str = "",
+        preserve_focused_order: bool = True,
+    ) -> None:
         selected_chat = self.chat_list.selected_chat()
         selected_jid = selected_jid or (selected_chat.jid if selected_chat else "")
         if not selected_jid and self.conversation.current_chat:
@@ -1382,6 +1419,7 @@ class MainWindow(wx.Frame):
         self.chat_list.set_chats(
             self._sort_chats_by_recency(self.chat_list.chats()),
             selected_jid=selected_jid,
+            preserve_focused_order=preserve_focused_order,
         )
 
     def _sort_chats_by_recency(self, chats: list[Chat]) -> list[Chat]:

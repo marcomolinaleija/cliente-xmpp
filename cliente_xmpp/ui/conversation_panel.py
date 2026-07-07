@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Callable
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from cliente_xmpp.media.downloads import (
     media_description,
 )
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
+
+MESSAGE_ROW_WIDTH = 120
 
 
 class ConversationPanel(wx.Panel):
@@ -88,7 +92,7 @@ class ConversationPanel(wx.Panel):
         for message_index, message in enumerate(self._messages):
             if marker_message_index == message_index:
                 self._insert_unread_marker()
-            self._append_message_row(message)
+            self._append_message_rows(message)
 
         if marker_message_index == len(self._messages) and self._unread_marker_count > 0:
             self._insert_unread_marker()
@@ -104,11 +108,11 @@ class ConversationPanel(wx.Panel):
 
     def append_message(self, message: Message) -> None:
         self._messages.append(message)
-        index = self._append_message_row(message)
+        first_index, last_index = self._append_message_rows(message)
         if self._unread_marker_index is None:
-            self._focus_target_index = index
+            self._focus_target_index = first_index
         self._resize_message_column_to_content()
-        self.messages.EnsureVisible(index)
+        self.messages.EnsureVisible(last_index)
 
     def focus_composer(self) -> None:
         self.compose.SetFocus()
@@ -217,18 +221,13 @@ class ConversationPanel(wx.Panel):
         return self._message_rows[index]
 
     def refresh_message(self, message: Message) -> None:
-        for index, current in enumerate(self._message_rows):
-            if current is not message:
-                continue
-
-            self.messages.SetItem(index, 0, self._format_message_row(message))
-            image_index = self._thumbnail_index_for_message(message)
-            if image_index >= 0:
-                item = self.messages.GetItem(index)
-                item.SetImage(image_index)
-                self.messages.SetItem(item)
-            self._resize_message_column_to_content()
-            return
+        for index, current in enumerate(self._messages):
+            if current is message:
+                self.set_messages(self._messages, unread_count=self._unread_marker_count)
+                self._focus_target_index = self._first_row_index_for_message_index(index)
+                if self.messages.HasFocus():
+                    wx.CallAfter(self.focus_default_message_item)
+                return
 
     def play_selected_audio(self) -> bool:
         index = self.messages.GetFirstSelected()
@@ -385,6 +384,7 @@ class ConversationPanel(wx.Panel):
 
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)
         self.SetSizer(box)
+        apply_theme(self)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
         self.messages.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._on_message_item_focused)
 
@@ -401,20 +401,27 @@ class ConversationPanel(wx.Panel):
                 self.messages.SetToolTip(text)
         event.Skip()
 
-    def _append_message_row(self, message: Message) -> int:
-        index = self.messages.GetItemCount()
-        self._message_rows.append(message)
+    def _append_message_rows(self, message: Message) -> tuple[int, int]:
+        first_index = self.messages.GetItemCount()
+        rows = self._format_message_visual_rows(message)
         image_index = self._thumbnail_index_for_message(message)
-        if image_index >= 0:
-            self.messages.InsertItem(index, self._format_message_row(message), image_index)
-        else:
-            self.messages.InsertItem(index, self._format_message_row(message))
-        return index
+        for offset, row in enumerate(rows):
+            index = self.messages.GetItemCount()
+            self._message_rows.append(message)
+            if offset == 0 and image_index >= 0:
+                self.messages.InsertItem(index, row, image_index)
+            else:
+                self.messages.InsertItem(index, row)
+            self._style_message_item(index)
+
+        return first_index, self.messages.GetItemCount() - 1
 
     def _insert_unread_marker(self) -> None:
         self._unread_marker_index = self.messages.GetItemCount()
         self._message_rows.append(None)
-        self.messages.InsertItem(self._unread_marker_index, "No leídos")
+        self.messages.InsertItem(self._unread_marker_index, "No leidos")
+
+        self._style_message_item(self._unread_marker_index)
 
     def _resize_message_column_to_content(self) -> None:
         if self.messages.GetItemCount() <= 0:
@@ -480,15 +487,28 @@ class ConversationPanel(wx.Panel):
         if not message.reply_quote:
             return ""
 
-        return f"respondiendo a: {self._truncate_reply_quote(message.reply_quote)}"
+        return f"respondiendo a: {' '.join(message.reply_quote.split())}"
+
+    def _format_message_visual_rows(self, message: Message) -> list[str]:
+        return self._wrap_visual_text(self._format_message_row(message))
 
     @staticmethod
-    def _truncate_reply_quote(quote: str, max_length: int = 300) -> str:
-        quote = " ".join(quote.split())
-        if len(quote) <= max_length:
-            return quote
+    def _wrap_visual_text(text: str) -> list[str]:
+        visual_rows: list[str] = []
+        for line in text.splitlines() or [text]:
+            if not line:
+                visual_rows.append(" ")
+                continue
 
-        return f"{quote[: max_length - 3]}..."
+            wrapped = textwrap.wrap(
+                line,
+                width=MESSAGE_ROW_WIDTH,
+                break_long_words=False,
+                replace_whitespace=False,
+            )
+            visual_rows.extend(wrapped or [" "])
+
+        return visual_rows or [" "]
 
     def _format_row_for_tooltip(self, index: int) -> str:
         row = self._message_rows[index]
@@ -579,7 +599,23 @@ class ConversationPanel(wx.Panel):
         self._audio_durations_by_url[audio_url] = duration
         message.media_duration_seconds = duration
         self.messages.SetItem(index, 0, self._format_message_row(message))
+        self._style_message_item(index)
         self._resize_message_column_to_content()
+
+    def _first_row_index_for_message_index(self, message_index: int) -> int | None:
+        if message_index < 0 or message_index >= len(self._messages):
+            return None
+
+        target = self._messages[message_index]
+        for row_index, row in enumerate(self._message_rows):
+            if row is target:
+                return row_index
+
+        return None
+
+    def _style_message_item(self, index: int) -> None:
+        self.messages.SetItemTextColour(index, YELLOW)
+        self.messages.SetItemBackgroundColour(index, DARKER_BLUE if index % 2 else NAVY_BLUE)
 
     @staticmethod
     def _format_duration(duration_seconds: float) -> str:
@@ -605,5 +641,6 @@ class MessageReaderDialog(wx.Dialog):
         box.Add(text, 1, wx.ALL | wx.EXPAND, 12)
         box.Add(close_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_RIGHT, 12)
         self.SetSizer(box)
+        apply_theme(self)
         self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_OK), close_button)
         wx.CallAfter(text.SetFocus)

@@ -4,6 +4,7 @@ import os
 import threading
 from collections import deque
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import wx
 
@@ -28,6 +29,7 @@ from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
+from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
@@ -84,6 +86,7 @@ class MainWindow(wx.Frame):
         self.status_bar = self.CreateStatusBar()
 
         self._layout()
+        apply_theme(self)
         self._bind_events()
         self._load_saved_password()
         self._set_connected_ui(False)
@@ -352,8 +355,51 @@ class MainWindow(wx.Frame):
         finally:
             dialog.Destroy()
 
-        self.status_bar.SetStatusText("Subiendo archivo...")
-        self.xmpp.send_file(chat.jid, path)
+        self._send_files_to_chat(chat, [Path(path)])
+
+    def _attach_clipboard_files(self) -> bool:
+        paths = self._clipboard_file_paths()
+        if not paths:
+            return False
+
+        chat = self.conversation.current_chat
+        if not chat:
+            self.status_bar.SetStatusText("Selecciona un chat para adjuntar archivos")
+            return True
+
+        self._send_files_to_chat(chat, paths)
+        return True
+
+    def _send_files_to_chat(self, chat: Chat, paths: list[Path]) -> None:
+        files = [path for path in paths if path.is_file()]
+        if not files:
+            self.status_bar.SetStatusText("El portapapeles no contiene archivos validos")
+            return
+
+        if len(files) == 1:
+            self.status_bar.SetStatusText("Subiendo archivo...")
+        else:
+            self.status_bar.SetStatusText(f"Subiendo {len(files)} archivos...")
+
+        for path in files:
+            self.xmpp.send_file(chat.jid, str(path))
+
+    @staticmethod
+    def _clipboard_file_paths() -> list[Path]:
+        if not wx.TheClipboard.Open():
+            return []
+
+        try:
+            if not wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_FILENAME)):
+                return []
+
+            data = wx.FileDataObject()
+            if not wx.TheClipboard.GetData(data):
+                return []
+
+            return [Path(filename) for filename in data.GetFilenames()]
+        finally:
+            wx.TheClipboard.Close()
 
     def _start_recording(self) -> None:
         if not self.conversation.current_chat:
@@ -411,6 +457,14 @@ class MainWindow(wx.Frame):
         self.xmpp.send_file(chat.jid, str(path))
 
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
+        if (
+            event.ControlDown()
+            and not event.AltDown()
+            and event.GetKeyCode() == ord("V")
+            and self._attach_clipboard_files()
+        ):
+            return
+
         if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
             self._on_primary_send_action(wx.CommandEvent())
             return

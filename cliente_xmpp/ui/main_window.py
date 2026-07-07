@@ -77,6 +77,8 @@ class MainWindow(wx.Frame):
         self.current_jid = ""
         self.audio_recorder = MciAudioRecorder()
 
+        self.startup_panel: wx.Panel
+        self.startup_message: wx.TextCtrl
         self.login_panel = LoginPanel(self, self.connection_settings)
         self.workspace_panel: wx.Panel
         self.content_panel: wx.Panel
@@ -90,11 +92,29 @@ class MainWindow(wx.Frame):
         apply_theme(self)
         self._bind_events()
         self._load_saved_password()
-        self._set_connected_ui(False)
-        self.status_bar.SetStatusText("Desconectado")
+        if self._can_auto_connect():
+            self._set_startup_wait_ui()
+            self.status_bar.SetStatusText("Conectando automaticamente...")
+            wx.CallAfter(self.speaker.speak, "Bienvenido a WhatsApp CAN. Espera por favor...")
+        else:
+            self._set_connected_ui(False)
+            self.status_bar.SetStatusText("Desconectado")
         self._schedule_auto_connect()
 
     def _layout(self) -> None:
+        self.startup_panel = wx.Panel(self)
+        startup_box = wx.BoxSizer(wx.VERTICAL)
+        self.startup_message = wx.TextCtrl(
+            self.startup_panel,
+            value="Bienvenido a WhatsApp CAN.\nEspera por favor...",
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE,
+        )
+        self.startup_message.SetToolTip("Conectando automaticamente.")
+        startup_box.AddStretchSpacer(1)
+        startup_box.Add(self.startup_message, 0, wx.ALL | wx.EXPAND, 32)
+        startup_box.AddStretchSpacer(1)
+        self.startup_panel.SetSizer(startup_box)
+
         self.workspace_panel = wx.Panel(self)
         workspace_box = wx.BoxSizer(wx.VERTICAL)
 
@@ -119,6 +139,7 @@ class MainWindow(wx.Frame):
         self.workspace_panel.SetSizer(workspace_box)
 
         box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self.startup_panel, 1, wx.EXPAND)
         box.Add(self.login_panel, 0, wx.EXPAND)
         box.Add(self.workspace_panel, 1, wx.EXPAND)
         self.SetSizer(box)
@@ -180,19 +201,29 @@ class MainWindow(wx.Frame):
             return
 
     def _schedule_auto_connect(self) -> None:
-        if not self.connection_settings.auto_connect:
+        if not self._auto_connect_enabled():
             return
 
-        if not self.connection_settings.remember_password:
-            return
-
-        if not self.login_panel.get_login_data().password:
+        if not self._can_auto_connect():
             self.status_bar.SetStatusText(
                 "No hay contraseña guardada para conectar automáticamente"
             )
             return
 
         wx.CallAfter(self._on_connect, wx.CommandEvent())
+
+    def _auto_connect_enabled(self) -> bool:
+        return (
+            self.connection_settings.auto_connect
+            and self.connection_settings.remember_password
+        )
+
+    def _can_auto_connect(self) -> bool:
+        if not self._auto_connect_enabled():
+            return False
+
+        login = self.login_panel.get_login_data()
+        return bool(login.settings.jid and login.password)
 
     def _on_disconnect(self, _event: wx.CommandEvent) -> None:
         self.connection_header.set_status("Desconectando...")
@@ -813,6 +844,8 @@ class MainWindow(wx.Frame):
                     self.status_bar.SetStatusText("Desconectado")
             case XmppError(message=message):
                 self.login_panel.set_connecting(False)
+                if self.startup_panel.IsShown():
+                    self._set_connected_ui(False)
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
             case RosterLoaded(chats=chats):
@@ -1135,12 +1168,19 @@ class MainWindow(wx.Frame):
         self.new_message_sound.play()
 
     def _set_connected_ui(self, connected: bool) -> None:
+        self.startup_panel.Show(False)
         self.login_panel.Show(not connected)
         self.workspace_panel.Show(connected)
         self.chat_list.Enable(connected)
         self.conversation.Enable(connected)
         if connected:
             self._show_chat_list()
+        self.Layout()
+
+    def _set_startup_wait_ui(self) -> None:
+        self.login_panel.Show(False)
+        self.workspace_panel.Show(False)
+        self.startup_panel.Show(True)
         self.Layout()
 
     def _store_message(self, message: Message) -> tuple[Message, bool]:

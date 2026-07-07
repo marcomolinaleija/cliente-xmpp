@@ -13,6 +13,7 @@ class ChatListPanel(wx.Panel):
         self.list_box = wx.ListBox(self)
         self.open_button = wx.Button(self, label="Abrir")
         self._chats: list[Chat] = []
+        self._last_selected_jid = ""
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.list_box, 1, wx.EXPAND)
@@ -111,13 +112,16 @@ class ChatListPanel(wx.Panel):
 
     def selected_chat(self) -> Chat | None:
         index = self.list_box.GetSelection()
-        if index == wx.NOT_FOUND or index >= len(self._chats):
-            return None
-        return self._chats[index]
+        if index != wx.NOT_FOUND and index < len(self._chats):
+            chat = self._chats[index]
+            self._last_selected_jid = chat.jid
+            return chat
+
+        return self._chat_by_jid(self._last_selected_jid)
 
     def _selected_chat_jid(self) -> str:
         chat = self.selected_chat()
-        return chat.jid if chat else ""
+        return chat.jid if chat else self._last_selected_jid
 
     def select_first(self) -> Chat | None:
         if not self._chats:
@@ -125,6 +129,7 @@ class ChatListPanel(wx.Panel):
 
         if self.list_box.GetSelection() != 0:
             self.list_box.SetSelection(0)
+        self._last_selected_jid = self._chats[0].jid
         return self._chats[0]
 
     def select_chat_by_jid(self, jid: str) -> Chat | None:
@@ -132,6 +137,17 @@ class ChatListPanel(wx.Panel):
             if chat.jid == jid:
                 if self.list_box.GetSelection() != index:
                     self.list_box.SetSelection(index)
+                self._last_selected_jid = jid
+                return chat
+
+        return None
+
+    def _chat_by_jid(self, jid: str) -> Chat | None:
+        if not jid:
+            return None
+
+        for chat in self._chats:
+            if chat.jid == jid:
                 return chat
 
         return None

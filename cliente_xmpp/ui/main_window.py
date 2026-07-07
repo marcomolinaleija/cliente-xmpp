@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.notification import NewMessageSound
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
-from cliente_xmpp.config.settings import SettingsStore
+from cliente_xmpp.config.settings import APP_DIR, SettingsStore
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
@@ -49,6 +50,14 @@ PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
+
+
+@dataclass(frozen=True, slots=True)
+class ClipboardAttachment:
+    paths: list[Path] | None = None
+    source_label: str = "archivo"
+    message: str = ""
 
 
 class MainWindow(wx.Frame):
@@ -161,6 +170,9 @@ class MainWindow(wx.Frame):
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
+        text_paste_event = getattr(wx, "EVT_TEXT_PASTE", None)
+        if text_paste_event is not None:
+            self.conversation.compose.Bind(text_paste_event, self._on_composer_paste)
         self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
         self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
         self.conversation.messages.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_message_right_click)
@@ -402,49 +414,102 @@ class MainWindow(wx.Frame):
 
         self._send_files_to_chat(chat, [Path(path)])
 
-    def _attach_clipboard_files(self) -> bool:
-        paths = self._clipboard_file_paths()
-        if not paths:
+    def _attach_clipboard_files(self, report_empty: bool = False) -> bool:
+        result = self._clipboard_attachment_paths()
+        if not result.paths:
+            if result.message or report_empty:
+                self._set_clipboard_status(
+                    result.message
+                    or "El portapapeles no contiene archivos ni una imagen adjuntable",
+                )
             return False
 
         chat = self.conversation.current_chat
         if not chat:
-            self.status_bar.SetStatusText("Selecciona un chat para adjuntar archivos")
+            self._set_clipboard_status("Selecciona un chat para adjuntar archivos")
             return True
 
-        self._send_files_to_chat(chat, paths)
+        self._send_files_to_chat(chat, result.paths, source_label=result.source_label)
         return True
 
-    def _send_files_to_chat(self, chat: Chat, paths: list[Path]) -> None:
+    def _send_files_to_chat(
+        self,
+        chat: Chat,
+        paths: list[Path],
+        source_label: str = "archivo",
+    ) -> None:
         files = [path for path in paths if path.is_file()]
         if not files:
-            self.status_bar.SetStatusText("El portapapeles no contiene archivos válidos")
+            self._set_clipboard_status("No se pudo adjuntar: no hay archivos válidos")
             return
 
         if len(files) == 1:
-            self.status_bar.SetStatusText("Subiendo archivo...")
+            self._set_clipboard_status(f"Subiendo {source_label}: {files[0].name}")
         else:
-            self.status_bar.SetStatusText(f"Subiendo {len(files)} archivos...")
+            self._set_clipboard_status(f"Subiendo {len(files)} archivos...")
 
         for path in files:
             self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
 
-    @staticmethod
-    def _clipboard_file_paths() -> list[Path]:
+    def _set_clipboard_status(self, message: str) -> None:
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    @classmethod
+    def _clipboard_attachment_paths(cls) -> ClipboardAttachment:
         if not wx.TheClipboard.Open():
-            return []
+            return ClipboardAttachment(message="No se pudo abrir el portapapeles")
 
         try:
-            if not wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_FILENAME)):
-                return []
+            paths = cls._clipboard_file_paths()
+            if paths:
+                return ClipboardAttachment(paths=paths, source_label="archivo")
 
-            data = wx.FileDataObject()
-            if not wx.TheClipboard.GetData(data):
-                return []
-
-            return [Path(filename) for filename in data.GetFilenames()]
+            image_path, message = cls._clipboard_bitmap_path()
+            if image_path is not None:
+                return ClipboardAttachment(paths=[image_path], source_label="imagen")
+            if message:
+                return ClipboardAttachment(message=message)
         finally:
             wx.TheClipboard.Close()
+
+        return ClipboardAttachment()
+
+    @staticmethod
+    def _clipboard_file_paths() -> list[Path]:
+        if not wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_FILENAME)):
+            return []
+
+        data = wx.FileDataObject()
+        if not wx.TheClipboard.GetData(data):
+            return []
+
+        return [Path(filename) for filename in data.GetFilenames()]
+
+    @classmethod
+    def _clipboard_bitmap_path(cls) -> tuple[Path | None, str]:
+        if not wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_BITMAP)):
+            return None, ""
+
+        data = wx.BitmapDataObject()
+        if not wx.TheClipboard.GetData(data):
+            return None, "No se pudo leer la imagen copiada"
+
+        bitmap = data.GetBitmap()
+        if not bitmap.IsOk():
+            return None, "La imagen copiada no es válida"
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        path = CLIPBOARD_ATTACHMENTS_DIR / f"imagen-portapapeles-{timestamp}.png"
+        try:
+            CLIPBOARD_ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+            image = bitmap.ConvertToImage()
+            if not image.IsOk() or not image.SaveFile(str(path), wx.BITMAP_TYPE_PNG):
+                return None, "No se pudo preparar la imagen copiada"
+        except OSError as exc:
+            return None, f"No se pudo guardar la imagen copiada: {exc}"
+
+        return path, ""
 
     def _start_recording(self) -> None:
         if not self.conversation.current_chat:
@@ -501,20 +566,43 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("Subiendo audio...")
         self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
 
-    def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
-        if (
-            event.ControlDown()
-            and not event.AltDown()
-            and event.GetKeyCode() == ord("V")
-            and self._attach_clipboard_files()
-        ):
-            return
-
-        if event.GetKeyCode() == wx.WXK_RETURN and not event.ShiftDown():
-            self._on_primary_send_action(wx.CommandEvent())
+    def _on_composer_paste(self, event: wx.CommandEvent) -> None:
+        if self._attach_clipboard_files():
             return
 
         event.Skip()
+
+    def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
+        if self._is_paste_shortcut(event):
+            if self._attach_clipboard_files(report_empty=True):
+                return
+            event.Skip()
+            return
+
+        if self._is_enter_without_shift(event):
+            if self.audio_recorder.is_recording or self.conversation.has_composed_text():
+                self._on_primary_send_action(wx.CommandEvent())
+            else:
+                self.status_bar.SetStatusText("Escribe un mensaje o usa el boton Grabar audio")
+            return
+
+        event.Skip()
+
+    @staticmethod
+    def _is_paste_shortcut(event: wx.KeyEvent) -> bool:
+        if not event.ControlDown() or event.AltDown():
+            return False
+
+        key_code = event.GetKeyCode()
+        unicode_key = event.GetUnicodeKey()
+        return key_code in (ord("V"), ord("v")) or unicode_key in (ord("V"), ord("v"))
+
+    @staticmethod
+    def _is_enter_without_shift(event: wx.KeyEvent) -> bool:
+        return (
+            event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER)
+            and not event.ShiftDown()
+        )
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
         if (

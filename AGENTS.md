@@ -260,6 +260,32 @@ Antes de cambiar parsing o envio XMPP, revisa el flujo actual y documentacion de
 relevante. Este proyecto ya contempla MAM para historial y formatos usados para archivos o
 multimedia como OOB/HTTP URLs y metadatos de comparticion de archivos.
 
+Fuentes oficiales del bridge usado:
+
+- Slidge: https://slidge.im/
+- Documentacion de slidge-whatsapp: https://slidge.im/docs/slidge-whatsapp/main/
+- Configuracion inicial de slidge-whatsapp como componente XMPP:
+  https://slidge.im/docs/slidge-whatsapp/main/admin/quickstart.html
+- Adjuntos en slidge-whatsapp y uso de XEP-0363:
+  https://slidge.im/docs/slidge-whatsapp/main/admin/attachments.html
+
+Fuentes oficiales de XMPP y XEPs relevantes para este cliente:
+
+- Indice de extensiones XMPP: https://xmpp.org/extensions/
+- XEP-0030, Service Discovery: https://xmpp.org/extensions/xep-0030.html
+- XEP-0045, Multi-User Chat: https://xmpp.org/extensions/xep-0045.html
+- XEP-0050, Ad-Hoc Commands: https://xmpp.org/extensions/xep-0050.html
+- XEP-0060, Publish-Subscribe: https://xmpp.org/extensions/xep-0060.html
+- XEP-0249, Direct MUC Invitations: https://xmpp.org/extensions/xep-0249.html
+- XEP-0280, Message Carbons: https://xmpp.org/extensions/xep-0280.html
+- XEP-0297, Stanza Forwarding: https://xmpp.org/extensions/xep-0297.html
+- XEP-0313, Message Archive Management: https://xmpp.org/extensions/xep-0313.html
+- XEP-0363, HTTP File Upload: https://xmpp.org/extensions/xep-0363.html
+- XEP-0402, PEP Native Bookmarks: https://xmpp.org/extensions/xep-0402.html
+- XEP-0444, Message Reactions: https://xmpp.org/extensions/xep-0444.html
+- XEP-0461, Message Replies: https://xmpp.org/extensions/xep-0461.html
+- XEP-0428, Fallback Indication: https://xmpp.org/extensions/xep-0428.html
+
 No asumas que todos los bridges emiten exactamente el mismo XML. Implementa parsing tolerante:
 leer namespaces conocidos, usar fallback razonable y conservar body si no se puede extraer algo
 mejor.

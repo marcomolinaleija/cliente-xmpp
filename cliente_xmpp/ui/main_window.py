@@ -232,6 +232,9 @@ class MainWindow(wx.Frame):
         self.xmpp.disconnect()
 
     def _on_chat_selected(self, _event: wx.CommandEvent) -> None:
+        if not self.chat_list.IsShown():
+            return
+
         chat = self.chat_list.selected_chat()
         if not chat:
             return

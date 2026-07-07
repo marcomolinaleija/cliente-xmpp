@@ -120,18 +120,22 @@ class ConversationPanel(wx.Panel):
         if marker_message_index == len(self._messages) and self._unread_marker_count > 0:
             self._insert_unread_marker()
 
+        restore_focused_message = False
         if had_message_focus and previous_focus_index != wx.NOT_FOUND:
             self._focus_target_index = self._row_index_for_focus_key(
                 previous_focus_key,
                 fallback_index=previous_focus_index,
             )
+            restore_focused_message = self._focus_target_index is not None
+        elif had_message_focus:
+            self._focus_target_index = None
         elif self._unread_marker_index is not None:
             self._focus_target_index = self._unread_marker_index
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
         self._resize_message_column_to_content()
-        if had_message_focus:
+        if restore_focused_message:
             wx.CallAfter(self.focus_default_message_item)
 
     def append_message(self, message: Message) -> None:
@@ -158,7 +162,6 @@ class ConversationPanel(wx.Panel):
 
         index = min(self._focus_target_index, item_count - 1)
         if self.messages.GetFirstSelected() == index:
-            self.messages.EnsureVisible(index)
             return
 
         self._clear_message_selection()
@@ -513,7 +516,7 @@ class ConversationPanel(wx.Panel):
 
         selected = self.messages.GetFirstSelected()
         if selected == wx.NOT_FOUND:
-            return True
+            return False
 
         return selected >= self.messages.GetItemCount() - 1
 

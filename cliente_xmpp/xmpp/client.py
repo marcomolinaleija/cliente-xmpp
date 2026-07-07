@@ -613,7 +613,7 @@ class BridgeXmppClient(ClientXMPP):
         mam = self["xep_0313"]
         messages: list[Message] = []
         page_size = 100
-        total = max((limit or 20) * 10, 100)
+        total = None if limit is None else max(limit * 10, 100)
 
         async for result in mam.iterate(
             with_jid=chat_jid if with_jid_filter else None,

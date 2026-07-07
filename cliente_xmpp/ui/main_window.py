@@ -912,7 +912,7 @@ class MainWindow(wx.Frame):
             self.history_loaded_chats.discard(chat_jid)
             self.history_exhausted_chats.discard(chat_jid)
             self.preloaded_history_chats.discard(chat_jid)
-        else:
+        elif not background:
             self.history_loaded_chats.add(chat_jid)
         if complete and not empty_preview_chat:
             self.history_exhausted_chats.add(chat_jid)
@@ -1004,6 +1004,16 @@ class MainWindow(wx.Frame):
             target.media_local_path = incoming.media_local_path
         if not target.reply_quote and incoming.reply_quote:
             target.reply_quote = incoming.reply_quote
+
+    def _request_full_history(self, chat_jid: str) -> None:
+        if chat_jid in self.history_loading_chats:
+            return
+
+        self.history_loading_chats.add(chat_jid)
+        self.history_exhausted_chats.discard(chat_jid)
+        self.preloaded_history_chats.discard(chat_jid)
+        self._refresh_load_older_button(chat_jid)
+        self.xmpp.load_history(chat_jid)
 
     def _request_history_page(
         self,
@@ -1585,8 +1595,8 @@ class MainWindow(wx.Frame):
             or self._chat_history_needs_reload(chat.jid)
         )
         if needs_history:
-            self.status_bar.SetStatusText(f"Cargando los últimos {HISTORY_PAGE_SIZE} mensajes...")
-            self._request_history_page(chat.jid)
+            self.status_bar.SetStatusText(f"Cargando todo el historial de {chat.name}...")
+            self._request_full_history(chat.jid)
 
     def _show_chat_list(self) -> None:
         self.reply_context = None

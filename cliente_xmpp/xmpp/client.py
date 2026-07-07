@@ -49,6 +49,7 @@ OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
+DELAY_NS = "urn:xmpp:delay"
 FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
 SIMS_NS = "urn:xmpp:sims:1"
@@ -83,6 +84,8 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._disconnect_requested = False
+        self._reconnect_scheduled = False
         self.force_starttls = settings.use_tls
 
         self.add_event_handler("session_start", self._on_session_start)
@@ -105,11 +108,45 @@ class BridgeXmppClient(ClientXMPP):
         asyncio.create_task(self.load_inbox())
 
     def _on_disconnected(self, _event: object) -> None:
-        self._emit(XmppDisconnected())
+        if self._disconnect_requested:
+            self._emit(XmppDisconnected())
+            if self.loop and self.loop.is_running():
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            return
+
+        self._emit(XmppDisconnected("Reconectando..."))
+        self._schedule_reconnect()
+
+    def _schedule_reconnect(self, delay: float = 3.0) -> None:
+        if self._reconnect_scheduled or self._disconnect_requested:
+            return
+
+        self._reconnect_scheduled = True
+
+        def reconnect() -> None:
+            self._reconnect_scheduled = False
+            if self._disconnect_requested:
+                return
+            if self.is_connected() or self.is_connecting():
+                return
+            if self.settings.host:
+                self.connect(self.settings.host, self.settings.port)
+            else:
+                self.connect()
+
+        self.loop.call_later(delay, reconnect)
+
+    def request_disconnect(self) -> None:
+        self._disconnect_requested = True
+        self.disconnect()
+
+    def _stop_after_failed_auth(self) -> None:
+        self._disconnect_requested = True
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
 
     def _on_failed_auth(self, _event: object) -> None:
+        self._stop_after_failed_auth()
         self._emit(XmppError("No se pudo autenticar con el servidor XMPP."))
 
     def _on_message(self, msg: object) -> None:
@@ -150,6 +187,7 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid=bare_jid,
                     sender_jid=bare_jid,
                     body=display_body,
+                    sent_at=self._sent_at_from_stanza_delay(msg) or datetime.now(),
                     outgoing=False,
                     audio_url=audio_url,
                     media_url=media_url,
@@ -797,6 +835,7 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid=chat_jid,
                     sender_jid=sender_jid,
                     body=display_body,
+                    sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
                     outgoing=outgoing,
                     audio_url=audio_url,
                     media_url=media_url,
@@ -840,6 +879,7 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid=str(stanza["from"].bare),
             sender_jid="Yo" if outgoing else sender_jid,
             body=display_body,
+            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,
@@ -994,6 +1034,19 @@ class BridgeXmppClient(ClientXMPP):
     def _sent_at_from_mam_result(result: object) -> datetime | None:
         forwarded = result["mam_result"]["forwarded"]
         return forwarded["delay"]["stamp"]
+
+    @staticmethod
+    def _sent_at_from_stanza_delay(stanza: object) -> datetime | None:
+        for delay in stanza.xml.findall(f".//{{{DELAY_NS}}}delay"):
+            stamp = delay.attrib.get("stamp", "")
+            if not stamp:
+                continue
+            try:
+                return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+        return None
 
     @staticmethod
     def _message_body_from_mam_result(result: object) -> str:
@@ -1441,7 +1494,7 @@ class XmppService:
 
     def disconnect(self) -> None:
         if self._client and self._loop:
-            self._loop.call_soon_threadsafe(self._client.disconnect)
+            self._loop.call_soon_threadsafe(self._client.request_disconnect)
 
     def send_message(self, to_jid: str, body: str, is_group: bool = False) -> None:
         if not self._client or not self._loop:
@@ -1663,7 +1716,13 @@ class XmppService:
                 "xep_0045",
             )
             for plugin in plugins:
-                self._client.register_plugin(plugin)
+                if plugin == "xep_0199":
+                    self._client.register_plugin(
+                        plugin,
+                        {"keepalive": True, "interval": 60, "timeout": 20},
+                    )
+                else:
+                    self._client.register_plugin(plugin)
 
             if settings.host:
                 self._client.connect(settings.host, settings.port)

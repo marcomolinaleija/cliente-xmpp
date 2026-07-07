@@ -799,13 +799,18 @@ class MainWindow(wx.Frame):
                 self.login_panel.set_connecting(False)
                 self.connection_header.set_account(self.current_jid)
                 self.connection_header.set_status("Conectado")
-                self._set_connected_ui(True)
+                if not self.workspace_panel.IsShown():
+                    self._set_connected_ui(True)
                 self.status_bar.SetStatusText("Conectado")
-            case XmppDisconnected():
+            case XmppDisconnected(reason=reason):
                 self.login_panel.set_connecting(False)
-                self.connection_header.set_status("Desconectado")
-                self._set_connected_ui(False)
-                self.status_bar.SetStatusText("Desconectado")
+                if reason:
+                    self.connection_header.set_status(reason)
+                    self.status_bar.SetStatusText(reason)
+                else:
+                    self.connection_header.set_status("Desconectado")
+                    self._set_connected_ui(False)
+                    self.status_bar.SetStatusText("Desconectado")
             case XmppError(message=message):
                 self.login_panel.set_connecting(False)
                 self.status_bar.SetStatusText(message)

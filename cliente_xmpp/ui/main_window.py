@@ -84,6 +84,7 @@ class MainWindow(wx.Frame):
         self.preloaded_history_chats: set[str] = set()
         self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
+        self.searchable_chats_by_jid: dict[str, Chat] = {}
         self.roster_jids: set[str] = set()
         self.loaded_chat_summaries = 0
         self.reply_context: Message | None = None
@@ -326,6 +327,7 @@ class MainWindow(wx.Frame):
             last_message_at=chat.last_message_at,
         )
         self.chat_names_by_jid[chat.jid] = name
+        self._upsert_searchable_chat(renamed_chat)
         self.chat_list.upsert_chat(renamed_chat)
         self._refresh_chat_order(selected_jid=chat.jid)
         if self.conversation.current_chat and self.conversation.current_chat.jid == chat.jid:
@@ -369,7 +371,7 @@ class MainWindow(wx.Frame):
             self.chat_list.clear_search_results()
             return
 
-        chats_by_jid = {chat.jid: chat for chat in self.chat_list.chats()}
+        chats_by_jid = self._searchable_chats_by_jid()
         contact_results = [
             ChatListItem(chat=chat)
             for chat in self._sort_chats_by_recency(chats_by_jid.values())
@@ -432,6 +434,18 @@ class MainWindow(wx.Frame):
             last_message_preview=media_description(message) if has_media(message) else message.body,
             last_message_at=message.sent_at,
         )
+
+    def _set_searchable_chats(self, chats: list[Chat]) -> None:
+        self.searchable_chats_by_jid = {chat.jid: chat for chat in chats}
+
+    def _searchable_chats_by_jid(self) -> dict[str, Chat]:
+        chats = dict(self.searchable_chats_by_jid)
+        for chat in self.chat_list.chats():
+            chats[chat.jid] = chat
+        return chats
+
+    def _upsert_searchable_chat(self, chat: Chat) -> None:
+        self.searchable_chats_by_jid[chat.jid] = chat
 
     def _chat_matches_search(self, chat: Chat, terms: list[str]) -> bool:
         haystack = self._normalize_search_text(
@@ -1148,15 +1162,15 @@ class MainWindow(wx.Frame):
                 self._update_chat_names(chats)
                 self.roster_jids = {chat.jid for chat in chats}
                 cached_chats = self._load_cached_chats()
-                available_chats = self._merge_chat_lists(chats, cached_chats)
+                self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
                 self.xmpp.monitor_group_chats(
-                    [chat.jid for chat in available_chats if chat.is_group]
+                    [chat.jid for chat in cached_chats if chat.is_group]
                 )
-                self.loaded_chat_summaries = len(available_chats)
-                self.chat_list.set_chats(self._sort_chats_by_recency(available_chats))
+                self.loaded_chat_summaries = len(cached_chats)
+                self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
                 self._select_first_chat_if_needed()
                 self.status_bar.SetStatusText(
-                    f"{self.loaded_chat_summaries} chats disponibles. Buscando actualizaciones..."
+                    f"{self.loaded_chat_summaries} chats cacheados. Buscando actualizaciones..."
                 )
             case ChatsDiscovered(chats=chats):
                 self._upsert_discovered_chats(chats)
@@ -1564,16 +1578,16 @@ class MainWindow(wx.Frame):
 
         name = self._display_name_for_jid(message.chat_jid)
         preview = media_description(message) if has_media(message) else message.body
-        self.chat_list.upsert_chat(
-            Chat(
-                jid=message.chat_jid,
-                name=name,
-                is_group=message.chat_is_group,
-                notifications_muted=self._chat_notifications_muted(message.chat_jid),
-                last_message_preview=preview,
-                last_message_at=message.sent_at,
-            )
+        chat = Chat(
+            jid=message.chat_jid,
+            name=name,
+            is_group=message.chat_is_group,
+            notifications_muted=self._chat_notifications_muted(message.chat_jid),
+            last_message_preview=preview,
+            last_message_at=message.sent_at,
         )
+        self._upsert_searchable_chat(chat)
+        self.chat_list.upsert_chat(chat)
         self.chat_names_by_jid.setdefault(message.chat_jid, name)
 
     def _select_first_chat(self) -> None:
@@ -1853,36 +1867,22 @@ class MainWindow(wx.Frame):
         force_preview: bool = False,
         is_group: bool = False,
     ) -> None:
-        chats = self.chat_list.chats()
-        for chat in chats:
-            if chat.jid != chat_jid:
-                continue
-
-            updated_chat = Chat(
-                jid=chat.jid,
-                name=chat.name,
-                custom_name=chat.custom_name,
-                is_group=chat.is_group or is_group,
-                notifications_muted=chat.notifications_muted,
-                unread_count=self._next_unread_count(
-                    chat.unread_count,
-                    unread_delta=unread_delta,
-                    unread_count=unread_count,
-                    mark_read=mark_read,
-                ),
-                last_message_preview=self._next_chat_preview(
-                    chat,
-                    preview,
-                    sent_at,
-                    force_preview=force_preview,
-                ),
-                last_message_at=self._next_chat_timestamp(
-                    chat,
-                    sent_at,
-                    force_preview=force_preview,
-                ),
+        visible_chat = self._visible_chat_by_jid(chat_jid)
+        chat = visible_chat or self.searchable_chats_by_jid.get(chat_jid)
+        if chat is not None:
+            updated_chat = self._updated_chat_summary(
+                chat,
+                preview=preview,
+                sent_at=sent_at,
+                unread_delta=unread_delta,
+                unread_count=unread_count,
+                mark_read=mark_read,
+                force_preview=force_preview,
+                is_group=is_group,
             )
-            self.chat_list.upsert_chat(updated_chat)
+            self._upsert_searchable_chat(updated_chat)
+            if visible_chat is not None or preview or sent_at is not None:
+                self.chat_list.upsert_chat(updated_chat)
             self._persist_chat(updated_chat)
             return
 
@@ -1900,9 +1900,47 @@ class MainWindow(wx.Frame):
             last_message_preview=preview,
             last_message_at=sent_at,
         )
-        self.chat_list.upsert_chat(updated_chat)
+        self._upsert_searchable_chat(updated_chat)
+        if preview or sent_at is not None:
+            self.chat_list.upsert_chat(updated_chat)
         self._persist_chat(updated_chat)
         self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
+
+    def _updated_chat_summary(
+        self,
+        chat: Chat,
+        preview: str = "",
+        sent_at: datetime | None = None,
+        unread_delta: int = 0,
+        unread_count: int | None = None,
+        mark_read: bool = False,
+        force_preview: bool = False,
+        is_group: bool = False,
+    ) -> Chat:
+        return Chat(
+            jid=chat.jid,
+            name=chat.name,
+            custom_name=chat.custom_name,
+            is_group=chat.is_group or is_group,
+            notifications_muted=chat.notifications_muted,
+            unread_count=self._next_unread_count(
+                chat.unread_count,
+                unread_delta=unread_delta,
+                unread_count=unread_count,
+                mark_read=mark_read,
+            ),
+            last_message_preview=self._next_chat_preview(
+                chat,
+                preview,
+                sent_at,
+                force_preview=force_preview,
+            ),
+            last_message_at=self._next_chat_timestamp(
+                chat,
+                sent_at,
+                force_preview=force_preview,
+            ),
+        )
 
     @classmethod
     def _next_chat_preview(
@@ -2063,6 +2101,7 @@ class MainWindow(wx.Frame):
                 added += 1
 
             self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
+            self._upsert_searchable_chat(merged_chat)
             self.chat_list.upsert_chat(merged_chat)
             self._persist_chat(merged_chat)
 
@@ -2072,6 +2111,9 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
 
     def _chat_by_jid(self, jid: str) -> Chat | None:
+        return self._visible_chat_by_jid(jid)
+
+    def _visible_chat_by_jid(self, jid: str) -> Chat | None:
         for chat in self.chat_list.chats():
             if chat.jid == jid:
                 return chat

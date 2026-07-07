@@ -48,6 +48,7 @@ HISTORY_PAGE_SIZE = 20
 PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
+OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
 
 class MainWindow(wx.Frame):
@@ -1023,13 +1024,12 @@ class MainWindow(wx.Frame):
     @staticmethod
     def _message_content_key(message: Message) -> tuple[object, ...]:
         return (
-            message.sender_jid,
+            "outgoing" if message.outgoing else message.sender_jid,
             message.body,
             message.outgoing,
             message.audio_url,
             message.media_url,
             message.media_kind,
-            message.reply_quote,
         )
 
     @classmethod
@@ -1043,13 +1043,33 @@ class MainWindow(wx.Frame):
             candidate = unique_messages[index]
             if not message.message_id and not candidate.message_id:
                 continue
+            if not cls._messages_have_compatible_reply_quotes(candidate, message):
+                continue
+            duplicate_window = cls._message_duplicate_window_seconds(candidate, message)
             if (
                 abs(cls._message_timestamp(candidate) - cls._message_timestamp(message))
-                <= MESSAGE_DUPLICATE_WINDOW_SECONDS
+                <= duplicate_window
             ):
                 return index
 
         return None
+
+    @staticmethod
+    def _message_duplicate_window_seconds(first: Message, second: Message) -> int:
+        if first.message_id and second.message_id:
+            return MESSAGE_DUPLICATE_WINDOW_SECONDS
+        if first.outgoing and second.outgoing:
+            return OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
+
+        return MESSAGE_DUPLICATE_WINDOW_SECONDS
+
+    @staticmethod
+    def _messages_have_compatible_reply_quotes(first: Message, second: Message) -> bool:
+        return (
+            not first.reply_quote
+            or not second.reply_quote
+            or first.reply_quote == second.reply_quote
+        )
 
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:

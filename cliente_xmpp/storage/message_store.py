@@ -5,7 +5,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from cliente_xmpp.config.settings import APP_DIR
@@ -14,6 +14,7 @@ from cliente_xmpp.models.chat import Chat, Message
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 5
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
+OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
 
 class MessageStore:
@@ -228,6 +229,7 @@ class MessageStore:
             )
             self._ensure_message_columns(conn)
             self._ensure_chat_columns(conn)
+            self._compact_duplicate_messages(conn)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -269,6 +271,75 @@ class MessageStore:
             conn.execute(
                 "ALTER TABLE chats ADD COLUMN notifications_muted INTEGER NOT NULL DEFAULT 0"
             )
+
+    def _compact_duplicate_messages(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT rowid AS db_rowid, *
+            FROM messages
+            WHERE outgoing = 1
+            ORDER BY account_jid, chat_jid, sent_at, rowid
+            """
+        ).fetchall()
+        kept_by_content: dict[tuple[object, ...], list[sqlite3.Row]] = {}
+        delete_rowids: set[int] = set()
+
+        for row in rows:
+            key = _duplicate_content_key(row)
+            candidates = kept_by_content.setdefault(key, [])
+            duplicate_index = _matching_duplicate_row_index(row, candidates)
+            if duplicate_index is None:
+                candidates.append(row)
+                continue
+
+            survivor = candidates[duplicate_index]
+            duplicate = row
+            if _duplicate_row_prefer_current(row, survivor):
+                survivor, duplicate = row, survivor
+                candidates[duplicate_index] = row
+
+            self._merge_duplicate_message_rows(conn, survivor, duplicate)
+            delete_rowids.add(int(duplicate["db_rowid"]))
+
+        for rowid in delete_rowids:
+            conn.execute("DELETE FROM messages WHERE rowid = ?", (rowid,))
+
+    @staticmethod
+    def _merge_duplicate_message_rows(
+        conn: sqlite3.Connection,
+        survivor: sqlite3.Row,
+        duplicate: sqlite3.Row,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE messages
+            SET
+                message_id = COALESCE(NULLIF(message_id, ''), ?),
+                audio_url = COALESCE(NULLIF(audio_url, ''), ?),
+                media_url = COALESCE(NULLIF(media_url, ''), ?),
+                media_kind = COALESCE(NULLIF(media_kind, ''), ?),
+                media_mime = COALESCE(NULLIF(media_mime, ''), ?),
+                media_filename = COALESCE(NULLIF(media_filename, ''), ?),
+                media_size = COALESCE(NULLIF(media_size, 0), ?),
+                media_duration_seconds = COALESCE(NULLIF(media_duration_seconds, 0), ?),
+                media_local_path = COALESCE(NULLIF(media_local_path, ''), ?),
+                reply_quote = COALESCE(NULLIF(reply_quote, ''), ?)
+            WHERE rowid = ?
+            """,
+            (
+                duplicate["message_id"],
+                duplicate["audio_url"],
+                duplicate["media_url"],
+                duplicate["media_kind"],
+                duplicate["media_mime"],
+                duplicate["media_filename"],
+                duplicate["media_size"],
+                duplicate["media_duration_seconds"],
+                duplicate["media_local_path"],
+                duplicate["reply_quote"],
+                survivor["db_rowid"],
+            ),
+        )
 
     def _upsert_chat(self, conn: sqlite3.Connection, account_jid: str, chat: Chat) -> None:
         now = _datetime_to_db(datetime.now())
@@ -505,35 +576,114 @@ def _message_key_for_upsert(
     return _message_key(message)
 
 
+def _duplicate_content_key(row: sqlite3.Row) -> tuple[object, ...]:
+    outgoing = bool(row["outgoing"])
+    return (
+        row["account_jid"],
+        row["chat_jid"],
+        "outgoing" if outgoing else row["sender_jid"],
+        row["body"],
+        outgoing,
+        row["audio_url"],
+        row["media_url"],
+        row["media_kind"],
+    )
+
+
+def _matching_duplicate_row_index(
+    row: sqlite3.Row,
+    candidates: list[sqlite3.Row],
+) -> int | None:
+    row_sent_at = _datetime_from_db(row["sent_at"])
+    if row_sent_at is None:
+        return None
+    row_timestamp = _datetime_timestamp(row_sent_at)
+    if row_timestamp is None:
+        return None
+
+    for index, candidate in enumerate(candidates):
+        if not row["message_id"] and not candidate["message_id"]:
+            continue
+        if not _duplicate_rows_have_compatible_reply_quotes(row, candidate):
+            continue
+
+        candidate_sent_at = _datetime_from_db(candidate["sent_at"])
+        if candidate_sent_at is None:
+            continue
+        candidate_timestamp = _datetime_timestamp(candidate_sent_at)
+        if candidate_timestamp is None:
+            continue
+
+        duplicate_window = _duplicate_row_window_seconds(row, candidate)
+        delta = abs(row_timestamp - candidate_timestamp)
+        if delta <= duplicate_window:
+            return index
+
+    return None
+
+
+def _duplicate_row_prefer_current(current: sqlite3.Row, existing: sqlite3.Row) -> bool:
+    if current["message_id"] and not existing["message_id"]:
+        return True
+    if current["reply_quote"] and not existing["reply_quote"]:
+        return True
+    if current["media_local_path"] and not existing["media_local_path"]:
+        return True
+    return False
+
+
+def _duplicate_row_window_seconds(first: sqlite3.Row, second: sqlite3.Row) -> int:
+    if first["message_id"] and second["message_id"]:
+        return MESSAGE_DUPLICATE_WINDOW_SECONDS
+    if bool(first["outgoing"]) and bool(second["outgoing"]):
+        return OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
+    return MESSAGE_DUPLICATE_WINDOW_SECONDS
+
+
+def _duplicate_rows_have_compatible_reply_quotes(
+    first: sqlite3.Row,
+    second: sqlite3.Row,
+) -> bool:
+    return (
+        not first["reply_quote"]
+        or not second["reply_quote"]
+        or first["reply_quote"] == second["reply_quote"]
+    )
+
+
 def _find_duplicate_message_row(
     conn: sqlite3.Connection,
     account_jid: str,
     message: Message,
 ) -> sqlite3.Row | None:
-    sent_at = message.sent_at
-    start = _datetime_to_db(sent_at - timedelta(seconds=MESSAGE_DUPLICATE_WINDOW_SECONDS))
-    end = _datetime_to_db(sent_at + timedelta(seconds=MESSAGE_DUPLICATE_WINDOW_SECONDS))
-    return conn.execute(
+    duplicate_window = (
+        OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
+        if message.outgoing
+        else MESSAGE_DUPLICATE_WINDOW_SECONDS
+    )
+    message_timestamp = _datetime_timestamp(message.sent_at)
+    if message_timestamp is None:
+        return None
+
+    rows = conn.execute(
         """
-        SELECT message_key
+        SELECT message_key, message_id, sent_at
         FROM messages
         WHERE account_jid = ?
             AND chat_jid = ?
-            AND sender_jid = ?
+            AND (? = 1 OR sender_jid = ?)
             AND body = ?
             AND outgoing = ?
             AND audio_url = ?
             AND media_url = ?
             AND media_kind = ?
-            AND reply_quote = ?
+            AND (? = '' OR reply_quote = '' OR reply_quote = ?)
             AND (? != '' OR message_id != '')
-            AND sent_at BETWEEN ? AND ?
-        ORDER BY ABS(strftime('%s', sent_at) - strftime('%s', ?))
-        LIMIT 1
         """,
         (
             account_jid,
             message.chat_jid,
+            int(message.outgoing),
             message.sender_jid,
             message.body,
             int(message.outgoing),
@@ -541,12 +691,31 @@ def _find_duplicate_message_row(
             message.media_url,
             message.media_kind,
             message.reply_quote,
+            message.reply_quote,
             message.message_id,
-            start,
-            end,
-            _datetime_to_db(sent_at),
         ),
-    ).fetchone()
+    ).fetchall()
+
+    closest_row: sqlite3.Row | None = None
+    closest_delta = duplicate_window + 1.0
+    for row in rows:
+        row_sent_at = _datetime_from_db(row["sent_at"])
+        if row_sent_at is None:
+            continue
+        row_timestamp = _datetime_timestamp(row_sent_at)
+        if row_timestamp is None:
+            continue
+        row_window = (
+            MESSAGE_DUPLICATE_WINDOW_SECONDS
+            if row["message_id"] and message.message_id
+            else duplicate_window
+        )
+        delta = abs(row_timestamp - message_timestamp)
+        if delta <= row_window and delta < closest_delta:
+            closest_row = row
+            closest_delta = delta
+
+    return closest_row
 
 
 def _message_key(message: Message) -> str:

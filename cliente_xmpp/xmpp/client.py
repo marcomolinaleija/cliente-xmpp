@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from slixmpp import ClientXMPP
+from slixmpp.exceptions import IqError, IqTimeout
 
 from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.opus import (
@@ -1381,7 +1382,7 @@ class BridgeXmppClient(ClientXMPP):
 
         size = file_path.stat().st_size
         duration = media_duration_seconds(file_path) if media_kind == "audio" else 0.0
-        get_url = await self["xep_0363"].upload_file(
+        get_url = await self._upload_file(
             file_path,
             size=size,
             content_type=upload_mime,
@@ -1422,6 +1423,36 @@ class BridgeXmppClient(ClientXMPP):
 
     async def send_audio_file(self, to_jid: str, path: str, is_group: bool = False) -> Message:
         return await self.send_file(to_jid, path, is_group=is_group)
+
+    async def _upload_file(
+        self,
+        file_path: Path,
+        size: int,
+        content_type: str,
+        timeout: int,
+    ) -> str:
+        upload = self["xep_0363"]
+        if upload.upload_service is None:
+            upload.upload_service = self._preferred_upload_service()
+
+        try:
+            return await upload.upload_file(
+                file_path,
+                size=size,
+                content_type=content_type,
+                timeout=timeout,
+            )
+        except (IqError, IqTimeout):
+            return await upload.upload_file(
+                file_path,
+                size=size,
+                content_type=content_type,
+                timeout=timeout,
+            )
+
+    def _preferred_upload_service(self) -> str:
+        domain = str(self.boundjid.bare).split("@", 1)[-1] or self.settings.jid.split("@", 1)[-1]
+        return f"upload.{domain}"
 
     @staticmethod
     def _append_file_metadata(
@@ -1616,7 +1647,7 @@ class XmppService:
             try:
                 message = await self._client.send_file(to_jid, path, is_group=is_group)
             except Exception as exc:
-                self._emit(XmppError(f"No se pudo enviar el archivo: {exc}"))
+                self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
                 return
 
             self._emit(MessageReceived(message))
@@ -1752,3 +1783,25 @@ class XmppService:
         finally:
             self._client = None
             self._loop = None
+
+
+def _format_xmpp_error(exc: Exception) -> str:
+    iq = getattr(exc, "iq", None)
+    if iq is None:
+        return str(exc)
+
+    to_jid = str(iq["to"] or "")
+    error = iq["error"]
+    condition = str(error["condition"] or "")
+    text = str(error["text"] or "")
+    if isinstance(exc, IqTimeout):
+        message = "tiempo de espera agotado"
+    else:
+        message = condition or type(exc).__name__
+
+    details = [message]
+    if to_jid:
+        details.append(f"servicio: {to_jid}")
+    if text:
+        details.append(text)
+    return "; ".join(details)

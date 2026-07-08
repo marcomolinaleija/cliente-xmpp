@@ -15,6 +15,7 @@ from cliente_xmpp.media.downloads import (
     local_media_path,
     media_description,
 )
+from cliente_xmpp.media.links import is_link_preview
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
 
@@ -634,6 +635,9 @@ class ConversationPanel(wx.Panel):
         return self._format_message_row(row)
 
     def _format_message_body(self, message: Message) -> str:
+        if is_link_preview(message):
+            return media_description(message)
+
         if message.media_url and message.media_kind != "audio":
             return media_description(message)
 

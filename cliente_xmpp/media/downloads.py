@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from cliente_xmpp.config.settings import APP_DIR
+from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Message
 
 DOWNLOADS_DIR = APP_DIR / "downloads"
@@ -68,6 +69,9 @@ def media_size_label(size: int) -> str:
 
 
 def media_description(message: Message) -> str:
+    if is_link_preview(message):
+        return link_description(message)
+
     if message.media_kind == "audio":
         if message.media_duration_seconds > 0:
             return f"voz, {format_duration(message.media_duration_seconds)}"

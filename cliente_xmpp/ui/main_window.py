@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import unicodedata
+import webbrowser
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +25,7 @@ from cliente_xmpp.media.downloads import (
     local_media_path,
     media_description,
 )
+from cliente_xmpp.media.links import MessageLink, is_link_preview, message_links
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -828,11 +830,15 @@ class MainWindow(wx.Frame):
         if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_video():
             return
 
+        if event.GetKeyCode() in (ord("L"), ord("l")) and self._open_selected_message_link():
+            return
+
         if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
             message = self.conversation.selected_message()
             if (
                 message
                 and has_media(message)
+                and not is_link_preview(message)
                 and message.media_kind not in {"audio", "video"}
             ):
                 self._open_or_download_media(message)
@@ -863,9 +869,13 @@ class MainWindow(wx.Frame):
         reply_item = menu.Append(wx.ID_ANY, "Responder")
         copy_item = menu.Append(wx.ID_ANY, "Copiar texto")
         media_item: wx.MenuItem | None = None
+        link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
         describe_item: wx.MenuItem | None = None
         play_item: wx.MenuItem | None = None
+        links = message_links(message)
+        if links:
+            link_item = menu.Append(wx.ID_ANY, "Abrir enlace")
         if has_media(message):
             media_label = "Abrir archivo" if local_media_path(message) else "Descargar archivo"
             if message.media_kind == "image":
@@ -874,11 +884,12 @@ class MainWindow(wx.Frame):
                 media_label = "Abrir video" if local_media_path(message) else "Descargar video"
             elif message.media_kind == "audio":
                 media_label = "Reproducir audio" if message.audio_url else media_label
-            media_item = menu.Append(wx.ID_ANY, media_label)
-            copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
-            copy_file_item.Enable(local_media_path(message) is not None)
-            if message.media_kind in {"image", "video"}:
-                describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
+            if not is_link_preview(message):
+                media_item = menu.Append(wx.ID_ANY, media_label)
+                copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
+                copy_file_item.Enable(local_media_path(message) is not None)
+                if message.media_kind in {"image", "video"}:
+                    describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
         else:
             play_item = menu.Append(wx.ID_ANY, "Reproducir audio")
             play_item.Enable(False)
@@ -894,6 +905,8 @@ class MainWindow(wx.Frame):
 
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        if link_item:
+            self.Bind(wx.EVT_MENU, lambda _event: self._open_message_link(message), link_item)
         if media_item:
             if message.media_kind == "audio":
                 self.Bind(
@@ -951,6 +964,51 @@ class MainWindow(wx.Frame):
             wx.TheClipboard.SetData(wx.TextDataObject(message.body))
         finally:
             wx.TheClipboard.Close()
+
+    def _open_selected_message_link(self) -> bool:
+        message = self.conversation.selected_message()
+        if message is None:
+            return False
+
+        return self._open_message_link(message)
+
+    def _open_message_link(self, message: Message) -> bool:
+        links = message_links(message)
+        if not links:
+            self.status_bar.SetStatusText("El mensaje no contiene enlaces")
+            return False
+
+        link = links[0] if len(links) == 1 else self._choose_message_link(links)
+        if link is None:
+            return True
+
+        if webbrowser.open(link.url):
+            self.status_bar.SetStatusText(f"Abriendo enlace: {link.url}")
+        else:
+            self.status_bar.SetStatusText("No se pudo abrir el enlace")
+        return True
+
+    def _choose_message_link(self, links: list[MessageLink]) -> MessageLink | None:
+        choices = [
+            f"{link.title} | {link.url}" if link.title else link.url
+            for link in links
+        ]
+        dialog = wx.SingleChoiceDialog(
+            self,
+            "Elige el enlace que quieres abrir:",
+            "Abrir enlace",
+            choices,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return None
+            selection = dialog.GetSelection()
+        finally:
+            dialog.Destroy()
+
+        if selection == wx.NOT_FOUND:
+            return None
+        return links[selection]
 
     def _open_or_download_media(self, message: Message) -> None:
         path = local_media_path(message)

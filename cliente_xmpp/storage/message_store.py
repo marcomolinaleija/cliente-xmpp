@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cliente_xmpp.config.settings import APP_DIR
+from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
@@ -131,6 +132,7 @@ class MessageStore:
                     (
                         message.body,
                         message.reply_quote,
+                        message.media_url,
                         message.media_filename,
                         message.sender_jid,
                         message.chat_jid,
@@ -788,6 +790,9 @@ def _message_key(message: Message) -> str:
 def _message_preview(message: Message) -> str:
     if not message.media_url:
         return message.body
+
+    if is_link_preview(message):
+        return link_description(message)
 
     if message.media_kind == "audio":
         if message.media_duration_seconds > 0:

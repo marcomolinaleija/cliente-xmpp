@@ -903,7 +903,9 @@ class BridgeXmppClient(ClientXMPP):
         if entry is None:
             return
 
-        chat_jid, unread_count, preview, sent_at = entry
+        chat_jid, unread_count, preview, sent_at, message = entry
+        if message is not None:
+            self._emit(MessageReceived(message))
         self._emit(
             ChatActivityLoaded(
                 chat_jid=chat_jid,
@@ -913,7 +915,10 @@ class BridgeXmppClient(ClientXMPP):
             )
         )
 
-    def _inbox_entry_from_stanza(self, msg: object) -> tuple[str, int, str, datetime | None] | None:
+    def _inbox_entry_from_stanza(
+        self,
+        msg: object,
+    ) -> tuple[str, int, str, datetime | None, Message | None] | None:
         xml = msg.xml
         entry = xml.find(f"{{{INBOX_NS}}}entry")
         if entry is None:
@@ -930,6 +935,7 @@ class BridgeXmppClient(ClientXMPP):
 
         preview = ""
         sent_at = None
+        message_model = None
         if result is not None:
             message = self._forwarded_message_from_xml(result)
             if message is not None:
@@ -944,9 +950,85 @@ class BridgeXmppClient(ClientXMPP):
                         "",
                         media_size,
                     )
+                message_model = self._message_from_forwarded_xml(chat_jid, result)
+                if message_model is not None and not preview:
+                    preview = message_model.body
             sent_at = self._forwarded_delay_from_xml(result)
 
-        return chat_jid, unread_count, preview, sent_at
+        return chat_jid, unread_count, preview, sent_at, message_model
+
+    def _message_from_forwarded_xml(
+        self,
+        chat_jid: str,
+        result: ET.Element,
+    ) -> Message | None:
+        message = self._forwarded_message_from_xml(result)
+        if message is None:
+            return None
+
+        body_node = message.find(f"{{{CLIENT_NS}}}body")
+        body = (body_node.text or "").strip() if body_node is not None else ""
+        media_url, media_kind, media_mime, media_filename, media_size, media_duration = (
+            self._media_from_xml(message)
+        )
+        audio_url = media_url if media_kind == "audio" else ""
+        if not body and not media_url:
+            return None
+
+        is_group = message.attrib.get("type", "") == "groupchat"
+        sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
+        outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        display_body, reply_quote = self._message_display_parts(
+            body,
+            media_url,
+            media_kind,
+            media_filename,
+            media_size,
+            message,
+        )
+        return Message(
+            chat_jid=chat_jid,
+            sender_jid="Yo" if outgoing else sender_jid,
+            body=display_body,
+            sent_at=self._forwarded_delay_from_xml(result) or datetime.now(),
+            outgoing=outgoing,
+            audio_url=audio_url,
+            media_url=media_url,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_size=media_size,
+            media_duration_seconds=media_duration,
+            message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
+            chat_is_group=is_group or chat_jid in self._group_chat_jids,
+            reply_quote=reply_quote,
+        )
+
+    def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
+        from_jid = message.attrib.get("from", "")
+        if is_group:
+            return self._jid_resource(from_jid) == self._muc_nick()
+
+        return self._bare_jid(from_jid) == str(self.boundjid.bare)
+
+    @classmethod
+    def _sender_jid_from_message_xml(cls, message: ET.Element, is_group: bool = False) -> str:
+        from_jid = message.attrib.get("from", "")
+        if not is_group:
+            return cls._bare_jid(from_jid)
+
+        return from_jid or cls._bare_jid(from_jid)
+
+    @staticmethod
+    def _bare_jid(jid: str) -> str:
+        return jid.split("/", 1)[0]
+
+    @staticmethod
+    def _jid_resource(jid: str) -> str:
+        if "/" not in jid:
+            return ""
+
+        return jid.rsplit("/", 1)[-1]
 
     @staticmethod
     def _forwarded_message_from_xml(result: ET.Element) -> ET.Element | None:
@@ -1740,6 +1822,17 @@ class XmppService:
                 self._loop.create_task(
                     self._client.load_recent_activity(roster_jids or set(), limit)
                 )
+
+        self._loop.call_soon_threadsafe(load)
+
+    def load_inbox(self) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexiÃ³n XMPP activa."))
+            return
+
+        def load() -> None:
+            if self._client:
+                self._loop.create_task(self._client.load_inbox())
 
         self._loop.call_soon_threadsafe(load)
 

@@ -513,6 +513,10 @@ class MainWindow(wx.Frame):
             self._focus_chat_search()
             return
 
+        if key_code == wx.WXK_F5:
+            self._refresh_current_view()
+            return
+
         if key_code == wx.WXK_RETURN and self.chat_list.IsShown():
             self._show_selected_chat()
             return
@@ -533,6 +537,33 @@ class MainWindow(wx.Frame):
 
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:
         self._show_chat_list()
+
+    def _refresh_current_view(self) -> None:
+        if self.conversation.IsShown() and self.conversation.current_chat:
+            self._refresh_current_chat()
+            return
+
+        if self.chat_list.IsShown():
+            self._refresh_chat_list_messages()
+
+    def _refresh_current_chat(self) -> None:
+        chat = self.conversation.current_chat
+        if chat is None:
+            return
+
+        self.status_bar.SetStatusText(f"Actualizando {chat.name}...")
+        self._request_history_page(chat.jid)
+
+    def _refresh_chat_list_messages(self) -> None:
+        self.status_bar.SetStatusText("Actualizando chats...")
+        self.xmpp.load_inbox()
+        self.xmpp.load_recent_activity(self.roster_jids)
+        chat_jids = [
+            chat.jid
+            for chat in self._sort_chats_by_recency(self.chat_list.chats())[:PRELOAD_CHAT_LIMIT]
+        ]
+        if chat_jids:
+            self.xmpp.preload_histories(chat_jids, limit=HISTORY_PAGE_SIZE)
 
     def _on_primary_send_action(self, _event: wx.CommandEvent) -> None:
         if self.audio_recorder.is_recording:
@@ -1243,13 +1274,16 @@ class MainWindow(wx.Frame):
             case MessageReceived(message=message):
                 message, added_message = self._store_message(message)
                 if self.loading_initial_chat_activity:
+                    pending_activity = self.pending_chat_activity.get(message.chat_jid)
                     self.pending_chat_activity[message.chat_jid] = ChatActivityLoaded(
                         chat_jid=message.chat_jid,
                         sent_at=message.sent_at,
                         preview=media_description(message) if has_media(message) else message.body,
+                        unread_count=(
+                            pending_activity.unread_count if pending_activity is not None else None
+                        ),
                         is_group=message.chat_is_group,
                     )
-                    return
 
                 self._ensure_chat_for_message(message)
                 current_chat_is_open = (

@@ -522,6 +522,11 @@ class MainWindow(wx.Frame):
             return
 
         if key_code == wx.WXK_ESCAPE and self.conversation.IsShown():
+            if self.audio_recorder.is_recording:
+                self.audio_recorder.cancel()
+                self.conversation.set_recording_state(False)
+                self.status_bar.SetStatusText("Grabación cancelada")
+                return
             if self.reply_context:
                 self._cancel_reply()
                 return
@@ -2228,6 +2233,9 @@ class MainWindow(wx.Frame):
             self._request_full_history(chat.jid)
 
     def _show_chat_list(self) -> None:
+        if self.audio_recorder.is_recording:
+            self.audio_recorder.cancel()
+            self.conversation.set_recording_state(False)
         self.reply_context = None
         self.conversation.clear_reply_quote()
         self.conversation.clear_unread_marker()

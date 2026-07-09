@@ -34,6 +34,7 @@ class ChatsDiscovered:
 @dataclass(slots=True)
 class MessageReceived:
     message: Message
+    notify: bool = True
 
 
 @dataclass(slots=True)

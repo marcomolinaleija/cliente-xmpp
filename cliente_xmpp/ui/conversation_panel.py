@@ -17,6 +17,7 @@ from cliente_xmpp.media.downloads import (
 )
 from cliente_xmpp.media.links import is_link_preview
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.names import display_label_from_jid
 from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
 
 DATE_SEPARATOR_PREFIX = "date:"
@@ -224,7 +225,7 @@ class ConversationPanel(wx.Panel):
         self.Layout()
 
     def insert_reply_quote(self, message: Message) -> None:
-        sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
+        sender = "Tú" if message.outgoing else self._sender_label(message)
         self._replying = True
         self.compose_label.SetLabel(f"Respondiendo a {sender}:")
         self.compose.SetFocus()
@@ -529,6 +530,7 @@ class ConversationPanel(wx.Panel):
         return (
             "message",
             message.sent_at.isoformat(),
+            message.sender_name,
             message.sender_jid,
             message.body,
             message.outgoing,
@@ -620,14 +622,14 @@ class ConversationPanel(wx.Panel):
                 return f"{starred}Tú, {body}, {reply}, {timestamp} Entregado.{reactions}"
             return f"{starred}Tú {body} {timestamp} Entregado.{reactions}"
 
-        sender = self.resolve_display_name(message.sender_jid)
+        sender = self._sender_label(message)
         if reply:
             return f"{starred}{sender}, {body}, {reply}, {timestamp}.{reactions}"
 
         return f"{starred}{sender} {body} {timestamp}.{reactions}"
 
     def _format_message_for_reader(self, message: Message) -> str:
-        sender = "Tú" if message.outgoing else self.resolve_display_name(message.sender_jid)
+        sender = "Tú" if message.outgoing else self._sender_label(message)
         timestamp = self._format_message_time(message)
         body = self._format_message_body(message)
         metadata = f"{sender} {timestamp}"
@@ -647,6 +649,15 @@ class ConversationPanel(wx.Panel):
             return ""
 
         return f"respondiendo a: {' '.join(message.reply_quote.split())}"
+
+    def _sender_label(self, message: Message) -> str:
+        if message.chat_is_group and message.sender_jid and "/" not in message.sender_jid:
+            resolved = self.resolve_display_name(message.sender_jid)
+            fallback = display_label_from_jid(message.sender_jid)
+            if resolved and resolved not in {message.sender_jid, fallback}:
+                return resolved
+
+        return message.sender_name or self.resolve_display_name(message.sender_jid)
 
     def _format_row_for_tooltip(self, index: int) -> str:
         row = self._message_rows[index]

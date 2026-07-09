@@ -334,6 +334,7 @@ class MainWindow(wx.Frame):
         if self.conversation.current_chat and self.conversation.current_chat.jid == chat.jid:
             self.conversation.set_chat(renamed_chat)
             self.conversation.set_messages(self.messages_by_chat.get(chat.jid, []))
+            self._sync_recording_ui()
         if self.current_jid:
             try:
                 self.message_store.rename_chat(self.current_jid, chat.jid, name)
@@ -617,7 +618,10 @@ class MainWindow(wx.Frame):
             self.xmpp.send_message(chat.jid, body, is_group=chat.is_group)
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
-        self.conversation.update_send_button_state(self.audio_recorder.is_recording)
+        self.conversation.update_send_button_state(
+            self.audio_recorder.is_recording,
+            self.audio_recorder.is_paused,
+        )
         event.Skip()
 
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
@@ -1870,7 +1874,11 @@ class MainWindow(wx.Frame):
             return
 
         try:
-            cached_messages = self.message_store.load_recent_messages(self.current_jid, chat_jid, limit=5000)
+            cached_messages = self.message_store.load_recent_messages(
+                self.current_jid,
+                chat_jid,
+                limit=5000,
+            )
         except Exception:
             return
 
@@ -1926,7 +1934,14 @@ class MainWindow(wx.Frame):
             self.messages_by_chat.get(chat.jid, []),
             unread_count=unread_count,
         )
+        self._sync_recording_ui()
         self._refresh_load_older_button(chat.jid)
+
+    def _sync_recording_ui(self) -> None:
+        self.conversation.set_recording_state(
+            self.audio_recorder.is_recording,
+            self.audio_recorder.is_paused,
+        )
 
     def _refresh_chat_order(
         self,

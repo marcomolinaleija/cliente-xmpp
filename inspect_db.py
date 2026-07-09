@@ -1,7 +1,5 @@
 import sqlite3
 from pathlib import Path
-from datetime import datetime
-import json
 
 db_path = Path.home() / ".cliente-xmpp" / "messages.sqlite3"
 print(f"Opening DB: {db_path}")
@@ -10,7 +8,9 @@ conn.row_factory = sqlite3.Row
 
 # Get chats
 print("--- CHATS ---")
-chats = conn.execute("SELECT jid, name, last_message_preview, last_message_at FROM chats").fetchall()
+chats = conn.execute(
+    "SELECT jid, name, last_message_preview, last_message_at FROM chats"
+).fetchall()
 for c in chats:
     if "Ari" in c["name"] or "Jessi" in c["name"]:
         print(dict(c))
@@ -24,7 +24,16 @@ for c in chats:
         break
 
 if ari_jid:
-    messages = conn.execute("SELECT body, sent_at, outgoing FROM messages WHERE chat_jid = ? ORDER BY sent_at DESC LIMIT 10", (ari_jid,)).fetchall()
+    messages = conn.execute(
+        """
+        SELECT body, sent_at, outgoing
+        FROM messages
+        WHERE chat_jid = ?
+        ORDER BY sent_at DESC
+        LIMIT 10
+        """,
+        (ari_jid,),
+    ).fetchall()
     for m in messages:
         print(dict(m))
 
@@ -36,7 +45,16 @@ for c in chats:
         break
 
 if jessi_jid:
-    messages = conn.execute("SELECT body, sent_at, outgoing, reply_quote FROM messages WHERE chat_jid = ? ORDER BY sent_at DESC LIMIT 10", (jessi_jid,)).fetchall()
+    messages = conn.execute(
+        """
+        SELECT body, sent_at, outgoing, reply_quote
+        FROM messages
+        WHERE chat_jid = ?
+        ORDER BY sent_at DESC
+        LIMIT 10
+        """,
+        (jessi_jid,),
+    ).fetchall()
     for m in messages:
         print(dict(m))
 

@@ -14,7 +14,7 @@ from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -31,6 +31,7 @@ class MessageStore:
                 """
                 SELECT
                     jid, name, custom_name, is_group, notifications_muted,
+                    notification_settings_known, group_member_count, is_self_group,
                     unread_count, last_message_preview, last_message_at
                 FROM chats
                 WHERE account_jid = ?
@@ -46,6 +47,9 @@ class MessageStore:
                 custom_name=str(row["custom_name"] or ""),
                 is_group=bool(row["is_group"]),
                 notifications_muted=bool(row["notifications_muted"]),
+                notification_settings_known=bool(row["notification_settings_known"]),
+                group_member_count=int(row["group_member_count"] or 0),
+                is_self_group=bool(row["is_self_group"]),
                 unread_count=int(row["unread_count"] or 0),
                 last_message_preview=str(row["last_message_preview"] or ""),
                 last_message_at=_datetime_from_db(row["last_message_at"]),
@@ -134,6 +138,7 @@ class MessageStore:
                         message.reply_quote,
                         message.media_url,
                         message.media_filename,
+                        message.sender_name,
                         message.sender_jid,
                         message.chat_jid,
                         str(row["chat_name"] or ""),
@@ -184,6 +189,23 @@ class MessageStore:
                 WHERE account_jid = ? AND jid = ?
                 """,
                 (int(is_group), now, account_jid, chat_jid),
+            )
+
+    def set_chat_notifications_muted(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        muted: bool,
+    ) -> None:
+        now = _datetime_to_db(datetime.now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE chats
+                SET notifications_muted = ?, notification_settings_known = 1, updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (int(muted), now, account_jid, chat_jid),
             )
 
     def update_message_media_local_path(
@@ -242,6 +264,9 @@ class MessageStore:
                     custom_name TEXT NOT NULL DEFAULT '',
                     is_group INTEGER NOT NULL DEFAULT 0,
                     notifications_muted INTEGER NOT NULL DEFAULT 0,
+                    notification_settings_known INTEGER NOT NULL DEFAULT 0,
+                    group_member_count INTEGER NOT NULL DEFAULT 0,
+                    is_self_group INTEGER NOT NULL DEFAULT 0,
                     unread_count INTEGER NOT NULL DEFAULT 0,
                     last_message_preview TEXT NOT NULL DEFAULT '',
                     last_message_at TEXT,
@@ -255,6 +280,7 @@ class MessageStore:
                     message_key TEXT NOT NULL,
                     message_id TEXT NOT NULL DEFAULT '',
                     sender_jid TEXT NOT NULL,
+                    sender_name TEXT NOT NULL DEFAULT '',
                     body TEXT NOT NULL DEFAULT '',
                     sent_at TEXT NOT NULL,
                     outgoing INTEGER NOT NULL DEFAULT 0,
@@ -266,6 +292,7 @@ class MessageStore:
                     media_size INTEGER NOT NULL DEFAULT 0,
                     media_duration_seconds REAL NOT NULL DEFAULT 0,
                     media_local_path TEXT NOT NULL DEFAULT '',
+                    chat_is_group INTEGER NOT NULL DEFAULT 0,
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
                     reply_quote TEXT NOT NULL DEFAULT '',
@@ -303,6 +330,8 @@ class MessageStore:
             "media_size": "INTEGER NOT NULL DEFAULT 0",
             "media_duration_seconds": "REAL NOT NULL DEFAULT 0",
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
+            "sender_name": "TEXT NOT NULL DEFAULT ''",
+            "chat_is_group": "INTEGER NOT NULL DEFAULT 0",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
         }
         for column, definition in columns.items():
@@ -321,6 +350,17 @@ class MessageStore:
             conn.execute(
                 "ALTER TABLE chats ADD COLUMN notifications_muted INTEGER NOT NULL DEFAULT 0"
             )
+        if "notification_settings_known" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN notification_settings_known "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "group_member_count" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN group_member_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_self_group" not in existing_columns:
+            conn.execute("ALTER TABLE chats ADD COLUMN is_self_group INTEGER NOT NULL DEFAULT 0")
 
     def _compact_duplicate_messages(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute(
@@ -399,7 +439,8 @@ class MessageStore:
         existing = conn.execute(
             """
             SELECT last_message_preview, last_message_at, custom_name, is_group,
-                notifications_muted
+                notifications_muted, notification_settings_known, group_member_count,
+                is_self_group
             FROM chats
             WHERE account_jid = ? AND jid = ?
             """,
@@ -414,20 +455,31 @@ class MessageStore:
             elif not last_message_preview:
                 last_message_preview = existing_preview
             is_group = chat.is_group or bool(existing["is_group"])
-            notifications_muted = chat.notifications_muted or bool(
-                existing["notifications_muted"]
+            if chat.notification_settings_known:
+                notifications_muted = chat.notifications_muted
+                notification_settings_known = True
+            else:
+                notifications_muted = bool(existing["notifications_muted"])
+                notification_settings_known = bool(existing["notification_settings_known"])
+            group_member_count = chat.group_member_count or int(
+                existing["group_member_count"] or 0
             )
+            is_self_group = chat.is_self_group or bool(existing["is_self_group"])
         else:
             is_group = chat.is_group
             notifications_muted = chat.notifications_muted
+            notification_settings_known = chat.notification_settings_known
+            group_member_count = chat.group_member_count
+            is_self_group = chat.is_self_group
 
         conn.execute(
             """
             INSERT INTO chats (
                 account_jid, jid, name, custom_name, is_group, notifications_muted,
+                notification_settings_known, group_member_count, is_self_group,
                 unread_count, last_message_preview, last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = excluded.name,
                 custom_name = COALESCE(NULLIF(excluded.custom_name, ''), chats.custom_name),
@@ -435,8 +487,18 @@ class MessageStore:
                     WHEN excluded.is_group = 1 OR chats.is_group = 1 THEN 1
                     ELSE 0
                 END,
-                notifications_muted = CASE
-                    WHEN excluded.notifications_muted = 1 OR chats.notifications_muted = 1 THEN 1
+                notifications_muted = excluded.notifications_muted,
+                notification_settings_known = CASE
+                    WHEN excluded.notification_settings_known = 1
+                        OR chats.notification_settings_known = 1 THEN 1
+                    ELSE 0
+                END,
+                group_member_count = COALESCE(
+                    NULLIF(excluded.group_member_count, 0),
+                    chats.group_member_count
+                ),
+                is_self_group = CASE
+                    WHEN excluded.is_self_group = 1 OR chats.is_self_group = 1 THEN 1
                     ELSE 0
                 END,
                 unread_count = excluded.unread_count,
@@ -454,6 +516,9 @@ class MessageStore:
                 chat.custom_name,
                 int(is_group),
                 int(notifications_muted),
+                int(notification_settings_known),
+                group_member_count,
+                int(is_self_group),
                 chat.unread_count,
                 last_message_preview,
                 _datetime_to_db(last_message_at),
@@ -472,15 +537,17 @@ class MessageStore:
         conn.execute(
             """
             INSERT INTO messages (
-                account_jid, chat_jid, message_key, message_id, sender_jid, body,
-                sent_at, outgoing, audio_url, media_url, media_kind, media_mime,
-                media_filename, media_size, media_duration_seconds, media_local_path,
-                starred, reactions_json, reply_quote, received_at
+                account_jid, chat_jid, message_key, message_id, sender_jid,
+                sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
+                media_mime, media_filename, media_size, media_duration_seconds,
+                media_local_path, chat_is_group, starred, reactions_json, reply_quote,
+                received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
+                sender_name = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
                 body = CASE
                     WHEN excluded.reply_quote != '' THEN excluded.body
                     WHEN messages.reply_quote != '' THEN messages.body
@@ -505,6 +572,10 @@ class MessageStore:
                     NULLIF(excluded.media_local_path, ''),
                     messages.media_local_path
                 ),
+                chat_is_group = CASE
+                    WHEN excluded.chat_is_group = 1 OR messages.chat_is_group = 1 THEN 1
+                    ELSE 0
+                END,
                 starred = excluded.starred,
                 reactions_json = excluded.reactions_json,
                 reply_quote = COALESCE(NULLIF(excluded.reply_quote, ''), messages.reply_quote)
@@ -515,6 +586,7 @@ class MessageStore:
                 message_key,
                 message.message_id,
                 message.sender_jid,
+                message.sender_name,
                 message.body,
                 _datetime_to_db(message.sent_at) or _datetime_to_db(datetime.now()),
                 int(message.outgoing),
@@ -526,6 +598,7 @@ class MessageStore:
                 message.media_size,
                 message.media_duration_seconds,
                 message.media_local_path,
+                int(message.chat_is_group),
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
                 message.reply_quote,
@@ -541,7 +614,8 @@ class MessageStore:
     ) -> None:
         existing = conn.execute(
             """
-            SELECT name, unread_count, last_message_at, is_group, notifications_muted
+            SELECT name, unread_count, last_message_at, is_group, notifications_muted,
+                notification_settings_known, group_member_count, is_self_group
             FROM chats
             WHERE account_jid = ? AND jid = ?
             """,
@@ -568,13 +642,19 @@ class MessageStore:
         unread_count = int(existing["unread_count"] or 0) if existing else 0
         is_group = bool(existing["is_group"]) if existing else message.chat_is_group
         notifications_muted = bool(existing["notifications_muted"]) if existing else False
+        notification_settings_known = (
+            bool(existing["notification_settings_known"]) if existing else False
+        )
+        group_member_count = int(existing["group_member_count"] or 0) if existing else 0
+        is_self_group = bool(existing["is_self_group"]) if existing else False
         conn.execute(
             """
             INSERT INTO chats (
-                account_jid, jid, name, is_group, notifications_muted, unread_count,
-                last_message_preview, last_message_at, updated_at
+                account_jid, jid, name, is_group, notifications_muted,
+                notification_settings_known, group_member_count, is_self_group,
+                unread_count, last_message_preview, last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = chats.name,
                 is_group = CASE
@@ -582,6 +662,9 @@ class MessageStore:
                     ELSE 0
                 END,
                 notifications_muted = chats.notifications_muted,
+                notification_settings_known = chats.notification_settings_known,
+                group_member_count = chats.group_member_count,
+                is_self_group = chats.is_self_group,
                 unread_count = chats.unread_count,
                 last_message_preview = excluded.last_message_preview,
                 last_message_at = excluded.last_message_at,
@@ -593,6 +676,9 @@ class MessageStore:
                 name,
                 int(is_group),
                 int(notifications_muted),
+                int(notification_settings_known),
+                group_member_count,
+                int(is_self_group),
                 unread_count,
                 _message_preview(latest_message),
                 _datetime_to_db(latest_message.sent_at),
@@ -850,6 +936,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         chat_jid=str(row["chat_jid"]),
         sender_jid=str(row["sender_jid"]),
         body=str(row["body"] or ""),
+        sender_name=str(row["sender_name"] or ""),
         sent_at=_datetime_from_db(row["sent_at"]) or datetime.now(),
         outgoing=bool(row["outgoing"]),
         audio_url=str(row["audio_url"] or ""),
@@ -861,6 +948,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
         message_id=str(row["message_id"] or ""),
+        chat_is_group=bool(row["chat_is_group"]),
         starred=bool(row["starred"]),
         reactions=tuple(json.loads(str(row["reactions_json"] or "[]"))),
         reply_quote=str(row["reply_quote"] or ""),

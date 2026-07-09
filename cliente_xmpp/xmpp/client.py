@@ -21,6 +21,7 @@ from cliente_xmpp.audio.opus import (
 )
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
@@ -42,8 +43,15 @@ CLIENT_NS = "jabber:client"
 DISCO_INFO_NS = "http://jabber.org/protocol/disco#info"
 DISCO_ITEMS_NS = "http://jabber.org/protocol/disco#items"
 MUC_NS = "http://jabber.org/protocol/muc"
+MUC_USER_NS = "http://jabber.org/protocol/muc#user"
 BOOKMARKS_NS = "urn:xmpp:bookmarks:1"
-NOTIFICATION_SETTINGS_NS = "urn:xmpp:notification-settings:0"
+LEGACY_BOOKMARKS_NS = "storage:bookmarks"
+PRIVATE_XML_NS = "jabber:iq:private"
+PUBSUB_EVENT_NS = "http://jabber.org/protocol/pubsub#event"
+NOTIFICATION_SETTINGS_NAMESPACES = (
+    "urn:xmpp:notification-settings:1",
+    "urn:xmpp:notification-settings:0",
+)
 DATA_FORMS_NS = "jabber:x:data"
 DIRECT_INVITE_NS = "jabber:x:conference"
 OOB_NS = "jabber:x:oob"
@@ -105,7 +113,7 @@ class BridgeXmppClient(ClientXMPP):
         chats = self._build_roster_chats()
         self._emit(RosterLoaded(chats))
         asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
-        asyncio.create_task(self._discover_group_chats(chats))
+        asyncio.create_task(self._discover_group_chats_with_retries(chats))
         asyncio.create_task(self.load_inbox())
 
     def _on_disconnected(self, _event: object) -> None:
@@ -152,6 +160,11 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_message(self, msg: object) -> None:
         self._emit_inbox_entry(msg)
+        group_chats = self._group_chats_from_bookmark_event_stanza(msg)
+        if group_chats:
+            self._monitor_discovered_group_chats(group_chats)
+            return
+
         group_chat = self._group_chat_from_invite_stanza(msg)
         if group_chat is not None:
             self._monitor_discovered_group_chats([group_chat])
@@ -222,7 +235,7 @@ class BridgeXmppClient(ClientXMPP):
         chats: list[Chat] = []
         for jid in sorted(self.client_roster.keys()):
             item = self.client_roster[jid]
-            name = self._roster_item_name(item) or jid
+            name = normalize_chat_name(jid, self._roster_item_name(item))
             chats.append(Chat(jid=jid, name=name))
         return chats
 
@@ -237,9 +250,12 @@ class BridgeXmppClient(ClientXMPP):
 
             group_chats[chat.jid] = Chat(
                 jid=chat.jid,
-                name=chat.name,
+                name=normalize_chat_name(chat.jid, chat.name),
                 is_group=True,
                 notifications_muted=chat.notifications_muted,
+                notification_settings_known=chat.notification_settings_known,
+                group_member_count=chat.group_member_count,
+                is_self_group=chat.is_self_group,
                 unread_count=chat.unread_count,
                 last_message_preview=chat.last_message_preview,
                 last_message_at=chat.last_message_at,
@@ -259,6 +275,14 @@ class BridgeXmppClient(ClientXMPP):
         for domain in component_domains:
             for item_jid, item_name in await self._disco_items(domain):
                 if item_jid in group_chats:
+                    continue
+
+                if self._jid_is_hash_group_chat(item_jid):
+                    enriched_group_chats[item_jid] = Chat(
+                        jid=item_jid,
+                        name=normalize_chat_name(item_jid, item_name),
+                        is_group=True,
+                    )
                     continue
 
                 group_chat = await self._group_chat_from_disco(
@@ -281,6 +305,12 @@ class BridgeXmppClient(ClientXMPP):
 
         self._monitor_discovered_group_chats(chats)
 
+    async def _discover_group_chats_with_retries(self, roster_chats: list[Chat]) -> None:
+        for delay in (0, 5, 15, 45):
+            if delay:
+                await asyncio.sleep(delay)
+            await self._discover_group_chats(roster_chats)
+
     def _monitor_discovered_group_chats(self, chats: list[Chat]) -> None:
         chats = [chat for chat in chats if self._jid_may_be_group_chat(chat.jid)]
         if not chats:
@@ -288,6 +318,8 @@ class BridgeXmppClient(ClientXMPP):
 
         self._group_chat_jids.update(chat.jid for chat in chats)
         self._emit(ChatsDiscovered(chats))
+        for chat in chats:
+            self._join_group_chat(chat.jid)
         asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
 
     async def _group_service_candidates(self, roster_chats: list[Chat]) -> set[str]:
@@ -300,11 +332,13 @@ class BridgeXmppClient(ClientXMPP):
 
         if server_domain:
             for jid, _name in await self._disco_items(server_domain):
-                candidates.add(jid)
+                if not self._jid_is_hash_group_chat(jid):
+                    candidates.add(jid)
 
         for jid in list(candidates):
             for child_jid, _name in await self._disco_items(jid):
-                candidates.add(child_jid)
+                if not self._jid_is_hash_group_chat(child_jid):
+                    candidates.add(child_jid)
 
         return candidates
 
@@ -330,6 +364,14 @@ class BridgeXmppClient(ClientXMPP):
 
         local_part = bare_jid.split("@", 1)[0]
         return bool(local_part and not local_part.startswith("+"))
+
+    @staticmethod
+    def _jid_is_hash_group_chat(jid: str) -> bool:
+        bare_jid = jid.split("/", 1)[0]
+        if "@" not in bare_jid:
+            return False
+
+        return bare_jid.split("@", 1)[0].startswith("#")
 
     async def _group_chat_from_disco(
         self,
@@ -359,11 +401,19 @@ class BridgeXmppClient(ClientXMPP):
                 name = identity_name
                 break
 
-        return Chat(jid=jid, name=name, is_group=True)
+        room_items = await self._disco_items(jid)
+        member_count = len(room_items)
+        return Chat(
+            jid=jid,
+            name=normalize_chat_name(jid, name),
+            is_group=True,
+            group_member_count=member_count,
+            is_self_group=member_count == 1,
+        )
 
     async def _disco_items(self, jid: str) -> list[tuple[str, str]]:
         try:
-            items = await self["xep_0030"].get_items(jid=jid, timeout=10)
+            items = await self["xep_0030"].get_items(jid=jid, timeout=30)
         except Exception:
             return []
 
@@ -375,16 +425,89 @@ class BridgeXmppClient(ClientXMPP):
         return discovered
 
     async def _bookmarked_group_chats(self) -> list[Chat]:
+        group_chats: dict[str, Chat] = {}
+        for jid in (self.boundjid.bare, None):
+            try:
+                items = await self["xep_0060"].get_items(
+                    jid,
+                    BOOKMARKS_NS,
+                    timeout=10,
+                )
+            except Exception:
+                continue
+
+            for chat in self._group_chats_from_bookmark_xml(items.xml):
+                group_chats[chat.jid] = chat
+
+        for chat in await self._xep_0048_bookmarked_group_chats("xep_0049"):
+            group_chats.setdefault(chat.jid, chat)
+        for chat in await self._xep_0048_bookmarked_group_chats("xep_0223"):
+            group_chats.setdefault(chat.jid, chat)
+        for chat in await self._legacy_pubsub_bookmarked_group_chats():
+            group_chats.setdefault(chat.jid, chat)
+        for chat in await self._private_xml_bookmarked_group_chats():
+            group_chats.setdefault(chat.jid, chat)
+
+        return list(group_chats.values())
+
+    async def _xep_0048_bookmarked_group_chats(self, method: str) -> list[Chat]:
         try:
-            items = await self["xep_0060"].get_items(
-                self.boundjid.bare,
-                BOOKMARKS_NS,
-                timeout=10,
-            )
+            result = await self["xep_0048"].get_bookmarks(method=method, timeout=10)
         except Exception:
             return []
 
-        return self._group_chats_from_bookmark_xml(items.xml)
+        try:
+            if method == "xep_0223":
+                bookmarks = result["pubsub"]["items"]["item"]["bookmarks"]
+            else:
+                bookmarks = result["private"]["bookmarks"]
+            conferences = bookmarks["conferences"]
+        except Exception:
+            return self._group_chats_from_legacy_bookmark_xml(result.xml)
+
+        chats: list[Chat] = []
+        for conference in conferences:
+            jid = str(conference["jid"] or "").strip()
+            if not jid:
+                continue
+
+            name = str(conference["name"] or "").strip() or jid
+            chats.append(
+                Chat(
+                    jid=jid,
+                    name=normalize_chat_name(jid, name),
+                    is_group=True,
+                )
+            )
+        return chats
+
+    async def _legacy_pubsub_bookmarked_group_chats(self) -> list[Chat]:
+        for jid in (self.boundjid.bare, None):
+            try:
+                items = await self["xep_0060"].get_items(
+                    jid,
+                    LEGACY_BOOKMARKS_NS,
+                    timeout=10,
+                )
+            except Exception:
+                continue
+
+            chats = self._group_chats_from_legacy_bookmark_xml(items.xml)
+            if chats:
+                return chats
+
+        return []
+
+    async def _private_xml_bookmarked_group_chats(self) -> list[Chat]:
+        try:
+            iq = self.make_iq_get()
+            query = ET.SubElement(iq.xml, f"{{{PRIVATE_XML_NS}}}query")
+            ET.SubElement(query, f"{{{LEGACY_BOOKMARKS_NS}}}storage")
+            result = await iq.send(timeout=10)
+        except Exception:
+            return []
+
+        return self._group_chats_from_legacy_bookmark_xml(result.xml)
 
     async def _adhoc_group_chats(self, component_domains: set[str]) -> list[Chat]:
         group_chats: dict[str, Chat] = {}
@@ -459,7 +582,7 @@ class BridgeXmppClient(ClientXMPP):
             return None
 
         name = self._group_name_from_invite_reason(reason) or jid
-        return Chat(jid=jid, name=name, is_group=True)
+        return Chat(jid=jid, name=normalize_chat_name(jid, name), is_group=True)
 
     @staticmethod
     def _group_name_from_invite_reason(reason: str) -> str:
@@ -482,24 +605,80 @@ class BridgeXmppClient(ClientXMPP):
                 continue
 
             name = conference.attrib.get("name", "").strip() or jid
-            notifications_muted = self._bookmark_notifications_muted(conference)
+            notifications_muted, notification_settings_known = (
+                self._bookmark_notification_settings(conference)
+            )
             chats.append(
                 Chat(
                     jid=jid,
-                    name=name,
+                    name=normalize_chat_name(jid, name),
                     is_group=True,
                     notifications_muted=notifications_muted,
+                    notification_settings_known=notification_settings_known,
                 )
             )
         return chats
 
-    @staticmethod
-    def _bookmark_notifications_muted(conference: ET.Element) -> bool:
-        notify = conference.find(f".//{{{NOTIFICATION_SETTINGS_NS}}}notify")
-        if notify is None:
-            return False
+    @classmethod
+    def _group_chats_from_legacy_bookmark_xml(cls, xml: ET.Element) -> list[Chat]:
+        chats: list[Chat] = []
+        for conference in xml.findall(f".//{{{LEGACY_BOOKMARKS_NS}}}conference"):
+            jid = conference.attrib.get("jid", "").strip()
+            if not jid:
+                continue
 
-        return notify.find(f"{{{NOTIFICATION_SETTINGS_NS}}}never") is not None
+            notifications_muted, notification_settings_known = (
+                cls._bookmark_notification_settings(conference)
+            )
+            name = conference.attrib.get("name", "").strip() or jid
+            chats.append(
+                Chat(
+                    jid=jid,
+                    name=normalize_chat_name(jid, name),
+                    is_group=True,
+                    notifications_muted=notifications_muted,
+                    notification_settings_known=notification_settings_known,
+                )
+            )
+        return chats
+
+    def _group_chats_from_bookmark_event_stanza(self, stanza: object) -> list[Chat]:
+        try:
+            xml = stanza.xml
+        except Exception:
+            return []
+
+        chats = self._group_chats_from_bookmark_xml(xml)
+        chats.extend(self._group_chats_from_legacy_bookmark_xml(xml))
+        return chats
+
+    @staticmethod
+    def _bookmark_notification_settings(conference: ET.Element) -> tuple[bool, bool]:
+        notify = None
+        for namespace in NOTIFICATION_SETTINGS_NAMESPACES:
+            notify = conference.find(f".//{{{namespace}}}notify")
+            if notify is not None:
+                break
+        if notify is None:
+            return False, False
+
+        for namespace in NOTIFICATION_SETTINGS_NAMESPACES:
+            if notify.find(f"{{{namespace}}}never") is not None:
+                return True, True
+            if (
+                notify.find(f"{{{namespace}}}always") is not None
+                or notify.find(f"{{{namespace}}}on-mention") is not None
+            ):
+                return False, True
+
+        for child in notify:
+            local_name = child.tag.rsplit("}", 1)[-1]
+            if local_name == "never":
+                return True, True
+            if local_name in {"always", "on-mention"}:
+                return False, True
+
+        return False, False
 
     def _group_chats_from_command_xml(self, xml: ET.Element) -> list[Chat]:
         group_chats: dict[str, Chat] = {}
@@ -509,12 +688,47 @@ class BridgeXmppClient(ClientXMPP):
             if not jid:
                 continue
 
-            name = values.get("name", "").strip() or jid
-            group_chats[jid] = Chat(jid=jid, name=name, is_group=True)
+            group_chats[jid] = self._group_chat_from_command_values(jid, values)
 
         for jid in self._jids_from_xml_text(xml):
-            group_chats.setdefault(jid, Chat(jid=jid, name=jid, is_group=True))
+            group_chats.setdefault(
+                jid,
+                Chat(jid=jid, name=normalize_chat_name(jid), is_group=True),
+            )
         return list(group_chats.values())
+
+    @classmethod
+    def _group_chat_from_command_values(cls, jid: str, values: dict[str, str]) -> Chat:
+        name = (
+            values.get("name", "")
+            or values.get("title", "")
+            or values.get("display-name", "")
+            or jid
+        )
+        member_count = cls._int_or_zero(
+            values.get("participants", "")
+            or values.get("participant_count", "")
+            or values.get("member_count", "")
+            or values.get("members", "")
+        )
+        muted_value = (
+            values.get("muted", "")
+            or values.get("notifications_muted", "")
+            or values.get("notifications-muted", "")
+        )
+        return Chat(
+            jid=jid,
+            name=normalize_chat_name(jid, name),
+            is_group=True,
+            notifications_muted=cls._truthy_value(muted_value),
+            notification_settings_known=bool(muted_value),
+            group_member_count=member_count,
+            is_self_group=member_count == 1,
+        )
+
+    @staticmethod
+    def _truthy_value(value: str) -> bool:
+        return value.strip().casefold() in {"1", "true", "yes", "si", "sí", "muted"}
 
     @staticmethod
     def _data_form_item_values(item: ET.Element) -> dict[str, str]:
@@ -557,7 +771,20 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         self._group_chat_jids.update(group_jids)
+        for group_jid in group_jids:
+            self._join_group_chat(group_jid)
+        asyncio.create_task(self._enrich_monitored_group_chats(group_jids))
         asyncio.create_task(self.load_recent_activity(group_jids))
+
+    async def _enrich_monitored_group_chats(self, group_jids: set[str]) -> None:
+        chats: list[Chat] = []
+        for group_jid in group_jids:
+            chat = await self._group_chat_from_disco(group_jid, fallback_name=group_jid)
+            if chat is not None:
+                chats.append(chat)
+
+        if chats:
+            self._emit(ChatsDiscovered(chats))
 
     async def load_history(
         self,
@@ -617,7 +844,12 @@ class BridgeXmppClient(ClientXMPP):
         total = 500 if limit is None else max(limit * 10, 100)
 
         async for result in mam.iterate(
-            with_jid=chat_jid if with_jid_filter else None,
+            jid=chat_jid if self._uses_room_archive(chat_jid) else None,
+            with_jid=(
+                None
+                if self._uses_room_archive(chat_jid)
+                else chat_jid if with_jid_filter else None
+            ),
             end=before,
             reverse=True,
             rsm={"max": min(page_size, 100)},
@@ -637,6 +869,12 @@ class BridgeXmppClient(ClientXMPP):
                 break
 
         return messages
+
+    def _uses_room_archive(self, jid: str) -> bool:
+        if jid in self._group_chat_jids:
+            return True
+
+        return BridgeXmppClient._jid_is_hash_group_chat(jid)
 
     @staticmethod
     def _history_page_needs_unfiltered_fallback(
@@ -694,6 +932,35 @@ class BridgeXmppClient(ClientXMPP):
         loaded_chat_jids: set[str] = set()
         messages_by_chat: dict[str, list[Message]] = {}
         try:
+            group_jids = {jid for jid in roster_jids if self._uses_room_archive(jid)}
+            for chat_jid in group_jids:
+                group_messages = await self._load_history_page(
+                    chat_jid,
+                    limit=1,
+                    before=None,
+                    with_jid_filter=True,
+                )
+                if not group_messages:
+                    continue
+
+                message = group_messages[-1]
+                messages_by_chat.setdefault(chat_jid, []).append(message)
+                loaded_chat_jids.add(chat_jid)
+                self._emit(
+                    ChatActivityLoaded(
+                        chat_jid=chat_jid,
+                        sent_at=message.sent_at,
+                        preview=self._message_body_for_display(
+                            message.body,
+                            message.media_url,
+                            message.media_kind,
+                            message.media_filename,
+                            message.media_size,
+                        ),
+                        is_group=True,
+                    )
+                )
+
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
                 chat_jid = self._chat_jid_from_mam_result(result)
@@ -786,6 +1053,7 @@ class BridgeXmppClient(ClientXMPP):
         stanza = forwarded["stanza"]
         is_group = self._stanza_is_groupchat(stanza)
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
+        sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
         display_body, reply_quote = self._message_display_parts(
             body,
@@ -802,6 +1070,7 @@ class BridgeXmppClient(ClientXMPP):
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
             body=display_body,
             sent_at=sent_at,
             outgoing=outgoing,
@@ -844,6 +1113,7 @@ class BridgeXmppClient(ClientXMPP):
         else:
             chat_jid = str(stanza["from"].bare)
         sender_jid = "Yo" if outgoing else self._sender_jid_from_stanza(stanza, is_group=is_group)
+        sender_name = "" if outgoing else self._sender_name_from_stanza(stanza, is_group=is_group)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -857,6 +1127,7 @@ class BridgeXmppClient(ClientXMPP):
                 Message(
                     chat_jid=chat_jid,
                     sender_jid=sender_jid,
+                    sender_name=sender_name,
                     body=display_body,
                     sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
                     outgoing=outgoing,
@@ -889,6 +1160,7 @@ class BridgeXmppClient(ClientXMPP):
             return None
 
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=True)
+        sender_name = self._sender_name_from_stanza(stanza, is_group=True)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
         display_body, reply_quote = self._message_display_parts(
             body,
@@ -901,6 +1173,7 @@ class BridgeXmppClient(ClientXMPP):
         return Message(
             chat_jid=str(stanza["from"].bare),
             sender_jid="Yo" if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
             body=display_body,
             sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
             outgoing=outgoing,
@@ -923,13 +1196,15 @@ class BridgeXmppClient(ClientXMPP):
 
         chat_jid, unread_count, preview, sent_at, message = entry
         if message is not None:
-            self._emit(MessageReceived(message))
+            self._emit(MessageReceived(message, notify=False))
         self._emit(
             ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
                 preview=preview,
                 unread_count=unread_count,
+                is_group=bool(message and message.chat_is_group)
+                or chat_jid in self._group_chat_jids,
             )
         )
 
@@ -993,8 +1268,12 @@ class BridgeXmppClient(ClientXMPP):
         if not body and not media_url:
             return None
 
-        is_group = message.attrib.get("type", "") == "groupchat"
+        is_group = (
+            message.attrib.get("type", "") == "groupchat"
+            or self._xml_message_addresses_groupchat(message)
+        )
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
+        sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
         display_body, reply_quote = self._message_display_parts(
             body,
@@ -1007,6 +1286,7 @@ class BridgeXmppClient(ClientXMPP):
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
             body=display_body,
             sent_at=self._forwarded_delay_from_xml(result) or datetime.now(),
             outgoing=outgoing,
@@ -1025,7 +1305,14 @@ class BridgeXmppClient(ClientXMPP):
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
         if is_group:
-            return self._jid_resource(from_jid) == self._muc_nick()
+            if self._muc_user_item_jid(message) == str(self.boundjid.bare):
+                return True
+
+            sender_nick = self._jid_resource(from_jid)
+            return (
+                sender_nick == self._muc_nick()
+                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
+            )
 
         return self._bare_jid(from_jid) == str(self.boundjid.bare)
 
@@ -1035,7 +1322,27 @@ class BridgeXmppClient(ClientXMPP):
         if not is_group:
             return cls._bare_jid(from_jid)
 
+        participant_jid = cls._muc_user_item_jid(message)
+        if participant_jid:
+            return participant_jid
+
         return from_jid or cls._bare_jid(from_jid)
+
+    @classmethod
+    def _sender_name_from_message_xml(cls, message: ET.Element, is_group: bool = False) -> str:
+        from_jid = message.attrib.get("from", "")
+        if not is_group:
+            return ""
+
+        return display_label_from_jid(cls._jid_resource(from_jid) or from_jid)
+
+    @staticmethod
+    def _muc_user_item_jid(xml: ET.Element) -> str:
+        item = xml.find(f".//{{{MUC_USER_NS}}}item")
+        if item is None:
+            return ""
+
+        return item.attrib.get("jid", "").strip()
 
     @staticmethod
     def _bare_jid(jid: str) -> str:
@@ -1087,17 +1394,40 @@ class BridgeXmppClient(ClientXMPP):
 
         return str(from_jid.bare)
 
-    @staticmethod
-    def _stanza_is_groupchat(stanza: object) -> bool:
+    @classmethod
+    def _stanza_is_groupchat(cls, stanza: object) -> bool:
         try:
-            return stanza["type"] == "groupchat"
+            if stanza["type"] == "groupchat":
+                return True
+        except Exception:
+            pass
+
+        try:
+            return cls._jid_is_hash_group_chat(
+                str(stanza["from"].bare)
+            ) or cls._jid_is_hash_group_chat(
+                str(stanza["to"].bare)
+            )
         except Exception:
             return False
+
+    @classmethod
+    def _xml_message_addresses_groupchat(cls, message: ET.Element) -> bool:
+        return cls._jid_is_hash_group_chat(
+            cls._bare_jid(message.attrib.get("from", ""))
+        ) or cls._jid_is_hash_group_chat(cls._bare_jid(message.attrib.get("to", "")))
 
     @classmethod
     def _sender_jid_from_stanza(cls, stanza: object, is_group: bool = False) -> str:
         if not is_group:
             return str(stanza["from"].bare)
+
+        try:
+            participant_jid = cls._muc_user_item_jid(stanza.xml)
+        except Exception:
+            participant_jid = ""
+        if participant_jid:
+            return participant_jid
 
         full_jid = str(stanza["from"] or "")
         if "/" in full_jid:
@@ -1108,6 +1438,18 @@ class BridgeXmppClient(ClientXMPP):
             return nick
 
         return str(stanza["from"].bare)
+
+    @classmethod
+    def _sender_name_from_stanza(cls, stanza: object, is_group: bool = False) -> str:
+        if not is_group:
+            return ""
+
+        nick = cls._group_sender_nick_from_stanza(stanza)
+        if nick:
+            return display_label_from_jid(nick)
+
+        full_jid = str(stanza["from"] or "")
+        return display_label_from_jid(full_jid)
 
     @staticmethod
     def _group_sender_nick_from_stanza(stanza: object) -> str:
@@ -1131,7 +1473,14 @@ class BridgeXmppClient(ClientXMPP):
         is_group: bool = False,
     ) -> bool:
         if is_group:
-            return self._group_sender_nick_from_stanza(stanza) == self._muc_nick()
+            if sender_jid == str(self.boundjid.bare):
+                return True
+
+            sender_nick = self._group_sender_nick_from_stanza(stanza)
+            return (
+                sender_nick == self._muc_nick()
+                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
+            )
 
         return str(stanza["from"].bare) == self.boundjid.bare
 
@@ -1251,6 +1600,10 @@ class BridgeXmppClient(ClientXMPP):
             end = max(start, min(end, len(body)))
             reply_quote = cls._reply_quote_from_fallback(body[start:end])
             display_body = f"{body[:start]}{body[end:]}".strip()
+        else:
+            quoted_body = cls._reply_parts_from_quoted_body(body)
+            if quoted_body is not None:
+                display_body, reply_quote = quoted_body
 
         return cls._message_body_for_display(
             display_body,
@@ -1294,6 +1647,35 @@ class BridgeXmppClient(ClientXMPP):
             quote_lines = quote_lines[1:]
 
         return " ".join(quote_lines).strip()
+
+    @classmethod
+    def _reply_parts_from_quoted_body(cls, body: str) -> tuple[str, str] | None:
+        lines = body.splitlines()
+        quote_lines: list[str] = []
+        body_start = 0
+        saw_quote = False
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                if saw_quote:
+                    body_start = index + 1
+                    break
+                continue
+            if stripped.startswith(">"):
+                saw_quote = True
+                quote_lines.append(stripped[1:].lstrip())
+                body_start = index + 1
+                continue
+            if saw_quote:
+                body_start = index
+            break
+
+        quote = cls._reply_quote_from_fallback("\n".join(quote_lines))
+        if not quote:
+            return None
+
+        display_body = "\n".join(lines[body_start:]).strip()
+        return display_body or body, quote
 
     @classmethod
     def _media_from_xml(cls, xml: ET.Element) -> tuple[str, str, str, str, int, float]:
@@ -1862,10 +2244,14 @@ class XmppService:
             self._client = BridgeXmppClient(settings, password, self._emit)
             plugins = (
                 "xep_0030",
+                "xep_0049",
                 "xep_0050",
                 "xep_0060",
+                "xep_0163",
                 "xep_0128",
                 "xep_0199",
+                "xep_0223",
+                "xep_0048",
                 "xep_0249",
                 "xep_0297",
                 "xep_0280",
@@ -1873,6 +2259,7 @@ class XmppService:
                 "xep_0363",
                 "xep_0402",
                 "xep_0045",
+                "xep_0492",
             )
             for plugin in plugins:
                 if plugin == "xep_0199":

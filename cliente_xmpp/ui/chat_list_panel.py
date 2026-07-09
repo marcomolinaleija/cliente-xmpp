@@ -311,29 +311,42 @@ class ChatListPanel(wx.Panel):
         return f"{name} | {details}"
 
     def _format_message_result_row(self, chat: Chat, message: Message) -> str:
-        sender = "Tú" if message.outgoing else self._sender_label(chat, message.sender_jid)
+        sender = (
+            "Tú"
+            if message.outgoing
+            else self._sender_label(chat, message.sender_jid, message.sender_name)
+        )
         preview = self._truncate_preview(message.body or message.media_filename or "Adjunto")
         time = self._format_time(message.sent_at)
         details = " | ".join(part for part in (sender, preview, time) if part)
         return f"{chat.name} | mensaje | {details}"
 
     @staticmethod
-    def _sender_label(chat: Chat, sender_jid: str) -> str:
+    def _sender_label(chat: Chat, sender_jid: str, sender_name: str = "") -> str:
         if not chat.is_group:
             return chat.name
+        if sender_name:
+            return sender_name
         if "/" in sender_jid:
             return sender_jid.rsplit("/", 1)[-1]
         return sender_jid or chat.name
 
     @staticmethod
     def _format_status(chat: Chat) -> str:
+        parts: list[str] = []
+        if chat.is_self_group:
+            parts.append("grupo personal")
+        if chat.notifications_muted:
+            parts.append("silenciado")
         if chat.unread_count <= 0:
-            return ""
+            return ", ".join(parts)
 
         if chat.unread_count == 1:
-            return "1 mensaje no leído"
+            parts.append("1 mensaje no leído")
+            return ", ".join(parts)
 
-        return f"{chat.unread_count} mensajes no leídos"
+        parts.append(f"{chat.unread_count} mensajes no leídos")
+        return ", ".join(parts)
 
     @staticmethod
     def _truncate_preview(preview: str, max_length: int = 200) -> str:
@@ -347,6 +360,9 @@ class ChatListPanel(wx.Panel):
     def _format_time(sent_at: datetime | None) -> str:
         if sent_at is None:
             return ""
+
+        if sent_at.tzinfo is not None:
+            sent_at = sent_at.astimezone()
 
         hour = sent_at.hour
         minute = sent_at.minute

@@ -63,6 +63,7 @@ class ConversationPanel(wx.Panel):
         self._speaker = NvdaSpeaker()
         self._audio_autoplay_timer = wx.Timer(self)
         self._current_audio_row_index: int | None = None
+        self._current_audio_source = ""
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -294,19 +295,20 @@ class ConversationPanel(wx.Panel):
         if message is None:
             return False
 
-        audio_url = message.audio_url
-        if not audio_url:
+        audio_source = self._audio_source(message)
+        if not audio_source:
             return False
 
         try:
-            status = self._audio_player.play(audio_url)
+            status = self._audio_player.play(audio_source)
         except MpvPlaybackError as exc:
             wx.MessageBox(str(exc), "Audio")
         else:
             self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
-            self._schedule_audio_duration_update(index, audio_url)
+            self._schedule_audio_duration_update(index, audio_source)
             if status == "playing":
                 self._current_audio_row_index = index
+                self._current_audio_source = audio_source
                 self._audio_autoplay_timer.Start(500)
             else:
                 self._audio_autoplay_timer.Stop()
@@ -341,11 +343,15 @@ class ConversationPanel(wx.Panel):
             return None
 
         message = self._message_at_row(index)
-        if message is None or not message.audio_url:
+        if message is None:
+            return None
+
+        audio_source = self._audio_source(message)
+        if not audio_source:
             return None
 
         try:
-            speed = self._audio_player.cycle_speed(message.audio_url)
+            speed = self._audio_player.cycle_speed(audio_source)
         except MpvPlaybackError as exc:
             wx.MessageBox(str(exc), "Audio")
             return None
@@ -353,7 +359,7 @@ class ConversationPanel(wx.Panel):
         self._speaker.speak(f"Velocidad {speed:g}x")
         if self.on_audio_speed_changed is not None:
             self.on_audio_speed_changed(speed)
-        self._schedule_audio_duration_update(index, message.audio_url)
+        self._schedule_audio_duration_update(index, audio_source)
         return speed
 
     def _on_audio_autoplay_timer(self, _event: wx.TimerEvent) -> None:
@@ -363,11 +369,16 @@ class ConversationPanel(wx.Panel):
             return
 
         message = self._message_at_row(index)
-        if message is None or not message.audio_url:
+        if message is None:
             self._audio_autoplay_timer.Stop()
             return
 
-        if not self._audio_player.is_finished(message.audio_url):
+        audio_source = self._current_audio_source or self._audio_source(message)
+        if not audio_source:
+            self._audio_autoplay_timer.Stop()
+            return
+
+        if not self._audio_player.is_finished(audio_source):
             return
 
         next_index, next_message = self._next_audio_message(index + 1)
@@ -382,16 +393,21 @@ class ConversationPanel(wx.Panel):
             wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED,
         )
         self.messages.EnsureVisible(next_index)
+        next_audio_source = self._audio_source(next_message)
+        if not next_audio_source:
+            self._audio_autoplay_timer.Stop()
+            return
         try:
-            self._audio_player.play(next_message.audio_url)
+            self._audio_player.play(next_audio_source)
         except MpvPlaybackError as exc:
             self._audio_autoplay_timer.Stop()
             wx.MessageBox(str(exc), "Audio")
             return
 
         self._current_audio_row_index = next_index
+        self._current_audio_source = next_audio_source
         self._speaker.speak("Reproduciendo")
-        self._schedule_audio_duration_update(next_index, next_message.audio_url)
+        self._schedule_audio_duration_update(next_index, next_audio_source)
 
     def _next_audio_message(self, start_index: int) -> tuple[int | None, Message | None]:
         for index in range(start_index, len(self._message_rows)):
@@ -401,8 +417,17 @@ class ConversationPanel(wx.Panel):
 
         return None, None
 
+    @staticmethod
+    def _audio_source(message: Message) -> str:
+        path = local_media_path(message)
+        if path is not None:
+            return str(path)
+
+        return message.audio_url
+
     def close_audio(self) -> None:
         self._audio_autoplay_timer.Stop()
+        self._current_audio_source = ""
         self._audio_player.close()
         self._video_player.close()
 

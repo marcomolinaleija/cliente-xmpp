@@ -614,7 +614,7 @@ class BridgeXmppClient(ClientXMPP):
         mam = self["xep_0313"]
         messages: list[Message] = []
         page_size = 100
-        total = None if limit is None else max(limit * 10, 100)
+        total = 500 if limit is None else max(limit * 10, 100)
 
         async for result in mam.iterate(
             with_jid=chat_jid if with_jid_filter else None,
@@ -692,20 +692,31 @@ class BridgeXmppClient(ClientXMPP):
 
     async def load_recent_activity(self, roster_jids: set[str], limit: int = 1000) -> None:
         loaded_chat_jids: set[str] = set()
+        messages_by_chat: dict[str, list[Message]] = {}
         try:
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
+                chat_jid = self._chat_jid_from_mam_result(result)
+                if not chat_jid:
+                    continue
+
+                if roster_jids and chat_jid not in roster_jids:
+                    continue
+
+                message = self._message_from_mam_result(chat_jid, result)
+                if message:
+                    messages_by_chat.setdefault(chat_jid, []).append(message)
+
+                if chat_jid in loaded_chat_jids:
+                    continue
+
                 preview = self._message_body_from_mam_result(result)
                 media_url, media_kind, _, _, media_size, _ = self._media_from_mam_result(result)
                 if not preview and not media_url:
                     continue
 
-                chat_jid = self._chat_jid_from_mam_result(result)
                 sent_at = self._sent_at_from_mam_result(result)
-                if not chat_jid or not sent_at or chat_jid in loaded_chat_jids:
-                    continue
-
-                if roster_jids and chat_jid not in roster_jids:
+                if not sent_at:
                     continue
 
                 is_group = (
@@ -728,8 +739,15 @@ class BridgeXmppClient(ClientXMPP):
                     )
                 )
 
-                if loaded_chat_jids == roster_jids:
-                    break
+            for chat_jid, messages in messages_by_chat.items():
+                self._emit(
+                    MessageHistoryLoaded(
+                        chat_jid=chat_jid,
+                        messages=list(reversed(messages)),
+                        older=False,
+                        background=True,
+                    )
+                )
         except Exception:
             pass
         finally:

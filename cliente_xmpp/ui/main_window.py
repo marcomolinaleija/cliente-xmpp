@@ -1237,8 +1237,7 @@ class MainWindow(wx.Frame):
                     self.connection_header.set_status(reason)
                     self.status_bar.SetStatusText(reason)
                 else:
-                    self.connection_header.set_status("Desconectado")
-                    self._set_connected_ui(False)
+                    self.connection_header.set_status("Desconectado (Reconectando...)")
                     self.status_bar.SetStatusText("Desconectado")
             case XmppError(message=message):
                 self.login_panel.set_connecting(False)
@@ -1534,7 +1533,7 @@ class MainWindow(wx.Frame):
         self.history_exhausted_chats.discard(chat_jid)
         self.preloaded_history_chats.discard(chat_jid)
         self._refresh_load_older_button(chat_jid)
-        self.xmpp.load_history(chat_jid)
+        self.xmpp.load_history(chat_jid, limit=50)
 
     def _request_history_page(
         self,
@@ -1661,8 +1660,6 @@ class MainWindow(wx.Frame):
         self.workspace_panel.Show(connected)
         self.chat_list.Enable(connected)
         self.conversation.Enable(connected)
-        if connected:
-            self._show_chat_list()
         self.Layout()
 
     def _set_startup_wait_ui(self) -> None:
@@ -1868,7 +1865,7 @@ class MainWindow(wx.Frame):
             return
 
         try:
-            cached_messages = self.message_store.load_recent_messages(self.current_jid, chat_jid)
+            cached_messages = self.message_store.load_recent_messages(self.current_jid, chat_jid, limit=5000)
         except Exception:
             return
 

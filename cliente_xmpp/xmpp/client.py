@@ -4,6 +4,7 @@ import asyncio
 import mimetypes
 import re
 import threading
+import unicodedata
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -93,6 +94,7 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._session_started_at: datetime | None = None
         self._disconnect_requested = False
         self._reconnect_scheduled = False
         self.force_starttls = settings.use_tls
@@ -106,6 +108,7 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("carbon_sent", self._on_carbon_sent)
 
     async def _on_session_start(self, _event: object) -> None:
+        self._session_started_at = datetime.now().astimezone()
         self.send_presence()
         await self.get_roster()
         self._emit(XmppConnected())
@@ -223,7 +226,14 @@ class BridgeXmppClient(ClientXMPP):
         message = self._message_from_groupchat_stanza(msg)
         if message is not None:
             self._group_chat_jids.add(message.chat_jid)
-            self._emit(MessageReceived(message))
+            notify = not self._message_predates_session(message)
+            self._emit(MessageReceived(message, notify=notify))
+
+    def _message_predates_session(self, message: Message) -> bool:
+        if self._session_started_at is None:
+            return False
+
+        return message.sent_at.timestamp() < self._session_started_at.timestamp()
 
     def _on_carbon_received(self, msg: object) -> None:
         self._emit_message_from_stanza(msg["carbon_received"], outgoing=False)
@@ -1305,14 +1315,13 @@ class BridgeXmppClient(ClientXMPP):
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
         if is_group:
-            if self._muc_user_item_jid(message) == str(self.boundjid.bare):
+            if self._group_sender_matches_local(
+                self._muc_user_item_jid(message),
+                self._jid_resource(from_jid),
+            ):
                 return True
 
-            sender_nick = self._jid_resource(from_jid)
-            return (
-                sender_nick == self._muc_nick()
-                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
-            )
+            return False
 
         return self._bare_jid(from_jid) == str(self.boundjid.bare)
 
@@ -1473,16 +1482,31 @@ class BridgeXmppClient(ClientXMPP):
         is_group: bool = False,
     ) -> bool:
         if is_group:
-            if sender_jid == str(self.boundjid.bare):
-                return True
-
-            sender_nick = self._group_sender_nick_from_stanza(stanza)
-            return (
-                sender_nick == self._muc_nick()
-                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
+            return self._group_sender_matches_local(
+                sender_jid,
+                self._group_sender_nick_from_stanza(stanza),
             )
 
         return str(stanza["from"].bare) == self.boundjid.bare
+
+    def _group_sender_matches_local(self, sender_jid: str, sender_nick: str) -> bool:
+        local_bare = str(self.boundjid.bare)
+        if sender_jid and self._bare_jid(sender_jid) == local_bare:
+            return True
+
+        return BridgeXmppClient._same_display_label(sender_nick, self._muc_nick())
+
+    @staticmethod
+    def _same_display_label(first: str, second: str) -> bool:
+        def normalize(value: str) -> str:
+            folded = display_label_from_jid(value).casefold()
+            return "".join(
+                character
+                for character in unicodedata.normalize("NFD", folded)
+                if unicodedata.category(character) != "Mn"
+            )
+
+        return bool(normalize(first)) and normalize(first) == normalize(second)
 
     @staticmethod
     def _sent_at_from_mam_result(result: object) -> datetime | None:

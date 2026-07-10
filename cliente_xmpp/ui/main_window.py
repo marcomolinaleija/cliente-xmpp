@@ -2990,6 +2990,8 @@ class MainWindow(wx.Frame):
 
         if chat.is_group:
             self.xmpp.join_group_chat(chat.jid)
+        else:
+            self.xmpp.request_contact_presence_subscription(chat.jid)
         self._load_conversation(chat, unread_count=chat.unread_count)
         self._update_chat_summary(chat.jid, mark_read=True)
         self.chat_list.Hide()

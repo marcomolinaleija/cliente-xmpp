@@ -220,6 +220,50 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
 
 
 class ContactStateTests(unittest.TestCase):
+    def test_presence_subscription_is_sent_once_for_contact(self) -> None:
+        sent: list[tuple[str, str]] = []
+        client = SimpleNamespace(
+            _presence_subscription_jids=set(),
+            _jid_may_be_group_chat=BridgeXmppClient._jid_may_be_group_chat,
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+            send_presence_subscription=lambda **kwargs: sent.append(
+                (kwargs["pto"], kwargs["ptype"])
+            ),
+        )
+
+        BridgeXmppClient.request_contact_presence_subscription(
+            client,
+            "+5218126462159@whatsapp.example.org",
+        )
+        BridgeXmppClient.request_contact_presence_subscription(
+            client,
+            "+5218126462159@whatsapp.example.org",
+        )
+
+        self.assertEqual(sent, [("+5218126462159@whatsapp.example.org", "subscribe")])
+
+    def test_presence_subscription_ignores_groups_and_component(self) -> None:
+        sent: list[tuple[str, str]] = []
+        client = SimpleNamespace(
+            _presence_subscription_jids=set(),
+            _jid_may_be_group_chat=BridgeXmppClient._jid_may_be_group_chat,
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+            send_presence_subscription=lambda **kwargs: sent.append(
+                (kwargs["pto"], kwargs["ptype"])
+            ),
+        )
+
+        BridgeXmppClient.request_contact_presence_subscription(
+            client,
+            "#1203630@groups.whatsapp.example.org",
+        )
+        BridgeXmppClient.request_contact_presence_subscription(
+            client,
+            "whatsapp.example.org",
+        )
+
+        self.assertEqual(sent, [])
+
     def test_reads_composing_chat_state(self) -> None:
         message = ET.fromstring(
             """

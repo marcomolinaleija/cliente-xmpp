@@ -112,6 +112,7 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._presence_subscription_jids: set[str] = set()
         self._session_started_at: datetime | None = None
         self._disconnect_requested = False
         self._reconnect_scheduled = False
@@ -1749,6 +1750,22 @@ class BridgeXmppClient(ClientXMPP):
         self._group_chat_jids.add(chat_jid)
         self._join_group_chat(chat_jid)
 
+    def request_contact_presence_subscription(self, chat_jid: str) -> None:
+        bare_jid = chat_jid.split("/", 1)[0]
+        if (
+            not bare_jid
+            or bare_jid in self._presence_subscription_jids
+            or self._jid_may_be_group_chat(bare_jid)
+            or self._is_probable_whatsapp_bridge_jid(bare_jid)
+        ):
+            return
+
+        self._presence_subscription_jids.add(bare_jid)
+        try:
+            self.send_presence_subscription(pto=bare_jid, ptype="subscribe")
+        except Exception:
+            self._presence_subscription_jids.discard(bare_jid)
+
     def monitor_group_chats(self, chat_jids: Iterable[str]) -> None:
         group_jids = {chat_jid for chat_jid in chat_jids if self._jid_may_be_group_chat(chat_jid)}
         if not group_jids:
@@ -3287,6 +3304,16 @@ class XmppService:
                 self._client.join_group_chat(chat_jid)
 
         self._loop.call_soon_threadsafe(join)
+
+    def request_contact_presence_subscription(self, chat_jid: str) -> None:
+        if not self._client or not self._loop or not chat_jid:
+            return
+
+        def request() -> None:
+            if self._client:
+                self._client.request_contact_presence_subscription(chat_jid)
+
+        self._loop.call_soon_threadsafe(request)
 
     def load_history(
         self,

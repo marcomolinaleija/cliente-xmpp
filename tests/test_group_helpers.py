@@ -7,6 +7,7 @@ from xml.etree import ElementTree as ET
 
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
+from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient
 
 
@@ -182,6 +183,39 @@ class GroupMessageParsingTests(unittest.TestCase):
             BridgeXmppClient._reply_parts_from_quoted_body("> cita original\n\nrespuesta"),
             ("respuesta", "cita original"),
         )
+
+    def test_group_self_echo_is_distinguished_from_bot_messages(self) -> None:
+        outgoing = Message(
+            chat_jid="#room@example.org",
+            sender_jid="me",
+            sender_name="Tú",
+            body="hola",
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            chat_is_group=True,
+        )
+        echo = Message(
+            chat_jid="#room@example.org",
+            sender_jid="#room@example.org/Ángel Alcantar",
+            sender_name="Ángel Alcantar",
+            body="hola",
+            sent_at=outgoing.sent_at + timedelta(seconds=1),
+            message_id="echo-1",
+            chat_is_group=True,
+        )
+        bot = Message(
+            chat_jid="#room@example.org",
+            sender_jid="Yo",
+            sender_name="Ángel Alcantar",
+            body="hola",
+            sent_at=outgoing.sent_at + timedelta(seconds=1),
+            message_id="bot-1",
+            outgoing=True,
+            chat_is_group=True,
+        )
+
+        self.assertTrue(MainWindow._messages_are_group_self_echo(outgoing, echo))
+        self.assertFalse(MainWindow._messages_are_group_self_echo(outgoing, bot))
 
 
 if __name__ == "__main__":

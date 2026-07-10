@@ -2471,7 +2471,7 @@ class MainWindow(wx.Frame):
         if not message.chat_is_group or message.outgoing or not message.sender_name:
             return
 
-        self.chat_names_by_jid[message.sender_jid] = message.sender_name
+        self.chat_names_by_jid.setdefault(message.sender_jid, message.sender_name)
 
     def _message_by_merge_key(
         self,

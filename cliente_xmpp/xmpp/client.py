@@ -6,6 +6,7 @@ import binascii
 import mimetypes
 import re
 import threading
+import unicodedata
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
     ChatsDiscovered,
+    MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
@@ -81,6 +83,7 @@ JID_PATTERN = re.compile(r"(?<![\w.+-])(?:xmpp:)?([^\s<>\"']+@[^\s<>\"']+)")
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
+CHAT_MARKERS_NS = "urn:xmpp:chat-markers:0"
 EXPLICIT_MIME_TYPES = {
     ".aac": "audio/aac",
     ".flac": "audio/flac",
@@ -103,6 +106,7 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._session_started_at: datetime | None = None
         self._disconnect_requested = False
         self._reconnect_scheduled = False
         self._last_whatsapp_status_by_component: dict[str, str] = {}
@@ -115,12 +119,16 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("carbon_received", self._on_carbon_received)
         self.add_event_handler("carbon_sent", self._on_carbon_sent)
+        self.add_event_handler("receipt_received", self._on_receipt_received)
+        self.add_event_handler("marker_received", self._on_marker_received)
+        self.add_event_handler("marker_displayed", self._on_marker_displayed)
         self.add_event_handler("presence_available", self._on_presence_debug)
         self.add_event_handler("presence_unavailable", self._on_presence_debug)
         self.add_event_handler("presence_error", self._on_presence_debug)
         self.add_event_handler("changed_status", self._on_presence_debug)
 
     async def _on_session_start(self, _event: object) -> None:
+        self._session_started_at = datetime.now().astimezone()
         self.send_presence()
         await self.get_roster()
         self._emit(XmppConnected())
@@ -186,6 +194,8 @@ class BridgeXmppClient(ClientXMPP):
 
         if message_type in ("chat", "normal"):
             self._debug_whatsapp_admin_message(bare_jid, body)
+            if self._is_whatsapp_component_admin_message(bare_jid, body):
+                return
 
         self._emit_inbox_entry(msg)
         group_chats = self._group_chats_from_bookmark_event_stanza(msg)
@@ -275,13 +285,70 @@ class BridgeXmppClient(ClientXMPP):
         message = self._message_from_groupchat_stanza(msg)
         if message is not None:
             self._group_chat_jids.add(message.chat_jid)
-            self._emit(MessageReceived(message))
+            notify = not self._message_predates_session(message)
+            self._emit(MessageReceived(message, notify=notify))
+
+    def _message_predates_session(self, message: Message) -> bool:
+        if self._session_started_at is None:
+            return False
+
+        return message.sent_at.timestamp() < self._session_started_at.timestamp()
 
     def _on_carbon_received(self, msg: object) -> None:
         self._emit_message_from_stanza(msg["carbon_received"], outgoing=False)
 
     def _on_carbon_sent(self, msg: object) -> None:
         self._emit_message_from_stanza(msg["carbon_sent"], outgoing=True)
+
+    def _on_receipt_received(self, msg: object) -> None:
+        self._emit_delivery_update_from_marker(msg, "delivered")
+
+    def _on_marker_received(self, msg: object) -> None:
+        self._emit_delivery_update_from_marker(msg, "delivered")
+
+    def _on_marker_displayed(self, msg: object) -> None:
+        self._emit_delivery_update_from_marker(msg, "read")
+
+    def _emit_delivery_update_from_marker(self, msg: object, delivery_state: str) -> None:
+        message_id = self._delivery_marker_id(msg)
+        if not message_id:
+            return
+
+        self._emit(
+            MessageDeliveryUpdated(
+                chat_jid=str(msg["from"].bare),
+                message_id=message_id,
+                delivery_state=delivery_state,
+            )
+        )
+
+    @staticmethod
+    def _delivery_marker_id(msg: object) -> str:
+        for plugin_name in ("receipt", "displayed", "received", "acknowledged"):
+            try:
+                value = msg[plugin_name]
+                if isinstance(value, str) and value:
+                    return value
+                marker_id = str(value["id"] or "")
+                if marker_id:
+                    return marker_id
+            except Exception:
+                pass
+
+        xml = getattr(msg, "xml", None)
+        if xml is None:
+            return ""
+
+        for node in xml.iter():
+            if node.tag in {
+                "{urn:xmpp:receipts}received",
+                f"{{{CHAT_MARKERS_NS}}}received",
+                f"{{{CHAT_MARKERS_NS}}}displayed",
+                f"{{{CHAT_MARKERS_NS}}}acknowledged",
+            }:
+                return node.attrib.get("id", "")
+
+        return ""
 
     def _on_presence_debug(self, presence: object) -> None:
         try:
@@ -916,6 +983,11 @@ class BridgeXmppClient(ClientXMPP):
         if state != "unknown":
             self._emit_whatsapp_status(from_jid, state, body)
 
+    @classmethod
+    def _is_whatsapp_component_admin_message(cls, from_jid: str, body: str) -> bool:
+        bare_jid = from_jid.split("/", 1)[0]
+        return cls._is_probable_whatsapp_bridge_jid(bare_jid) and cls._is_whatsapp_state_text(body)
+
     @staticmethod
     def _debug_whatsapp(message: str) -> None:
         print(f"{WHATSAPP_DEBUG_PREFIX} {message}", flush=True)
@@ -995,7 +1067,7 @@ class BridgeXmppClient(ClientXMPP):
                 continue
 
             mime = cls._node_mime(node)
-            if not mime.startswith("image/"):
+            if not cls._is_raster_image_mime(mime):
                 continue
 
             encoded = (node.text or "").strip()
@@ -1026,12 +1098,25 @@ class BridgeXmppClient(ClientXMPP):
         if not separator:
             return None
         mime = header.removeprefix("data:").split(";", 1)[0]
-        if not mime.startswith("image/"):
+        if not cls._is_raster_image_mime(mime):
             return None
         decoded = cls._decode_base64_image(payload.strip())
         if decoded is None:
             return None
         return decoded, mime
+
+    @staticmethod
+    def _is_raster_image_mime(mime: str) -> bool:
+        return mime.split(";", 1)[0].strip().casefold() in {
+            "image/avif",
+            "image/bmp",
+            "image/gif",
+            "image/heic",
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/webp",
+        }
 
     @staticmethod
     def _decode_base64_image(value: str) -> bytes | None:
@@ -1057,10 +1142,11 @@ class BridgeXmppClient(ClientXMPP):
         if "qr" in normalized or "scan" in normalized or "vincul" in normalized:
             return True
         for node in xml.iter():
-            if cls._is_bob_data_node(node) and cls._node_mime(node).startswith("image/"):
+            if cls._is_bob_data_node(node) and cls._is_raster_image_mime(cls._node_mime(node)):
                 return True
             for attribute in ("src", "uri", "url", "href"):
-                if node.attrib.get(attribute, "").strip().startswith("data:image/"):
+                image_data = cls._image_data_from_data_uri(node.attrib.get(attribute, "").strip())
+                if image_data is not None:
                     return True
         return False
 
@@ -1401,7 +1487,16 @@ class BridgeXmppClient(ClientXMPP):
 
         self._joined_group_chat_jids.add(jid)
         try:
-            self["xep_0045"].join_muc(jid, self._muc_nick(), maxhistory="0")
+            future = self["xep_0045"].join_muc(jid, self._muc_nick(), maxhistory="0")
+            future.add_done_callback(lambda task, room_jid=jid: self._finish_group_join(room_jid, task))
+        except Exception:
+            self._joined_group_chat_jids.discard(jid)
+
+    def _finish_group_join(self, jid: str, task: asyncio.Future) -> None:
+        try:
+            task.result()
+        except (asyncio.TimeoutError, IqError, IqTimeout):
+            self._joined_group_chat_jids.discard(jid)
         except Exception:
             self._joined_group_chat_jids.discard(jid)
 
@@ -1512,7 +1607,7 @@ class BridgeXmppClient(ClientXMPP):
                 continue
 
             message = self._message_from_mam_result(result_chat_jid, result)
-            if message:
+            if message and message.chat_jid == chat_jid:
                 messages.append(message)
 
             if limit is not None and len(messages) >= limit:
@@ -1702,6 +1797,7 @@ class BridgeXmppClient(ClientXMPP):
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         is_group = self._stanza_is_groupchat(stanza)
+        message_chat_jid = self._chat_jid_from_mam_result(result) if is_group else chat_jid
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
@@ -1718,7 +1814,7 @@ class BridgeXmppClient(ClientXMPP):
             return None
 
         return Message(
-            chat_jid=chat_jid,
+            chat_jid=message_chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
@@ -1732,8 +1828,9 @@ class BridgeXmppClient(ClientXMPP):
             media_size=media_size,
             media_duration_seconds=media_duration,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
-            chat_is_group=is_group or chat_jid in self._group_chat_jids,
+            chat_is_group=is_group or message_chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            delivery_state="sent" if outgoing else "",
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -1791,6 +1888,7 @@ class BridgeXmppClient(ClientXMPP):
                     message_id=str(stanza["id"] or ""),
                     chat_is_group=is_group,
                     reply_quote=reply_quote,
+                    delivery_state="sent" if outgoing else "",
                 )
             )
         )
@@ -1837,6 +1935,7 @@ class BridgeXmppClient(ClientXMPP):
             message_id=str(stanza["id"] or ""),
             chat_is_group=True,
             reply_quote=reply_quote,
+            delivery_state="sent" if outgoing else "",
         )
 
     def _emit_inbox_entry(self, msg: object) -> None:
@@ -1950,19 +2049,19 @@ class BridgeXmppClient(ClientXMPP):
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            delivery_state="sent" if outgoing else "",
         )
 
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
         if is_group:
-            if self._muc_user_item_jid(message) == str(self.boundjid.bare):
+            if self._group_sender_matches_local(
+                self._muc_user_item_jid(message),
+                self._jid_resource(from_jid),
+            ):
                 return True
 
-            sender_nick = self._jid_resource(from_jid)
-            return (
-                sender_nick == self._muc_nick()
-                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
-            )
+            return False
 
         return self._bare_jid(from_jid) == str(self.boundjid.bare)
 
@@ -2123,16 +2222,31 @@ class BridgeXmppClient(ClientXMPP):
         is_group: bool = False,
     ) -> bool:
         if is_group:
-            if sender_jid == str(self.boundjid.bare):
-                return True
-
-            sender_nick = self._group_sender_nick_from_stanza(stanza)
-            return (
-                sender_nick == self._muc_nick()
-                or display_label_from_jid(sender_nick) == display_label_from_jid(self._muc_nick())
+            return self._group_sender_matches_local(
+                sender_jid,
+                self._group_sender_nick_from_stanza(stanza),
             )
 
         return str(stanza["from"].bare) == self.boundjid.bare
+
+    def _group_sender_matches_local(self, sender_jid: str, sender_nick: str) -> bool:
+        local_bare = str(self.boundjid.bare)
+        if sender_jid and self._bare_jid(sender_jid) == local_bare:
+            return True
+
+        return BridgeXmppClient._same_display_label(sender_nick, self._muc_nick())
+
+    @staticmethod
+    def _same_display_label(first: str, second: str) -> bool:
+        def normalize(value: str) -> str:
+            folded = display_label_from_jid(value).casefold()
+            return "".join(
+                character
+                for character in unicodedata.normalize("NFD", folded)
+                if unicodedata.category(character) != "Mn"
+            )
+
+        return bool(normalize(first)) and normalize(first) == normalize(second)
 
     @staticmethod
     def _sent_at_from_mam_result(result: object) -> datetime | None:
@@ -2551,6 +2665,7 @@ class BridgeXmppClient(ClientXMPP):
             media_local_path=str(file_path),
             message_id=message_id,
             chat_is_group=is_group,
+            delivery_state="sent",
         )
 
     async def send_audio_file(self, to_jid: str, path: str, is_group: bool = False) -> Message:
@@ -2676,17 +2791,56 @@ class XmppService:
         if self._client and self._loop:
             self._loop.call_soon_threadsafe(self._client.request_disconnect)
 
-    def send_message(self, to_jid: str, body: str, is_group: bool = False) -> None:
+    def send_message(
+        self,
+        to_jid: str,
+        body: str,
+        is_group: bool = False,
+        message_id: str = "",
+    ) -> None:
         if not self._client or not self._loop:
+            if message_id:
+                self._emit(
+                    MessageDeliveryUpdated(
+                        chat_jid=to_jid,
+                        message_id=message_id,
+                        delivery_state="failed",
+                        detail="No hay una conexión XMPP activa.",
+                    )
+                )
             self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
         def send() -> None:
             if self._client:
-                if is_group:
-                    self._client._join_group_chat(to_jid)
-                message_type = "groupchat" if is_group else "chat"
-                self._client.send_message(mto=to_jid, mbody=body, mtype=message_type)
+                try:
+                    if is_group:
+                        self._client._join_group_chat(to_jid)
+                    message_type = "groupchat" if is_group else "chat"
+                    msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
+                    if message_id:
+                        msg["id"] = message_id
+                    self._request_delivery_updates(msg, message_type)
+                    msg.send()
+                    if message_id:
+                        self._emit(
+                            MessageDeliveryUpdated(
+                                chat_jid=to_jid,
+                                message_id=message_id,
+                                delivery_state="sent",
+                            )
+                        )
+                except Exception as exc:
+                    if message_id:
+                        self._emit(
+                            MessageDeliveryUpdated(
+                                chat_jid=to_jid,
+                                message_id=message_id,
+                                delivery_state="failed",
+                                detail=f"No se pudo enviar el mensaje: {exc}",
+                            )
+                        )
+                    self._emit(XmppError(f"No se pudo enviar el mensaje: {exc}"))
 
         self._loop.call_soon_threadsafe(send)
 
@@ -2698,8 +2852,18 @@ class XmppService:
         reply_to_id: str,
         fallback_end: int = 0,
         is_group: bool = False,
+        message_id: str = "",
     ) -> None:
         if not self._client or not self._loop:
+            if message_id:
+                self._emit(
+                    MessageDeliveryUpdated(
+                        chat_jid=to_jid,
+                        message_id=message_id,
+                        delivery_state="failed",
+                        detail="No hay una conexión XMPP activa.",
+                    )
+                )
             self._emit(XmppError("No hay una conexión XMPP activa."))
             return
 
@@ -2707,34 +2871,67 @@ class XmppService:
             if not self._client:
                 return
 
-            if is_group:
-                self._client._join_group_chat(to_jid)
-            message_type = "groupchat" if is_group else "chat"
-            msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
-            if reply_to_id:
-                msg.append(
-                    ET.Element(
-                        f"{{{REPLY_NS}}}reply",
-                        {
-                            "to": reply_to_jid,
-                            "id": reply_to_id,
-                        },
+            try:
+                if is_group:
+                    self._client._join_group_chat(to_jid)
+                message_type = "groupchat" if is_group else "chat"
+                msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
+                if message_id:
+                    msg["id"] = message_id
+                self._request_delivery_updates(msg, message_type)
+                if reply_to_id:
+                    msg.append(
+                        ET.Element(
+                            f"{{{REPLY_NS}}}reply",
+                            {
+                                "to": reply_to_jid,
+                                "id": reply_to_id,
+                            },
+                        )
                     )
-                )
-            if fallback_end > 0:
-                fallback = ET.Element(
-                    f"{{{FALLBACK_NS}}}fallback",
-                    {"for": REPLY_NS},
-                )
-                ET.SubElement(
-                    fallback,
-                    f"{{{FALLBACK_NS}}}body",
-                    {"start": "0", "end": str(fallback_end)},
-                )
-                msg.append(fallback)
-            msg.send()
+                if fallback_end > 0:
+                    fallback = ET.Element(
+                        f"{{{FALLBACK_NS}}}fallback",
+                        {"for": REPLY_NS},
+                    )
+                    ET.SubElement(
+                        fallback,
+                        f"{{{FALLBACK_NS}}}body",
+                        {"start": "0", "end": str(fallback_end)},
+                    )
+                    msg.append(fallback)
+                msg.send()
+                if message_id:
+                    self._emit(
+                        MessageDeliveryUpdated(
+                            chat_jid=to_jid,
+                            message_id=message_id,
+                            delivery_state="sent",
+                        )
+                    )
+            except Exception as exc:
+                if message_id:
+                    self._emit(
+                        MessageDeliveryUpdated(
+                            chat_jid=to_jid,
+                            message_id=message_id,
+                            delivery_state="failed",
+                            detail=f"No se pudo enviar la respuesta: {exc}",
+                        )
+                    )
+                self._emit(XmppError(f"No se pudo enviar la respuesta: {exc}"))
 
         self._loop.call_soon_threadsafe(send)
+
+    @staticmethod
+    def _request_delivery_updates(msg: object, message_type: str) -> None:
+        if message_type != "groupchat":
+            msg["request_receipt"] = True
+        try:
+            msg.enable("markable")
+        except Exception:
+            marker = ET.Element(f"{{{CHAT_MARKERS_NS}}}markable")
+            msg.append(marker)
 
     def send_reaction(
         self,
@@ -2923,6 +3120,7 @@ class XmppService:
                 "xep_0060",
                 "xep_0163",
                 "xep_0128",
+                "xep_0184",
                 "xep_0199",
                 "xep_0223",
                 "xep_0048",
@@ -2930,6 +3128,7 @@ class XmppService:
                 "xep_0297",
                 "xep_0280",
                 "xep_0313",
+                "xep_0333",
                 "xep_0363",
                 "xep_0402",
                 "xep_0045",

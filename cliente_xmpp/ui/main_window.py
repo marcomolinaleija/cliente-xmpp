@@ -1912,8 +1912,8 @@ class MainWindow(wx.Frame):
             case ContactPresenceUpdated(chat_jid=chat_jid):
                 self.contact_presence_by_chat[chat_jid] = event
                 self._refresh_current_chat_status_title()
-            case ChatStateUpdated(chat_jid=chat_jid, state=state):
-                self._set_chat_state(chat_jid, state)
+            case ChatStateUpdated(chat_jid=chat_jid, state=state, media=media):
+                self._set_chat_state(chat_jid, state, media)
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
@@ -3029,22 +3029,26 @@ class MainWindow(wx.Frame):
         self.Layout()
         self.chat_list.focus()
 
-    def _set_chat_state(self, chat_jid: str, state: str) -> None:
+    def _set_chat_state(self, chat_jid: str, state: str, media: str = "") -> None:
         previous_state = self.chat_state_by_chat.get(chat_jid, "")
-        if state == "composing":
-            self.chat_state_by_chat[chat_jid] = state
+        next_state = "recording_audio" if state == "composing" and media == "audio" else state
+        if next_state in {"composing", "recording_audio"}:
+            self.chat_state_by_chat[chat_jid] = next_state
         else:
             self.chat_state_by_chat.pop(chat_jid, None)
         self._refresh_current_chat_status_title()
-        if state == "composing" and previous_state != "composing":
-            self._speak_chat_composing(chat_jid)
+        if next_state != previous_state:
+            if next_state == "recording_audio":
+                self._speak_chat_state(chat_jid, "está grabando audio")
+            elif next_state == "composing":
+                self._speak_chat_state(chat_jid, "está escribiendo")
 
-    def _speak_chat_composing(self, chat_jid: str) -> None:
+    def _speak_chat_state(self, chat_jid: str, state_text: str) -> None:
         chat = self.conversation.current_chat
         if chat is None or not self.conversation.IsShown() or chat.jid != chat_jid:
             return
 
-        self.speaker.speak(f"{chat.name} está escribiendo")
+        self.speaker.speak(f"{chat.name} {state_text}")
 
     def _refresh_current_chat_status_title(self) -> None:
         chat = self.conversation.current_chat
@@ -3061,6 +3065,8 @@ class MainWindow(wx.Frame):
         self.SetTitle(APP_WINDOW_TITLE)
 
     def _conversation_status_text(self, chat_jid: str) -> str:
+        if self.chat_state_by_chat.get(chat_jid) == "recording_audio":
+            return "contacto grabando audio"
         if self.chat_state_by_chat.get(chat_jid) == "composing":
             return "contacto escribiendo"
 

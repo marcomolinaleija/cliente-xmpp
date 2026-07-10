@@ -449,23 +449,24 @@ class BridgeXmppClient(ClientXMPP):
         if message_type not in {"chat", "normal"} or not from_jid:
             return
 
-        state = self._chat_state_from_xml(getattr(msg, "xml", None))
+        state, media = self._chat_state_from_xml(getattr(msg, "xml", None))
         if not state:
             return
 
-        self._emit_chat_state_update(from_jid, state)
+        self._emit_chat_state_update(from_jid, state, media)
 
     def _on_chatstate(self, msg: object) -> None:
         try:
             from_jid = str(msg["from"].bare)
             state = str(msg["chat_state"] or "")
+            _xml_state, media = self._chat_state_from_xml(getattr(msg, "xml", None))
         except Exception as exc:
             self._debug_whatsapp(f"chatstate parse error: {exc}")
             return
 
-        self._emit_chat_state_update(from_jid, state)
+        self._emit_chat_state_update(from_jid, state, media)
 
-    def _emit_chat_state_update(self, from_jid: str, state: str) -> None:
+    def _emit_chat_state_update(self, from_jid: str, state: str, media: str = "") -> None:
         if (
             not from_jid
             or not state
@@ -474,13 +475,13 @@ class BridgeXmppClient(ClientXMPP):
         ):
             return
 
-        self._debug_whatsapp(f"chatstate from={from_jid} state={state}")
-        self._emit(ChatStateUpdated(chat_jid=from_jid, state=state))
+        self._debug_whatsapp(f"chatstate from={from_jid} state={state} media={media or '-'}")
+        self._emit(ChatStateUpdated(chat_jid=from_jid, state=state, media=media))
 
     @staticmethod
-    def _chat_state_from_xml(xml: ET.Element | None) -> str:
+    def _chat_state_from_xml(xml: ET.Element | None) -> tuple[str, str]:
         if xml is None:
-            return ""
+            return "", ""
 
         for node in xml.iter():
             namespace, _, local_name = (
@@ -493,9 +494,9 @@ class BridgeXmppClient(ClientXMPP):
                 "inactive",
                 "gone",
             }:
-                return local_name
+                return local_name, node.attrib.get("media", "").strip().casefold()
 
-        return ""
+        return "", ""
 
     def _build_roster_chats(self) -> list[Chat]:
         chats: list[Chat] = []

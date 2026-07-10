@@ -138,7 +138,6 @@ class ConversationPanel(wx.Panel):
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
-        self._resize_message_column_to_content()
         if restore_focused_message:
             wx.CallAfter(self.focus_default_message_item)
 
@@ -149,7 +148,6 @@ class ConversationPanel(wx.Panel):
         index = self._append_message_row(message)
         if self._unread_marker_index is None:
             self._focus_target_index = index
-        self._resize_message_column_to_content()
         if follow_new_message:
             self.messages.EnsureVisible(index)
 
@@ -273,7 +271,6 @@ class ConversationPanel(wx.Panel):
                 item = self.messages.GetItem(index)
                 item.SetImage(image_index)
                 self.messages.SetItem(item)
-            self._resize_message_column_to_content()
             return
 
     def speak_selected_text_message(self) -> bool:
@@ -472,19 +469,10 @@ class ConversationPanel(wx.Panel):
         self.SetSizer(box)
         apply_theme(self)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
-        self.messages.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._on_message_item_focused)
 
     def _on_messages_focus(self, event: wx.FocusEvent) -> None:
         if self.messages.GetFirstSelected() == wx.NOT_FOUND:
             wx.CallAfter(self.focus_default_message_item)
-        event.Skip()
-
-    def _on_message_item_focused(self, event: wx.ListEvent) -> None:
-        index = event.GetIndex()
-        if index != wx.NOT_FOUND and index < len(self._message_rows):
-            text = self._format_row_for_tooltip(index)
-            if text:
-                self.messages.SetToolTip(text)
         event.Skip()
 
     def _message_at_row(self, index: int) -> Message | None:
@@ -589,14 +577,6 @@ class ConversationPanel(wx.Panel):
         self.messages.InsertItem(self._unread_marker_index, "No leídos")
 
         self._style_message_item(self._unread_marker_index)
-
-    def _resize_message_column_to_content(self) -> None:
-        if self.messages.GetItemCount() <= 0:
-            self.messages.SetColumnWidth(0, 820)
-            return
-
-        self.messages.SetColumnWidth(0, wx.LIST_AUTOSIZE)
-        self.messages.SetColumnWidth(0, max(self.messages.GetColumnWidth(0), 820))
 
     def _clear_message_selection(self) -> None:
         selected = self.messages.GetFirstSelected()
@@ -801,7 +781,6 @@ class ConversationPanel(wx.Panel):
         message.media_duration_seconds = duration
         self.messages.SetItem(index, 0, self._format_message_row(message))
         self._style_message_item(index)
-        self._resize_message_column_to_content()
 
     def _style_message_item(self, index: int) -> None:
         self.messages.SetItemTextColour(index, YELLOW)

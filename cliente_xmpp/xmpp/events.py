@@ -22,6 +22,52 @@ class XmppError:
 
 
 @dataclass(slots=True)
+class WhatsAppBridgeStatus:
+    status: str
+    component_jid: str = ""
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppPairingCodeReceived:
+    component_jid: str
+    code: str
+
+
+@dataclass(slots=True)
+class WhatsAppLinkSessionStarted:
+    component_jid: str
+    command_node: str
+    session_id: str
+    mode: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppLinkSessionEnded:
+    component_jid: str
+    command_node: str = ""
+    session_id: str = ""
+    canceled: bool = False
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppQrImageReceived:
+    component_jid: str
+    image_url: str
+    mime: str = ""
+    filename: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppQrImageDataReceived:
+    component_jid: str
+    image_data: bytes
+    mime: str = ""
+    filename: str = ""
+
+
+@dataclass(slots=True)
 class RosterLoaded:
     chats: list[Chat]
 
@@ -47,6 +93,14 @@ class MessageHistoryLoaded:
 
 
 @dataclass(slots=True)
+class MessageDeliveryUpdated:
+    chat_jid: str
+    message_id: str
+    delivery_state: str
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class ChatActivityLoaded:
     chat_jid: str
     sent_at: datetime | None
@@ -64,10 +118,17 @@ XmppEvent = (
     XmppConnected
     | XmppDisconnected
     | XmppError
+    | WhatsAppBridgeStatus
+    | WhatsAppPairingCodeReceived
+    | WhatsAppLinkSessionStarted
+    | WhatsAppLinkSessionEnded
+    | WhatsAppQrImageReceived
+    | WhatsAppQrImageDataReceived
     | RosterLoaded
     | ChatsDiscovered
     | MessageReceived
     | MessageHistoryLoaded
+    | MessageDeliveryUpdated
     | ChatActivityLoaded
     | ChatActivityLoadFinished
 )

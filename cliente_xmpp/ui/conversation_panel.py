@@ -45,10 +45,12 @@ class ConversationPanel(wx.Panel):
         resolve_display_name: Callable[[str], str],
         initial_audio_speed: float = 1.0,
         on_audio_speed_changed: Callable[[float], None] | None = None,
+        on_audio_download_requested: Callable[[Message], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
         self.on_audio_speed_changed = on_audio_speed_changed
+        self.on_audio_download_requested = on_audio_download_requested
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
@@ -65,6 +67,7 @@ class ConversationPanel(wx.Panel):
         self._audio_autoplay_timer = wx.Timer(self)
         self._current_audio_row_index: int | None = None
         self._current_audio_source = ""
+        self._pending_audio_message: Message | None = None
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -88,6 +91,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index = None
         self._focus_target_index = None
+        self._pending_audio_message = None
         self._replying = False
         self.compose_label.SetLabel("Mensaje:")
         self.send_button.Enable(True)
@@ -138,7 +142,6 @@ class ConversationPanel(wx.Panel):
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
-        self._resize_message_column_to_content()
         if restore_focused_message:
             wx.CallAfter(self.focus_default_message_item)
 
@@ -149,7 +152,6 @@ class ConversationPanel(wx.Panel):
         index = self._append_message_row(message)
         if self._unread_marker_index is None:
             self._focus_target_index = index
-        self._resize_message_column_to_content()
         if follow_new_message:
             self.messages.EnsureVisible(index)
 
@@ -273,7 +275,6 @@ class ConversationPanel(wx.Panel):
                 item = self.messages.GetItem(index)
                 item.SetImage(image_index)
                 self.messages.SetItem(item)
-            self._resize_message_column_to_content()
             return
 
     def speak_selected_text_message(self) -> bool:
@@ -298,6 +299,11 @@ class ConversationPanel(wx.Panel):
 
         audio_source = self._audio_source(message)
         if not audio_source:
+            if message.audio_url and self.on_audio_download_requested is not None:
+                self._pending_audio_message = message
+                self.on_audio_download_requested(message)
+                self._speaker.speak("Descargando audio")
+                return True
             return False
 
         try:
@@ -315,6 +321,14 @@ class ConversationPanel(wx.Panel):
                 self._audio_autoplay_timer.Stop()
 
         return True
+
+    def audio_download_completed(self, message: Message) -> None:
+        if self._pending_audio_message is not message:
+            return
+
+        self._pending_audio_message = None
+        if self.selected_message() is message:
+            self.play_selected_audio()
 
     def play_selected_video(self) -> bool:
         index = self.messages.GetFirstSelected()
@@ -424,7 +438,7 @@ class ConversationPanel(wx.Panel):
         if path is not None:
             return str(path)
 
-        return message.audio_url
+        return ""
 
     def close_audio(self) -> None:
         self._audio_autoplay_timer.Stop()
@@ -472,19 +486,10 @@ class ConversationPanel(wx.Panel):
         self.SetSizer(box)
         apply_theme(self)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
-        self.messages.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._on_message_item_focused)
 
     def _on_messages_focus(self, event: wx.FocusEvent) -> None:
         if self.messages.GetFirstSelected() == wx.NOT_FOUND:
             wx.CallAfter(self.focus_default_message_item)
-        event.Skip()
-
-    def _on_message_item_focused(self, event: wx.ListEvent) -> None:
-        index = event.GetIndex()
-        if index != wx.NOT_FOUND and index < len(self._message_rows):
-            text = self._format_row_for_tooltip(index)
-            if text:
-                self.messages.SetToolTip(text)
         event.Skip()
 
     def _message_at_row(self, index: int) -> Message | None:
@@ -590,14 +595,6 @@ class ConversationPanel(wx.Panel):
 
         self._style_message_item(self._unread_marker_index)
 
-    def _resize_message_column_to_content(self) -> None:
-        if self.messages.GetItemCount() <= 0:
-            self.messages.SetColumnWidth(0, 820)
-            return
-
-        self.messages.SetColumnWidth(0, wx.LIST_AUTOSIZE)
-        self.messages.SetColumnWidth(0, max(self.messages.GetColumnWidth(0), 820))
-
     def _clear_message_selection(self) -> None:
         selected = self.messages.GetFirstSelected()
         while selected != wx.NOT_FOUND:
@@ -618,15 +615,28 @@ class ConversationPanel(wx.Panel):
         reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
         reply = self._format_reply_summary(message)
         if message.outgoing:
+            delivery = self._format_delivery_state(message)
             if reply:
-                return f"{starred}Tú, {body}, {reply}, {timestamp} Entregado.{reactions}"
-            return f"{starred}Tú {body} {timestamp} Entregado.{reactions}"
+                return f"{starred}Tú, {body}, {reply}, {timestamp} {delivery}.{reactions}"
+            return f"{starred}Tú {body} {timestamp} {delivery}.{reactions}"
 
         sender = self._sender_label(message)
         if reply:
             return f"{starred}{sender}, {body}, {reply}, {timestamp}.{reactions}"
 
         return f"{starred}{sender} {body} {timestamp}.{reactions}"
+
+    @staticmethod
+    def _format_delivery_state(message: Message) -> str:
+        if message.delivery_state == "pending":
+            return "Enviando"
+        if message.delivery_state == "failed":
+            return "No enviado"
+        if message.delivery_state in {"delivered", "received"}:
+            return "Entregado"
+        if message.delivery_state in {"displayed", "read"}:
+            return "Leído"
+        return "Enviado"
 
     def _format_message_for_reader(self, message: Message) -> str:
         sender = "Tú" if message.outgoing else self._sender_label(message)
@@ -801,7 +811,6 @@ class ConversationPanel(wx.Panel):
         message.media_duration_seconds = duration
         self.messages.SetItem(index, 0, self._format_message_row(message))
         self._style_message_item(index)
-        self._resize_message_column_to_content()
 
     def _style_message_item(self, index: int) -> None:
         self.messages.SetItemTextColour(index, YELLOW)

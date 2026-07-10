@@ -872,7 +872,7 @@ class BridgeXmppClient(ClientXMPP):
                 continue
 
             message = self._message_from_mam_result(result_chat_jid, result)
-            if message:
+            if message and message.chat_jid == chat_jid:
                 messages.append(message)
 
             if limit is not None and len(messages) >= limit:
@@ -1062,6 +1062,7 @@ class BridgeXmppClient(ClientXMPP):
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         is_group = self._stanza_is_groupchat(stanza)
+        message_chat_jid = self._chat_jid_from_mam_result(result) if is_group else chat_jid
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
@@ -1078,7 +1079,7 @@ class BridgeXmppClient(ClientXMPP):
             return None
 
         return Message(
-            chat_jid=chat_jid,
+            chat_jid=message_chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
@@ -1092,7 +1093,7 @@ class BridgeXmppClient(ClientXMPP):
             media_size=media_size,
             media_duration_seconds=media_duration,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
-            chat_is_group=is_group or chat_jid in self._group_chat_jids,
+            chat_is_group=is_group or message_chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
         )
 

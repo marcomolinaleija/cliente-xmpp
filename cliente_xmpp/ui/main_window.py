@@ -2618,8 +2618,6 @@ class MainWindow(wx.Frame):
 
         chats_by_jid = {chat.jid: chat for chat in chats}
         for message in latest_messages:
-            if self._normalize_audio_metadata(message):
-                self._persist_messages([message])
             chat = chats_by_jid.get(message.chat_jid)
             if chat is None:
                 chat = Chat(
@@ -2639,7 +2637,6 @@ class MainWindow(wx.Frame):
                     media_description(message) if has_media(message) else message.body
                 )
                 chat.last_message_at = message.sent_at
-                self._persist_chat(chat)
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:
@@ -2866,13 +2863,13 @@ class MainWindow(wx.Frame):
             return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
         preview = media_description(message) if has_media(message) else message.body
         if message.outgoing and message.delivery_state == "pending":
-            return f"Enviando: {preview}"
+            return f"{preview} | Enviando"
         if message.outgoing and message.delivery_state == "failed":
-            return f"No enviado: {preview}"
+            return f"{preview} | No enviado"
         if message.outgoing and message.delivery_state in {"delivered", "received"}:
-            return f"Entregado: {preview}"
+            return f"{preview} | Entregado"
         if message.outgoing and message.delivery_state in {"displayed", "read"}:
-            return f"Leído: {preview}"
+            return f"{preview} | Leído"
         return preview
 
     def _update_chat_summary(

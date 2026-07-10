@@ -76,6 +76,7 @@ CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
+APP_WINDOW_TITLE = "whatsapp-CAN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +88,7 @@ class ClipboardAttachment:
 
 class MainWindow(wx.Frame):
     def __init__(self) -> None:
-        super().__init__(None, title="whatsapp-CAN", size=(980, 700))
+        super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
         self.settings_store = SettingsStore()
         self.credential_store = CredentialStore()
@@ -3017,7 +3018,7 @@ class MainWindow(wx.Frame):
         self.reply_context = None
         self.conversation.clear_reply_quote()
         self.conversation.clear_unread_marker()
-        self.conversation.set_chat_status("")
+        self._reset_window_title()
         self.conversation.Hide()
         self.chat_list.Show()
         self.chat_list.refresh_visible_if_stale()
@@ -3038,7 +3039,14 @@ class MainWindow(wx.Frame):
         if chat is None or not self.conversation.IsShown():
             return
 
-        self.conversation.set_chat_status(self._conversation_status_text(chat.jid))
+        status = self._conversation_status_text(chat.jid)
+        if status:
+            self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name} - {status}")
+        else:
+            self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name}")
+
+    def _reset_window_title(self) -> None:
+        self.SetTitle(APP_WINDOW_TITLE)
 
     def _conversation_status_text(self, chat_jid: str) -> str:
         if self.chat_state_by_chat.get(chat_jid) == "composing":

@@ -68,7 +68,6 @@ class ConversationPanel(wx.Panel):
         self._current_audio_row_index: int | None = None
         self._current_audio_source = ""
         self._pending_audio_message: Message | None = None
-        self._title_base = "Selecciona un chat"
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -85,8 +84,7 @@ class ConversationPanel(wx.Panel):
 
     def set_chat(self, chat: Chat) -> None:
         self.current_chat = chat
-        self._title_base = chat.name
-        self.set_chat_status("")
+        self.title.SetLabel(chat.name)
         self.messages.DeleteAllItems()
         self._messages = []
         self._message_rows = []
@@ -101,13 +99,6 @@ class ConversationPanel(wx.Panel):
         self.set_recording_state(False)
         self.update_send_button_state()
         self.load_older_button.Enable(True)
-
-    def set_chat_status(self, status: str = "") -> None:
-        if status:
-            self.title.SetLabel(f"{self._title_base} - {status}")
-        else:
-            self.title.SetLabel(self._title_base)
-        self.Layout()
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
         previous_focus_index = self.messages.GetFirstSelected()

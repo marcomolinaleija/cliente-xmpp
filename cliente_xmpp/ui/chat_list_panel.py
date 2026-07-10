@@ -74,6 +74,14 @@ class ChatListPanel(wx.Panel):
         self._searching = True
         self._set_items(items, selected_jid=selected_jid, preserve_focused_order=False)
 
+    def set_placeholder(self, text: str) -> None:
+        self._chats = []
+        self._items = []
+        self._last_selected_jid = ""
+        self._visible_stale = False
+        self._searching = False
+        self.list_box.Set([text])
+
     def clear_search_results(self, selected_jid: str = "") -> None:
         self._searching = False
         self._set_items(

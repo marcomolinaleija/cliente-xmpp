@@ -34,6 +34,8 @@ from cliente_xmpp.xmpp.events import (
     MessageReceived,
     RosterLoaded,
     WhatsAppBridgeStatus,
+    WhatsAppLinkSessionEnded,
+    WhatsAppLinkSessionStarted,
     WhatsAppPairingCodeReceived,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
@@ -110,6 +112,7 @@ class BridgeXmppClient(ClientXMPP):
         self._disconnect_requested = False
         self._reconnect_scheduled = False
         self._last_whatsapp_status_by_component: dict[str, str] = {}
+        self._whatsapp_link_sessions: dict[str, tuple[str, str]] = {}
         self.force_starttls = settings.use_tls
 
         self.add_event_handler("session_start", self._on_session_start)
@@ -743,11 +746,18 @@ class BridgeXmppClient(ClientXMPP):
         *,
         allow_recovery: bool = True,
     ) -> None:
+        await self.cancel_whatsapp_linking(component_jid, silent=True)
         try:
-            await self["xep_0050"].send_command(
+            command = await self["xep_0050"].send_command(
                 component_jid,
                 SLIDGE_RELOGIN_COMMAND,
                 timeout=15,
+            )
+            self._remember_whatsapp_link_session(
+                component_jid,
+                SLIDGE_RELOGIN_COMMAND,
+                str(command["command"]["sessionid"] or ""),
+                "qr",
             )
         except IqTimeout:
             self._emit_whatsapp_status(
@@ -800,6 +810,98 @@ class BridgeXmppClient(ClientXMPP):
             "Se solicito un nuevo QR de vinculacion.",
         )
 
+    def _remember_whatsapp_link_session(
+        self,
+        component_jid: str,
+        command_node: str,
+        session_id: str,
+        mode: str,
+    ) -> None:
+        if not session_id:
+            return
+
+        self._whatsapp_link_sessions[component_jid] = (command_node, session_id)
+        self._emit(
+            WhatsAppLinkSessionStarted(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+                mode=mode,
+            )
+        )
+
+    def _clear_whatsapp_link_session(
+        self,
+        component_jid: str,
+        command_node: str = "",
+        session_id: str = "",
+        *,
+        canceled: bool = False,
+        detail: str = "",
+    ) -> None:
+        existing = self._whatsapp_link_sessions.get(component_jid)
+        if existing is not None and (
+            (not command_node or existing[0] == command_node)
+            and (not session_id or existing[1] == session_id)
+        ):
+            self._whatsapp_link_sessions.pop(component_jid, None)
+
+        self._emit(
+            WhatsAppLinkSessionEnded(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+                canceled=canceled,
+                detail=detail,
+            )
+        )
+
+    async def cancel_whatsapp_linking(self, component_jid: str, *, silent: bool = False) -> bool:
+        session = self._whatsapp_link_sessions.get(component_jid)
+        if session is None:
+            if not silent:
+                self._emit_whatsapp_status(
+                    component_jid,
+                    self._last_whatsapp_status_by_component.get(component_jid, "needs_pairing"),
+                    "No hay una vinculacion en curso para cancelar.",
+                )
+            return False
+
+        command_node, session_id = session
+        try:
+            await self["xep_0050"].send_command(
+                component_jid,
+                command_node,
+                action="cancel",
+                sessionid=session_id,
+                timeout=10,
+            )
+        except Exception as exc:
+            error_text = _format_xmpp_error(exc)
+            self._debug_whatsapp(
+                f"cancel linking failed for {component_jid}: {error_text}"
+            )
+            self._clear_whatsapp_link_session(
+                component_jid,
+                command_node,
+                session_id,
+                detail=error_text,
+            )
+            if not silent:
+                self._emit(XmppError(f"No se pudo cancelar la vinculacion: {error_text}"))
+            return False
+
+        self._clear_whatsapp_link_session(
+            component_jid,
+            command_node,
+            session_id,
+            canceled=True,
+            detail="Vinculacion cancelada.",
+        )
+        if not silent:
+            self._emit_whatsapp_status(component_jid, "needs_pairing", "Vinculacion cancelada.")
+        return True
+
     async def _request_whatsapp_logout(self, component_jid: str) -> bool:
         try:
             await self["xep_0050"].send_command(component_jid, "wa_logout", timeout=15)
@@ -823,6 +925,7 @@ class BridgeXmppClient(ClientXMPP):
         *,
         allow_recovery: bool = True,
     ) -> None:
+        await self.cancel_whatsapp_linking(component_jid, silent=True)
         phone = phone.strip()
         if not phone:
             self._emit(XmppError("Escribe el telefono de WhatsApp en formato internacional."))
@@ -835,6 +938,12 @@ class BridgeXmppClient(ClientXMPP):
                 timeout=15,
             )
             session_id = str(command["command"]["sessionid"] or "")
+            self._remember_whatsapp_link_session(
+                component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                session_id,
+                "code",
+            )
             form = command.xml.find(f".//{{{DATA_FORMS_NS}}}x")
             if form is None:
                 raise RuntimeError("El comando no devolvio formulario para telefono.")
@@ -847,6 +956,11 @@ class BridgeXmppClient(ClientXMPP):
                 payload=form_stanza,
                 sessionid=session_id or None,
                 timeout=20,
+            )
+            self._clear_whatsapp_link_session(
+                component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                session_id,
             )
         except Exception as exc:
             error_text = _format_xmpp_error(exc)
@@ -3011,6 +3125,17 @@ class XmppService:
                 self._loop.create_task(
                     self._client.request_whatsapp_pair_code(component_jid, phone)
                 )
+
+        self._loop.call_soon_threadsafe(request)
+
+    def cancel_whatsapp_linking(self, component_jid: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def request() -> None:
+            if self._client:
+                self._loop.create_task(self._client.cancel_whatsapp_linking(component_jid))
 
         self._loop.call_soon_threadsafe(request)
 

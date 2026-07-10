@@ -753,12 +753,25 @@ class BridgeXmppClient(ClientXMPP):
                 SLIDGE_RELOGIN_COMMAND,
                 timeout=15,
             )
-            self._remember_whatsapp_link_session(
-                component_jid,
-                SLIDGE_RELOGIN_COMMAND,
-                str(command["command"]["sessionid"] or ""),
-                "qr",
-            )
+            command_status = str(command["command"]["status"] or "")
+            command_text = self._command_result_text(command.xml)
+            if command_status == "executing":
+                self._remember_whatsapp_link_session(
+                    component_jid,
+                    SLIDGE_RELOGIN_COMMAND,
+                    str(command["command"]["sessionid"] or ""),
+                    "qr",
+                )
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_qr",
+                    command_text or "Se solicito un nuevo QR de vinculacion.",
+                )
+                return
+
+            if self._means_already_connected(command_text):
+                self._emit_whatsapp_status(component_jid, "connected", command_text)
+                return
         except IqTimeout:
             self._emit_whatsapp_status(
                 component_jid,
@@ -807,7 +820,7 @@ class BridgeXmppClient(ClientXMPP):
         self._emit_whatsapp_status(
             component_jid,
             "needs_qr",
-            "Se solicito un nuevo QR de vinculacion.",
+            command_text or "Se solicito un nuevo QR de vinculacion.",
         )
 
     def _remember_whatsapp_link_session(

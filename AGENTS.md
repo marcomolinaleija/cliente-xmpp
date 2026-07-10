@@ -151,6 +151,160 @@ El estado en memoria (`messages_by_chat`, timestamps, sets de carga) existe para
 rapida. SQLite existe para durabilidad y arranque rapido. XMPP sigue siendo la fuente remota,
 pero nunca debe hacer que la pantalla quede vacia si hay cache valida.
 
+## Contexto operativo vigente
+
+Esta seccion describe el comportamiento real del checkout. Debe actualizarse cuando cambie un
+flujo de eventos o una regla de negocio, porque es la referencia mas util para un agente nuevo.
+
+### Hilos y frontera entre XMPP y wx
+
+- wxPython corre en el hilo de UI y `BridgeXmppClient` corre dentro del hilo asyncio propio de
+  `XmppService`.
+- `BridgeXmppClient` nunca debe tocar controles wx. Emite dataclasses de `xmpp/events.py`.
+- `XmppService` entrega esos eventos a wx mediante `wx.PostEvent`; `MainWindow` es el unico
+  orquestador que muta listas, conversacion, estado de cache y notificaciones.
+- Las acciones desde UI hacia XMPP deben entrar por `XmppService`, que usa
+  `call_soon_threadsafe`. No bloquees handlers wx con red, MAM, SQLite, ffmpeg ni descargas.
+
+### Fuentes de mensajes y semantica de eventos
+
+Hay cuatro caminos que pueden representar el mismo mensaje:
+
+1. MAM (`MessageHistoryLoaded`) para historial y precargas.
+2. Inbox del bridge (`MessageReceived(notify=False)` mas `ChatActivityLoaded`) para resumen,
+   preview y contador de no leidos.
+3. Mensaje XMPP en vivo (`MessageReceived(notify=True)`).
+4. Carbons enviados/recibidos y eco de MUC, que tambien pueden duplicar un mensaje vivo.
+
+Reglas obligatorias:
+
+- `notify` controla voz NVDA, sonido y el incremento de no leidos. Un evento con
+  `notify=False` puede persistirse y actualizar preview, pero no debe anunciarse ni marcar un
+  chat como nuevo.
+- El estado de no leidos que trae `ChatActivityLoaded.unread_count` es la autoridad del bridge
+  durante el arranque. No lo sustituyas contando todos los mensajes historicos.
+- Un mensaje historico de MUC puede llegar tarde como `groupchat_message`; el cliente lo marca
+  `notify=False` si su timestamp es anterior al inicio de sesion.
+- `MessageHistoryLoaded` nunca debe llamar directamente a NVDA o al sonido.
+- Si un nuevo productor de eventos no puede distinguir vivo de historico, debe emitir
+  `notify=False` y documentar la razon antes de conectarlo a UI.
+
+### Arranque, cache y sincronizacion en segundo plano
+
+El orden en `MainWindow` es deliberado:
+
+1. `RosterLoaded` carga chats y ultimos mensajes desde SQLite.
+2. Se activa `loading_initial_chat_activity` antes de `monitor_group_chats`.
+3. Se unen los grupos cacheados con historial MUC desactivado (`maxhistory="0"`) y se cargan
+   actividad/inbox en segundo plano.
+4. Los `ChatActivityLoaded` se acumulan en `pending_chat_activity` hasta terminar la carga
+   inicial o vencer el fallback de 8 segundos.
+5. Se precargan hasta 20 chats con paginas pequenas y una cola de un chat a la vez.
+
+No muevas `loading_initial_chat_activity` despues de `monitor_group_chats`: los grupos pueden
+emitir mensajes inmediatamente al unirse y se anunciarian como nuevos. Tampoco conviertas la
+precarga en una carga sin limite ni reemplaces cache visible con una respuesta remota vacia.
+
+Al abrir un chat, primero se muestran mensajes cacheados y luego se pide historial. Al abrirlo
+se marca como leido; al volver a la lista se limpia el marcador visual. Las actualizaciones de
+fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
+
+### Grupos, identidad y ecos propios
+
+- Los grupos del bridge suelen tener JID con `#` y usan el room archive MAM. No trates un JID
+  con `+numero@...` como grupo solo por el dominio.
+- Para identificar al participante, prioriza `muc#user item jid`; usa despues el recurso/nick
+  del ocupante y finalmente un fallback tolerante. El nombre visible debe parecerse al nombre
+  que el usuario tiene registrado, no depender ciegamente del nick tecnico.
+- La clasificacion de saliente en MUC debe aceptar JID local y nick propio con comparacion
+  tolerante a mayusculas y acentos, pero nunca asumir que todo lo que aparece en un grupo es
+  entrante.
+- Un envio de texto crea primero un mensaje optimista local (`sender_jid="me"`, sin
+  `message_id`). El eco puede regresar como `#room@dominio/recurso`. Solo se fusiona ese eco
+  cuando coincide grupo, cuerpo, adjuntos compatibles y una ventana corta de 10 segundos.
+- No deduplica todos los mensajes salientes ni todos los mensajes con el mismo texto. El grupo
+  personal `Yo` puede recibir respuestas de Zapia que el bridge representa como salientes con
+  `message_id` propio; esos mensajes deben conservarse y seguir siendo legibles.
+- No uses `is_self_group` como unica prueba para borrar, silenciar o deduplicar. Es metadata del
+  bridge y puede faltar o llegar tarde.
+- Un resultado MAM cuyo XML sea `groupchat` debe conservar el JID del room. Si aparece durante
+  una consulta de chat individual, se descarta de esa conversacion; no se debe pintar con el
+  nombre o el nick del contacto individual.
+
+### Notificaciones y accesibilidad
+
+- Las notificaciones de texto usan `_speak_incoming_message` y las de audio usan el mismo
+  control de mute; ambas deben respetar `message.outgoing`, `notify` y
+  `notifications_muted`.
+- No generes tooltips con el cuerpo completo de un mensaje ni autoajustes una lista de cientos
+  de filas con `LIST_AUTOSIZE`. NVDA puede bloquearse durante varios segundos con textos de
+  miles de caracteres.
+- La lista de mensajes mantiene una columna estable y ofrece el lector detallado con Enter.
+  No muevas el foco en actualizaciones de fondo ni reconstruyas la lista mientras el usuario la
+  esta leyendo si puede evitarse.
+- Cambios de UI deben probar teclado, Escape, Enter, flechas, lector de mensaje, foco de lista
+  y lectura NVDA con chats de mas de 300 mensajes y textos largos.
+
+### Audio y multimedia
+
+- Un audio entrante puede ser `.m4a`/AAC de WhatsApp (`audio/mp4`) o OGG/Opus. No asumas que
+  una nota de voz siempre termina en `.ogg`.
+- Al recibirse un mensaje con `media_kind="audio"` y `audio_url` o `media_url`, `MainWindow`
+  inicia descarga automatica aunque el usuario no haya pulsado reproducir.
+- Las descargas escriben a `.part` y solo hacen `replace` al terminar. Persiste
+  `media_local_path` despues de una escritura valida y conserva esa ruta en upserts posteriores.
+- La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
+  solicita/espera la descarga y reproduce al terminar; no hagas fallback a streaming HTTP,
+  porque provoca cortes y ruido.
+- Para diagnosticar un audio, comprueba primero ruta local, tamano, `ffprobe` y decodificacion
+  `ffmpeg`; no culpes al bridge sin distinguir archivo corrupto de streaming inestable.
+- El audio enviado desde el cliente se normaliza a OGG/Opus; no reutilices esa regla para
+  interpretar automaticamente los audios entrantes.
+
+### Deduplicacion y persistencia
+
+- Usa `message_id` cuando exista, pero admite que MAM, carbon, inbox y MUC pueden usar IDs
+  distintos para la misma entrega. Los fallbacks de payload deben comparar timestamp,
+  remitente, cuerpo, multimedia y cita sin fusionar conversaciones distintas.
+- Conserva metadata enriquecida: un evento posterior puede traer menos datos que el cache
+  (por ejemplo, perder `media_local_path` o `reply_quote`). Los upserts deben completar, no
+  degradar, esos campos.
+- El preview y la hora de un chat solo avanzan con mensajes mas recientes; una pagina vieja no
+  debe pisar el preview nuevo.
+- SQLite usa WAL y migraciones defensivas. No borres mensajes ni reinicialices la base para
+  resolver un bug sin confirmacion explicita.
+
+### Integraciones especiales
+
+`cliente_xmpp/integrations/rayoai.py` y el grupo personal con Zapia son un caso de uso del
+usuario, no una regla para todos los grupos. Los mensajes que el bot devuelve por el bridge
+pueden verse como `outgoing=True`; no los filtres por esa bandera. La regla de eco propio debe
+ser estructural (room JID, ID y ventana temporal), no textual (por ejemplo, no filtres todo lo
+que contenga "Zapia").
+
+### Estado de tests y diagnostico
+
+Actualmente existe `tests/test_group_helpers.py`. El ciclo minimo es:
+
+```powershell
+conda activate XMPP
+python -m compileall cliente_xmpp tests
+python -m ruff check .
+python -m unittest tests.test_group_helpers
+git diff --check
+```
+
+Para diagnosticar una incidencia real, inspecciona sin modificar la base local:
+
+```powershell
+python inspect_db.py
+```
+
+La base de prueba/usuario esta en `%USERPROFILE%\\.cliente-xmpp\\messages.sqlite3`; no copies
+credenciales ni contenido sensible a commits, logs o issues. Para comparar un duplicado,
+registra como minimo `chat_jid`, `message_id`, `sender_jid`, `outgoing`, `chat_is_group`,
+`sent_at`, `body` truncado y rutas multimedia.
+
 ## Historial y sincronizacion
 
 El historial se carga con paginas pequenas. Mantener esto es importante para que la app no se

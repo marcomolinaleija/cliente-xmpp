@@ -93,7 +93,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = None
         self._pending_audio_message = None
         self._replying = False
-        self.compose_label.SetLabel("Mensaje:")
+        self._set_compose_label_for_chat()
         self.send_button.Enable(True)
         self.attach_button.Enable(True)
         self.set_recording_state(False)
@@ -234,10 +234,17 @@ class ConversationPanel(wx.Panel):
 
     def clear_reply_quote(self) -> None:
         self._replying = False
-        self.compose_label.SetLabel("Mensaje:")
+        self._set_compose_label_for_chat()
 
     def has_reply_context(self) -> bool:
         return self._replying
+
+    def _set_compose_label_for_chat(self) -> None:
+        if self.current_chat is None:
+            self.compose_label.SetLabel("Escribir un mensaje:")
+            return
+
+        self.compose_label.SetLabel(f"Escribir un mensaje para {self.current_chat.name}:")
 
     def open_selected_message_reader(self) -> bool:
         message = self.selected_message()

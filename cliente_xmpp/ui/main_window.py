@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import unicodedata
@@ -35,6 +36,12 @@ from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.theme import apply_theme
+from cliente_xmpp.ui.whatsapp_link_panel import (
+    WhatsAppLinkDialog,
+    WhatsAppLinkPanel,
+    WhatsAppPairingCodeDialog,
+    WhatsAppQrDialog,
+)
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
@@ -43,6 +50,10 @@ from cliente_xmpp.xmpp.events import (
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
+    WhatsAppBridgeStatus,
+    WhatsAppPairingCodeReceived,
+    WhatsAppQrImageDataReceived,
+    WhatsAppQrImageReceived,
     XmppConnected,
     XmppDisconnected,
     XmppError,
@@ -97,6 +108,17 @@ class MainWindow(wx.Frame):
         self.search_debounce_timer: wx.CallLater | None = None
         self.reply_context: Message | None = None
         self.current_jid = ""
+        self.whatsapp_component_jid = ""
+        self.whatsapp_link_status = "unknown"
+        self.whatsapp_link_detail = ""
+        self.whatsapp_verified = False
+        self.pending_roster_chats: list[Chat] | None = None
+        self.whatsapp_link_prompt_open = False
+        self.whatsapp_link_prompted_key = ""
+        self.last_whatsapp_phone = ""
+        self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_downloads_in_progress: set[str] = set()
         self.audio_recorder = MciAudioRecorder()
 
         self.startup_panel: wx.Panel
@@ -106,6 +128,7 @@ class MainWindow(wx.Frame):
         self.content_panel: wx.Panel
         self.content_box: wx.BoxSizer
         self.connection_header: ConnectionHeaderPanel
+        self.whatsapp_link_panel: WhatsAppLinkPanel
         self.chat_list: ChatListPanel
         self.conversation: ConversationPanel
         self.status_bar = self.CreateStatusBar()
@@ -141,6 +164,7 @@ class MainWindow(wx.Frame):
         workspace_box = wx.BoxSizer(wx.VERTICAL)
 
         self.connection_header = ConnectionHeaderPanel(self.workspace_panel)
+        self.whatsapp_link_panel = WhatsAppLinkPanel(self.workspace_panel)
 
         self.content_panel = wx.Panel(self.workspace_panel)
         self.content_box = wx.BoxSizer(wx.VERTICAL)
@@ -157,6 +181,7 @@ class MainWindow(wx.Frame):
         self.conversation.Hide()
 
         workspace_box.Add(self.connection_header, 0, wx.EXPAND)
+        workspace_box.Add(self.whatsapp_link_panel, 0, wx.EXPAND)
         workspace_box.Add(self.content_panel, 1, wx.EXPAND)
         self.workspace_panel.SetSizer(workspace_box)
 
@@ -169,6 +194,7 @@ class MainWindow(wx.Frame):
     def _bind_events(self) -> None:
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
         self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
+        self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
@@ -201,6 +227,8 @@ class MainWindow(wx.Frame):
         self.settings_store.save_connection(login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
+        self.whatsapp_verified = False
+        self.pending_roster_chats = None
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
@@ -255,6 +283,296 @@ class MainWindow(wx.Frame):
         self.connection_header.set_status("Desconectando...")
         self.status_bar.SetStatusText("Desconectando...")
         self.xmpp.disconnect()
+
+    def _handle_whatsapp_bridge_status(
+        self,
+        status: str,
+        component_jid: str,
+        detail: str,
+    ) -> None:
+        if component_jid:
+            self.whatsapp_component_jid = component_jid
+        self.whatsapp_link_status = status
+        self.whatsapp_link_detail = detail
+
+        if status in {"connected", "paired"}:
+            self.whatsapp_verified = True
+            self.whatsapp_link_panel.clear()
+            self._close_whatsapp_qr_dialog()
+            message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
+            self.connection_header.set_status(message)
+            self.status_bar.SetStatusText(message)
+            self._apply_pending_roster_if_ready()
+            self.workspace_panel.Layout()
+            return
+
+        if status in {"needs_pairing", "needs_relogin", "needs_qr", "needs_pair_code"}:
+            self.whatsapp_verified = False
+            message = "WhatsApp necesita volver a vincularse."
+            action_label = "Volver a vincular"
+        elif status == "logged_out":
+            self.whatsapp_verified = False
+            message = "WhatsApp se desvinculo de este cliente."
+            action_label = "Volver a vincular"
+        elif status == "needs_registration":
+            self.whatsapp_verified = False
+            message = "WhatsApp necesita registrarse en el bridge."
+            action_label = "Configurar WhatsApp"
+        elif status == "connection_error":
+            self.whatsapp_verified = False
+            message = "WhatsApp reporto un error de conexion."
+            action_label = "Revisar vinculacion"
+        else:
+            return
+
+        if detail:
+            message = f"{message} {detail}"
+        if not self.workspace_panel.IsShown():
+            self.login_panel.set_connecting(False)
+            self.connection_header.set_account(self.current_jid)
+            self._set_connected_ui(True)
+        self.whatsapp_link_panel.set_status(message, action_label=action_label)
+        self._show_chat_placeholder("WhatsApp requiere vinculacion.")
+        self.connection_header.set_status("WhatsApp requiere vinculacion")
+        self.status_bar.SetStatusText(message)
+        self.workspace_panel.Layout()
+        wx.CallAfter(self.speaker.speak, message)
+        self._maybe_auto_open_whatsapp_link(status)
+
+    def _handle_whatsapp_pairing_code(self, component_jid: str, code: str) -> None:
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.status_bar.SetStatusText(f"Codigo de vinculacion: {code}")
+        wx.CallAfter(self.speaker.speak, f"Codigo de vinculacion: {code}")
+        dialog = WhatsAppPairingCodeDialog(self, code)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+
+    def _handle_whatsapp_qr_image(
+        self,
+        component_jid: str,
+        image_url: str,
+        mime: str,
+        filename: str,
+    ) -> None:
+        if self.whatsapp_verified:
+            return
+        if image_url in self.whatsapp_qr_downloads_in_progress:
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.whatsapp_qr_downloads_in_progress.add(image_url)
+        self.status_bar.SetStatusText("Descargando QR de vinculacion...")
+        message = Message(
+            chat_jid=component_jid,
+            sender_jid=component_jid,
+            body="QR de vinculacion",
+            media_url=image_url,
+            media_kind="image",
+            media_mime=mime,
+            media_filename=filename or "qr-whatsapp.png",
+        )
+
+        def worker() -> None:
+            try:
+                downloaded = download_media(message, self.current_jid or "cuenta")
+            except Exception as exc:
+                wx.CallAfter(
+                    self.status_bar.SetStatusText,
+                    f"No se pudo descargar el QR: {exc}",
+                )
+                return
+            finally:
+                wx.CallAfter(self.whatsapp_qr_downloads_in_progress.discard, image_url)
+
+            wx.CallAfter(self._show_whatsapp_qr, downloaded.path)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_whatsapp_qr_image_data(
+        self,
+        component_jid: str,
+        image_data: bytes,
+        mime: str,
+        filename: str,
+    ) -> None:
+        if self.whatsapp_verified:
+            return
+
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        digest = hashlib.sha256(image_data).hexdigest()[:16]
+        extension = self._image_extension_from_mime(mime)
+        filename = Path(filename).name if filename else ""
+        safe_filename = (
+            filename if filename.endswith(extension) else f"qr-whatsapp-{digest}{extension}"
+        )
+        qr_dir = APP_DIR / "whatsapp-linking"
+        qr_dir.mkdir(parents=True, exist_ok=True)
+        path = qr_dir / safe_filename
+        try:
+            path.write_bytes(image_data)
+        except OSError as exc:
+            self.status_bar.SetStatusText(f"No se pudo guardar el QR: {exc}")
+            return
+
+        self._show_whatsapp_qr(path)
+
+    @staticmethod
+    def _image_extension_from_mime(mime: str) -> str:
+        return {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }.get(mime.casefold(), ".png")
+
+    def _show_whatsapp_qr(self, path: Path) -> None:
+        if self.whatsapp_verified:
+            return
+
+        self.status_bar.SetStatusText("QR de vinculacion listo")
+        wx.CallAfter(self.speaker.speak, "QR de vinculacion listo")
+        path_text = str(path)
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_path = path_text
+            self.whatsapp_qr_dialog.set_image(path_text)
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        self.whatsapp_qr_path = path_text
+        dialog = WhatsAppQrDialog(self, path_text)
+        self.whatsapp_qr_dialog = dialog
+        dialog.Bind(wx.EVT_CLOSE, self._on_whatsapp_qr_dialog_close)
+        dialog.Show()
+        self._focus_whatsapp_qr_dialog()
+
+    def _focus_whatsapp_qr_dialog(self) -> None:
+        dialog = self.whatsapp_qr_dialog
+        if dialog is None:
+            return
+
+        if dialog.IsIconized():
+            dialog.Iconize(False)
+        dialog.Raise()
+        dialog.RequestUserAttention()
+        dialog.SetFocus()
+
+    def _close_whatsapp_qr_dialog(self) -> None:
+        dialog = self.whatsapp_qr_dialog
+        self.whatsapp_qr_dialog = None
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_downloads_in_progress.clear()
+        if dialog is not None:
+            dialog.Destroy()
+
+    def _on_whatsapp_qr_dialog_close(self, event: wx.CloseEvent) -> None:
+        dialog = self.whatsapp_qr_dialog
+        self.whatsapp_qr_dialog = None
+        self.whatsapp_qr_path = ""
+        if dialog is not None:
+            dialog.Destroy()
+        event.Skip(False)
+
+    def _on_open_whatsapp_link(self, _event: wx.CommandEvent) -> None:
+        if not self.whatsapp_component_jid:
+            wx.MessageBox(
+                "Todavia no detecte el componente de WhatsApp.",
+                "Vincular WhatsApp",
+            )
+            return
+
+        self.whatsapp_link_prompt_open = True
+        status_text = self._whatsapp_link_dialog_status_text()
+        dialog = WhatsAppLinkDialog(
+            self,
+            self.whatsapp_component_jid,
+            status_text,
+            last_phone=self.last_whatsapp_phone,
+        )
+        try:
+            result = dialog.ShowModal()
+            action = dialog.action
+        finally:
+            dialog.Destroy()
+            self.whatsapp_link_prompt_open = False
+
+        if action is None:
+            return
+
+        if result == wx.ID_OK and action.mode == "code":
+            self.last_whatsapp_phone = action.phone
+            self.status_bar.SetStatusText("Solicitando codigo de vinculacion...")
+            self.xmpp.request_whatsapp_pair_code(self.whatsapp_component_jid, action.phone)
+            return
+
+        if result == wx.ID_APPLY and action.mode == "qr":
+            self.status_bar.SetStatusText("Solicitando QR de vinculacion...")
+            self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
+
+    def _maybe_auto_open_whatsapp_link(self, status: str) -> None:
+        if status not in {"logged_out", "needs_pairing", "needs_relogin"}:
+            return
+        if self.whatsapp_link_prompt_open or not self.whatsapp_component_jid:
+            return
+
+        prompt_key = f"{self.whatsapp_component_jid}:{status}"
+        if self.whatsapp_link_prompted_key == prompt_key:
+            return
+
+        self.whatsapp_link_prompted_key = prompt_key
+        wx.CallAfter(self._on_open_whatsapp_link, wx.CommandEvent())
+
+    def _whatsapp_link_dialog_status_text(self) -> str:
+        if self.whatsapp_link_status == "connected":
+            return "WhatsApp ya esta conectado."
+        if self.whatsapp_link_status == "paired":
+            return "WhatsApp ya se vinculo. Espera la sincronizacion."
+        if self.whatsapp_link_status == "logged_out":
+            return "WhatsApp cerro la sesion de este cliente. Puedes volver a vincularlo."
+        if self.whatsapp_link_status == "connection_error":
+            return "WhatsApp reporto un error de conexion. Puedes intentar vincular de nuevo."
+        if self.whatsapp_link_status in {"needs_pairing", "needs_relogin"}:
+            return "WhatsApp necesita una nueva vinculacion."
+        if self.whatsapp_link_status == "needs_qr":
+            return "Hay una vinculacion por QR en curso."
+        if self.whatsapp_link_status == "needs_pair_code":
+            return "Hay una vinculacion por codigo en curso."
+        return "Vincula WhatsApp con codigo o QR."
+
+    def _apply_pending_roster_if_ready(self) -> None:
+        if not self.whatsapp_verified:
+            return
+        if self.pending_roster_chats is None:
+            self._show_chat_placeholder("Cargando chats...")
+            return
+
+        self._apply_roster_chats(self.pending_roster_chats)
+
+    def _apply_roster_chats(self, chats: list[Chat]) -> None:
+        cached_chats = self._load_cached_chats()
+        self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
+        self.xmpp.monitor_group_chats([chat.jid for chat in cached_chats if chat.is_group])
+        self.loading_initial_chat_activity = True
+        self.pending_chat_activity = {}
+        self.loaded_chat_summaries = len(cached_chats)
+        self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+        if not self.chat_list.selected_chat():
+            self.chat_list.select_first()
+        self.chat_list.focus()
+        self.status_bar.SetStatusText(
+            f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
+        )
+        self.xmpp.load_recent_activity(self.roster_jids)
+        wx.CallLater(
+            INITIAL_CHAT_LOAD_FALLBACK_MS,
+            self._finish_initial_chat_loading_if_needed,
+        )
+
+    def _show_chat_placeholder(self, text: str) -> None:
+        self.chat_list.set_placeholder(text)
+        if self.conversation.IsShown():
+            self._show_chat_list()
 
     def _on_chat_selected(self, _event: wx.CommandEvent) -> None:
         if not self.chat_list.IsShown():
@@ -1314,10 +1632,11 @@ class MainWindow(wx.Frame):
             case XmppConnected():
                 self.login_panel.set_connecting(False)
                 self.connection_header.set_account(self.current_jid)
-                self.connection_header.set_status("Conectado")
+                self.connection_header.set_status("Verificando WhatsApp")
                 if not self.workspace_panel.IsShown():
                     self._set_connected_ui(True)
-                self.status_bar.SetStatusText("Conectado")
+                self._show_chat_placeholder("Verificando conexion de WhatsApp...")
+                self.status_bar.SetStatusText("Verificando conexion de WhatsApp...")
             case XmppDisconnected(reason=reason):
                 self.login_panel.set_connecting(False)
                 if reason:
@@ -1332,34 +1651,42 @@ class MainWindow(wx.Frame):
                     self._set_connected_ui(False)
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
+            case WhatsAppBridgeStatus(status=status, component_jid=component_jid, detail=detail):
+                self._handle_whatsapp_bridge_status(status, component_jid, detail)
+            case WhatsAppPairingCodeReceived(component_jid=component_jid, code=code):
+                self._handle_whatsapp_pairing_code(component_jid, code)
+            case WhatsAppQrImageReceived(
+                component_jid=component_jid,
+                image_url=image_url,
+                mime=mime,
+                filename=filename,
+            ):
+                self._handle_whatsapp_qr_image(component_jid, image_url, mime, filename)
+            case WhatsAppQrImageDataReceived(
+                component_jid=component_jid,
+                image_data=image_data,
+                mime=mime,
+                filename=filename,
+            ):
+                self._handle_whatsapp_qr_image_data(component_jid, image_data, mime, filename)
             case RosterLoaded(chats=chats):
-                self._update_chat_names(chats)
+                self.pending_roster_chats = chats
                 self.roster_jids = {chat.jid for chat in chats}
-                cached_chats = self._load_cached_chats()
-                self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
-                self.xmpp.monitor_group_chats(
-                    [chat.jid for chat in cached_chats if chat.is_group]
-                )
-                self.loading_initial_chat_activity = True
-                self.pending_chat_activity = {}
-                self.loaded_chat_summaries = len(cached_chats)
-                self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
-                if not self.chat_list.selected_chat():
-                    self.chat_list.select_first()
-                self.chat_list.focus()
-                self.status_bar.SetStatusText(
-                    f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
-                )
-                wx.CallLater(
-                    INITIAL_CHAT_LOAD_FALLBACK_MS,
-                    self._finish_initial_chat_loading_if_needed,
-                )
+                self._update_chat_names(chats)
+                if self.whatsapp_verified:
+                    self._apply_roster_chats(chats)
+                else:
+                    self._show_chat_placeholder("Verificando conexion de WhatsApp...")
             case ChatsDiscovered(chats=chats):
+                if not self.whatsapp_verified:
+                    return
                 self._upsert_discovered_chats(chats)
                 self._preload_recent_histories()
             case MessageReceived(message=message, notify=notify):
                 message, added_message = self._store_message(message)
                 suppress_notification = self.loading_initial_chat_activity or not notify
+                if not self.whatsapp_verified:
+                    return
                 if self.loading_initial_chat_activity:
                     pending_activity = self.pending_chat_activity.get(message.chat_jid)
                     self.pending_chat_activity[message.chat_jid] = ChatActivityLoaded(
@@ -1405,6 +1732,8 @@ class MainWindow(wx.Frame):
                 complete=complete,
                 background=background,
             ):
+                if not self.whatsapp_verified:
+                    return
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
@@ -1413,6 +1742,8 @@ class MainWindow(wx.Frame):
                 unread_count=unread_count,
                 is_group=is_group,
             ):
+                if not self.whatsapp_verified:
+                    return
                 if sent_at or preview or unread_count is not None:
                     if self.loading_initial_chat_activity:
                         self.pending_chat_activity[chat_jid] = event
@@ -1439,6 +1770,8 @@ class MainWindow(wx.Frame):
                         f"{self.loaded_chat_summaries} chats con mensajes cargados"
                     )
             case ChatActivityLoadFinished(loaded_count=loaded_count):
+                if not self.whatsapp_verified:
+                    return
                 if self.loading_initial_chat_activity:
                     self._finish_initial_chat_loading(loaded_count)
                     return

@@ -25,6 +25,102 @@ class GroupNameTests(unittest.TestCase):
         )
 
 
+class WhatsAppPairingCodeTests(unittest.TestCase):
+    def test_extracts_code_after_label_instead_of_whatsapp_word(self) -> None:
+        text = (
+            "Please open the official WhatsApp client and input the following "
+            "code: 1A2B-3C4D"
+        )
+
+        self.assertEqual(BridgeXmppClient._pairing_code_from_text(text), "1A2B-3C4D")
+
+    def test_extracts_qr_from_bob_image_data(self) -> None:
+        message = ET.fromstring(
+            """
+            <message from="whatsapp.example.org" type="chat">
+              <body>Scan this QR code</body>
+              <data xmlns="urn:xmpp:bob" type="image/png">iVBORw0KGgo=</data>
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._whatsapp_qr_image_data_from_xml(
+                "whatsapp.example.org",
+                "Scan this QR code",
+                message,
+            ),
+            (b"\x89PNG\r\n\x1a\n", "image/png", "qr-whatsapp.png"),
+        )
+
+    def test_extracts_qr_from_data_uri(self) -> None:
+        message = ET.fromstring(
+            """
+            <message from="whatsapp.example.org" type="chat">
+              <body>QR scan needed</body>
+              <html>
+                <img src="data:image/png;base64,iVBORw0KGgo=" />
+              </html>
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._whatsapp_qr_image_data_from_xml(
+                "whatsapp.example.org",
+                "QR scan needed",
+                message,
+            ),
+            (b"\x89PNG\r\n\x1a\n", "image/png", "qr-whatsapp.png"),
+        )
+
+    def test_detects_slidge_qr_image_url_after_relogin(self) -> None:
+        message = ET.fromstring(
+            """
+            <message xmlns="jabber:client"
+                     xmlns:oob="jabber:x:oob"
+                     xmlns:file="urn:xmpp:file:metadata:0"
+                     from="whatsapp.example.org"
+                     type="chat">
+              <body>http://example.org/slidge-attachments/tmp.png</body>
+              <file:file>
+                <file:media-type>image/png</file:media-type>
+                <file:name>tmp.png</file:name>
+              </file:file>
+              <oob:x>
+                <oob:url>http://example.org/slidge-attachments/tmp.png</oob:url>
+              </oob:x>
+            </message>
+            """
+        )
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={"whatsapp.example.org": "needs_relogin\n"},
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+        )
+        media_url, media_kind, _, _, _, _ = BridgeXmppClient._media_from_xml(message)
+
+        self.assertEqual(media_url, "http://example.org/slidge-attachments/tmp.png")
+        self.assertEqual(media_kind, "image")
+        self.assertTrue(
+            BridgeXmppClient._is_whatsapp_qr_image(
+                client,
+                "whatsapp.example.org",
+                media_url,
+                media_url,
+                media_kind,
+            )
+        )
+
+    def test_qr_timeout_presence_needs_relogin(self) -> None:
+        self.assertEqual(
+            BridgeXmppClient._whatsapp_state_hint(
+                "You are not connected to this gateway! "
+                "You did not flash the QR code in time. Use re-login when you are ready."
+            ),
+            "needs_relogin",
+        )
+
+
 class BookmarkNotificationTests(unittest.TestCase):
     def test_detects_muted_group_from_current_notification_namespace(self) -> None:
         conference = ET.fromstring(

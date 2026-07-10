@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import mimetypes
 import re
 import threading
@@ -29,6 +31,10 @@ from cliente_xmpp.xmpp.events import (
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
+    WhatsAppBridgeStatus,
+    WhatsAppPairingCodeReceived,
+    WhatsAppQrImageDataReceived,
+    WhatsAppQrImageReceived,
     XmppConnected,
     XmppDisconnected,
     XmppError,
@@ -65,8 +71,12 @@ SIMS_NS = "urn:xmpp:sims:1"
 REFERENCE_NS = "urn:xmpp:reference:0"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
+BOB_NS = "urn:xmpp:bob"
 SLIDGE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/groups"
 SLIDGE_REINVITE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/re-invite"
+SLIDGE_RELOGIN_COMMAND = "https://slidge.im/command/core/re-login"
+SLIDGE_PAIR_PHONE_COMMAND = "wa_pair_phone"
+WHATSAPP_DEBUG_PREFIX = "[cliente-xmpp][whatsapp]"
 JID_PATTERN = re.compile(r"(?<![\w.+-])(?:xmpp:)?([^\s<>\"']+@[^\s<>\"']+)")
 AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav", ".weba")
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
@@ -95,6 +105,7 @@ class BridgeXmppClient(ClientXMPP):
         self._joined_group_chat_jids: set[str] = set()
         self._disconnect_requested = False
         self._reconnect_scheduled = False
+        self._last_whatsapp_status_by_component: dict[str, str] = {}
         self.force_starttls = settings.use_tls
 
         self.add_event_handler("session_start", self._on_session_start)
@@ -104,6 +115,10 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("carbon_received", self._on_carbon_received)
         self.add_event_handler("carbon_sent", self._on_carbon_sent)
+        self.add_event_handler("presence_available", self._on_presence_debug)
+        self.add_event_handler("presence_unavailable", self._on_presence_debug)
+        self.add_event_handler("presence_error", self._on_presence_debug)
+        self.add_event_handler("changed_status", self._on_presence_debug)
 
     async def _on_session_start(self, _event: object) -> None:
         self.send_presence()
@@ -112,6 +127,7 @@ class BridgeXmppClient(ClientXMPP):
         await self._enable_carbons()
         chats = self._build_roster_chats()
         self._emit(RosterLoaded(chats))
+        asyncio.create_task(self._debug_whatsapp_bridge_state(chats))
         asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
         asyncio.create_task(self._discover_group_chats_with_retries(chats))
         asyncio.create_task(self.load_inbox())
@@ -159,6 +175,18 @@ class BridgeXmppClient(ClientXMPP):
         self._emit(XmppError("No se pudo autenticar con el servidor XMPP."))
 
     def _on_message(self, msg: object) -> None:
+        try:
+            message_type = msg["type"]
+            body = str(msg["body"] or "").strip()
+            bare_jid = str(msg["from"].bare)
+        except Exception:
+            message_type = ""
+            body = ""
+            bare_jid = ""
+
+        if message_type in ("chat", "normal"):
+            self._debug_whatsapp_admin_message(bare_jid, body)
+
         self._emit_inbox_entry(msg)
         group_chats = self._group_chats_from_bookmark_event_stanza(msg)
         if group_chats:
@@ -170,10 +198,9 @@ class BridgeXmppClient(ClientXMPP):
             self._monitor_discovered_group_chats([group_chat])
             return
 
-        if msg["type"] not in ("chat", "normal"):
+        if message_type not in ("chat", "normal"):
             return
 
-        body = str(msg["body"] or "").strip()
         (
             media_url,
             media_kind,
@@ -183,10 +210,35 @@ class BridgeXmppClient(ClientXMPP):
             media_duration,
         ) = self._media_from_stanza(msg)
         audio_url = media_url if media_kind == "audio" else ""
+        qr_image_data = self._whatsapp_qr_image_data_from_xml(bare_jid, body, msg.xml)
+        if qr_image_data is not None:
+            image_data, image_mime, image_filename = qr_image_data
+            self._debug_whatsapp(
+                "qr embedded image received "
+                f"from={bare_jid} mime={image_mime or '-'} bytes={len(image_data)}"
+            )
+            self._emit(
+                WhatsAppQrImageDataReceived(
+                    component_jid=bare_jid,
+                    image_data=image_data,
+                    mime=image_mime,
+                    filename=image_filename,
+                )
+            )
+        elif self._is_whatsapp_qr_image(bare_jid, body, media_url, media_kind):
+            self._emit(
+                WhatsAppQrImageReceived(
+                    component_jid=bare_jid,
+                    image_url=media_url,
+                    mime=media_mime,
+                    filename=media_filename,
+                )
+            )
+        elif self._is_whatsapp_qr_candidate_message(bare_jid, body, msg.xml, media_url, media_kind):
+            self._debug_whatsapp_qr_candidate(bare_jid, body, msg.xml, media_url, media_kind)
         if not body and not media_url:
             return
 
-        bare_jid = str(msg["from"].bare)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -230,6 +282,30 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_carbon_sent(self, msg: object) -> None:
         self._emit_message_from_stanza(msg["carbon_sent"], outgoing=True)
+
+    def _on_presence_debug(self, presence: object) -> None:
+        try:
+            from_jid = str(presence["from"].bare)
+            presence_type = str(presence["type"] or "available")
+            show = str(presence["show"] or "")
+            status = str(presence["status"] or "")
+        except Exception as exc:
+            self._debug_whatsapp(f"presence parse error: {exc}")
+            return
+
+        if not self._is_probable_whatsapp_bridge_jid(from_jid) and not self._is_whatsapp_state_text(
+            status
+        ):
+            return
+
+        self._debug_whatsapp(
+            "presence "
+            f"from={from_jid} type={presence_type or 'available'} "
+            f"show={show or '-'} status={self._safe_debug_text(status) or '-'}"
+        )
+        state = self._whatsapp_state_hint(status)
+        if state != "unknown":
+            self._emit_whatsapp_status(from_jid, state, status)
 
     def _build_roster_chats(self) -> list[Chat]:
         chats: list[Chat] = []
@@ -341,6 +417,51 @@ class BridgeXmppClient(ClientXMPP):
                     candidates.add(child_jid)
 
         return candidates
+
+    async def _debug_whatsapp_bridge_state(self, roster_chats: list[Chat]) -> None:
+        try:
+            candidates = await self._group_service_candidates(roster_chats)
+        except Exception as exc:
+            self._debug_whatsapp(f"state discovery failed: {exc}")
+            return
+
+        probable = sorted(jid for jid in candidates if self._is_probable_whatsapp_bridge_jid(jid))
+        self._debug_whatsapp(
+            "component candidates "
+            f"probable={probable or 'none'} total={sorted(candidates) or 'none'}"
+        )
+
+        for jid in probable:
+            await self._debug_whatsapp_component(jid)
+
+    async def _debug_whatsapp_component(self, jid: str) -> None:
+        try:
+            info = await self["xep_0030"].get_info(jid=jid, timeout=10)
+        except Exception as exc:
+            self._debug_whatsapp(f"component {jid} disco_info error: {_format_xmpp_error(exc)}")
+            return
+
+        identities = [
+            "category="
+            f"{identity.attrib.get('category', '')},type={identity.attrib.get('type', '')},"
+            f"name={self._safe_debug_text(identity.attrib.get('name', ''))}"
+            for identity in info.xml.findall(f".//{{{DISCO_INFO_NS}}}identity")
+        ]
+        features = sorted(
+            feature.attrib.get("var", "")
+            for feature in info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")
+            if feature.attrib.get("var", "")
+        )
+        self._debug_whatsapp(
+            f"component {jid} identities={identities or 'none'} "
+            f"features={features or 'none'}"
+        )
+
+        commands = await self._adhoc_commands(jid)
+        self._debug_whatsapp_commands(jid, commands)
+        state = self._whatsapp_command_state(commands)
+        if state not in ("unknown", "connected"):
+            self._emit_whatsapp_status(jid, state)
 
     @staticmethod
     def _component_domains_from_chats(chats: list[Chat]) -> set[str]:
@@ -537,6 +658,8 @@ class BridgeXmppClient(ClientXMPP):
         try:
             commands = await self["xep_0050"].get_commands(jid, timeout=10)
         except Exception:
+            if self._is_probable_whatsapp_bridge_jid(jid):
+                self._debug_whatsapp(f"commands {jid}: unavailable")
             return []
 
         discovered: list[tuple[str, str]] = []
@@ -546,6 +669,533 @@ class BridgeXmppClient(ClientXMPP):
             if node:
                 discovered.append((node, name))
         return discovered
+
+    async def request_whatsapp_relogin(
+        self,
+        component_jid: str,
+        *,
+        allow_recovery: bool = True,
+    ) -> None:
+        try:
+            await self["xep_0050"].send_command(
+                component_jid,
+                SLIDGE_RELOGIN_COMMAND,
+                timeout=15,
+            )
+        except IqTimeout:
+            self._emit_whatsapp_status(
+                component_jid,
+                "needs_qr",
+                "Se solicito un nuevo QR de vinculacion.",
+            )
+            return
+        except Exception as exc:
+            error_text = _format_xmpp_error(exc)
+            if "already logging in" in error_text.casefold():
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_qr",
+                    (
+                        "Ya hay una vinculacion por QR en curso. "
+                        "Si no ves el QR, usa codigo por telefono."
+                    ),
+                )
+                return
+            if self._means_pairing_command_forbidden(error_text):
+                if self._means_already_connected(error_text):
+                    self._emit_whatsapp_status(component_jid, "connected", error_text)
+                    return
+                if allow_recovery and await self._request_whatsapp_logout(component_jid):
+                    await asyncio.sleep(1)
+                    await self.request_whatsapp_relogin(
+                        component_jid,
+                        allow_recovery=False,
+                    )
+                    return
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_pairing",
+                    (
+                        "Slidge rechazo el comando de vinculacion aunque no hay confirmacion "
+                        "de conexion. Usa codigo por telefono o espera unos segundos y reintenta."
+                    ),
+                )
+                return
+
+            self._emit(
+                XmppError(f"No se pudo iniciar la revinculacion por QR: {error_text}")
+            )
+            return
+
+        self._emit_whatsapp_status(
+            component_jid,
+            "needs_qr",
+            "Se solicito un nuevo QR de vinculacion.",
+        )
+
+    async def _request_whatsapp_logout(self, component_jid: str) -> bool:
+        try:
+            await self["xep_0050"].send_command(component_jid, "wa_logout", timeout=15)
+        except Exception as exc:
+            self._debug_whatsapp(
+                f"logout recovery failed for {component_jid}: {_format_xmpp_error(exc)}"
+            )
+            return False
+
+        self._emit_whatsapp_status(
+            component_jid,
+            "logged_out",
+            "Se limpio una sesion de WhatsApp incompleta.",
+        )
+        return True
+
+    async def request_whatsapp_pair_code(
+        self,
+        component_jid: str,
+        phone: str,
+        *,
+        allow_recovery: bool = True,
+    ) -> None:
+        phone = phone.strip()
+        if not phone:
+            self._emit(XmppError("Escribe el telefono de WhatsApp en formato internacional."))
+            return
+
+        try:
+            command = await self["xep_0050"].send_command(
+                component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                timeout=15,
+            )
+            session_id = str(command["command"]["sessionid"] or "")
+            form = command.xml.find(f".//{{{DATA_FORMS_NS}}}x")
+            if form is None:
+                raise RuntimeError("El comando no devolvio formulario para telefono.")
+
+            form_stanza = self._form_reply_with_values(form, {"phone": phone})
+            result = await self["xep_0050"].send_command(
+                component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                action="complete",
+                payload=form_stanza,
+                sessionid=session_id or None,
+                timeout=20,
+            )
+        except Exception as exc:
+            error_text = _format_xmpp_error(exc)
+            if self._means_pairing_command_forbidden(error_text):
+                if self._means_already_connected(error_text):
+                    self._emit_whatsapp_status(component_jid, "connected", error_text)
+                    return
+                if allow_recovery and await self._request_whatsapp_logout(component_jid):
+                    await asyncio.sleep(1)
+                    await self.request_whatsapp_pair_code(
+                        component_jid,
+                        phone,
+                        allow_recovery=False,
+                    )
+                    return
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_pairing",
+                    (
+                        "Slidge rechazo el comando de codigo aunque no hay confirmacion "
+                        "de conexion. Espera unos segundos y reintenta."
+                    ),
+                )
+                return
+
+            self._emit(
+                XmppError(
+                    f"No se pudo obtener el codigo de vinculacion: {error_text}"
+                )
+            )
+            return
+
+        text = self._command_result_text(result.xml)
+        code = self._pairing_code_from_text(text)
+        if not code:
+            self._emit(
+                XmppError(
+                    "Slidge respondio, pero no pude detectar el codigo de vinculacion."
+                )
+            )
+            if text:
+                self._emit_whatsapp_status(component_jid, "needs_pair_code", text)
+            return
+
+        self._emit(WhatsAppPairingCodeReceived(component_jid=component_jid, code=code))
+        self._emit_whatsapp_status(component_jid, "needs_pair_code", text)
+
+    @staticmethod
+    def _form_reply_with_values(form_xml: ET.Element, values: dict[str, str]) -> object:
+        from slixmpp.plugins.xep_0004.stanza import Form
+
+        form = Form(xml=ET.fromstring(ET.tostring(form_xml, encoding="unicode")))
+        form.reply()
+        form["values"] = values
+        return form
+
+    @staticmethod
+    def _command_result_text(xml: ET.Element) -> str:
+        texts: list[str] = []
+        for element in xml.iter():
+            if element.text and element.text.strip():
+                texts.append(element.text.strip())
+        return " ".join(texts)
+
+    @staticmethod
+    def _pairing_code_from_text(text: str) -> str:
+        normalized = text.upper()
+        match = re.search(
+            r"\b(?:CODE|CODIGO)\b[^A-Z0-9]{0,80}([A-Z0-9]{4}[-\s]?[A-Z0-9]{4})\b",
+            normalized,
+        )
+        if match is None:
+            matches = re.findall(r"\b([A-Z0-9]{4}[-\s][A-Z0-9]{4})\b", normalized)
+            match = re.match(r"(.+)", matches[-1]) if matches else None
+        return match.group(1).replace(" ", "-") if match else ""
+
+    @staticmethod
+    def _means_pairing_command_forbidden(error_text: str) -> bool:
+        normalized = error_text.casefold()
+        return (
+            "only available for users that are not logged" in normalized
+            or "already logged" in normalized
+            or "already connected" in normalized
+            or "refusing to pair for connected session" in normalized
+        )
+
+    @staticmethod
+    def _means_already_connected(error_text: str) -> bool:
+        normalized = error_text.casefold()
+        return (
+            "already logged" in normalized
+            or "already connected" in normalized
+            or "refusing to pair for connected session" in normalized
+        )
+
+    def _debug_whatsapp_commands(self, jid: str, commands: list[tuple[str, str]]) -> None:
+        if not commands:
+            self._debug_whatsapp(f"commands {jid}: none")
+            return
+
+        rendered = [
+            f"{node} ({self._safe_debug_text(name) or 'no name'})" for node, name in commands
+        ]
+        state_hints: list[str] = []
+        for node, name in commands:
+            normalized = f"{node} {name}".casefold()
+            if self._is_register_command(node, name):
+                state_hints.append("register_available")
+            if node == SLIDGE_PAIR_PHONE_COMMAND or "pair-phone" in normalized:
+                state_hints.append("pair_phone_available")
+            if "re-login" in normalized or "relogin" in normalized:
+                state_hints.append("relogin_available")
+            if "logout" in normalized:
+                state_hints.append("logged_in_command_seen")
+
+        self._debug_whatsapp(
+            f"commands {jid}: {rendered}; state={self._whatsapp_command_state(commands)} "
+            f"hints={sorted(set(state_hints)) or 'none'}"
+        )
+
+    def _debug_whatsapp_admin_message(self, from_jid: str, body: str) -> None:
+        if not body:
+            return
+        if not self._is_probable_whatsapp_bridge_jid(from_jid) and not self._is_whatsapp_state_text(
+            body
+        ):
+            return
+
+        self._debug_whatsapp(
+            f"admin message from={from_jid} state={self._whatsapp_state_hint(body)} "
+            f"body={self._safe_debug_text(body)}"
+        )
+        state = self._whatsapp_state_hint(body)
+        if state != "unknown":
+            self._emit_whatsapp_status(from_jid, state, body)
+
+    @staticmethod
+    def _debug_whatsapp(message: str) -> None:
+        print(f"{WHATSAPP_DEBUG_PREFIX} {message}", flush=True)
+
+    def _emit_whatsapp_status(self, component_jid: str, status: str, detail: str = "") -> None:
+        component_jid = component_jid.split("/", 1)[0]
+        key = f"{status}\n{detail}"
+        if self._last_whatsapp_status_by_component.get(component_jid) == key:
+            return
+
+        self._last_whatsapp_status_by_component[component_jid] = key
+        self._emit(
+            WhatsAppBridgeStatus(
+                status=status,
+                component_jid=component_jid,
+                detail=self._safe_debug_text(detail, limit=500),
+            )
+        )
+
+    def _is_whatsapp_qr_image(
+        self,
+        from_jid: str,
+        body: str,
+        media_url: str,
+        media_kind: str,
+    ) -> bool:
+        if media_kind != "image" or not media_url:
+            return False
+        if not self._is_probable_whatsapp_bridge_jid(from_jid):
+            return False
+        if "qr" in body.casefold():
+            return True
+
+        status = self._last_whatsapp_status_by_component.get(from_jid.split("/", 1)[0], "")
+        return any(
+            status.startswith(candidate)
+            for candidate in (
+                "needs_qr",
+                "needs_pairing",
+                "needs_pair_code",
+                "needs_relogin",
+                "logged_out",
+            )
+        )
+
+    @classmethod
+    def _whatsapp_qr_image_data_from_xml(
+        cls,
+        from_jid: str,
+        body: str,
+        xml: ET.Element,
+    ) -> tuple[bytes, str, str] | None:
+        if not cls._is_probable_whatsapp_bridge_jid(from_jid):
+            return None
+        if not cls._message_may_carry_whatsapp_qr(body, xml):
+            return None
+
+        embedded = cls._embedded_image_data_from_xml(xml)
+        if embedded is None:
+            return None
+
+        image_data, mime = embedded
+        return image_data, mime, cls._qr_filename_from_mime(mime)
+
+    @classmethod
+    def _embedded_image_data_from_xml(cls, xml: ET.Element) -> tuple[bytes, str] | None:
+        for node in xml.iter():
+            for attribute in ("src", "uri", "url", "href"):
+                value = node.attrib.get(attribute, "").strip()
+                if not value.startswith("data:image/"):
+                    continue
+                decoded = cls._image_data_from_data_uri(value)
+                if decoded is not None:
+                    return decoded
+
+            if not cls._is_bob_data_node(node):
+                continue
+
+            mime = cls._node_mime(node)
+            if not mime.startswith("image/"):
+                continue
+
+            encoded = (node.text or "").strip()
+            decoded = cls._decode_base64_image(encoded)
+            if decoded is not None:
+                return decoded, mime
+
+        return None
+
+    @staticmethod
+    def _is_bob_data_node(node: ET.Element) -> bool:
+        namespace = ""
+        if node.tag.startswith("{"):
+            namespace = node.tag.split("}", 1)[0][1:]
+        return namespace == BOB_NS and node.tag.rsplit("}", 1)[-1] == "data"
+
+    @staticmethod
+    def _node_mime(node: ET.Element) -> str:
+        for attribute in ("type", "media-type", "mime-type", "content-type"):
+            value = node.attrib.get(attribute, "").strip()
+            if value:
+                return value
+        return ""
+
+    @classmethod
+    def _image_data_from_data_uri(cls, value: str) -> tuple[bytes, str] | None:
+        header, separator, payload = value.partition(",")
+        if not separator:
+            return None
+        mime = header.removeprefix("data:").split(";", 1)[0]
+        if not mime.startswith("image/"):
+            return None
+        decoded = cls._decode_base64_image(payload.strip())
+        if decoded is None:
+            return None
+        return decoded, mime
+
+    @staticmethod
+    def _decode_base64_image(value: str) -> bytes | None:
+        if not value:
+            return None
+        try:
+            return base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    @staticmethod
+    def _qr_filename_from_mime(mime: str) -> str:
+        extension = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }.get(mime.casefold(), ".png")
+        return f"qr-whatsapp{extension}"
+
+    @classmethod
+    def _message_may_carry_whatsapp_qr(cls, body: str, xml: ET.Element) -> bool:
+        normalized = body.casefold()
+        if "qr" in normalized or "scan" in normalized or "vincul" in normalized:
+            return True
+        for node in xml.iter():
+            if cls._is_bob_data_node(node) and cls._node_mime(node).startswith("image/"):
+                return True
+            for attribute in ("src", "uri", "url", "href"):
+                if node.attrib.get(attribute, "").strip().startswith("data:image/"):
+                    return True
+        return False
+
+    @classmethod
+    def _is_whatsapp_qr_candidate_message(
+        cls,
+        from_jid: str,
+        body: str,
+        xml: ET.Element,
+        media_url: str,
+        media_kind: str,
+    ) -> bool:
+        if not cls._is_probable_whatsapp_bridge_jid(from_jid):
+            return False
+        if media_kind == "image" or media_url:
+            return True
+        return cls._message_may_carry_whatsapp_qr(body, xml)
+
+    @classmethod
+    def _debug_whatsapp_qr_candidate(
+        cls,
+        from_jid: str,
+        body: str,
+        xml: ET.Element,
+        media_url: str,
+        media_kind: str,
+    ) -> None:
+        nodes: list[str] = []
+        for node in xml.iter():
+            local_name = node.tag.rsplit("}", 1)[-1]
+            attrs = {}
+            for key, value in node.attrib.items():
+                if key in {"src", "uri", "url", "href", "cid", "type", "media-type"}:
+                    attrs[key] = cls._safe_debug_text(value, limit=90)
+            if attrs:
+                nodes.append(f"{local_name}{attrs}")
+            elif local_name in {"data", "image", "thumbnail", "file", "url", "x"}:
+                nodes.append(local_name)
+            if len(nodes) >= 12:
+                break
+
+        cls._debug_whatsapp(
+            "qr candidate not handled "
+            f"from={from_jid} body={cls._safe_debug_text(body, limit=180) or '-'} "
+            f"media_url={cls._safe_debug_text(media_url, limit=180) or '-'} "
+            f"media_kind={media_kind or '-'} nodes={nodes or 'none'}"
+        )
+
+    @staticmethod
+    def _is_probable_whatsapp_bridge_jid(jid: str) -> bool:
+        bare_jid = jid.split("/", 1)[0].casefold()
+        if not bare_jid:
+            return False
+        local_part = bare_jid.split("@", 1)[0]
+        domain = bare_jid.split("@", 1)[-1]
+        if local_part.startswith(("+", "#")):
+            return False
+        return "whatsapp" in bare_jid or "slidge" in bare_jid or domain.startswith("wa.")
+
+    @classmethod
+    def _is_whatsapp_state_text(cls, text: str) -> bool:
+        return cls._whatsapp_state_hint(text) != "unknown"
+
+    @staticmethod
+    def _whatsapp_state_hint(text: str) -> str:
+        normalized = text.casefold()
+        if not normalized:
+            return "unknown"
+        if normalized.startswith("connected as ") or " connected as +" in normalized:
+            return "connected"
+        if "qr scan needed" in normalized or "scan the following qr" in normalized:
+            return "needs_qr"
+        if "pair-phone" in normalized or "input the following code" in normalized:
+            return "needs_pair_code"
+        if "pairing successful" in normalized:
+            return "paired"
+        if "you are not connected to this gateway" in normalized:
+            return "needs_relogin"
+        if "did not flash the qr code in time" in normalized:
+            return "needs_relogin"
+        if "logged out" in normalized or "re-login" in normalized or "re-scan" in normalized:
+            return "logged_out"
+        if "connection error" in normalized:
+            return "connection_error"
+        if "register" in normalized and "whatsapp" in normalized:
+            return "needs_registration"
+        return "unknown"
+
+    @classmethod
+    def _whatsapp_command_state(cls, commands: list[tuple[str, str]]) -> str:
+        has_logout = False
+        has_pair_phone = False
+        has_relogin = False
+        has_register = False
+        for node, name in commands:
+            normalized = f"{node} {name}".casefold()
+            has_logout = has_logout or node == "wa_logout" or " logout" in f" {normalized}"
+            has_pair_phone = (
+                has_pair_phone
+                or node == SLIDGE_PAIR_PHONE_COMMAND
+                or "pair-phone" in normalized
+            )
+            has_relogin = has_relogin or "re-login" in normalized or "relogin" in normalized
+            has_register = has_register or cls._is_register_command(node, name)
+
+        if has_logout:
+            return "connected"
+        if has_pair_phone:
+            return "needs_pairing"
+        if has_relogin:
+            return "needs_relogin"
+        if has_register:
+            return "needs_registration"
+        return "unknown"
+
+    @staticmethod
+    def _is_register_command(node: str, name: str) -> bool:
+        normalized_node = node.casefold().strip()
+        normalized_name = name.casefold().strip()
+        if "unregister" in normalized_node or "unregister" in normalized_name:
+            return False
+        return (
+            normalized_node.endswith("/register")
+            or normalized_node.endswith(":register")
+            or normalized_node == "register"
+            or normalized_name == "register"
+            or normalized_name.startswith("register ")
+        )
+
+    @staticmethod
+    def _safe_debug_text(value: str, limit: int = 300) -> str:
+        single_line = " ".join(str(value).split())
+        if len(single_line) > limit:
+            single_line = single_line[: limit - 3] + "..."
+        return single_line.encode("ascii", errors="backslashreplace").decode("ascii")
 
     @staticmethod
     def _is_groups_command(node: str, name: str) -> bool:
@@ -2142,6 +2792,30 @@ class XmppService:
 
     def send_audio_file(self, to_jid: str, path: str, is_group: bool = False) -> None:
         self.send_file(to_jid, path, is_group=is_group)
+
+    def request_whatsapp_relogin(self, component_jid: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def request() -> None:
+            if self._client:
+                self._loop.create_task(self._client.request_whatsapp_relogin(component_jid))
+
+        self._loop.call_soon_threadsafe(request)
+
+    def request_whatsapp_pair_code(self, component_jid: str, phone: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def request() -> None:
+            if self._client:
+                self._loop.create_task(
+                    self._client.request_whatsapp_pair_code(component_jid, phone)
+                )
+
+        self._loop.call_soon_threadsafe(request)
 
     def monitor_group_chats(self, chat_jids: Iterable[str]) -> None:
         if not self._client or not self._loop:

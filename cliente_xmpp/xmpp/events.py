@@ -22,6 +22,35 @@ class XmppError:
 
 
 @dataclass(slots=True)
+class WhatsAppBridgeStatus:
+    status: str
+    component_jid: str = ""
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppPairingCodeReceived:
+    component_jid: str
+    code: str
+
+
+@dataclass(slots=True)
+class WhatsAppQrImageReceived:
+    component_jid: str
+    image_url: str
+    mime: str = ""
+    filename: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppQrImageDataReceived:
+    component_jid: str
+    image_data: bytes
+    mime: str = ""
+    filename: str = ""
+
+
+@dataclass(slots=True)
 class RosterLoaded:
     chats: list[Chat]
 
@@ -64,6 +93,10 @@ XmppEvent = (
     XmppConnected
     | XmppDisconnected
     | XmppError
+    | WhatsAppBridgeStatus
+    | WhatsAppPairingCodeReceived
+    | WhatsAppQrImageReceived
+    | WhatsAppQrImageDataReceived
     | RosterLoaded
     | ChatsDiscovered
     | MessageReceived

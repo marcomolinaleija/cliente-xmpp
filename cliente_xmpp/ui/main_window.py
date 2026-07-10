@@ -150,6 +150,7 @@ class MainWindow(wx.Frame):
             self._display_name_for_jid,
             initial_audio_speed=self.settings_store.load_audio_speed(),
             on_audio_speed_changed=self._save_audio_speed,
+            on_audio_download_requested=self._request_audio_download_for_playback,
         )
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
         self.content_box.Add(self.conversation, 1, wx.EXPAND)
@@ -1188,6 +1189,7 @@ class MainWindow(wx.Frame):
             message.media_duration_seconds = media_duration_seconds(downloaded.path)
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
+        self.conversation.audio_download_completed(message)
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
         if silent:
@@ -1214,7 +1216,7 @@ class MainWindow(wx.Frame):
             self._auto_download_audio_message(message)
 
     def _auto_download_audio_message(self, message: Message) -> None:
-        if message.media_kind != "audio" or not message.audio_url:
+        if message.media_kind != "audio" or not (message.audio_url or message.media_url):
             return
 
         if message.outgoing or local_media_path(message) is not None:
@@ -1227,9 +1229,20 @@ class MainWindow(wx.Frame):
         self.auto_downloading_audio_keys.add(key)
         self._download_media(message, silent=True)
 
+    def _request_audio_download_for_playback(self, message: Message) -> None:
+        if local_media_path(message) is not None:
+            self.conversation.audio_download_completed(message)
+            return
+
+        key = self._auto_audio_download_key(message)
+        if key not in self.auto_downloading_audio_keys:
+            self.auto_downloading_audio_keys.add(key)
+            self._download_media(message, silent=True)
+        self.status_bar.SetStatusText("Descargando audio para reproducir...")
+
     @staticmethod
     def _auto_audio_download_key(message: Message) -> tuple[str, str]:
-        stable_id = message.message_id or message.audio_url
+        stable_id = message.message_id or message.audio_url or message.media_url
         return message.chat_jid, stable_id
 
     def _copy_media_file(self, message: Message) -> None:

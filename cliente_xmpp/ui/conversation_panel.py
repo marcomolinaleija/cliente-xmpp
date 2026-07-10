@@ -45,10 +45,12 @@ class ConversationPanel(wx.Panel):
         resolve_display_name: Callable[[str], str],
         initial_audio_speed: float = 1.0,
         on_audio_speed_changed: Callable[[float], None] | None = None,
+        on_audio_download_requested: Callable[[Message], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
         self.on_audio_speed_changed = on_audio_speed_changed
+        self.on_audio_download_requested = on_audio_download_requested
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
@@ -65,6 +67,7 @@ class ConversationPanel(wx.Panel):
         self._audio_autoplay_timer = wx.Timer(self)
         self._current_audio_row_index: int | None = None
         self._current_audio_source = ""
+        self._pending_audio_message: Message | None = None
 
         self.title = wx.StaticText(self, label="Selecciona un chat")
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -88,6 +91,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_count = 0
         self._unread_marker_index = None
         self._focus_target_index = None
+        self._pending_audio_message = None
         self._replying = False
         self.compose_label.SetLabel("Mensaje:")
         self.send_button.Enable(True)
@@ -295,6 +299,11 @@ class ConversationPanel(wx.Panel):
 
         audio_source = self._audio_source(message)
         if not audio_source:
+            if message.audio_url and self.on_audio_download_requested is not None:
+                self._pending_audio_message = message
+                self.on_audio_download_requested(message)
+                self._speaker.speak("Descargando audio")
+                return True
             return False
 
         try:
@@ -312,6 +321,14 @@ class ConversationPanel(wx.Panel):
                 self._audio_autoplay_timer.Stop()
 
         return True
+
+    def audio_download_completed(self, message: Message) -> None:
+        if self._pending_audio_message is not message:
+            return
+
+        self._pending_audio_message = None
+        if self.selected_message() is message:
+            self.play_selected_audio()
 
     def play_selected_video(self) -> bool:
         index = self.messages.GetFirstSelected()
@@ -421,7 +438,7 @@ class ConversationPanel(wx.Panel):
         if path is not None:
             return str(path)
 
-        return message.audio_url
+        return ""
 
     def close_audio(self) -> None:
         self._audio_autoplay_timer.Stop()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import unicodedata
+import uuid
 import webbrowser
 from collections import deque
 from dataclasses import dataclass
@@ -35,14 +37,27 @@ from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.theme import apply_theme
+from cliente_xmpp.ui.whatsapp_link_panel import (
+    WhatsAppLinkDialog,
+    WhatsAppLinkPanel,
+    WhatsAppPairingCodeDialog,
+    WhatsAppQrDialog,
+)
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
     ChatsDiscovered,
+    MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
     RosterLoaded,
+    WhatsAppBridgeStatus,
+    WhatsAppLinkSessionEnded,
+    WhatsAppLinkSessionStarted,
+    WhatsAppPairingCodeReceived,
+    WhatsAppQrImageDataReceived,
+    WhatsAppQrImageReceived,
     XmppConnected,
     XmppDisconnected,
     XmppError,
@@ -54,6 +69,7 @@ PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+GROUP_SELF_ECHO_WINDOW_SECONDS = 10
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
@@ -97,6 +113,18 @@ class MainWindow(wx.Frame):
         self.search_debounce_timer: wx.CallLater | None = None
         self.reply_context: Message | None = None
         self.current_jid = ""
+        self.whatsapp_component_jid = ""
+        self.whatsapp_link_status = "unknown"
+        self.whatsapp_link_detail = ""
+        self.whatsapp_verified = False
+        self.pending_roster_chats: list[Chat] | None = None
+        self.whatsapp_link_prompt_open = False
+        self.whatsapp_link_prompted_key = ""
+        self.whatsapp_link_session: tuple[str, str, str] | None = None
+        self.last_whatsapp_phone = ""
+        self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_downloads_in_progress: set[str] = set()
         self.audio_recorder = MciAudioRecorder()
 
         self.startup_panel: wx.Panel
@@ -106,6 +134,7 @@ class MainWindow(wx.Frame):
         self.content_panel: wx.Panel
         self.content_box: wx.BoxSizer
         self.connection_header: ConnectionHeaderPanel
+        self.whatsapp_link_panel: WhatsAppLinkPanel
         self.chat_list: ChatListPanel
         self.conversation: ConversationPanel
         self.status_bar = self.CreateStatusBar()
@@ -141,6 +170,7 @@ class MainWindow(wx.Frame):
         workspace_box = wx.BoxSizer(wx.VERTICAL)
 
         self.connection_header = ConnectionHeaderPanel(self.workspace_panel)
+        self.whatsapp_link_panel = WhatsAppLinkPanel(self.workspace_panel)
 
         self.content_panel = wx.Panel(self.workspace_panel)
         self.content_box = wx.BoxSizer(wx.VERTICAL)
@@ -150,6 +180,7 @@ class MainWindow(wx.Frame):
             self._display_name_for_jid,
             initial_audio_speed=self.settings_store.load_audio_speed(),
             on_audio_speed_changed=self._save_audio_speed,
+            on_audio_download_requested=self._request_audio_download_for_playback,
         )
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
         self.content_box.Add(self.conversation, 1, wx.EXPAND)
@@ -157,6 +188,7 @@ class MainWindow(wx.Frame):
         self.conversation.Hide()
 
         workspace_box.Add(self.connection_header, 0, wx.EXPAND)
+        workspace_box.Add(self.whatsapp_link_panel, 0, wx.EXPAND)
         workspace_box.Add(self.content_panel, 1, wx.EXPAND)
         self.workspace_panel.SetSizer(workspace_box)
 
@@ -169,6 +201,12 @@ class MainWindow(wx.Frame):
     def _bind_events(self) -> None:
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
         self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
+        self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
+        self.whatsapp_link_panel.show_qr_button.Bind(wx.EVT_BUTTON, self._on_show_whatsapp_qr)
+        self.whatsapp_link_panel.cancel_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_cancel_whatsapp_link,
+        )
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
@@ -201,6 +239,8 @@ class MainWindow(wx.Frame):
         self.settings_store.save_connection(login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
+        self.whatsapp_verified = False
+        self.pending_roster_chats = None
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
@@ -255,6 +295,401 @@ class MainWindow(wx.Frame):
         self.connection_header.set_status("Desconectando...")
         self.status_bar.SetStatusText("Desconectando...")
         self.xmpp.disconnect()
+
+    def _handle_whatsapp_bridge_status(
+        self,
+        status: str,
+        component_jid: str,
+        detail: str,
+    ) -> None:
+        if component_jid:
+            self.whatsapp_component_jid = component_jid
+        self.whatsapp_link_status = status
+        self.whatsapp_link_detail = detail
+
+        if status in {"connected", "paired"}:
+            self.whatsapp_verified = True
+            self.whatsapp_link_session = None
+            self.whatsapp_link_panel.clear()
+            self._close_whatsapp_qr_dialog()
+            message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
+            self.connection_header.set_status(message)
+            self.status_bar.SetStatusText(message)
+            self._apply_pending_roster_if_ready()
+            self.workspace_panel.Layout()
+            return
+
+        if status in {"needs_pairing", "needs_relogin", "needs_qr", "needs_pair_code"}:
+            self.whatsapp_verified = False
+            message = "WhatsApp necesita volver a vincularse."
+            action_label = "Volver a vincular"
+        elif status == "logged_out":
+            self.whatsapp_verified = False
+            message = "WhatsApp se desvinculo de este cliente."
+            action_label = "Volver a vincular"
+        elif status == "needs_registration":
+            self.whatsapp_verified = False
+            message = "WhatsApp necesita registrarse en el bridge."
+            action_label = "Configurar WhatsApp"
+        elif status == "connection_error":
+            self.whatsapp_verified = False
+            message = "WhatsApp reporto un error de conexion."
+            action_label = "Revisar vinculacion"
+        else:
+            return
+
+        if detail:
+            message = f"{message} {detail}"
+        if not self.workspace_panel.IsShown():
+            self.login_panel.set_connecting(False)
+            self.connection_header.set_account(self.current_jid)
+            self._set_connected_ui(True)
+        self.whatsapp_link_panel.set_status(
+            message,
+            action_label=action_label,
+            can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
+        self._show_chat_placeholder("WhatsApp requiere vinculacion.")
+        self.connection_header.set_status("WhatsApp requiere vinculacion")
+        self.status_bar.SetStatusText(message)
+        self.workspace_panel.Layout()
+        wx.CallAfter(self.speaker.speak, message)
+        self._maybe_auto_open_whatsapp_link(status)
+
+    def _handle_whatsapp_pairing_code(self, component_jid: str, code: str) -> None:
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.status_bar.SetStatusText(f"Codigo de vinculacion: {code}")
+        wx.CallAfter(self.speaker.speak, f"Codigo de vinculacion: {code}")
+        dialog = WhatsAppPairingCodeDialog(self, code)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+
+    def _handle_whatsapp_link_session_started(
+        self,
+        component_jid: str,
+        command_node: str,
+        session_id: str,
+    ) -> None:
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.whatsapp_link_session = (component_jid, command_node, session_id)
+        self.whatsapp_link_panel.set_status(
+            "Hay una vinculacion de WhatsApp en curso.",
+            action_label="Revisar vinculacion",
+            can_cancel=True,
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
+        self.workspace_panel.Layout()
+
+    def _handle_whatsapp_link_session_ended(
+        self,
+        component_jid: str,
+        command_node: str,
+        session_id: str,
+        canceled: bool,
+        detail: str,
+    ) -> None:
+        if self.whatsapp_link_session == (component_jid, command_node, session_id):
+            self.whatsapp_link_session = None
+        if canceled:
+            self._close_whatsapp_qr_dialog()
+            self.status_bar.SetStatusText(detail or "Vinculacion cancelada")
+            wx.CallAfter(self.speaker.speak, "Vinculacion cancelada")
+        if self.whatsapp_link_panel.IsShown():
+            self.whatsapp_link_panel.set_status(
+                detail or "WhatsApp necesita volver a vincularse.",
+                action_label="Volver a vincular",
+                can_cancel=False,
+                can_show_qr=self._has_whatsapp_qr_to_show(),
+            )
+            self.workspace_panel.Layout()
+
+    def _has_whatsapp_qr_to_show(self) -> bool:
+        return bool(self.whatsapp_qr_dialog is not None or self.whatsapp_qr_path)
+
+    def _refresh_whatsapp_link_panel_actions(self) -> None:
+        if not self.whatsapp_link_panel.IsShown():
+            return
+
+        self.whatsapp_link_panel.set_status(
+            self.whatsapp_link_panel.message.GetLabel(),
+            action_label=self.whatsapp_link_panel.open_button.GetLabel(),
+            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
+        self.workspace_panel.Layout()
+
+    def _has_cancelable_whatsapp_link(self, component_jid: str = "") -> bool:
+        if self.whatsapp_link_session is None:
+            return False
+        if not component_jid:
+            return True
+        return self.whatsapp_link_session[0] == component_jid
+
+    def _on_cancel_whatsapp_link(self, _event: wx.CommandEvent) -> None:
+        component_jid = (
+            self.whatsapp_link_session[0]
+            if self.whatsapp_link_session is not None
+            else self.whatsapp_component_jid
+        )
+        if not component_jid:
+            self.status_bar.SetStatusText("No hay vinculacion en curso para cancelar")
+            return
+
+        self.status_bar.SetStatusText("Cancelando vinculacion...")
+        self.xmpp.cancel_whatsapp_linking(component_jid)
+
+    def _on_show_whatsapp_qr(self, _event: wx.CommandEvent) -> None:
+        if self.whatsapp_qr_dialog is not None:
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        if self.whatsapp_qr_path:
+            self._show_whatsapp_qr(Path(self.whatsapp_qr_path))
+            return
+
+        self.status_bar.SetStatusText("Todavia no hay QR para mostrar")
+
+    def _handle_whatsapp_qr_image(
+        self,
+        component_jid: str,
+        image_url: str,
+        mime: str,
+        filename: str,
+    ) -> None:
+        if self.whatsapp_verified:
+            return
+        if image_url in self.whatsapp_qr_downloads_in_progress:
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.whatsapp_qr_downloads_in_progress.add(image_url)
+        self.status_bar.SetStatusText("Descargando QR de vinculacion...")
+        message = Message(
+            chat_jid=component_jid,
+            sender_jid=component_jid,
+            body="QR de vinculacion",
+            media_url=image_url,
+            media_kind="image",
+            media_mime=mime,
+            media_filename=filename or "qr-whatsapp.png",
+        )
+
+        def worker() -> None:
+            try:
+                downloaded = download_media(message, self.current_jid or "cuenta")
+            except Exception as exc:
+                wx.CallAfter(
+                    self.status_bar.SetStatusText,
+                    f"No se pudo descargar el QR: {exc}",
+                )
+                return
+            finally:
+                wx.CallAfter(self.whatsapp_qr_downloads_in_progress.discard, image_url)
+
+            wx.CallAfter(self._show_whatsapp_qr, downloaded.path)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_whatsapp_qr_image_data(
+        self,
+        component_jid: str,
+        image_data: bytes,
+        mime: str,
+        filename: str,
+    ) -> None:
+        if self.whatsapp_verified:
+            return
+
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        digest = hashlib.sha256(image_data).hexdigest()[:16]
+        extension = self._image_extension_from_mime(mime)
+        filename = Path(filename).name if filename else ""
+        safe_filename = (
+            filename if filename.endswith(extension) else f"qr-whatsapp-{digest}{extension}"
+        )
+        qr_dir = APP_DIR / "whatsapp-linking"
+        qr_dir.mkdir(parents=True, exist_ok=True)
+        path = qr_dir / safe_filename
+        try:
+            path.write_bytes(image_data)
+        except OSError as exc:
+            self.status_bar.SetStatusText(f"No se pudo guardar el QR: {exc}")
+            return
+
+        self._show_whatsapp_qr(path)
+
+    @staticmethod
+    def _image_extension_from_mime(mime: str) -> str:
+        return {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }.get(mime.casefold(), ".png")
+
+    def _show_whatsapp_qr(self, path: Path) -> None:
+        if self.whatsapp_verified:
+            return
+
+        path_text = str(path)
+        if not wx.Image.CanRead(path_text):
+            self.status_bar.SetStatusText("El QR recibido no es una imagen válida")
+            return
+
+        self.status_bar.SetStatusText("QR de vinculacion listo")
+        wx.CallAfter(self.speaker.speak, "QR de vinculacion listo")
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_path = path_text
+            self.whatsapp_qr_dialog.set_image(path_text)
+            self._refresh_whatsapp_link_panel_actions()
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        self.whatsapp_qr_path = path_text
+        dialog = WhatsAppQrDialog(self, path_text)
+        self.whatsapp_qr_dialog = dialog
+        dialog.Bind(wx.EVT_CLOSE, self._on_whatsapp_qr_dialog_close)
+        dialog.cancel_link_button.Bind(wx.EVT_BUTTON, self._on_cancel_whatsapp_link)
+        dialog.Show()
+        self._refresh_whatsapp_link_panel_actions()
+        self._focus_whatsapp_qr_dialog()
+
+    def _focus_whatsapp_qr_dialog(self) -> None:
+        dialog = self.whatsapp_qr_dialog
+        if dialog is None:
+            return
+
+        if dialog.IsIconized():
+            dialog.Iconize(False)
+        dialog.Raise()
+        dialog.RequestUserAttention()
+        dialog.SetFocus()
+
+    def _close_whatsapp_qr_dialog(self) -> None:
+        dialog = self.whatsapp_qr_dialog
+        self.whatsapp_qr_dialog = None
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_downloads_in_progress.clear()
+        if dialog is not None:
+            dialog.Destroy()
+        self._refresh_whatsapp_link_panel_actions()
+
+    def _on_whatsapp_qr_dialog_close(self, event: wx.CloseEvent) -> None:
+        dialog = self.whatsapp_qr_dialog
+        self.whatsapp_qr_dialog = None
+        self.whatsapp_qr_path = ""
+        if dialog is not None:
+            dialog.Destroy()
+        self._refresh_whatsapp_link_panel_actions()
+        event.Skip(False)
+
+    def _on_open_whatsapp_link(self, _event: wx.CommandEvent) -> None:
+        if not self.whatsapp_component_jid:
+            wx.MessageBox(
+                "Todavia no detecte el componente de WhatsApp.",
+                "Vincular WhatsApp",
+            )
+            return
+
+        self.whatsapp_link_prompt_open = True
+        status_text = self._whatsapp_link_dialog_status_text()
+        dialog = WhatsAppLinkDialog(
+            self,
+            self.whatsapp_component_jid,
+            status_text,
+            last_phone=self.last_whatsapp_phone,
+            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
+        )
+        try:
+            result = dialog.ShowModal()
+            action = dialog.action
+        finally:
+            dialog.Destroy()
+            self.whatsapp_link_prompt_open = False
+
+        if action is None:
+            return
+
+        if action.mode == "cancel":
+            self._on_cancel_whatsapp_link(wx.CommandEvent())
+            return
+
+        if result == wx.ID_OK and action.mode == "code":
+            self.last_whatsapp_phone = action.phone
+            self.status_bar.SetStatusText("Solicitando codigo de vinculacion...")
+            self.xmpp.request_whatsapp_pair_code(self.whatsapp_component_jid, action.phone)
+            return
+
+        if result == wx.ID_APPLY and action.mode == "qr":
+            self.status_bar.SetStatusText("Solicitando QR de vinculacion...")
+            self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
+
+    def _maybe_auto_open_whatsapp_link(self, status: str) -> None:
+        if status not in {"logged_out", "needs_pairing", "needs_relogin"}:
+            return
+        if self.whatsapp_link_prompt_open or not self.whatsapp_component_jid:
+            return
+
+        prompt_key = f"{self.whatsapp_component_jid}:{status}"
+        if self.whatsapp_link_prompted_key == prompt_key:
+            return
+
+        self.whatsapp_link_prompted_key = prompt_key
+        wx.CallAfter(self._on_open_whatsapp_link, wx.CommandEvent())
+
+    def _whatsapp_link_dialog_status_text(self) -> str:
+        if self.whatsapp_link_status == "connected":
+            return "WhatsApp ya esta conectado."
+        if self.whatsapp_link_status == "paired":
+            return "WhatsApp ya se vinculo. Espera la sincronizacion."
+        if self.whatsapp_link_status == "logged_out":
+            return "WhatsApp cerro la sesion de este cliente. Puedes volver a vincularlo."
+        if self.whatsapp_link_status == "connection_error":
+            return "WhatsApp reporto un error de conexion. Puedes intentar vincular de nuevo."
+        if self.whatsapp_link_status in {"needs_pairing", "needs_relogin"}:
+            return "WhatsApp necesita una nueva vinculacion."
+        if self.whatsapp_link_status == "needs_qr":
+            return "Hay una vinculacion por QR en curso."
+        if self.whatsapp_link_status == "needs_pair_code":
+            return "Hay una vinculacion por codigo en curso."
+        return "Vincula WhatsApp con codigo o QR."
+
+    def _apply_pending_roster_if_ready(self) -> None:
+        if not self.whatsapp_verified:
+            return
+        if self.pending_roster_chats is None:
+            self._show_chat_placeholder("Cargando chats...")
+            return
+
+        self._apply_roster_chats(self.pending_roster_chats)
+
+    def _apply_roster_chats(self, chats: list[Chat]) -> None:
+        cached_chats = self._load_cached_chats()
+        self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
+        self.xmpp.monitor_group_chats([chat.jid for chat in cached_chats if chat.is_group])
+        self.loading_initial_chat_activity = True
+        self.pending_chat_activity = {}
+        self.loaded_chat_summaries = len(cached_chats)
+        self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+        if not self.chat_list.selected_chat():
+            self.chat_list.select_first()
+        self.chat_list.focus()
+        self.status_bar.SetStatusText(
+            f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
+        )
+        self.xmpp.load_recent_activity(self.roster_jids)
+        wx.CallLater(
+            INITIAL_CHAT_LOAD_FALLBACK_MS,
+            self._finish_initial_chat_loading_if_needed,
+        )
+
+    def _show_chat_placeholder(self, text: str) -> None:
+        self.chat_list.set_placeholder(text)
+        if self.conversation.IsShown():
+            self._show_chat_list()
 
     def _on_chat_selected(self, _event: wx.CommandEvent) -> None:
         if not self.chat_list.IsShown():
@@ -665,6 +1100,7 @@ class MainWindow(wx.Frame):
         if not chat or not body:
             return
 
+        message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
         message = Message(
             chat_jid=chat.jid,
             sender_jid="me",
@@ -672,12 +1108,12 @@ class MainWindow(wx.Frame):
             body=body,
             outgoing=True,
             chat_is_group=chat.is_group,
+            message_id=message_id,
             reply_quote=self.reply_context.body if self.reply_context else "",
+            delivery_state="pending",
         )
-        self._store_message(message)
-        self._update_chat_from_message(message)
-        self.conversation.append_message(message)
-        self._refresh_chat_order(chat.jid)
+        self._add_pending_outgoing_message(message)
+        self.status_bar.SetStatusText("Enviando mensaje...")
         if self.reply_context:
             reply_to_jid = (
                 self.current_jid if self.reply_context.outgoing else self.reply_context.sender_jid
@@ -689,11 +1125,12 @@ class MainWindow(wx.Frame):
                 self.reply_context.message_id,
                 fallback_end=0,
                 is_group=chat.is_group,
+                message_id=message_id,
             )
             self.reply_context = None
             self.conversation.clear_reply_quote()
         else:
-            self.xmpp.send_message(chat.jid, body, is_group=chat.is_group)
+            self.xmpp.send_message(chat.jid, body, is_group=chat.is_group, message_id=message_id)
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
         self.conversation.update_send_button_state(
@@ -1188,6 +1625,7 @@ class MainWindow(wx.Frame):
             message.media_duration_seconds = media_duration_seconds(downloaded.path)
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
+        self.conversation.audio_download_completed(message)
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
         if silent:
@@ -1214,7 +1652,7 @@ class MainWindow(wx.Frame):
             self._auto_download_audio_message(message)
 
     def _auto_download_audio_message(self, message: Message) -> None:
-        if message.media_kind != "audio" or not message.audio_url:
+        if message.media_kind != "audio" or not (message.audio_url or message.media_url):
             return
 
         if message.outgoing or local_media_path(message) is not None:
@@ -1227,9 +1665,20 @@ class MainWindow(wx.Frame):
         self.auto_downloading_audio_keys.add(key)
         self._download_media(message, silent=True)
 
+    def _request_audio_download_for_playback(self, message: Message) -> None:
+        if local_media_path(message) is not None:
+            self.conversation.audio_download_completed(message)
+            return
+
+        key = self._auto_audio_download_key(message)
+        if key not in self.auto_downloading_audio_keys:
+            self.auto_downloading_audio_keys.add(key)
+            self._download_media(message, silent=True)
+        self.status_bar.SetStatusText("Descargando audio para reproducir...")
+
     @staticmethod
     def _auto_audio_download_key(message: Message) -> tuple[str, str]:
-        stable_id = message.message_id or message.audio_url
+        stable_id = message.message_id or message.audio_url or message.media_url
         return message.chat_jid, stable_id
 
     def _copy_media_file(self, message: Message) -> None:
@@ -1314,10 +1763,11 @@ class MainWindow(wx.Frame):
             case XmppConnected():
                 self.login_panel.set_connecting(False)
                 self.connection_header.set_account(self.current_jid)
-                self.connection_header.set_status("Conectado")
+                self.connection_header.set_status("Verificando WhatsApp")
                 if not self.workspace_panel.IsShown():
                     self._set_connected_ui(True)
-                self.status_bar.SetStatusText("Conectado")
+                self._show_chat_placeholder("Verificando conexion de WhatsApp...")
+                self.status_bar.SetStatusText("Verificando conexion de WhatsApp...")
             case XmppDisconnected(reason=reason):
                 self.login_panel.set_connecting(False)
                 if reason:
@@ -1332,40 +1782,72 @@ class MainWindow(wx.Frame):
                     self._set_connected_ui(False)
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
+            case WhatsAppBridgeStatus(status=status, component_jid=component_jid, detail=detail):
+                self._handle_whatsapp_bridge_status(status, component_jid, detail)
+            case WhatsAppPairingCodeReceived(component_jid=component_jid, code=code):
+                self._handle_whatsapp_pairing_code(component_jid, code)
+            case WhatsAppLinkSessionStarted(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+            ):
+                self._handle_whatsapp_link_session_started(
+                    component_jid,
+                    command_node,
+                    session_id,
+                )
+            case WhatsAppLinkSessionEnded(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+                canceled=canceled,
+                detail=detail,
+            ):
+                self._handle_whatsapp_link_session_ended(
+                    component_jid,
+                    command_node,
+                    session_id,
+                    canceled,
+                    detail,
+                )
+            case WhatsAppQrImageReceived(
+                component_jid=component_jid,
+                image_url=image_url,
+                mime=mime,
+                filename=filename,
+            ):
+                self._handle_whatsapp_qr_image(component_jid, image_url, mime, filename)
+            case WhatsAppQrImageDataReceived(
+                component_jid=component_jid,
+                image_data=image_data,
+                mime=mime,
+                filename=filename,
+            ):
+                self._handle_whatsapp_qr_image_data(component_jid, image_data, mime, filename)
             case RosterLoaded(chats=chats):
-                self._update_chat_names(chats)
+                self.pending_roster_chats = chats
                 self.roster_jids = {chat.jid for chat in chats}
-                cached_chats = self._load_cached_chats()
-                self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
-                self.xmpp.monitor_group_chats(
-                    [chat.jid for chat in cached_chats if chat.is_group]
-                )
-                self.loading_initial_chat_activity = True
-                self.pending_chat_activity = {}
-                self.loaded_chat_summaries = len(cached_chats)
-                self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
-                if not self.chat_list.selected_chat():
-                    self.chat_list.select_first()
-                self.chat_list.focus()
-                self.status_bar.SetStatusText(
-                    f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
-                )
-                wx.CallLater(
-                    INITIAL_CHAT_LOAD_FALLBACK_MS,
-                    self._finish_initial_chat_loading_if_needed,
-                )
+                self._update_chat_names(chats)
+                if self.whatsapp_verified:
+                    self._apply_roster_chats(chats)
+                else:
+                    self._show_chat_placeholder("Verificando conexion de WhatsApp...")
             case ChatsDiscovered(chats=chats):
+                if not self.whatsapp_verified:
+                    return
                 self._upsert_discovered_chats(chats)
                 self._preload_recent_histories()
             case MessageReceived(message=message, notify=notify):
                 message, added_message = self._store_message(message)
                 suppress_notification = self.loading_initial_chat_activity or not notify
+                if not self.whatsapp_verified:
+                    return
                 if self.loading_initial_chat_activity:
                     pending_activity = self.pending_chat_activity.get(message.chat_jid)
                     self.pending_chat_activity[message.chat_jid] = ChatActivityLoaded(
                         chat_jid=message.chat_jid,
                         sent_at=message.sent_at,
-                        preview=media_description(message) if has_media(message) else message.body,
+                        preview=self._chat_preview_for_message(message),
                         unread_count=(
                             pending_activity.unread_count if pending_activity is not None else None
                         ),
@@ -1380,7 +1862,7 @@ class MainWindow(wx.Frame):
                 )
                 self._update_chat_from_message(
                     message,
-                    mark_unread=not message.outgoing and not current_chat_is_open,
+                    mark_unread=notify and not message.outgoing and not current_chat_is_open,
                 )
                 self._refresh_chat_order(preserve_focused_order=False)
                 if self.chat_list.IsShown() and not self.chat_list.is_searching:
@@ -1405,7 +1887,21 @@ class MainWindow(wx.Frame):
                 complete=complete,
                 background=background,
             ):
+                if not self.whatsapp_verified:
+                    return
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
+            case MessageDeliveryUpdated(
+                chat_jid=chat_jid,
+                message_id=message_id,
+                delivery_state=delivery_state,
+                detail=detail,
+            ):
+                self._handle_message_delivery_updated(
+                    chat_jid,
+                    message_id,
+                    delivery_state,
+                    detail,
+                )
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
@@ -1413,6 +1909,8 @@ class MainWindow(wx.Frame):
                 unread_count=unread_count,
                 is_group=is_group,
             ):
+                if not self.whatsapp_verified:
+                    return
                 if sent_at or preview or unread_count is not None:
                     if self.loading_initial_chat_activity:
                         self.pending_chat_activity[chat_jid] = event
@@ -1439,6 +1937,8 @@ class MainWindow(wx.Frame):
                         f"{self.loaded_chat_summaries} chats con mensajes cargados"
                     )
             case ChatActivityLoadFinished(loaded_count=loaded_count):
+                if not self.whatsapp_verified:
+                    return
                 if self.loading_initial_chat_activity:
                     self._finish_initial_chat_loading(loaded_count)
                     return
@@ -1512,7 +2012,9 @@ class MainWindow(wx.Frame):
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
             key = self._message_merge_key(message)
-            existing_index = indexes_by_key.get(key)
+            existing_index = self._matching_group_self_echo_index(message, unique_messages)
+            if existing_index is None:
+                existing_index = indexes_by_key.get(key)
             if existing_index is None:
                 existing_index = self._matching_content_message_index(
                     message,
@@ -1530,6 +2032,46 @@ class MainWindow(wx.Frame):
             unique_messages.append(message)
 
         self.messages_by_chat[chat_jid] = unique_messages
+
+    @classmethod
+    def _matching_group_self_echo_index(
+        cls,
+        message: Message,
+        candidates: list[Message],
+    ) -> int | None:
+        for index, candidate in enumerate(candidates):
+            if cls._messages_are_group_self_echo(candidate, message):
+                return index
+
+        return None
+
+    @classmethod
+    def _messages_are_group_self_echo(cls, first: Message, second: Message) -> bool:
+        outgoing, incoming = (first, second) if first.outgoing else (second, first)
+        if not outgoing.outgoing or incoming.outgoing:
+            return False
+        if not outgoing.chat_is_group or not incoming.chat_is_group:
+            return False
+        if outgoing.chat_jid != incoming.chat_jid:
+            return False
+        if not incoming.message_id or not incoming.sender_jid.startswith(
+            f"{incoming.chat_jid}/"
+        ):
+            return False
+        if (
+            outgoing.body != incoming.body
+            or outgoing.audio_url != incoming.audio_url
+            or outgoing.media_url != incoming.media_url
+            or outgoing.media_kind != incoming.media_kind
+        ):
+            return False
+        if not cls._messages_have_compatible_reply_quotes(outgoing, incoming):
+            return False
+
+        return (
+            abs(cls._message_timestamp(outgoing) - cls._message_timestamp(incoming))
+            <= GROUP_SELF_ECHO_WINDOW_SECONDS
+        )
 
     @staticmethod
     def _message_merge_key(message: Message) -> tuple[object, ...]:
@@ -1573,12 +2115,25 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _message_duplicate_window_seconds(first: Message, second: Message) -> int:
+        if (
+            first.outgoing
+            and second.outgoing
+            and (
+                MainWindow._message_has_local_pending_id(first)
+                or MainWindow._message_has_local_pending_id(second)
+            )
+        ):
+            return OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
         if first.message_id and second.message_id:
             return MESSAGE_DUPLICATE_WINDOW_SECONDS
         if first.outgoing and second.outgoing:
             return OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
 
         return MESSAGE_DUPLICATE_WINDOW_SECONDS
+
+    @staticmethod
+    def _message_has_local_pending_id(message: Message) -> bool:
+        return message.message_id.startswith("cliente-xmpp-")
 
     @staticmethod
     def _messages_have_compatible_reply_quotes(first: Message, second: Message) -> bool:
@@ -1590,8 +2145,14 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
-        if not target.message_id and incoming.message_id:
+        if incoming.message_id and (
+            not target.message_id or MainWindow._message_has_local_pending_id(target)
+        ):
             target.message_id = incoming.message_id
+        if incoming.outgoing and target.delivery_state != "failed":
+            target.delivery_state = incoming.delivery_state or "sent"
+        elif incoming.delivery_state and target.delivery_state != "failed":
+            target.delivery_state = incoming.delivery_state
         if incoming.sender_name and not target.sender_name:
             target.sender_name = incoming.sender_name
         if incoming.reply_quote and not target.reply_quote:
@@ -1765,17 +2326,57 @@ class MainWindow(wx.Frame):
             message.chat_jid
         )
         self._normalize_audio_metadata(message)
+        existing_messages = self.messages_by_chat.get(message.chat_jid, [])
         existing_keys = {
             self._message_merge_key(existing)
-            for existing in self.messages_by_chat.get(message.chat_jid, [])
+            for existing in existing_messages
         }
         message_key = self._message_merge_key(message)
+        existing_group_echo = next(
+            (
+                existing
+                for existing in self.messages_by_chat.get(message.chat_jid, [])
+                if self._messages_are_group_self_echo(existing, message)
+            ),
+            None,
+        )
         self._merge_messages(message.chat_jid, [message])
-        stored_message = self._message_by_merge_key(message.chat_jid, message_key) or message
+        stored_message = (
+            existing_group_echo
+            or self._message_by_merge_key(message.chat_jid, message_key)
+            or message
+        )
         self._remember_message_sender(stored_message)
         self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
         self._persist_messages([stored_message])
-        return stored_message, message_key not in existing_keys
+        added_message = (
+            existing_group_echo is None
+            and message_key not in existing_keys
+            and all(existing is not stored_message for existing in existing_messages)
+        )
+        return stored_message, added_message
+
+    def _add_pending_outgoing_message(self, message: Message) -> None:
+        message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
+            message.chat_jid
+        )
+        self._normalize_audio_metadata(message)
+        self._merge_messages(message.chat_jid, [message])
+        stored_message = self._message_by_merge_key(
+            message.chat_jid,
+            self._message_merge_key(message),
+        ) or message
+        self._update_chat_activity(stored_message.chat_jid, self._message_timestamp(stored_message))
+        self._ensure_chat_for_message(stored_message)
+        self._update_chat_from_message(stored_message)
+        current_chat_is_open = (
+            self.conversation.IsShown()
+            and self.conversation.current_chat
+            and self.conversation.current_chat.jid == stored_message.chat_jid
+        )
+        if current_chat_is_open:
+            self.conversation.append_message(stored_message)
+        self._refresh_chat_order(stored_message.chat_jid)
 
     def _remember_message_sender(self, message: Message) -> None:
         if not message.chat_is_group or message.outgoing or not message.sender_name:
@@ -1794,12 +2395,33 @@ class MainWindow(wx.Frame):
 
         return None
 
+    def _handle_message_delivery_updated(
+        self,
+        chat_jid: str,
+        message_id: str,
+        delivery_state: str,
+        detail: str = "",
+    ) -> None:
+        if not message_id:
+            return
+
+        for message in self.messages_by_chat.get(chat_jid, []):
+            if message.message_id != message_id:
+                continue
+            message.delivery_state = delivery_state
+            self.conversation.refresh_message(message)
+            self._update_chat_from_message(message)
+            self._refresh_chat_order(chat_jid)
+            if detail:
+                self.status_bar.SetStatusText(detail)
+            return
+
     def _ensure_chat_for_message(self, message: Message) -> None:
         if self.chat_list.has_chat(message.chat_jid):
             return
 
         name = self._display_name_for_jid(message.chat_jid)
-        preview = media_description(message) if has_media(message) else message.body
+        preview = self._chat_preview_for_message(message)
         chat = Chat(
             jid=message.chat_jid,
             name=name,
@@ -2139,7 +2761,7 @@ class MainWindow(wx.Frame):
         )[1]
 
     def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
-        preview = media_description(message) if has_media(message) else message.body
+        preview = self._chat_preview_for_message(message)
         self._update_chat_summary(
             message.chat_jid,
             preview=preview,
@@ -2148,6 +2770,19 @@ class MainWindow(wx.Frame):
             force_preview=True,
             is_group=message.chat_is_group,
         )
+
+    @staticmethod
+    def _chat_preview_for_message(message: Message) -> str:
+        preview = media_description(message) if has_media(message) else message.body
+        if message.outgoing and message.delivery_state == "pending":
+            return f"Enviando: {preview}"
+        if message.outgoing and message.delivery_state == "failed":
+            return f"No enviado: {preview}"
+        if message.outgoing and message.delivery_state in {"delivered", "received"}:
+            return f"Entregado: {preview}"
+        if message.outgoing and message.delivery_state in {"displayed", "read"}:
+            return f"Leído: {preview}"
+        return preview
 
     def _update_chat_summary(
         self,

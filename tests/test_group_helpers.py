@@ -108,6 +108,27 @@ class GroupArchiveTests(unittest.TestCase):
 
         self.assertTrue(BridgeXmppClient._xml_message_addresses_groupchat(message))
 
+    def test_mam_group_result_uses_room_jid(self) -> None:
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="angel@example.org"),
+            _stanza_is_groupchat=lambda _stanza: True,
+        )
+        result = {
+            "mam_result": {
+                "forwarded": {
+                    "stanza": {
+                        "from": SimpleNamespace(bare="#room@example.org"),
+                        "to": SimpleNamespace(bare="angel@example.org"),
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(
+            BridgeXmppClient._chat_jid_from_mam_result(client, result),
+            "#room@example.org",
+        )
+
 
 class GroupMessageParsingTests(unittest.TestCase):
     def test_group_sender_prefers_muc_user_item_jid(self) -> None:

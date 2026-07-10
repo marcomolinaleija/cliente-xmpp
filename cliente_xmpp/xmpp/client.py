@@ -130,6 +130,7 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("receipt_received", self._on_receipt_received)
         self.add_event_handler("marker_received", self._on_marker_received)
         self.add_event_handler("marker_displayed", self._on_marker_displayed)
+        self.add_event_handler("chatstate", self._on_chatstate)
         self.add_event_handler("presence_available", self._on_presence_debug)
         self.add_event_handler("presence_unavailable", self._on_presence_debug)
         self.add_event_handler("presence_error", self._on_presence_debug)
@@ -447,13 +448,33 @@ class BridgeXmppClient(ClientXMPP):
     def _emit_chat_state_from_message(self, from_jid: str, message_type: str, msg: object) -> None:
         if message_type not in {"chat", "normal"} or not from_jid:
             return
-        if self._is_probable_whatsapp_bridge_jid(from_jid) or self._jid_may_be_group_chat(from_jid):
-            return
 
         state = self._chat_state_from_xml(getattr(msg, "xml", None))
         if not state:
             return
 
+        self._emit_chat_state_update(from_jid, state)
+
+    def _on_chatstate(self, msg: object) -> None:
+        try:
+            from_jid = str(msg["from"].bare)
+            state = str(msg["chat_state"] or "")
+        except Exception as exc:
+            self._debug_whatsapp(f"chatstate parse error: {exc}")
+            return
+
+        self._emit_chat_state_update(from_jid, state)
+
+    def _emit_chat_state_update(self, from_jid: str, state: str) -> None:
+        if (
+            not from_jid
+            or not state
+            or self._is_probable_whatsapp_bridge_jid(from_jid)
+            or self._jid_may_be_group_chat(from_jid)
+        ):
+            return
+
+        self._debug_whatsapp(f"chatstate from={from_jid} state={state}")
         self._emit(ChatStateUpdated(chat_jid=from_jid, state=state))
 
     @staticmethod

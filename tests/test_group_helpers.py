@@ -275,6 +275,47 @@ class ContactStateTests(unittest.TestCase):
 
         self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), "composing")
 
+    def test_emits_chatstate_for_contact_jid(self) -> None:
+        events: list[object] = []
+        client = SimpleNamespace(
+            _emit=events.append,
+            _debug_whatsapp=lambda _message: None,
+            _jid_may_be_group_chat=BridgeXmppClient._jid_may_be_group_chat,
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+        )
+
+        BridgeXmppClient._emit_chat_state_update(
+            client,
+            "+5218126462159@whatsapp.example.org",
+            "composing",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].chat_jid, "+5218126462159@whatsapp.example.org")
+        self.assertEqual(events[0].state, "composing")
+
+    def test_ignores_chatstate_from_group_or_component(self) -> None:
+        events: list[object] = []
+        client = SimpleNamespace(
+            _emit=events.append,
+            _debug_whatsapp=lambda _message: None,
+            _jid_may_be_group_chat=BridgeXmppClient._jid_may_be_group_chat,
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+        )
+
+        BridgeXmppClient._emit_chat_state_update(
+            client,
+            "#1203630@groups.whatsapp.example.org",
+            "composing",
+        )
+        BridgeXmppClient._emit_chat_state_update(
+            client,
+            "whatsapp.example.org",
+            "composing",
+        )
+
+        self.assertEqual(events, [])
+
     def test_ignores_non_chatstate_composing_node(self) -> None:
         message = ET.fromstring(
             """

@@ -193,8 +193,8 @@ class WhatsAppQrDialog(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.MAXIMIZE_BOX,
         )
 
-        display_width, display_height = wx.GetDisplaySize()
-        self.qr_size = max(420, min(display_width - 160, display_height - 220, 820))
+        display_rect = self._display_rect(parent)
+        self.qr_size = max(420, min(display_rect.width - 80, display_rect.height - 120))
         bitmap = self._bitmap_from_path(image_path) or wx.Bitmap(self.qr_size, self.qr_size)
         self.qr = wx.StaticBitmap(self, bitmap=bitmap)
         self.cancel_link_button = wx.Button(self, wx.ID_STOP, "Cancelar vinculacion")
@@ -205,10 +205,12 @@ class WhatsAppQrDialog(wx.Dialog):
         box.Add(
             wx.StaticText(self, label="Escanea este QR desde WhatsApp en tu telefono."),
             0,
-            wx.ALL | wx.EXPAND,
-            10,
+            wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND,
+            12,
         )
-        box.Add(self.qr, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 10)
+        box.AddStretchSpacer(1)
+        box.Add(self.qr, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 8)
+        box.AddStretchSpacer(1)
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.AddStretchSpacer(1)
         buttons.Add(self.cancel_link_button, 0, wx.ALL, 6)
@@ -217,13 +219,13 @@ class WhatsAppQrDialog(wx.Dialog):
         self.SetSizer(box)
         self.SetMinSize(
             (
-                min(display_width - 40, self.qr_size + 100),
-                min(display_height - 40, self.qr_size + 170),
+                min(display_rect.width, self.qr_size + 80),
+                min(display_rect.height, self.qr_size + 120),
             )
         )
-        self.SetSize((display_width - 40, display_height - 40))
+        self.SetPosition(display_rect.GetPosition())
+        self.SetSize(display_rect.GetSize())
         self.Layout()
-        self.CentreOnParent()
         self.Maximize(True)
         self.close_button.SetFocus()
 
@@ -244,3 +246,10 @@ class WhatsAppQrDialog(wx.Dialog):
             return wx.Bitmap(image)
 
         return None
+
+    @staticmethod
+    def _display_rect(parent: wx.Window) -> wx.Rect:
+        display_index = wx.Display.GetFromWindow(parent)
+        if display_index == wx.NOT_FOUND:
+            return wx.GetClientDisplayRect()
+        return wx.Display(display_index).GetClientArea()

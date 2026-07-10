@@ -170,7 +170,8 @@ class WhatsAppQrDialog(wx.Dialog):
 
         display_width, display_height = wx.GetDisplaySize()
         self.qr_size = max(420, min(display_width - 160, display_height - 220, 820))
-        self.qr = wx.StaticBitmap(self, bitmap=self._bitmap_from_path(image_path))
+        bitmap = self._bitmap_from_path(image_path) or wx.Bitmap(self.qr_size, self.qr_size)
+        self.qr = wx.StaticBitmap(self, bitmap=bitmap)
         self.close_button = wx.Button(self, wx.ID_OK, "Cerrar")
         self.close_button.Bind(wx.EVT_BUTTON, lambda _event: self.Close())
 
@@ -197,13 +198,19 @@ class WhatsAppQrDialog(wx.Dialog):
         self.close_button.SetFocus()
 
     def set_image(self, image_path: str) -> None:
-        self.qr.SetBitmap(self._bitmap_from_path(image_path))
+        bitmap = self._bitmap_from_path(image_path)
+        if bitmap is None:
+            return
+        self.qr.SetBitmap(bitmap)
         self.Layout()
 
-    def _bitmap_from_path(self, image_path: str) -> wx.Bitmap:
+    def _bitmap_from_path(self, image_path: str) -> wx.Bitmap | None:
+        if not wx.Image.CanRead(image_path):
+            return None
+
         image = wx.Image(image_path)
         if image.IsOk():
             image = image.Scale(self.qr_size, self.qr_size, wx.IMAGE_QUALITY_NEAREST)
             return wx.Bitmap(image)
 
-        return wx.Bitmap(self.qr_size, self.qr_size)
+        return None

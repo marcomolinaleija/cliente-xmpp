@@ -76,6 +76,14 @@ class MessageHistoryLoaded:
 
 
 @dataclass(slots=True)
+class MessageDeliveryUpdated:
+    chat_jid: str
+    message_id: str
+    delivery_state: str
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class ChatActivityLoaded:
     chat_jid: str
     sent_at: datetime | None
@@ -101,6 +109,7 @@ XmppEvent = (
     | ChatsDiscovered
     | MessageReceived
     | MessageHistoryLoaded
+    | MessageDeliveryUpdated
     | ChatActivityLoaded
     | ChatActivityLoadFinished
 )

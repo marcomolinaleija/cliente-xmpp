@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
+from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.xmpp.client import BridgeXmppClient
 
@@ -111,6 +113,40 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             )
         )
 
+    def test_ignores_slidge_thumbhash_as_embedded_qr_image(self) -> None:
+        message = ET.fromstring(
+            """
+            <message xmlns="jabber:client"
+                     xmlns:oob="jabber:x:oob"
+                     xmlns:file="urn:xmpp:file:metadata:0"
+                     xmlns:thumb="urn:xmpp:thumbs:1"
+                     from="whatsapp.example.org"
+                     type="chat">
+              <body>http://example.org/slidge-attachments/tmp.png</body>
+              <file:file>
+                <file:media-type>image/png</file:media-type>
+                <file:name>tmp.png</file:name>
+                <thumb:thumbnail media-type="image/thumbhash"
+                                 uri="data:image/thumbhash;base64,JggKBwD3xw==" />
+              </file:file>
+              <oob:x>
+                <oob:url>http://example.org/slidge-attachments/tmp.png</oob:url>
+              </oob:x>
+            </message>
+            """
+        )
+
+        self.assertIsNone(
+            BridgeXmppClient._whatsapp_qr_image_data_from_xml(
+                "whatsapp.example.org",
+                "http://example.org/slidge-attachments/tmp.png",
+                message,
+            )
+        )
+        media_url, media_kind, _, _, _, _ = BridgeXmppClient._media_from_xml(message)
+        self.assertEqual(media_url, "http://example.org/slidge-attachments/tmp.png")
+        self.assertEqual(media_kind, "image")
+
     def test_qr_timeout_presence_needs_relogin(self) -> None:
         self.assertEqual(
             BridgeXmppClient._whatsapp_state_hint(
@@ -119,6 +155,35 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             ),
             "needs_relogin",
         )
+
+    def test_component_status_message_is_admin_message(self) -> None:
+        self.assertTrue(
+            BridgeXmppClient._is_whatsapp_component_admin_message(
+                "whatsapp.example.org",
+                "Connected as +5218126462159",
+            )
+        )
+
+    def test_contact_message_is_not_component_admin_message(self) -> None:
+        self.assertFalse(
+            BridgeXmppClient._is_whatsapp_component_admin_message(
+                "+5218126462159@whatsapp.example.org",
+                "Connected as +5218126462159",
+            )
+        )
+
+    def test_reads_displayed_marker_id_from_xml(self) -> None:
+        message = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <message from="+5218126462159@whatsapp.example.org">
+                  <displayed xmlns="urn:xmpp:chat-markers:0" id="wa-message-id" />
+                </message>
+                """
+            )
+        )
+
+        self.assertEqual(BridgeXmppClient._delivery_marker_id(message), "wa-message-id")
 
 
 class BookmarkNotificationTests(unittest.TestCase):
@@ -202,6 +267,27 @@ class GroupArchiveTests(unittest.TestCase):
 
         self.assertTrue(BridgeXmppClient._xml_message_addresses_groupchat(message))
 
+    def test_mam_group_result_uses_room_jid(self) -> None:
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="angel@example.org"),
+            _stanza_is_groupchat=lambda _stanza: True,
+        )
+        result = {
+            "mam_result": {
+                "forwarded": {
+                    "stanza": {
+                        "from": SimpleNamespace(bare="#room@example.org"),
+                        "to": SimpleNamespace(bare="angel@example.org"),
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(
+            BridgeXmppClient._chat_jid_from_mam_result(client, result),
+            "#room@example.org",
+        )
+
 
 class GroupMessageParsingTests(unittest.TestCase):
     def test_group_sender_prefers_muc_user_item_jid(self) -> None:
@@ -221,6 +307,34 @@ class GroupMessageParsingTests(unittest.TestCase):
             BridgeXmppClient._sender_jid_from_message_xml(message, is_group=True),
             "+5214495380505@whatsapp.example.org",
         )
+
+    def test_group_sender_matches_local_nick_case_and_accents_insensitively(self) -> None:
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="angel@example.org"),
+            _muc_nick=lambda: "Angel Alcantar",
+        )
+
+        self.assertTrue(
+            BridgeXmppClient._group_sender_matches_local(
+                client,
+                "",
+                "ÁNGEL ALCANTAR",
+            )
+        )
+
+    def test_group_history_before_session_does_not_notify(self) -> None:
+        client = SimpleNamespace(
+            _session_started_at=datetime.now().astimezone(),
+        )
+        message = Message(
+            chat_jid="#room@example.org",
+            sender_jid="participant@example.org",
+            body="histórico",
+            sent_at=datetime.now().astimezone() - timedelta(minutes=1),
+            chat_is_group=True,
+        )
+
+        self.assertTrue(BridgeXmppClient._message_predates_session(client, message))
 
     def test_reply_parts_from_quoted_body(self) -> None:
         self.assertEqual(

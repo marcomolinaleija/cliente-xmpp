@@ -219,6 +219,44 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         self.assertEqual(BridgeXmppClient._delivery_marker_id(message), "wa-message-id")
 
 
+class ContactStateTests(unittest.TestCase):
+    def test_reads_composing_chat_state(self) -> None:
+        message = ET.fromstring(
+            """
+            <message from="+5218126462159@whatsapp.example.org">
+              <composing xmlns="http://jabber.org/protocol/chatstates" />
+            </message>
+            """
+        )
+
+        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), "composing")
+
+    def test_ignores_non_chatstate_composing_node(self) -> None:
+        message = ET.fromstring(
+            """
+            <message from="+5218126462159@whatsapp.example.org">
+              <composing xmlns="urn:example:not-chatstates" />
+            </message>
+            """
+        )
+
+        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), "")
+
+    def test_reads_idle_since_from_presence(self) -> None:
+        presence = ET.fromstring(
+            """
+            <presence from="+5218126462159@whatsapp.example.org">
+              <idle xmlns="urn:xmpp:idle:1" since="2026-07-10T15:41:00Z" />
+            </presence>
+            """
+        )
+
+        last_seen = BridgeXmppClient._idle_datetime_from_xml(presence)
+
+        self.assertIsNotNone(last_seen)
+        self.assertEqual(last_seen.isoformat(), "2026-07-10T15:41:00+00:00")
+
+
 class BookmarkNotificationTests(unittest.TestCase):
     def test_detects_muted_group_from_current_notification_namespace(self) -> None:
         conference = ET.fromstring(

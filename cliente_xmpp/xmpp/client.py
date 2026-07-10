@@ -28,7 +28,9 @@ from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_nam
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
+    ChatStateUpdated,
     ChatsDiscovered,
+    ContactPresenceUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -86,6 +88,8 @@ AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
 CHAT_MARKERS_NS = "urn:xmpp:chat-markers:0"
+CHATSTATES_NS = "http://jabber.org/protocol/chatstates"
+IDLE_NS = "urn:xmpp:idle:1"
 EXPLICIT_MIME_TYPES = {
     ".aac": "audio/aac",
     ".flac": "audio/flac",
@@ -194,6 +198,8 @@ class BridgeXmppClient(ClientXMPP):
             message_type = ""
             body = ""
             bare_jid = ""
+
+        self._emit_chat_state_from_message(bare_jid, message_type, msg)
 
         if message_type in ("chat", "normal"):
             self._debug_whatsapp_admin_message(bare_jid, body)
@@ -363,19 +369,111 @@ class BridgeXmppClient(ClientXMPP):
             self._debug_whatsapp(f"presence parse error: {exc}")
             return
 
-        if not self._is_probable_whatsapp_bridge_jid(from_jid) and not self._is_whatsapp_state_text(
-            status
+        if self._is_probable_whatsapp_bridge_jid(from_jid) or self._is_whatsapp_state_text(status):
+            self._debug_whatsapp(
+                "presence "
+                f"from={from_jid} type={presence_type or 'available'} "
+                f"show={show or '-'} status={self._safe_debug_text(status) or '-'}"
+            )
+            state = self._whatsapp_state_hint(status)
+            if state != "unknown":
+                self._emit_whatsapp_status(from_jid, state, status)
+                return
+
+        self._emit_contact_presence(from_jid, presence_type, show, status, presence)
+
+    def _emit_contact_presence(
+        self,
+        from_jid: str,
+        presence_type: str,
+        show: str,
+        status: str,
+        presence: object,
+    ) -> None:
+        if (
+            not from_jid
+            or from_jid == str(self.boundjid.bare)
+            or self._is_probable_whatsapp_bridge_jid(from_jid)
+            or self._jid_may_be_group_chat(from_jid)
         ):
             return
 
-        self._debug_whatsapp(
-            "presence "
-            f"from={from_jid} type={presence_type or 'available'} "
-            f"show={show or '-'} status={self._safe_debug_text(status) or '-'}"
+        availability = self._presence_availability(presence_type, show)
+        if not availability:
+            return
+
+        self._emit(
+            ContactPresenceUpdated(
+                chat_jid=from_jid,
+                availability=availability,
+                status=status,
+                last_seen=self._idle_datetime_from_xml(getattr(presence, "xml", None)),
+            )
         )
-        state = self._whatsapp_state_hint(status)
-        if state != "unknown":
-            self._emit_whatsapp_status(from_jid, state, status)
+
+    @staticmethod
+    def _presence_availability(presence_type: str, show: str) -> str:
+        if presence_type == "unavailable":
+            return "offline"
+        if presence_type in {"error", "subscribe", "subscribed", "unsubscribe", "unsubscribed"}:
+            return ""
+        if show in {"away", "xa"}:
+            return "away"
+        if show == "dnd":
+            return "busy"
+        return "online"
+
+    @classmethod
+    def _idle_datetime_from_xml(cls, xml: ET.Element | None) -> datetime | None:
+        if xml is None:
+            return None
+
+        for node in xml.iter():
+            if node.tag == f"{{{IDLE_NS}}}idle":
+                return cls._datetime_from_xmpp_value(node.attrib.get("since", ""))
+
+        return None
+
+    @staticmethod
+    def _datetime_from_xmpp_value(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _emit_chat_state_from_message(self, from_jid: str, message_type: str, msg: object) -> None:
+        if message_type not in {"chat", "normal"} or not from_jid:
+            return
+        if self._is_probable_whatsapp_bridge_jid(from_jid) or self._jid_may_be_group_chat(from_jid):
+            return
+
+        state = self._chat_state_from_xml(getattr(msg, "xml", None))
+        if not state:
+            return
+
+        self._emit(ChatStateUpdated(chat_jid=from_jid, state=state))
+
+    @staticmethod
+    def _chat_state_from_xml(xml: ET.Element | None) -> str:
+        if xml is None:
+            return ""
+
+        for node in xml.iter():
+            namespace, _, local_name = (
+                node.tag[1:].partition("}") if node.tag.startswith("{") else ("", "", node.tag)
+            )
+            if namespace == CHATSTATES_NS and local_name in {
+                "active",
+                "composing",
+                "paused",
+                "inactive",
+                "gone",
+            }:
+                return local_name
+
+        return ""
 
     def _build_roster_chats(self) -> list[Chat]:
         chats: list[Chat] = []
@@ -3267,6 +3365,7 @@ class XmppService:
                 "xep_0049",
                 "xep_0050",
                 "xep_0060",
+                "xep_0085",
                 "xep_0163",
                 "xep_0128",
                 "xep_0184",

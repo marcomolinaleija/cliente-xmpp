@@ -101,6 +101,20 @@ class MessageDeliveryUpdated:
 
 
 @dataclass(slots=True)
+class ContactPresenceUpdated:
+    chat_jid: str
+    availability: str
+    status: str = ""
+    last_seen: datetime | None = None
+
+
+@dataclass(slots=True)
+class ChatStateUpdated:
+    chat_jid: str
+    state: str
+
+
+@dataclass(slots=True)
 class ChatActivityLoaded:
     chat_jid: str
     sent_at: datetime | None
@@ -129,6 +143,8 @@ XmppEvent = (
     | MessageReceived
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
+    | ContactPresenceUpdated
+    | ChatStateUpdated
     | ChatActivityLoaded
     | ChatActivityLoadFinished
 )

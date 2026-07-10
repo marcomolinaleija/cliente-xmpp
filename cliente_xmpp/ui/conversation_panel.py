@@ -635,6 +635,8 @@ class ConversationPanel(wx.Panel):
 
     @staticmethod
     def _format_delivery_state(message: Message) -> str:
+        if message.retracted:
+            return "Eliminado"
         if message.delivery_state == "pending":
             return "Enviando"
         if message.delivery_state == "failed":
@@ -688,6 +690,9 @@ class ConversationPanel(wx.Panel):
         return self._format_message_row(row)
 
     def _format_message_body(self, message: Message) -> str:
+        if message.retracted:
+            return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
+
         if is_link_preview(message):
             return media_description(message)
 

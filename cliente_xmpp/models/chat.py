@@ -41,3 +41,4 @@ class Message:
     reactions: tuple[str, ...] = ()
     reply_quote: str = ""
     delivery_state: str = ""
+    retracted: bool = False

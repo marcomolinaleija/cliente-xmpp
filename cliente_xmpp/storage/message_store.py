@@ -14,7 +14,7 @@ from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -296,6 +296,7 @@ class MessageStore:
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
                     reply_quote TEXT NOT NULL DEFAULT '',
+                    retracted INTEGER NOT NULL DEFAULT 0,
                     received_at TEXT NOT NULL,
                     PRIMARY KEY (account_jid, chat_jid, message_key)
                 );
@@ -333,6 +334,7 @@ class MessageStore:
             "sender_name": "TEXT NOT NULL DEFAULT ''",
             "chat_is_group": "INTEGER NOT NULL DEFAULT 0",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
+            "retracted": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in columns.items():
             if column not in existing_columns:
@@ -413,7 +415,11 @@ class MessageStore:
                 media_size = COALESCE(NULLIF(media_size, 0), ?),
                 media_duration_seconds = COALESCE(NULLIF(media_duration_seconds, 0), ?),
                 media_local_path = COALESCE(NULLIF(media_local_path, ''), ?),
-                reply_quote = COALESCE(NULLIF(reply_quote, ''), ?)
+                reply_quote = COALESCE(NULLIF(reply_quote, ''), ?),
+                retracted = CASE
+                    WHEN retracted = 1 OR ? = 1 THEN 1
+                    ELSE 0
+                END
             WHERE rowid = ?
             """,
             (
@@ -427,6 +433,7 @@ class MessageStore:
                 duplicate["media_duration_seconds"],
                 duplicate["media_local_path"],
                 duplicate["reply_quote"],
+                duplicate["retracted"],
                 survivor["db_rowid"],
             ),
         )
@@ -541,14 +548,16 @@ class MessageStore:
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
                 media_local_path, chat_is_group, starred, reactions_json, reply_quote,
-                received_at
+                retracted, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
                 sender_name = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
                 body = CASE
+                    WHEN excluded.retracted = 1 THEN ''
+                    WHEN messages.retracted = 1 THEN messages.body
                     WHEN excluded.reply_quote != '' THEN excluded.body
                     WHEN messages.reply_quote != '' THEN messages.body
                     ELSE excluded.body
@@ -578,7 +587,14 @@ class MessageStore:
                 END,
                 starred = excluded.starred,
                 reactions_json = excluded.reactions_json,
-                reply_quote = COALESCE(NULLIF(excluded.reply_quote, ''), messages.reply_quote)
+                reply_quote = CASE
+                    WHEN excluded.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.reply_quote, ''), messages.reply_quote)
+                END,
+                retracted = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN 1
+                    ELSE 0
+                END
             """,
             (
                 account_jid,
@@ -602,6 +618,7 @@ class MessageStore:
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
                 message.reply_quote,
+                int(message.retracted),
                 now,
             ),
         )
@@ -874,6 +891,9 @@ def _message_key(message: Message) -> str:
 
 
 def _message_preview(message: Message) -> str:
+    if message.retracted:
+        return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
+
     if not message.media_url:
         return message.body
 
@@ -952,6 +972,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         starred=bool(row["starred"]),
         reactions=tuple(json.loads(str(row["reactions_json"] or "[]"))),
         reply_quote=str(row["reply_quote"] or ""),
+        retracted=bool(row["retracted"]),
     )
 
 

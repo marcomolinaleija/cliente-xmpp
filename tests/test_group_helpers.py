@@ -458,6 +458,67 @@ class GroupArchiveTests(unittest.TestCase):
 
 
 class GroupMessageParsingTests(unittest.TestCase):
+    def test_retracted_message_id_from_xml(self) -> None:
+        message = ET.fromstring(
+            """
+            <message xmlns="jabber:client" from="+1@whatsapp.example.org" type="chat">
+              <retract xmlns="urn:xmpp:message-retract:1" id="original-id" />
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._retracted_message_id_from_xml(message),
+            "original-id",
+        )
+
+    def test_forwarded_retraction_marks_message_deleted(self) -> None:
+        client = SimpleNamespace(boundjid=SimpleNamespace(bare="angel@example.org"))
+        client._group_chat_jids = set()
+        client._forwarded_delay_from_xml = BridgeXmppClient._forwarded_delay_from_xml
+        client._retracted_message = BridgeXmppClient._retracted_message
+        client._retracted_message_id_from_xml = BridgeXmppClient._retracted_message_id_from_xml
+        client._bare_jid = BridgeXmppClient._bare_jid
+        client._message_xml_is_outgoing = lambda message, is_group=False: (
+            BridgeXmppClient._message_xml_is_outgoing(client, message, is_group)
+        )
+        client._xml_message_addresses_groupchat = (
+            BridgeXmppClient._xml_message_addresses_groupchat
+        )
+        result = ET.fromstring(
+            """
+            <result xmlns="urn:xmpp:mam:2">
+              <forwarded xmlns="urn:xmpp:forward:0">
+                <delay xmlns="urn:xmpp:delay" stamp="2026-07-10T12:00:00+00:00" />
+                <message xmlns="jabber:client"
+                         from="+1@whatsapp.example.org"
+                         to="angel@example.org"
+                         type="chat">
+                  <retract xmlns="urn:xmpp:message-retract:1" id="original-id" />
+                </message>
+              </forwarded>
+            </result>
+            """
+        )
+        message = result.find(
+            "{urn:xmpp:forward:0}forwarded/{jabber:client}message"
+        )
+        self.assertIsNotNone(message)
+
+        retraction = BridgeXmppClient._message_retraction_from_xml(
+            client,
+            "+1@whatsapp.example.org",
+            message,
+            result,
+        )
+
+        self.assertIsNotNone(retraction)
+        assert retraction is not None
+        self.assertTrue(retraction.retracted)
+        self.assertEqual(retraction.message_id, "original-id")
+        self.assertEqual(retraction.chat_jid, "+1@whatsapp.example.org")
+        self.assertFalse(retraction.outgoing)
+
     def test_group_sender_prefers_muc_user_item_jid(self) -> None:
         message = ET.fromstring(
             """

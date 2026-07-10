@@ -310,7 +310,7 @@ class ChatListPanel(wx.Panel):
     def _format_chat_row(self, chat: Chat) -> str:
         name = chat.name
         status = self._format_status(chat)
-        preview = self._truncate_preview(chat.last_message_preview)
+        preview = self._format_preview(chat.last_message_preview)
         time = self._format_time(chat.last_message_at)
         details = " | ".join(part for part in (status, preview, time) if part)
         if not details:
@@ -355,6 +355,22 @@ class ChatListPanel(wx.Panel):
 
         parts.append(f"{chat.unread_count} mensajes no leídos")
         return ", ".join(parts)
+
+    @classmethod
+    def _format_preview(cls, preview: str) -> str:
+        preview = cls._truncate_preview(preview)
+        for prefix, label in (
+            ("Enviando: ", "Enviando"),
+            ("No enviado: ", "No enviado"),
+            ("Entregado: ", "Entregado"),
+            ("LeÃ­do: ", "LeÃ­do"),
+            ("Leído: ", "Leído"),
+        ):
+            if preview.startswith(prefix):
+                body = preview.removeprefix(prefix).strip()
+                return " | ".join(part for part in (body, label) if part)
+
+        return preview
 
     @staticmethod
     def _truncate_preview(preview: str, max_length: int = 200) -> str:

@@ -3030,11 +3030,21 @@ class MainWindow(wx.Frame):
         self.chat_list.focus()
 
     def _set_chat_state(self, chat_jid: str, state: str) -> None:
+        previous_state = self.chat_state_by_chat.get(chat_jid, "")
         if state == "composing":
             self.chat_state_by_chat[chat_jid] = state
         else:
             self.chat_state_by_chat.pop(chat_jid, None)
         self._refresh_current_chat_status_title()
+        if state == "composing" and previous_state != "composing":
+            self._speak_chat_composing(chat_jid)
+
+    def _speak_chat_composing(self, chat_jid: str) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or not self.conversation.IsShown() or chat.jid != chat_jid:
+            return
+
+        self.speaker.speak(f"{chat.name} está escribiendo")
 
     def _refresh_current_chat_status_title(self) -> None:
         chat = self.conversation.current_chat

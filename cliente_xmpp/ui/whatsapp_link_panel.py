@@ -17,23 +17,39 @@ class WhatsAppLinkPanel(wx.Panel):
 
         self.message = wx.StaticText(self, label="")
         self.open_button = wx.Button(self, label="Vincular WhatsApp")
+        self.show_qr_button = wx.Button(self, label="Mostrar QR")
+        self.show_qr_button.Hide()
+        self.cancel_button = wx.Button(self, label="Cancelar vinculacion")
+        self.cancel_button.Hide()
 
         self._layout()
         self.Hide()
 
-    def set_status(self, text: str, action_label: str = "Vincular WhatsApp") -> None:
+    def set_status(
+        self,
+        text: str,
+        action_label: str = "Vincular WhatsApp",
+        can_cancel: bool = False,
+        can_show_qr: bool = False,
+    ) -> None:
         self.message.SetLabel(text)
         self.open_button.SetLabel(action_label)
+        self.show_qr_button.Show(can_show_qr)
+        self.cancel_button.Show(can_cancel)
         self.Show(True)
         self.Layout()
 
     def clear(self) -> None:
+        self.show_qr_button.Hide()
+        self.cancel_button.Hide()
         self.Hide()
 
     def _layout(self) -> None:
         box = wx.BoxSizer(wx.HORIZONTAL)
         box.Add(self.message, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         box.Add(self.open_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
+        box.Add(self.show_qr_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
+        box.Add(self.cancel_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         self.SetSizer(box)
 
 
@@ -44,6 +60,7 @@ class WhatsAppLinkDialog(wx.Dialog):
         component_jid: str,
         status_text: str,
         last_phone: str = "",
+        can_cancel: bool = False,
     ) -> None:
         super().__init__(parent, title="Vincular WhatsApp")
 
@@ -55,7 +72,9 @@ class WhatsAppLinkDialog(wx.Dialog):
         )
         self.code_button = wx.Button(self, wx.ID_OK, "Obtener codigo")
         self.qr_button = wx.Button(self, wx.ID_APPLY, "Solicitar QR")
-        self.cancel_button = wx.Button(self, wx.ID_CANCEL, "Cancelar")
+        self.cancel_link_button = wx.Button(self, wx.ID_STOP, "Cancelar vinculacion en curso")
+        self.cancel_link_button.Show(can_cancel)
+        self.cancel_button = wx.Button(self, wx.ID_CANCEL, "Cerrar")
         self.action: WhatsAppLinkAction | None = None
 
         self._layout()
@@ -82,6 +101,7 @@ class WhatsAppLinkDialog(wx.Dialog):
         buttons.AddStretchSpacer(1)
         buttons.Add(self.code_button, 0, wx.ALL, 6)
         buttons.Add(self.qr_button, 0, wx.ALL, 6)
+        buttons.Add(self.cancel_link_button, 0, wx.ALL, 6)
         buttons.Add(self.cancel_button, 0, wx.ALL, 6)
         box.Add(buttons, 0, wx.EXPAND)
 
@@ -91,6 +111,7 @@ class WhatsAppLinkDialog(wx.Dialog):
     def _bind_events(self) -> None:
         self.code_button.Bind(wx.EVT_BUTTON, self._on_code)
         self.qr_button.Bind(wx.EVT_BUTTON, self._on_qr)
+        self.cancel_link_button.Bind(wx.EVT_BUTTON, self._on_cancel_link)
 
     def _on_code(self, _event: wx.CommandEvent) -> None:
         phone = self.phone.GetValue().strip()
@@ -108,6 +129,10 @@ class WhatsAppLinkDialog(wx.Dialog):
     def _on_qr(self, _event: wx.CommandEvent) -> None:
         self.action = WhatsAppLinkAction(mode="qr")
         self.EndModal(wx.ID_APPLY)
+
+    def _on_cancel_link(self, _event: wx.CommandEvent) -> None:
+        self.action = WhatsAppLinkAction(mode="cancel")
+        self.EndModal(wx.ID_STOP)
 
 
 class WhatsAppPairingCodeDialog(wx.Dialog):
@@ -172,6 +197,7 @@ class WhatsAppQrDialog(wx.Dialog):
         self.qr_size = max(420, min(display_width - 160, display_height - 220, 820))
         bitmap = self._bitmap_from_path(image_path) or wx.Bitmap(self.qr_size, self.qr_size)
         self.qr = wx.StaticBitmap(self, bitmap=bitmap)
+        self.cancel_link_button = wx.Button(self, wx.ID_STOP, "Cancelar vinculacion")
         self.close_button = wx.Button(self, wx.ID_OK, "Cerrar")
         self.close_button.Bind(wx.EVT_BUTTON, lambda _event: self.Close())
 
@@ -183,7 +209,11 @@ class WhatsAppQrDialog(wx.Dialog):
             10,
         )
         box.Add(self.qr, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 10)
-        box.Add(self.close_button, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        buttons.AddStretchSpacer(1)
+        buttons.Add(self.cancel_link_button, 0, wx.ALL, 6)
+        buttons.Add(self.close_button, 0, wx.ALL, 6)
+        box.Add(buttons, 0, wx.EXPAND)
         self.SetSizer(box)
         self.SetMinSize(
             (

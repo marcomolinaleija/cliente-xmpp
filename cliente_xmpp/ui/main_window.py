@@ -53,6 +53,8 @@ from cliente_xmpp.xmpp.events import (
     MessageReceived,
     RosterLoaded,
     WhatsAppBridgeStatus,
+    WhatsAppLinkSessionEnded,
+    WhatsAppLinkSessionStarted,
     WhatsAppPairingCodeReceived,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
@@ -117,6 +119,7 @@ class MainWindow(wx.Frame):
         self.pending_roster_chats: list[Chat] | None = None
         self.whatsapp_link_prompt_open = False
         self.whatsapp_link_prompted_key = ""
+        self.whatsapp_link_session: tuple[str, str, str] | None = None
         self.last_whatsapp_phone = ""
         self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
         self.whatsapp_qr_path = ""
@@ -198,6 +201,11 @@ class MainWindow(wx.Frame):
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
         self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
         self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
+        self.whatsapp_link_panel.show_qr_button.Bind(wx.EVT_BUTTON, self._on_show_whatsapp_qr)
+        self.whatsapp_link_panel.cancel_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_cancel_whatsapp_link,
+        )
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
@@ -300,6 +308,7 @@ class MainWindow(wx.Frame):
 
         if status in {"connected", "paired"}:
             self.whatsapp_verified = True
+            self.whatsapp_link_session = None
             self.whatsapp_link_panel.clear()
             self._close_whatsapp_qr_dialog()
             message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
@@ -334,7 +343,12 @@ class MainWindow(wx.Frame):
             self.login_panel.set_connecting(False)
             self.connection_header.set_account(self.current_jid)
             self._set_connected_ui(True)
-        self.whatsapp_link_panel.set_status(message, action_label=action_label)
+        self.whatsapp_link_panel.set_status(
+            message,
+            action_label=action_label,
+            can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
         self._show_chat_placeholder("WhatsApp requiere vinculacion.")
         self.connection_header.set_status("WhatsApp requiere vinculacion")
         self.status_bar.SetStatusText(message)
@@ -351,6 +365,91 @@ class MainWindow(wx.Frame):
             dialog.ShowModal()
         finally:
             dialog.Destroy()
+
+    def _handle_whatsapp_link_session_started(
+        self,
+        component_jid: str,
+        command_node: str,
+        session_id: str,
+    ) -> None:
+        self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
+        self.whatsapp_link_session = (component_jid, command_node, session_id)
+        self.whatsapp_link_panel.set_status(
+            "Hay una vinculacion de WhatsApp en curso.",
+            action_label="Revisar vinculacion",
+            can_cancel=True,
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
+        self.workspace_panel.Layout()
+
+    def _handle_whatsapp_link_session_ended(
+        self,
+        component_jid: str,
+        command_node: str,
+        session_id: str,
+        canceled: bool,
+        detail: str,
+    ) -> None:
+        if self.whatsapp_link_session == (component_jid, command_node, session_id):
+            self.whatsapp_link_session = None
+        if canceled:
+            self._close_whatsapp_qr_dialog()
+            self.status_bar.SetStatusText(detail or "Vinculacion cancelada")
+            wx.CallAfter(self.speaker.speak, "Vinculacion cancelada")
+        if self.whatsapp_link_panel.IsShown():
+            self.whatsapp_link_panel.set_status(
+                detail or "WhatsApp necesita volver a vincularse.",
+                action_label="Volver a vincular",
+                can_cancel=False,
+                can_show_qr=self._has_whatsapp_qr_to_show(),
+            )
+            self.workspace_panel.Layout()
+
+    def _has_whatsapp_qr_to_show(self) -> bool:
+        return bool(self.whatsapp_qr_dialog is not None or self.whatsapp_qr_path)
+
+    def _refresh_whatsapp_link_panel_actions(self) -> None:
+        if not self.whatsapp_link_panel.IsShown():
+            return
+
+        self.whatsapp_link_panel.set_status(
+            self.whatsapp_link_panel.message.GetLabel(),
+            action_label=self.whatsapp_link_panel.open_button.GetLabel(),
+            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
+            can_show_qr=self._has_whatsapp_qr_to_show(),
+        )
+        self.workspace_panel.Layout()
+
+    def _has_cancelable_whatsapp_link(self, component_jid: str = "") -> bool:
+        if self.whatsapp_link_session is None:
+            return False
+        if not component_jid:
+            return True
+        return self.whatsapp_link_session[0] == component_jid
+
+    def _on_cancel_whatsapp_link(self, _event: wx.CommandEvent) -> None:
+        component_jid = (
+            self.whatsapp_link_session[0]
+            if self.whatsapp_link_session is not None
+            else self.whatsapp_component_jid
+        )
+        if not component_jid:
+            self.status_bar.SetStatusText("No hay vinculacion en curso para cancelar")
+            return
+
+        self.status_bar.SetStatusText("Cancelando vinculacion...")
+        self.xmpp.cancel_whatsapp_linking(component_jid)
+
+    def _on_show_whatsapp_qr(self, _event: wx.CommandEvent) -> None:
+        if self.whatsapp_qr_dialog is not None:
+            self._focus_whatsapp_qr_dialog()
+            return
+
+        if self.whatsapp_qr_path:
+            self._show_whatsapp_qr(Path(self.whatsapp_qr_path))
+            return
+
+        self.status_bar.SetStatusText("Todavia no hay QR para mostrar")
 
     def _handle_whatsapp_qr_image(
         self,
@@ -444,6 +543,7 @@ class MainWindow(wx.Frame):
         if self.whatsapp_qr_dialog is not None:
             self.whatsapp_qr_path = path_text
             self.whatsapp_qr_dialog.set_image(path_text)
+            self._refresh_whatsapp_link_panel_actions()
             self._focus_whatsapp_qr_dialog()
             return
 
@@ -451,7 +551,9 @@ class MainWindow(wx.Frame):
         dialog = WhatsAppQrDialog(self, path_text)
         self.whatsapp_qr_dialog = dialog
         dialog.Bind(wx.EVT_CLOSE, self._on_whatsapp_qr_dialog_close)
+        dialog.cancel_link_button.Bind(wx.EVT_BUTTON, self._on_cancel_whatsapp_link)
         dialog.Show()
+        self._refresh_whatsapp_link_panel_actions()
         self._focus_whatsapp_qr_dialog()
 
     def _focus_whatsapp_qr_dialog(self) -> None:
@@ -472,6 +574,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_qr_downloads_in_progress.clear()
         if dialog is not None:
             dialog.Destroy()
+        self._refresh_whatsapp_link_panel_actions()
 
     def _on_whatsapp_qr_dialog_close(self, event: wx.CloseEvent) -> None:
         dialog = self.whatsapp_qr_dialog
@@ -479,6 +582,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_qr_path = ""
         if dialog is not None:
             dialog.Destroy()
+        self._refresh_whatsapp_link_panel_actions()
         event.Skip(False)
 
     def _on_open_whatsapp_link(self, _event: wx.CommandEvent) -> None:
@@ -496,6 +600,7 @@ class MainWindow(wx.Frame):
             self.whatsapp_component_jid,
             status_text,
             last_phone=self.last_whatsapp_phone,
+            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
         )
         try:
             result = dialog.ShowModal()
@@ -505,6 +610,10 @@ class MainWindow(wx.Frame):
             self.whatsapp_link_prompt_open = False
 
         if action is None:
+            return
+
+        if action.mode == "cancel":
+            self._on_cancel_whatsapp_link(wx.CommandEvent())
             return
 
         if result == wx.ID_OK and action.mode == "code":
@@ -1676,6 +1785,30 @@ class MainWindow(wx.Frame):
                 self._handle_whatsapp_bridge_status(status, component_jid, detail)
             case WhatsAppPairingCodeReceived(component_jid=component_jid, code=code):
                 self._handle_whatsapp_pairing_code(component_jid, code)
+            case WhatsAppLinkSessionStarted(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+            ):
+                self._handle_whatsapp_link_session_started(
+                    component_jid,
+                    command_node,
+                    session_id,
+                )
+            case WhatsAppLinkSessionEnded(
+                component_jid=component_jid,
+                command_node=command_node,
+                session_id=session_id,
+                canceled=canceled,
+                detail=detail,
+            ):
+                self._handle_whatsapp_link_session_ended(
+                    component_jid,
+                    command_node,
+                    session_id,
+                    canceled,
+                    detail,
+                )
             case WhatsAppQrImageReceived(
                 component_jid=component_jid,
                 image_url=image_url,

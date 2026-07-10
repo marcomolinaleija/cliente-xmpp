@@ -35,6 +35,23 @@ class WhatsAppPairingCodeReceived:
 
 
 @dataclass(slots=True)
+class WhatsAppLinkSessionStarted:
+    component_jid: str
+    command_node: str
+    session_id: str
+    mode: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppLinkSessionEnded:
+    component_jid: str
+    command_node: str = ""
+    session_id: str = ""
+    canceled: bool = False
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class WhatsAppQrImageReceived:
     component_jid: str
     image_url: str
@@ -103,6 +120,8 @@ XmppEvent = (
     | XmppError
     | WhatsAppBridgeStatus
     | WhatsAppPairingCodeReceived
+    | WhatsAppLinkSessionStarted
+    | WhatsAppLinkSessionEnded
     | WhatsAppQrImageReceived
     | WhatsAppQrImageDataReceived
     | RosterLoaded

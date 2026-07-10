@@ -273,7 +273,18 @@ class ContactStateTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), "composing")
+        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), ("composing", ""))
+
+    def test_reads_audio_media_chat_state(self) -> None:
+        message = ET.fromstring(
+            """
+            <message from="+5218126462159@whatsapp.example.org">
+              <composing xmlns="http://jabber.org/protocol/chatstates" media="audio" />
+            </message>
+            """
+        )
+
+        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), ("composing", "audio"))
 
     def test_emits_chatstate_for_contact_jid(self) -> None:
         events: list[object] = []
@@ -293,6 +304,7 @@ class ContactStateTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].chat_jid, "+5218126462159@whatsapp.example.org")
         self.assertEqual(events[0].state, "composing")
+        self.assertEqual(events[0].media, "")
 
     def test_ignores_chatstate_from_group_or_component(self) -> None:
         events: list[object] = []
@@ -325,7 +337,7 @@ class ContactStateTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), "")
+        self.assertEqual(BridgeXmppClient._chat_state_from_xml(message), ("", ""))
 
     def test_reads_idle_since_from_presence(self) -> None:
         presence = ET.fromstring(

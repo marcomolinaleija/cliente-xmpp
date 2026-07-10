@@ -112,6 +112,7 @@ class ContactPresenceUpdated:
 class ChatStateUpdated:
     chat_jid: str
     state: str
+    media: str = ""
 
 
 @dataclass(slots=True)

@@ -28,6 +28,24 @@ class GroupNameTests(unittest.TestCase):
         )
 
 
+class ChatListFocusTests(unittest.TestCase):
+    def test_restores_returned_chat_selection_before_focus(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class FakeChatList:
+            def select_chat_by_jid(self, jid: str) -> None:
+                calls.append(("select", jid))
+
+            def focus(self) -> None:
+                calls.append(("focus", ""))
+
+        window = SimpleNamespace(chat_list=FakeChatList())
+
+        MainWindow._restore_chat_list_focus(window, "marco@example.org")
+
+        self.assertEqual(calls, [("select", "marco@example.org"), ("focus", "")])
+
+
 class WhatsAppPairingCodeTests(unittest.TestCase):
     def test_extracts_code_after_label_instead_of_whatsapp_word(self) -> None:
         text = (

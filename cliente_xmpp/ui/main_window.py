@@ -841,11 +841,11 @@ class MainWindow(wx.Frame):
         self.chat_list.focus_search()
         self.status_bar.SetStatusText("Buscar chats y mensajes")
 
-    def _clear_chat_search(self, focus_list: bool = False) -> None:
+    def _clear_chat_search(self, focus_list: bool = False, selected_jid: str = "") -> None:
         self._cancel_scheduled_chat_search()
         if self.chat_list.search_ctrl.GetValue():
             self.chat_list.search_ctrl.ChangeValue("")
-        self.chat_list.clear_search_results()
+        self.chat_list.clear_search_results(selected_jid=selected_jid)
         if focus_list:
             self.chat_list.focus()
         self.status_bar.SetStatusText("Lista de chats")
@@ -1048,8 +1048,8 @@ class MainWindow(wx.Frame):
             if self.reply_context:
                 self._cancel_reply()
                 return
-            self._show_chat_list()
-            self._clear_chat_search(focus_list=True)
+            selected_jid = self._show_chat_list()
+            self._clear_chat_search(focus_list=True, selected_jid=selected_jid)
             return
 
         if key_code == wx.WXK_ESCAPE and self.chat_list.IsShown():
@@ -3092,7 +3092,8 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(f"Cargando todo el historial de {chat.name}...")
             self._request_full_history(chat.jid)
 
-    def _show_chat_list(self) -> None:
+    def _show_chat_list(self) -> str:
+        selected_jid = self.conversation.current_chat.jid if self.conversation.current_chat else ""
         if self.audio_recorder.is_recording:
             self.audio_recorder.cancel()
             self.conversation.set_recording_state(False)
@@ -3103,9 +3104,16 @@ class MainWindow(wx.Frame):
         self.conversation.Hide()
         self.chat_list.Show()
         self.chat_list.refresh_visible_if_stale()
+        self._restore_chat_list_focus(selected_jid)
         self.content_panel.Layout()
         self.workspace_panel.Layout()
         self.Layout()
+        wx.CallAfter(self._restore_chat_list_focus, selected_jid)
+        return selected_jid
+
+    def _restore_chat_list_focus(self, selected_jid: str) -> None:
+        if selected_jid:
+            self.chat_list.select_chat_by_jid(selected_jid)
         self.chat_list.focus()
 
     def _set_chat_state(self, chat_jid: str, state: str, media: str = "") -> None:

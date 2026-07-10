@@ -69,6 +69,7 @@ PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+GROUP_SELF_ECHO_WINDOW_SECONDS = 10
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
@@ -2011,7 +2012,9 @@ class MainWindow(wx.Frame):
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
             key = self._message_merge_key(message)
-            existing_index = indexes_by_key.get(key)
+            existing_index = self._matching_group_self_echo_index(message, unique_messages)
+            if existing_index is None:
+                existing_index = indexes_by_key.get(key)
             if existing_index is None:
                 existing_index = self._matching_content_message_index(
                     message,
@@ -2029,6 +2032,46 @@ class MainWindow(wx.Frame):
             unique_messages.append(message)
 
         self.messages_by_chat[chat_jid] = unique_messages
+
+    @classmethod
+    def _matching_group_self_echo_index(
+        cls,
+        message: Message,
+        candidates: list[Message],
+    ) -> int | None:
+        for index, candidate in enumerate(candidates):
+            if cls._messages_are_group_self_echo(candidate, message):
+                return index
+
+        return None
+
+    @classmethod
+    def _messages_are_group_self_echo(cls, first: Message, second: Message) -> bool:
+        outgoing, incoming = (first, second) if first.outgoing else (second, first)
+        if not outgoing.outgoing or incoming.outgoing:
+            return False
+        if not outgoing.chat_is_group or not incoming.chat_is_group:
+            return False
+        if outgoing.chat_jid != incoming.chat_jid:
+            return False
+        if not incoming.message_id or not incoming.sender_jid.startswith(
+            f"{incoming.chat_jid}/"
+        ):
+            return False
+        if (
+            outgoing.body != incoming.body
+            or outgoing.audio_url != incoming.audio_url
+            or outgoing.media_url != incoming.media_url
+            or outgoing.media_kind != incoming.media_kind
+        ):
+            return False
+        if not cls._messages_have_compatible_reply_quotes(outgoing, incoming):
+            return False
+
+        return (
+            abs(cls._message_timestamp(outgoing) - cls._message_timestamp(incoming))
+            <= GROUP_SELF_ECHO_WINDOW_SECONDS
+        )
 
     @staticmethod
     def _message_merge_key(message: Message) -> tuple[object, ...]:
@@ -2289,13 +2332,26 @@ class MainWindow(wx.Frame):
             for existing in existing_messages
         }
         message_key = self._message_merge_key(message)
+        existing_group_echo = next(
+            (
+                existing
+                for existing in self.messages_by_chat.get(message.chat_jid, [])
+                if self._messages_are_group_self_echo(existing, message)
+            ),
+            None,
+        )
         self._merge_messages(message.chat_jid, [message])
-        stored_message = self._message_by_merge_key(message.chat_jid, message_key) or message
+        stored_message = (
+            existing_group_echo
+            or self._message_by_merge_key(message.chat_jid, message_key)
+            or message
+        )
         self._remember_message_sender(stored_message)
         self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
         self._persist_messages([stored_message])
         added_message = (
-            message_key not in existing_keys
+            existing_group_echo is None
+            and message_key not in existing_keys
             and all(existing is not stored_message for existing in existing_messages)
         )
         return stored_message, added_message

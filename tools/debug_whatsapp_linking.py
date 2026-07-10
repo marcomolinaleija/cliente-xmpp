@@ -72,8 +72,12 @@ class WhatsAppLinkProbe(ClientXMPP):
                 await self._request_relogin()
             case "relogin":
                 await self._request_relogin()
+            case "relogin-cancel":
+                await self._request_relogin_cancel()
             case "pair-code":
                 await self._request_pair_code()
+            case "pair-cancel":
+                await self._request_pair_cancel()
             case "chat-relogin":
                 self.send_message(
                     mto=self.component_jid,
@@ -196,6 +200,30 @@ class WhatsAppLinkProbe(ClientXMPP):
         print("[probe] relogin result:", flush=True)
         print(ET.tostring(result.xml, encoding="unicode"), flush=True)
 
+    async def _request_relogin_cancel(self) -> None:
+        try:
+            command = await self["xep_0050"].send_command(
+                self.component_jid,
+                SLIDGE_RELOGIN_COMMAND,
+                timeout=20,
+            )
+            session_id = str(command["command"]["sessionid"] or "")
+            print("[probe] relogin initial:", flush=True)
+            print(ET.tostring(command.xml, encoding="unicode"), flush=True)
+            result = await self["xep_0050"].send_command(
+                self.component_jid,
+                SLIDGE_RELOGIN_COMMAND,
+                action="cancel",
+                sessionid=session_id or None,
+                timeout=20,
+            )
+        except Exception as exc:
+            print(f"[probe] relogin cancel error={_format_xmpp_error(exc)}", flush=True)
+            return
+
+        print("[probe] relogin cancel result:", flush=True)
+        print(ET.tostring(result.xml, encoding="unicode"), flush=True)
+
     async def _request_logout(self) -> None:
         try:
             result = await self["xep_0050"].send_command(
@@ -244,6 +272,30 @@ class WhatsAppLinkProbe(ClientXMPP):
         print("[probe] pair code result:", flush=True)
         print(ET.tostring(result.xml, encoding="unicode"), flush=True)
 
+    async def _request_pair_cancel(self) -> None:
+        try:
+            command = await self["xep_0050"].send_command(
+                self.component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                timeout=20,
+            )
+            session_id = str(command["command"]["sessionid"] or "")
+            print("[probe] pair initial:", flush=True)
+            print(ET.tostring(command.xml, encoding="unicode"), flush=True)
+            result = await self["xep_0050"].send_command(
+                self.component_jid,
+                SLIDGE_PAIR_PHONE_COMMAND,
+                action="cancel",
+                sessionid=session_id or None,
+                timeout=20,
+            )
+        except Exception as exc:
+            print(f"[probe] pair cancel error={_format_xmpp_error(exc)}", flush=True)
+            return
+
+        print("[probe] pair cancel result:", flush=True)
+        print(ET.tostring(result.xml, encoding="unicode"), flush=True)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -254,7 +306,9 @@ def main() -> None:
             "logout",
             "logout-relogin",
             "relogin",
+            "relogin-cancel",
             "pair-code",
+            "pair-cancel",
             "chat-relogin",
             "chat-qr",
         ),

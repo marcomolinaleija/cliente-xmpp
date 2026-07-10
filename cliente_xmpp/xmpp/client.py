@@ -1149,6 +1149,9 @@ class BridgeXmppClient(ClientXMPP):
             return True
 
         status = self._last_whatsapp_status_by_component.get(from_jid.split("/", 1)[0], "")
+        if BridgeXmppClient._is_slidge_attachment_image_url(media_url) and not status.startswith("connected"):
+            return True
+
         return any(
             status.startswith(candidate)
             for candidate in (
@@ -1159,6 +1162,14 @@ class BridgeXmppClient(ClientXMPP):
                 "logged_out",
             )
         )
+
+    @staticmethod
+    def _is_slidge_attachment_image_url(url: str) -> bool:
+        if not url:
+            return False
+        parsed = urlparse(url)
+        path = parsed.path.casefold()
+        return "/slidge-attachments/" in path and path.endswith(IMAGE_EXTENSIONS)
 
     @classmethod
     def _whatsapp_qr_image_data_from_xml(

@@ -113,6 +113,38 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             )
         )
 
+    def test_detects_slidge_qr_image_url_when_state_is_still_unknown(self) -> None:
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={},
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+        )
+
+        self.assertTrue(
+            BridgeXmppClient._is_whatsapp_qr_image(
+                client,
+                "whatsapp.example.org",
+                "http://example.org/slidge-attachments/tmp-race.png",
+                "http://example.org/slidge-attachments/tmp-race.png",
+                "image",
+            )
+        )
+
+    def test_connected_component_image_is_not_assumed_to_be_qr(self) -> None:
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={"whatsapp.example.org": "connected\n"},
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+        )
+
+        self.assertFalse(
+            BridgeXmppClient._is_whatsapp_qr_image(
+                client,
+                "whatsapp.example.org",
+                "http://example.org/slidge-attachments/avatar.png",
+                "http://example.org/slidge-attachments/avatar.png",
+                "image",
+            )
+        )
+
     def test_ignores_slidge_thumbhash_as_embedded_qr_image(self) -> None:
         message = ET.fromstring(
             """

@@ -70,6 +70,7 @@ OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
+MESSAGE_RETRACT_NS = "urn:xmpp:message-retract:1"
 DELAY_NS = "urn:xmpp:delay"
 FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
@@ -220,6 +221,11 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         if message_type not in ("chat", "normal"):
+            return
+
+        retraction = self._message_retraction_from_stanza(msg, outgoing=False)
+        if retraction is not None:
+            self._emit(MessageReceived(retraction))
             return
 
         (
@@ -2059,6 +2065,10 @@ class BridgeXmppClient(ClientXMPP):
             pass
 
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
+        retraction = self._message_retraction_from_mam_result(chat_jid, result)
+        if retraction is not None:
+            return retraction
+
         body = self._message_body_from_mam_result(result)
         (
             media_url,
@@ -2113,6 +2123,11 @@ class BridgeXmppClient(ClientXMPP):
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
         if stanza["type"] not in ("chat", "normal", "groupchat"):
+            return
+
+        retraction = self._message_retraction_from_stanza(stanza, outgoing=outgoing)
+        if retraction is not None:
+            self._emit(MessageReceived(retraction))
             return
 
         is_group = self._stanza_is_groupchat(stanza)
@@ -2172,6 +2187,10 @@ class BridgeXmppClient(ClientXMPP):
         )
 
     def _message_from_groupchat_stanza(self, stanza: object) -> Message | None:
+        retraction = self._message_retraction_from_stanza(stanza, outgoing=False)
+        if retraction is not None:
+            return retraction
+
         body = str(stanza["body"] or "").strip()
         (
             media_url,
@@ -2271,7 +2290,13 @@ class BridgeXmppClient(ClientXMPP):
                         media_size,
                     )
                 message_model = self._message_from_forwarded_xml(chat_jid, result)
-                if message_model is not None and not preview:
+                if message_model is not None and message_model.retracted:
+                    preview = (
+                        "Eliminaste este mensaje"
+                        if message_model.outgoing
+                        else "Este mensaje fue eliminado"
+                    )
+                elif message_model is not None and not preview:
                     preview = message_model.body
             sent_at = self._forwarded_delay_from_xml(result)
 
@@ -2285,6 +2310,10 @@ class BridgeXmppClient(ClientXMPP):
         message = self._forwarded_message_from_xml(result)
         if message is None:
             return None
+
+        retraction = self._message_retraction_from_xml(chat_jid, message, result)
+        if retraction is not None:
+            return retraction
 
         body_node = message.find(f"{{{CLIENT_NS}}}body")
         body = (body_node.text or "").strip() if body_node is not None else ""
@@ -2329,6 +2358,105 @@ class BridgeXmppClient(ClientXMPP):
             reply_quote=reply_quote,
             delivery_state="sent" if outgoing else "",
         )
+
+    def _message_retraction_from_mam_result(
+        self,
+        chat_jid: str,
+        result: object,
+    ) -> Message | None:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        target_id = self._retracted_message_id_from_xml(stanza.xml)
+        if not target_id:
+            return None
+
+        is_group = self._stanza_is_groupchat(stanza)
+        message_chat_jid = self._chat_jid_from_mam_result(result) if is_group else chat_jid
+        sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
+        outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
+        sent_at = self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
+        return self._retracted_message(
+            chat_jid=message_chat_jid,
+            message_id=target_id,
+            sent_at=sent_at or datetime.now(),
+            outgoing=outgoing,
+            is_group=is_group or message_chat_jid in self._group_chat_jids,
+        )
+
+    def _message_retraction_from_stanza(self, stanza: object, outgoing: bool) -> Message | None:
+        target_id = self._retracted_message_id_from_xml(stanza.xml)
+        if not target_id:
+            return None
+
+        is_group = self._stanza_is_groupchat(stanza)
+        if is_group and outgoing and str(stanza["from"].bare) == self.boundjid.bare:
+            chat_jid = str(stanza["to"].bare)
+        elif is_group:
+            chat_jid = str(stanza["from"].bare)
+        elif outgoing:
+            chat_jid = str(stanza["to"].bare)
+        else:
+            chat_jid = str(stanza["from"].bare)
+        if is_group:
+            self._group_chat_jids.add(chat_jid)
+        return self._retracted_message(
+            chat_jid=chat_jid,
+            message_id=target_id,
+            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
+            outgoing=outgoing,
+            is_group=is_group,
+        )
+
+    def _message_retraction_from_xml(
+        self,
+        chat_jid: str,
+        message: ET.Element,
+        result: ET.Element,
+    ) -> Message | None:
+        target_id = self._retracted_message_id_from_xml(message)
+        if not target_id:
+            return None
+
+        is_group = (
+            message.attrib.get("type", "") == "groupchat"
+            or self._xml_message_addresses_groupchat(message)
+        )
+        outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        return self._retracted_message(
+            chat_jid=chat_jid,
+            message_id=target_id,
+            sent_at=self._forwarded_delay_from_xml(result) or datetime.now(),
+            outgoing=outgoing,
+            is_group=is_group or chat_jid in self._group_chat_jids,
+        )
+
+    @staticmethod
+    def _retracted_message(
+        chat_jid: str,
+        message_id: str,
+        sent_at: datetime,
+        outgoing: bool,
+        is_group: bool,
+    ) -> Message:
+        return Message(
+            chat_jid=chat_jid,
+            sender_jid="Yo" if outgoing else "",
+            body="",
+            sent_at=sent_at,
+            outgoing=outgoing,
+            message_id=message_id,
+            chat_is_group=is_group,
+            delivery_state="sent" if outgoing else "",
+            retracted=True,
+        )
+
+    @staticmethod
+    def _retracted_message_id_from_xml(xml: ET.Element) -> str:
+        retract = xml.find(f".//{{{MESSAGE_RETRACT_NS}}}retract")
+        if retract is None:
+            return ""
+
+        return retract.attrib.get("id", "").strip()
 
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
@@ -3239,6 +3367,36 @@ class XmppService:
             reaction_node.text = reaction
             msg.append(reactions)
             msg.send()
+
+        self._loop.call_soon_threadsafe(send)
+
+    def retract_message(
+        self,
+        to_jid: str,
+        message_id: str,
+        is_group: bool = False,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexión XMPP activa."))
+            return
+
+        if not message_id:
+            self._emit(XmppError("No se puede eliminar: el mensaje no tiene ID XMPP."))
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            try:
+                if is_group:
+                    self._client._join_group_chat(to_jid)
+                message_type = "groupchat" if is_group else "chat"
+                msg = self._client.make_message(mto=to_jid, mtype=message_type)
+                msg.append(ET.Element(f"{{{MESSAGE_RETRACT_NS}}}retract", {"id": message_id}))
+                msg.send()
+            except Exception as exc:
+                self._emit(XmppError(f"No se pudo eliminar el mensaje: {exc}"))
 
         self._loop.call_soon_threadsafe(send)
 

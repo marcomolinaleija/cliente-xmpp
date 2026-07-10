@@ -1387,6 +1387,9 @@ class MainWindow(wx.Frame):
                 self.status_bar.SetStatusText(f"Velocidad de audio: {speed:g}x")
                 return
 
+        if event.GetKeyCode() == wx.WXK_DELETE and self._delete_selected_message():
+            return
+
         if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_video():
             return
 
@@ -1462,6 +1465,10 @@ class MainWindow(wx.Frame):
 
         star_label = "No destacar" if message.starred else "Destacar"
         star_item = menu.Append(wx.ID_ANY, star_label)
+        delete_item: wx.MenuItem | None = None
+        if message.outgoing:
+            delete_item = menu.Append(wx.ID_ANY, "Eliminar mensaje")
+            delete_item.Enable(self._message_can_be_deleted(message))
 
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
@@ -1504,6 +1511,8 @@ class MainWindow(wx.Frame):
                 ),
                 item,
             )
+        if delete_item:
+            self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
         self.PopupMenu(menu)
         menu.Destroy()
@@ -1515,6 +1524,60 @@ class MainWindow(wx.Frame):
     def _cancel_reply(self) -> None:
         self.reply_context = None
         self.conversation.clear_reply_quote()
+
+    def _delete_selected_message(self) -> bool:
+        message = self.conversation.selected_message()
+        if message is None:
+            return False
+
+        return self._delete_message(message)
+
+    def _message_can_be_deleted(self, message: Message) -> bool:
+        return bool(
+            message.outgoing
+            and message.message_id
+            and message.delivery_state not in {"pending", "failed"}
+            and not message.retracted
+        )
+
+    def _delete_message(self, message: Message) -> bool:
+        if not self._message_can_be_deleted(message):
+            self.status_bar.SetStatusText("Solo se pueden eliminar mensajes propios ya enviados")
+            return False
+
+        if message.chat_jid not in self.messages_by_chat:
+            return False
+
+        result = wx.MessageBox(
+            "¿Eliminar este mensaje para todos?",
+            "Eliminar mensaje",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return True
+
+        self.xmpp.retract_message(
+            message.chat_jid,
+            message.message_id,
+            is_group=message.chat_is_group,
+        )
+        message.retracted = True
+        message.body = ""
+        message.audio_url = ""
+        message.media_url = ""
+        message.media_kind = ""
+        message.media_mime = ""
+        message.media_filename = ""
+        message.media_size = 0
+        message.media_duration_seconds = 0
+        message.reply_quote = ""
+        self._persist_messages([message])
+        self.conversation.refresh_message(message)
+        self._update_chat_from_message(message)
+        self._refresh_chat_order(message.chat_jid)
+        self.status_bar.SetStatusText("Mensaje eliminado")
+        return True
 
     def _copy_message_text(self, message: Message) -> None:
         if not wx.TheClipboard.Open():
@@ -2157,6 +2220,20 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
+        if incoming.retracted:
+            target.retracted = True
+            target.body = ""
+            target.audio_url = ""
+            target.media_url = ""
+            target.media_kind = ""
+            target.media_mime = ""
+            target.media_filename = ""
+            target.media_size = 0
+            target.media_duration_seconds = 0
+            target.reply_quote = ""
+            return
+        if target.retracted:
+            return
         if incoming.message_id and (
             not target.message_id or MainWindow._message_has_local_pending_id(target)
         ):
@@ -2785,6 +2862,8 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _chat_preview_for_message(message: Message) -> str:
+        if message.retracted:
+            return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
         preview = media_description(message) if has_media(message) else message.body
         if message.outgoing and message.delivery_state == "pending":
             return f"Enviando: {preview}"

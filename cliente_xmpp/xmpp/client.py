@@ -625,6 +625,9 @@ class BridgeXmppClient(ClientXMPP):
             f"features={features or 'none'}"
         )
 
+        asyncio.create_task(self._debug_whatsapp_component_commands(jid))
+
+    async def _debug_whatsapp_component_commands(self, jid: str) -> None:
         commands = await self._adhoc_commands(jid)
         self._debug_whatsapp_commands(jid, commands)
         state = self._whatsapp_command_state(commands)

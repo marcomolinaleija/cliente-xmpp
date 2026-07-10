@@ -47,7 +47,9 @@ from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
+    ChatStateUpdated,
     ChatsDiscovered,
+    ContactPresenceUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -105,6 +107,8 @@ class MainWindow(wx.Frame):
         self.preloaded_history_chats: set[str] = set()
         self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
+        self.contact_presence_by_chat: dict[str, ContactPresenceUpdated] = {}
+        self.chat_state_by_chat: dict[str, str] = {}
         self.searchable_chats_by_jid: dict[str, Chat] = {}
         self.roster_jids: set[str] = set()
         self.loading_initial_chat_activity = False
@@ -1839,6 +1843,8 @@ class MainWindow(wx.Frame):
                 self._preload_recent_histories()
             case MessageReceived(message=message, notify=notify):
                 message, added_message = self._store_message(message)
+                if not message.outgoing:
+                    self._set_chat_state(message.chat_jid, "")
                 suppress_notification = self.loading_initial_chat_activity or not notify
                 if not self.whatsapp_verified:
                     return
@@ -1902,6 +1908,11 @@ class MainWindow(wx.Frame):
                     delivery_state,
                     detail,
                 )
+            case ContactPresenceUpdated(chat_jid=chat_jid):
+                self.contact_presence_by_chat[chat_jid] = event
+                self._refresh_current_chat_status_title()
+            case ChatStateUpdated(chat_jid=chat_jid, state=state):
+                self._set_chat_state(chat_jid, state)
             case ChatActivityLoaded(
                 chat_jid=chat_jid,
                 sent_at=sent_at,
@@ -2990,6 +3001,7 @@ class MainWindow(wx.Frame):
         else:
             self.conversation.focus_composer()
         self.status_bar.SetStatusText(f"Chat abierto: {chat.name}")
+        self._refresh_current_chat_status_title()
         needs_history = (
             chat.jid not in self.history_loaded_chats
             or self._chat_history_needs_reload(chat.jid)
@@ -3005,6 +3017,7 @@ class MainWindow(wx.Frame):
         self.reply_context = None
         self.conversation.clear_reply_quote()
         self.conversation.clear_unread_marker()
+        self.conversation.set_chat_status("")
         self.conversation.Hide()
         self.chat_list.Show()
         self.chat_list.refresh_visible_if_stale()
@@ -3012,6 +3025,54 @@ class MainWindow(wx.Frame):
         self.workspace_panel.Layout()
         self.Layout()
         self.chat_list.focus()
+
+    def _set_chat_state(self, chat_jid: str, state: str) -> None:
+        if state == "composing":
+            self.chat_state_by_chat[chat_jid] = state
+        else:
+            self.chat_state_by_chat.pop(chat_jid, None)
+        self._refresh_current_chat_status_title()
+
+    def _refresh_current_chat_status_title(self) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or not self.conversation.IsShown():
+            return
+
+        self.conversation.set_chat_status(self._conversation_status_text(chat.jid))
+
+    def _conversation_status_text(self, chat_jid: str) -> str:
+        if self.chat_state_by_chat.get(chat_jid) == "composing":
+            return "contacto escribiendo"
+
+        presence = self.contact_presence_by_chat.get(chat_jid)
+        if presence is None:
+            return ""
+
+        if presence.availability == "online":
+            return "contacto en línea"
+        if presence.availability == "away":
+            return "contacto ausente"
+        if presence.availability == "busy":
+            return "contacto ocupado"
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
+        if presence.status:
+            return presence.status
+        return ""
+
+    @staticmethod
+    def _format_presence_time(value: datetime) -> str:
+        if value.tzinfo is not None:
+            value = value.astimezone()
+
+        hour = value.hour
+        minute = value.minute
+        suffix = "a. m." if hour < 12 else "p. m."
+        hour_12 = hour % 12 or 12
+        today = datetime.now(value.tzinfo).date() if value.tzinfo else datetime.now().date()
+        if value.date() == today:
+            return f"hoy {hour_12}:{minute:02d} {suffix}"
+        return f"{value.day:02d}/{value.month:02d} {hour_12}:{minute:02d} {suffix}"
 
     def _upsert_discovered_chats(self, chats: list[Chat]) -> None:
         if not chats:

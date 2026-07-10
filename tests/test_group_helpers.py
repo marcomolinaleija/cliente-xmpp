@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
+from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.xmpp.client import BridgeXmppClient
 
@@ -125,6 +127,34 @@ class GroupMessageParsingTests(unittest.TestCase):
             BridgeXmppClient._sender_jid_from_message_xml(message, is_group=True),
             "+5214495380505@whatsapp.example.org",
         )
+
+    def test_group_sender_matches_local_nick_case_and_accents_insensitively(self) -> None:
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="angel@example.org"),
+            _muc_nick=lambda: "Angel Alcantar",
+        )
+
+        self.assertTrue(
+            BridgeXmppClient._group_sender_matches_local(
+                client,
+                "",
+                "ÁNGEL ALCANTAR",
+            )
+        )
+
+    def test_group_history_before_session_does_not_notify(self) -> None:
+        client = SimpleNamespace(
+            _session_started_at=datetime.now().astimezone(),
+        )
+        message = Message(
+            chat_jid="#room@example.org",
+            sender_jid="participant@example.org",
+            body="histórico",
+            sent_at=datetime.now().astimezone() - timedelta(minutes=1),
+            chat_is_group=True,
+        )
+
+        self.assertTrue(BridgeXmppClient._message_predates_session(client, message))
 
     def test_reply_parts_from_quoted_body(self) -> None:
         self.assertEqual(

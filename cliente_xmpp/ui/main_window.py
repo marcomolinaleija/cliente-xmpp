@@ -1337,12 +1337,12 @@ class MainWindow(wx.Frame):
                 self.roster_jids = {chat.jid for chat in chats}
                 cached_chats = self._load_cached_chats()
                 self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
-                self.xmpp.monitor_group_chats(
-                    [chat.jid for chat in cached_chats if chat.is_group]
-                )
                 self.loading_initial_chat_activity = True
                 self.pending_chat_activity = {}
                 self.loaded_chat_summaries = len(cached_chats)
+                self.xmpp.monitor_group_chats(
+                    [chat.jid for chat in cached_chats if chat.is_group]
+                )
                 self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
                 if not self.chat_list.selected_chat():
                     self.chat_list.select_first()
@@ -1380,7 +1380,7 @@ class MainWindow(wx.Frame):
                 )
                 self._update_chat_from_message(
                     message,
-                    mark_unread=not message.outgoing and not current_chat_is_open,
+                    mark_unread=notify and not message.outgoing and not current_chat_is_open,
                 )
                 self._refresh_chat_order(preserve_focused_order=False)
                 if self.chat_list.IsShown() and not self.chat_list.is_searching:

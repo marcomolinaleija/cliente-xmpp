@@ -537,6 +537,36 @@ class GroupMessageParsingTests(unittest.TestCase):
             "+5214495380505@whatsapp.example.org",
         )
 
+    def test_group_sender_does_not_replace_custom_contact_name(self) -> None:
+        sender_jid = "+5214495380505@whatsapp.example.org"
+        window = SimpleNamespace(chat_names_by_jid={sender_jid: "Burra"})
+        message = Message(
+            chat_jid="#room@whatsapp.example.org",
+            sender_jid=sender_jid,
+            sender_name="Jessy Herrera",
+            body="mensaje",
+            chat_is_group=True,
+        )
+
+        MainWindow._remember_message_sender(window, message)
+
+        self.assertEqual(window.chat_names_by_jid[sender_jid], "Burra")
+
+    def test_group_sender_is_remembered_when_contact_is_unknown(self) -> None:
+        sender_jid = "+5214495380505@whatsapp.example.org"
+        window = SimpleNamespace(chat_names_by_jid={})
+        message = Message(
+            chat_jid="#room@whatsapp.example.org",
+            sender_jid=sender_jid,
+            sender_name="Jessy Herrera",
+            body="mensaje",
+            chat_is_group=True,
+        )
+
+        MainWindow._remember_message_sender(window, message)
+
+        self.assertEqual(window.chat_names_by_jid[sender_jid], "Jessy Herrera")
+
     def test_group_sender_matches_local_nick_case_and_accents_insensitively(self) -> None:
         client = SimpleNamespace(
             boundjid=SimpleNamespace(bare="angel@example.org"),

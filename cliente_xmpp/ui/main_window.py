@@ -850,6 +850,7 @@ class MainWindow(wx.Frame):
         if self.conversation.current_chat and self.conversation.current_chat.jid == chat.jid:
             self.conversation.set_chat(renamed_chat)
             self.conversation.set_messages(self.messages_by_chat.get(chat.jid, []))
+            self._refresh_conversation_avatar(renamed_chat)
             self._sync_recording_ui()
         if self.current_jid:
             try:
@@ -3126,6 +3127,7 @@ class MainWindow(wx.Frame):
             self.conversation.set_contact_summary(chat.name, "")
         else:
             self.conversation.set_chat(chat)
+        self._refresh_conversation_avatar(chat)
         render_started_at = time.perf_counter()
         self.conversation.set_messages(
             self.messages_by_chat.get(chat.jid, []),
@@ -3533,15 +3535,11 @@ class MainWindow(wx.Frame):
         if chat is None or not self.conversation.IsShown():
             return
 
-        status = self._conversation_status_text(chat.jid)
         self.conversation.set_contact_summary(
             chat.name,
             self._contact_connection_status_text(chat.jid),
         )
-        if status:
-            self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name} - {status}")
-        else:
-            self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name}")
+        self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name}")
 
     def _reset_window_title(self) -> None:
         self.SetTitle(APP_WINDOW_TITLE)
@@ -3571,7 +3569,7 @@ class MainWindow(wx.Frame):
     def _contact_connection_status_text(self, chat_jid: str) -> str:
         presence = self.contact_presence_by_chat.get(chat_jid)
         if presence is None:
-            return "estado desconocido"
+            return ""
 
         if presence.availability == "online":
             return "en línea"
@@ -3583,7 +3581,7 @@ class MainWindow(wx.Frame):
             return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.status:
             return presence.status
-        return "estado desconocido"
+        return ""
 
     def _on_contact_info(self, _event: wx.CommandEvent) -> None:
         chat = self.conversation.current_chat
@@ -3646,6 +3644,13 @@ class MainWindow(wx.Frame):
             return
 
         self.contact_avatar_paths_by_chat[chat_jid] = path
+        current_chat = self.conversation.current_chat
+        if (
+            current_chat is not None
+            and self.conversation.IsShown()
+            and current_chat.jid == chat_jid
+        ):
+            self.conversation.set_contact_avatar(path)
         if (
             self.contact_info_dialog is not None
             and self.contact_info_dialog.chat_jid == chat_jid
@@ -3656,12 +3661,25 @@ class MainWindow(wx.Frame):
     def _handle_contact_avatar_unavailable(self, chat_jid: str, detail: str) -> None:
         self.contact_avatar_requests_in_progress.discard(chat_jid)
         message = detail or "Foto de perfil no disponible."
+        current_chat = self.conversation.current_chat
+        if (
+            current_chat is not None
+            and self.conversation.IsShown()
+            and current_chat.jid == chat_jid
+        ):
+            self.conversation.set_contact_avatar(None)
         if (
             self.contact_info_dialog is not None
             and self.contact_info_dialog.chat_jid == chat_jid
         ):
             self.contact_info_dialog.set_avatar_unavailable(message)
         self.status_bar.SetStatusText(message)
+
+    def _refresh_conversation_avatar(self, chat: Chat) -> None:
+        avatar_path = self._contact_avatar_path(chat)
+        self.conversation.set_contact_avatar(avatar_path)
+        if avatar_path is None:
+            self._request_contact_avatar(chat.jid)
 
     def _save_contact_avatar(
         self,
@@ -3891,8 +3909,9 @@ class ContactInfoDialog(wx.Dialog):
         lines = [
             f"Nombre: {chat.name}",
             f"Tipo: {'grupo' if chat.is_group else 'contacto'}",
-            f"Estado: {status}",
         ]
+        if status:
+            lines.append(f"Estado: {status}")
         phone = cls._phone_from_jid(chat.jid)
         if phone:
             lines.append(f"Número: {phone}")

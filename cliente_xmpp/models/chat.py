@@ -25,7 +25,7 @@ class Message:
     sender_jid: str
     body: str
     sender_name: str = ""
-    sent_at: datetime = field(default_factory=datetime.now)
+    sent_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
     outgoing: bool = False
     audio_url: str = ""
     media_url: str = ""

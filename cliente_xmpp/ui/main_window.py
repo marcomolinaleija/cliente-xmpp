@@ -106,6 +106,7 @@ class MainWindow(wx.Frame):
         self.message_store = MessageStore()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
+        self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.history_exhausted_chats: set[str] = set()
@@ -1200,6 +1201,7 @@ class MainWindow(wx.Frame):
             sender_jid="me",
             sender_name="Tú",
             body=body,
+            sent_at=datetime.now().astimezone(),
             outgoing=True,
             chat_is_group=chat.is_group,
             message_id=message_id,
@@ -2279,7 +2281,35 @@ class MainWindow(wx.Frame):
             indexes_by_content.setdefault(content_key, []).append(len(unique_messages))
             unique_messages.append(message)
 
+        delivery_states = getattr(self, "delivery_states_by_message", {})
+        for message in unique_messages:
+            known_state = delivery_states.get((chat_jid, message.message_id))
+            if known_state:
+                message.delivery_state = MainWindow._merge_delivery_state(
+                    message.delivery_state,
+                    known_state,
+                )
+
         self.messages_by_chat[chat_jid] = unique_messages
+
+    @staticmethod
+    def _merge_delivery_state(current: str, incoming: str) -> str:
+        if not incoming or current == incoming:
+            return current or incoming
+        if current == "failed":
+            return current
+        if incoming == "failed":
+            return incoming
+
+        rank = {
+            "pending": 0,
+            "sent": 1,
+            "delivered": 2,
+            "received": 2,
+            "read": 3,
+            "displayed": 3,
+        }
+        return incoming if rank.get(incoming, 0) >= rank.get(current, 0) else current
 
     @staticmethod
     def _apply_message_correction(messages: list[Message], correction: Message) -> bool:
@@ -2444,10 +2474,11 @@ class MainWindow(wx.Frame):
             not target.message_id or MainWindow._message_has_local_pending_id(target)
         ):
             target.message_id = incoming.message_id
-        if incoming.outgoing and target.delivery_state != "failed":
-            target.delivery_state = incoming.delivery_state or "sent"
-        elif incoming.delivery_state and target.delivery_state != "failed":
-            target.delivery_state = incoming.delivery_state
+        incoming_state = incoming.delivery_state or ("sent" if incoming.outgoing else "")
+        target.delivery_state = MainWindow._merge_delivery_state(
+            target.delivery_state,
+            incoming_state,
+        )
         if incoming.sender_name and not target.sender_name:
             target.sender_name = incoming.sender_name
         if incoming.reply_quote and not target.reply_quote:
@@ -2715,11 +2746,20 @@ class MainWindow(wx.Frame):
         if not message_id:
             return
 
+        state_key = (chat_jid, message_id)
+        known_state = self.delivery_states_by_message.get(state_key, "")
+        delivery_state = self._merge_delivery_state(known_state, delivery_state)
+        self.delivery_states_by_message[state_key] = delivery_state
+
         for message in self.messages_by_chat.get(chat_jid, []):
             if message.message_id != message_id:
                 continue
             previous_delivery_state = message.delivery_state
-            message.delivery_state = delivery_state
+            message.delivery_state = self._merge_delivery_state(
+                message.delivery_state,
+                delivery_state,
+            )
+            self._persist_messages([message])
             self.conversation.refresh_message(message)
             self._update_chat_from_message(message)
             self._refresh_chat_order(chat_jid)

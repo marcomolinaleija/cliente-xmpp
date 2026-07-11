@@ -286,7 +286,7 @@ class BridgeXmppClient(ClientXMPP):
                     chat_jid=bare_jid,
                     sender_jid=bare_jid,
                     body=display_body,
-                    sent_at=self._sent_at_from_stanza_delay(msg) or datetime.now(),
+                    sent_at=self._sent_at_from_stanza_delay(msg) or datetime.now().astimezone(),
                     outgoing=False,
                     audio_url=audio_url,
                     media_url=media_url,
@@ -2245,7 +2245,7 @@ class BridgeXmppClient(ClientXMPP):
                     sender_jid=sender_jid,
                     sender_name=sender_name,
                     body=display_body,
-                    sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
+                    sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone(),
                     outgoing=outgoing,
                     audio_url=audio_url,
                     media_url=media_url,
@@ -2297,7 +2297,7 @@ class BridgeXmppClient(ClientXMPP):
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
-            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
+            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone(),
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,
@@ -2422,7 +2422,7 @@ class BridgeXmppClient(ClientXMPP):
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
-            sent_at=self._forwarded_delay_from_xml(result) or datetime.now(),
+            sent_at=self._forwarded_delay_from_xml(result) or datetime.now().astimezone(),
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,
@@ -2457,7 +2457,7 @@ class BridgeXmppClient(ClientXMPP):
         return self._retracted_message(
             chat_jid=message_chat_jid,
             message_id=target_id,
-            sent_at=sent_at or datetime.now(),
+            sent_at=sent_at or datetime.now().astimezone(),
             outgoing=outgoing,
             is_group=is_group or message_chat_jid in self._group_chat_jids,
         )
@@ -2481,7 +2481,7 @@ class BridgeXmppClient(ClientXMPP):
         return self._retracted_message(
             chat_jid=chat_jid,
             message_id=target_id,
-            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now(),
+            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone(),
             outgoing=outgoing,
             is_group=is_group,
         )
@@ -2504,7 +2504,7 @@ class BridgeXmppClient(ClientXMPP):
         return self._retracted_message(
             chat_jid=chat_jid,
             message_id=target_id,
-            sent_at=self._forwarded_delay_from_xml(result) or datetime.now(),
+            sent_at=self._forwarded_delay_from_xml(result) or datetime.now().astimezone(),
             outgoing=outgoing,
             is_group=is_group or chat_jid in self._group_chat_jids,
         )
@@ -3146,7 +3146,7 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid=to_jid,
             sender_jid="Yo",
             body=body,
-            sent_at=datetime.now(),
+            sent_at=datetime.now().astimezone(),
             outgoing=True,
             audio_url=get_url if media_kind == "audio" else "",
             media_url=get_url,

@@ -6,7 +6,7 @@ import sqlite3
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cliente_xmpp.config.settings import APP_DIR
@@ -14,7 +14,7 @@ from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -69,7 +69,7 @@ class MessageStore:
                 SELECT *
                 FROM messages
                 WHERE account_jid = ? AND chat_jid = ?
-                ORDER BY sent_at DESC, rowid DESC
+                ORDER BY julianday(sent_at) DESC, rowid DESC
                 LIMIT ?
                 """,
                 (account_jid, chat_jid, limit),
@@ -89,7 +89,7 @@ class MessageStore:
                         FROM messages AS latest
                         WHERE latest.account_jid = ?
                             AND latest.chat_jid = grouped.chat_jid
-                        ORDER BY latest.sent_at DESC, latest.rowid DESC
+                        ORDER BY julianday(latest.sent_at) DESC, latest.rowid DESC
                         LIMIT 1
                     )
                     FROM (
@@ -123,7 +123,7 @@ class MessageStore:
                     ON chats.account_jid = messages.account_jid
                     AND chats.jid = messages.chat_jid
                 WHERE messages.account_jid = ?
-                ORDER BY messages.sent_at DESC, messages.rowid DESC
+                ORDER BY julianday(messages.sent_at) DESC, messages.rowid DESC
                 """,
                 (account_jid,),
             ).fetchall()
@@ -253,8 +253,8 @@ class MessageStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS chats (
@@ -298,6 +298,7 @@ class MessageStore:
                     reply_quote TEXT NOT NULL DEFAULT '',
                     retracted INTEGER NOT NULL DEFAULT 0,
                     edited INTEGER NOT NULL DEFAULT 0,
+                    delivery_state TEXT NOT NULL DEFAULT '',
                     received_at TEXT NOT NULL,
                     PRIMARY KEY (account_jid, chat_jid, message_key)
                 );
@@ -308,7 +309,66 @@ class MessageStore:
             )
             self._ensure_message_columns(conn)
             self._ensure_chat_columns(conn)
-            self._compact_duplicate_messages(conn)
+            if previous_version < SCHEMA_VERSION:
+                self._normalize_datetime_columns(conn)
+                self._compact_duplicate_messages(conn)
+                self._rebuild_chat_summaries(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            if previous_version >= SCHEMA_VERSION:
+                self._compact_duplicate_messages(conn)
+
+    def _normalize_datetime_columns(self, conn: sqlite3.Connection) -> None:
+        for table, column in (
+            ("messages", "sent_at"),
+            ("messages", "received_at"),
+            ("chats", "last_message_at"),
+            ("chats", "updated_at"),
+        ):
+            rows = conn.execute(
+                f"SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                value = _datetime_from_db(row[column])
+                normalized = _datetime_to_db(value)
+                if normalized and normalized != row[column]:
+                    conn.execute(
+                        f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
+                        (normalized, row["rowid"]),
+                    )
+
+    def _rebuild_chat_summaries(self, conn: sqlite3.Connection) -> None:
+        chats = conn.execute(
+            "SELECT account_jid, jid FROM chats"
+        ).fetchall()
+        for chat in chats:
+            latest = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                ORDER BY julianday(sent_at) DESC, rowid DESC
+                LIMIT 1
+                """,
+                (chat["account_jid"], chat["jid"]),
+            ).fetchone()
+            if latest is None:
+                continue
+
+            message = _message_from_row(latest)
+            conn.execute(
+                """
+                UPDATE chats
+                SET last_message_preview = ?, last_message_at = ?, updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (
+                    _message_preview(message),
+                    _datetime_to_db(message.sent_at),
+                    _datetime_to_db(datetime.now()),
+                    chat["account_jid"],
+                    chat["jid"],
+                ),
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -337,6 +397,7 @@ class MessageStore:
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
             "retracted": "INTEGER NOT NULL DEFAULT 0",
             "edited": "INTEGER NOT NULL DEFAULT 0",
+            "delivery_state": "TEXT NOT NULL DEFAULT ''",
         }
         for column, definition in columns.items():
             if column not in existing_columns:
@@ -550,9 +611,9 @@ class MessageStore:
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
                 media_local_path, chat_is_group, starred, reactions_json, reply_quote,
-                retracted, edited, received_at
+                retracted, edited, delivery_state, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
@@ -600,6 +661,24 @@ class MessageStore:
                 edited = CASE
                     WHEN excluded.edited = 1 OR messages.edited = 1 THEN 1
                     ELSE 0
+                END,
+                delivery_state = CASE
+                    WHEN excluded.delivery_state = 'failed' THEN 'failed'
+                    WHEN messages.delivery_state = 'failed' THEN 'failed'
+                    WHEN excluded.delivery_state IN ('read', 'displayed')
+                        AND messages.delivery_state NOT IN ('read', 'displayed')
+                        THEN excluded.delivery_state
+                    WHEN excluded.delivery_state IN ('delivered', 'received')
+                        AND messages.delivery_state NOT IN (
+                            'delivered', 'received', 'read', 'displayed'
+                        )
+                        THEN excluded.delivery_state
+                    WHEN excluded.delivery_state = 'sent'
+                        AND COALESCE(messages.delivery_state, '') IN ('', 'pending')
+                        THEN 'sent'
+                    WHEN COALESCE(messages.delivery_state, '') = ''
+                        THEN excluded.delivery_state
+                    ELSE messages.delivery_state
                 END
             """,
             (
@@ -626,6 +705,7 @@ class MessageStore:
                 message.reply_quote,
                 int(message.retracted),
                 int(message.edited),
+                message.delivery_state,
                 now,
             ),
         )
@@ -651,7 +731,7 @@ class MessageStore:
             SELECT *
             FROM messages
             WHERE account_jid = ? AND chat_jid = ?
-            ORDER BY sent_at DESC, rowid DESC
+            ORDER BY julianday(sent_at) DESC, rowid DESC
             LIMIT 1
             """,
             (account_jid, message.chat_jid),
@@ -902,30 +982,38 @@ def _message_preview(message: Message) -> str:
         return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
 
     if not message.media_url:
-        return message.body
-
-    if is_link_preview(message):
-        return link_description(message)
-
-    if message.media_kind == "audio":
+        preview = message.body
+    elif is_link_preview(message):
+        preview = link_description(message)
+    elif message.media_kind == "audio":
         if message.media_duration_seconds > 0:
-            return f"voz, {_format_duration(message.media_duration_seconds)}"
+            preview = f"voz, {_format_duration(message.media_duration_seconds)}"
+        else:
+            preview = "voz"
+    else:
+        label = {
+            "image": "foto",
+            "video": "video",
+            "file": "archivo",
+        }.get(message.media_kind, "archivo")
+        details = [label]
+        if message.media_kind == "audio" and message.media_duration_seconds > 0:
+            details.append(_format_duration(message.media_duration_seconds))
+        if message.media_filename:
+            details.append(message.media_filename)
+        if message.media_size > 0:
+            details.append(_format_size(message.media_size))
+        preview = ", ".join(details)
 
-        return "voz"
-
-    label = {
-        "image": "foto",
-        "video": "video",
-        "file": "archivo",
-    }.get(message.media_kind, "archivo")
-    details = [label]
-    if message.media_kind == "audio" and message.media_duration_seconds > 0:
-        details.append(_format_duration(message.media_duration_seconds))
-    if message.media_filename:
-        details.append(message.media_filename)
-    if message.media_size > 0:
-        details.append(_format_size(message.media_size))
-    return ", ".join(details)
+    if message.outgoing and message.delivery_state in {"delivered", "received"}:
+        return f"{preview} | Entregado"
+    if message.outgoing and message.delivery_state in {"displayed", "read"}:
+        return f"{preview} | Leído"
+    if message.outgoing and message.delivery_state == "pending":
+        return f"{preview} | Enviando"
+    if message.outgoing and message.delivery_state == "failed":
+        return f"{preview} | No enviado"
+    return preview
 
 
 def _format_size(size: int) -> str:
@@ -981,6 +1069,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         reply_quote=str(row["reply_quote"] or ""),
         retracted=bool(row["retracted"]),
         edited=bool(row["edited"]),
+        delivery_state=str(row["delivery_state"] or ""),
     )
 
 
@@ -988,7 +1077,10 @@ def _datetime_to_db(value: datetime | None) -> str | None:
     if value is None:
         return None
 
-    return value.isoformat()
+    if value.tzinfo is None:
+        value = value.astimezone()
+
+    return value.astimezone(UTC).isoformat()
 
 
 def _datetime_from_db(value: object) -> datetime | None:
@@ -996,7 +1088,10 @@ def _datetime_from_db(value: object) -> datetime | None:
         return None
 
     try:
-        return datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed.astimezone(UTC)
     except ValueError:
         return None
 

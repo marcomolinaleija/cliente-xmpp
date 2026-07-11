@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
+import time
 import unicodedata
 import uuid
 import webbrowser
@@ -81,6 +82,7 @@ SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
 APP_WINDOW_TITLE = "whatsapp-CAN"
+PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +306,15 @@ class MainWindow(wx.Frame):
         login = self.login_panel.get_login_data()
         return bool(login.settings.jid and login.password)
 
+    @staticmethod
+    def _debug_perf(label: str, started_at: float, **details: object) -> None:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        rendered_details = " ".join(
+            f"{key}={value}" for key, value in details.items() if value is not None
+        )
+        suffix = f" {rendered_details}" if rendered_details else ""
+        print(f"{PERF_DEBUG_PREFIX} {label} {elapsed_ms:.1f}ms{suffix}", flush=True)
+
     def _on_disconnect(self, _event: wx.CommandEvent) -> None:
         self.connection_header.set_status("Desconectando...")
         self.status_bar.SetStatusText("Desconectando...")
@@ -321,6 +332,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_link_detail = detail
 
         if status in {"connected", "paired"}:
+            started_at = time.perf_counter()
             self.whatsapp_verified = True
             self.whatsapp_link_session = None
             self.whatsapp_link_panel.clear()
@@ -330,6 +342,12 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(message)
             self._apply_pending_roster_if_ready()
             self.workspace_panel.Layout()
+            self._debug_perf(
+                "_handle_whatsapp_bridge_status.connected",
+                started_at,
+                status=status,
+                has_pending_roster=self.pending_roster_chats is not None,
+            )
             return
 
         if status in {"needs_pairing", "needs_relogin", "needs_qr", "needs_pair_code"}:
@@ -671,22 +689,49 @@ class MainWindow(wx.Frame):
         return "Vincula WhatsApp con codigo o QR."
 
     def _apply_pending_roster_if_ready(self) -> None:
+        started_at = time.perf_counter()
         if not self.whatsapp_verified:
             return
         if self.pending_roster_chats is None:
             self._show_chat_placeholder("Cargando chats...")
+            self._debug_perf("_apply_pending_roster_if_ready.waiting", started_at)
             return
 
         self._apply_roster_chats(self.pending_roster_chats)
+        self._debug_perf(
+            "_apply_pending_roster_if_ready.applied",
+            started_at,
+            chats=len(self.pending_roster_chats),
+        )
 
     def _apply_roster_chats(self, chats: list[Chat]) -> None:
+        started_at = time.perf_counter()
+        load_started_at = time.perf_counter()
         cached_chats = self._load_cached_chats()
+        self._debug_perf(
+            "_apply_roster_chats.load_cached_chats",
+            load_started_at,
+            cached=len(cached_chats),
+            roster=len(chats),
+        )
+        merge_started_at = time.perf_counter()
         self._set_searchable_chats(self._merge_chat_lists(chats, cached_chats))
+        self._debug_perf(
+            "_apply_roster_chats.merge_searchable",
+            merge_started_at,
+            searchable=len(self.searchable_chats_by_jid),
+        )
         self.xmpp.monitor_group_chats([chat.jid for chat in cached_chats if chat.is_group])
         self.loading_initial_chat_activity = True
         self.pending_chat_activity = {}
         self.loaded_chat_summaries = len(cached_chats)
+        render_started_at = time.perf_counter()
         self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+        self._debug_perf(
+            "_apply_roster_chats.render_local_list",
+            render_started_at,
+            cached=len(cached_chats),
+        )
         if not self.chat_list.selected_chat():
             self.chat_list.select_first()
         self.chat_list.focus()
@@ -697,6 +742,12 @@ class MainWindow(wx.Frame):
         wx.CallLater(
             INITIAL_CHAT_LOAD_FALLBACK_MS,
             self._finish_initial_chat_loading_if_needed,
+        )
+        self._debug_perf(
+            "_apply_roster_chats.total",
+            started_at,
+            cached=len(cached_chats),
+            roster=len(chats),
         )
 
     def _show_chat_placeholder(self, text: str) -> None:
@@ -911,21 +962,35 @@ class MainWindow(wx.Frame):
         chats_by_jid: dict[str, Chat],
         limit: int = SEARCH_RESULT_LIMIT,
     ) -> list[ChatListItem]:
+        started_at = time.perf_counter()
         if limit <= 0:
             return []
 
+        memory_started_at = time.perf_counter()
         messages_by_key: dict[tuple[object, ...], Message] = {}
         for messages in self.messages_by_chat.values():
             for message in messages:
                 chat = chats_by_jid.get(message.chat_jid)
                 if self._message_matches_search(message, terms, chat):
                     messages_by_key[self._message_search_key(message)] = message
+        self._debug_perf(
+            "_message_search_results.memory",
+            memory_started_at,
+            matches=len(messages_by_key),
+        )
 
         if self.current_jid:
             try:
+                sqlite_started_at = time.perf_counter()
                 cached_messages = self.message_store.search_messages(
                     self.current_jid,
                     " ".join(terms),
+                    limit=limit,
+                )
+                self._debug_perf(
+                    "_message_search_results.sqlite",
+                    sqlite_started_at,
+                    cached=len(cached_messages),
                     limit=limit,
                 )
             except Exception:
@@ -944,6 +1009,12 @@ class MainWindow(wx.Frame):
         for message in messages:
             chat = chats_by_jid.get(message.chat_jid) or self._chat_for_message(message)
             results.append(ChatListItem(chat=chat, message=message))
+        self._debug_perf(
+            "_message_search_results.total",
+            started_at,
+            results=len(results),
+            terms=len(terms),
+        )
         return results
 
     def _message_search_key(self, message: Message) -> tuple[object, ...]:
@@ -2581,10 +2652,20 @@ class MainWindow(wx.Frame):
         return self._fallback_display_name_for_jid(jid)
 
     def _finish_initial_chat_loading(self, loaded_count: int) -> None:
+        started_at = time.perf_counter()
         self.loading_initial_chat_activity = False
+        load_started_at = time.perf_counter()
         cached_chats = self._load_cached_chats()
+        self._debug_perf(
+            "_finish_initial_chat_loading.load_cached_chats",
+            load_started_at,
+            cached=len(cached_chats),
+            pending=len(self.pending_chat_activity),
+        )
         chats_by_jid = {chat.jid: chat for chat in cached_chats}
 
+        merge_started_at = time.perf_counter()
+        pending_updated_chats: list[Chat] = []
         for activity in self.pending_chat_activity.values():
             chat = chats_by_jid.get(activity.chat_jid)
             if chat is None:
@@ -2603,36 +2684,69 @@ class MainWindow(wx.Frame):
                 is_group=activity.is_group,
             )
             chats_by_jid[activity.chat_jid] = updated_chat
-            self._persist_chat(updated_chat)
+            pending_updated_chats.append(updated_chat)
+        self._persist_chats(pending_updated_chats)
+        self._debug_perf(
+            "_finish_initial_chat_loading.merge_pending",
+            merge_started_at,
+            pending=len(self.pending_chat_activity),
+        )
 
         self.pending_chat_activity = {}
         chats = self._sort_chats_by_recency(list(chats_by_jid.values()))
         self.loaded_chat_summaries = max(len(chats), loaded_count)
+        render_started_at = time.perf_counter()
         self._set_searchable_chats(
             self._merge_chat_lists(list(self.searchable_chats_by_jid.values()), chats)
         )
         self.chat_list.set_chats(chats, preserve_focused_order=False)
         self.chat_list.force_refresh_visible()
+        self._debug_perf(
+            "_finish_initial_chat_loading.render",
+            render_started_at,
+            chats=len(chats),
+        )
         if not self.chat_list.selected_chat():
             self.chat_list.select_first()
             self.chat_list.focus()
         self._preload_recent_histories()
         self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats cargados")
+        self._debug_perf(
+            "_finish_initial_chat_loading.total",
+            started_at,
+            chats=len(chats),
+            loaded=loaded_count,
+        )
 
     def _finish_initial_chat_loading_if_needed(self) -> None:
         if self.loading_initial_chat_activity:
             self._finish_initial_chat_loading(len(self.pending_chat_activity))
 
     def _load_cached_chats(self) -> list[Chat]:
+        started_at = time.perf_counter()
         if not self.current_jid:
             return []
 
         try:
+            load_chats_started_at = time.perf_counter()
             chats = self.message_store.load_chats(self.current_jid)
+            self._debug_perf(
+                "_load_cached_chats.load_chats",
+                load_chats_started_at,
+                chats=len(chats),
+            )
+            latest_started_at = time.perf_counter()
             latest_messages = self.message_store.load_latest_messages(self.current_jid)
+            self._debug_perf(
+                "_load_cached_chats.load_latest_messages",
+                latest_started_at,
+                messages=len(latest_messages),
+            )
         except Exception:
             return []
 
+        normalize_started_at = time.perf_counter()
+        group_flag_writes = 0
         chats_by_jid = {chat.jid: chat for chat in chats}
         for message in latest_messages:
             chat = chats_by_jid.get(message.chat_jid)
@@ -2660,9 +2774,11 @@ class MainWindow(wx.Frame):
             if chat.jid == self.current_jid and chat.is_group:
                 chat.is_group = False
                 self.message_store.set_chat_group_flag(self.current_jid, chat.jid, False)
+                group_flag_writes += 1
             elif chat.is_group and not self._jid_may_be_group_chat(chat.jid):
                 chat.is_group = False
                 self.message_store.set_chat_group_flag(self.current_jid, chat.jid, False)
+                group_flag_writes += 1
             if chat.custom_name:
                 chat.name = chat.custom_name
                 self.chat_names_by_jid[chat.jid] = chat.custom_name
@@ -2670,6 +2786,19 @@ class MainWindow(wx.Frame):
                 chat.name = self._display_name_for_jid(chat.jid)
             else:
                 chat.name = normalize_chat_name(chat.jid, chat.name)
+        self._debug_perf(
+            "_load_cached_chats.normalize",
+            normalize_started_at,
+            chats=len(chats),
+            latest=len(latest_messages),
+            group_flag_writes=group_flag_writes,
+        )
+        self._debug_perf(
+            "_load_cached_chats.total",
+            started_at,
+            chats=len(chats),
+            latest=len(latest_messages),
+        )
         return chats
 
     @staticmethod
@@ -2704,23 +2833,44 @@ class MainWindow(wx.Frame):
         return list(chats_by_jid.values())
 
     def _load_cached_messages_for_chat(self, chat_jid: str) -> None:
+        started_at = time.perf_counter()
         if not self.current_jid:
             return
 
         try:
+            load_started_at = time.perf_counter()
             cached_messages = self.message_store.load_recent_messages(
                 self.current_jid,
                 chat_jid,
                 limit=5000,
             )
+            self._debug_perf(
+                "_load_cached_messages_for_chat.load_recent_messages",
+                load_started_at,
+                chat=chat_jid,
+                messages=len(cached_messages),
+            )
         except Exception:
             return
 
         if cached_messages:
+            merge_started_at = time.perf_counter()
             self._normalize_audio_metadata_for_messages(cached_messages)
             self._merge_messages(chat_jid, cached_messages)
             self._update_chat_activity_from_messages(chat_jid, cached_messages)
             self._update_chat_preview_from_messages(chat_jid, cached_messages)
+            self._debug_perf(
+                "_load_cached_messages_for_chat.merge",
+                merge_started_at,
+                chat=chat_jid,
+                messages=len(cached_messages),
+            )
+        self._debug_perf(
+            "_load_cached_messages_for_chat.total",
+            started_at,
+            chat=chat_jid,
+            messages=len(cached_messages),
+        )
 
     def _persist_chat(self, chat: Chat) -> None:
         if not self.current_jid:
@@ -2728,6 +2878,15 @@ class MainWindow(wx.Frame):
 
         try:
             self.message_store.upsert_chat(self.current_jid, chat)
+        except Exception:
+            return
+
+    def _persist_chats(self, chats: list[Chat]) -> None:
+        if not self.current_jid or not chats:
+            return
+
+        try:
+            self.message_store.upsert_chats(self.current_jid, chats)
         except Exception:
             return
 
@@ -2762,14 +2921,28 @@ class MainWindow(wx.Frame):
         return True
 
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
+        started_at = time.perf_counter()
         self._load_cached_messages_for_chat(chat.jid)
         self.conversation.set_chat(chat)
+        render_started_at = time.perf_counter()
         self.conversation.set_messages(
             self.messages_by_chat.get(chat.jid, []),
             unread_count=unread_count,
         )
+        self._debug_perf(
+            "_load_conversation.render_messages",
+            render_started_at,
+            chat=chat.jid,
+            messages=len(self.messages_by_chat.get(chat.jid, [])),
+        )
         self._sync_recording_ui()
         self._refresh_load_older_button(chat.jid)
+        self._debug_perf(
+            "_load_conversation.total",
+            started_at,
+            chat=chat.jid,
+            unread=unread_count,
+        )
 
     def _sync_recording_ui(self) -> None:
         self.conversation.set_recording_state(
@@ -3354,6 +3527,7 @@ class MainWindow(wx.Frame):
             return
 
         added = 0
+        merged_chats: list[Chat] = []
         for chat in chats:
             existing = self._chat_by_jid(chat.jid)
             if existing is not None:
@@ -3385,7 +3559,9 @@ class MainWindow(wx.Frame):
             self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
             self._upsert_searchable_chat(merged_chat)
             self.chat_list.upsert_chat(merged_chat)
-            self._persist_chat(merged_chat)
+            merged_chats.append(merged_chat)
+
+        self._persist_chats(merged_chats)
 
         self.loaded_chat_summaries += added
         self._refresh_chat_order()

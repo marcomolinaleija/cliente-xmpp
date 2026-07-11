@@ -96,6 +96,7 @@ IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", "
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
 CHAT_MARKERS_NS = "urn:xmpp:chat-markers:0"
 CHATSTATES_NS = "http://jabber.org/protocol/chatstates"
+RECORDING_AUDIO_NS = "urn:marco-ml:whatsapp:recording:0"
 IDLE_NS = "urn:xmpp:idle:1"
 EXPLICIT_MIME_TYPES = {
     ".aac": "audio/aac",
@@ -3130,7 +3131,7 @@ class BridgeXmppClient(ClientXMPP):
 
         return mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
 
-    async def send_file(self, to_jid: str, path: str, is_group: bool = False) -> Message:
+    async def send_file(self, to_jid: str, path: str, is_group: bool = False, view_once: bool = False) -> Message:
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
@@ -3156,6 +3157,8 @@ class BridgeXmppClient(ClientXMPP):
 
         message_type = "groupchat" if is_group else "chat"
         message = self.make_message(mto=to_jid, mbody=get_url, mtype=message_type)
+        if view_once and media_kind == "audio":
+            message["thread"] = "urn:marco-ml:whatsapp:view-once:0"
         message_id = str(message["id"] or "")
         self._append_file_metadata(
             message,
@@ -3563,7 +3566,7 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
-    def send_file(self, to_jid: str, path: str, is_group: bool = False) -> None:
+    def send_file(self, to_jid: str, path: str, is_group: bool = False, view_once: bool = False) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
             return
@@ -3573,7 +3576,7 @@ class XmppService:
                 return
 
             try:
-                message = await self._client.send_file(to_jid, path, is_group=is_group)
+                message = await self._client.send_file(to_jid, path, is_group=is_group, view_once=view_once)
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
                 return
@@ -3585,6 +3588,22 @@ class XmppService:
                 self._loop.create_task(send())
 
         self._loop.call_soon_threadsafe(schedule)
+
+    def send_chat_state(self, to_jid: str, state: str, is_group: bool = False, media: str = "") -> None:
+        if not self._client or not self._loop:
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+            message_type = "groupchat" if is_group else "chat"
+            msg = self._client.make_message(mto=to_jid, mtype=message_type)
+            msg.append(ET.Element(f"{{{CHATSTATES_NS}}}{state}"))
+            if state == "composing" and media == "audio":
+                msg.append(ET.Element(f"{{{RECORDING_AUDIO_NS}}}recording"))
+            msg.send()
+
+        self._loop.call_soon_threadsafe(send)
 
     def send_audio_file(self, to_jid: str, path: str, is_group: bool = False) -> None:
         self.send_file(to_jid, path, is_group=is_group)

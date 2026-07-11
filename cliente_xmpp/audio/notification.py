@@ -31,6 +31,11 @@ class NewMessageSound(AssetSound):
         super().__init__("new-message.mp3", "cliente_xmpp_new_message")
 
 
+class OpenChatMessageSound(AssetSound):
+    def __init__(self) -> None:
+        super().__init__("message.mp3", "cliente_xmpp_open_chat_message")
+
+
 class SentMessageSound(AssetSound):
     def __init__(self) -> None:
         super().__init__("sent-message.mp3", "cliente_xmpp_sent_message")

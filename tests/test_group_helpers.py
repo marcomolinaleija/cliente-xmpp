@@ -48,6 +48,43 @@ class ChatListFocusTests(unittest.TestCase):
         self.assertEqual(calls, [("select", "marco@example.org"), ("focus", "")])
 
 
+class IncomingMessageSoundTests(unittest.TestCase):
+    def _window(self, *, active: bool, muted: bool = False) -> SimpleNamespace:
+        played: list[str] = []
+        return SimpleNamespace(
+            IsActive=lambda: active,
+            _message_notifications_muted=lambda _message: muted,
+            open_chat_message_sound=SimpleNamespace(play=lambda: played.append("open")),
+            new_message_sound=SimpleNamespace(play=lambda: played.append("new")),
+            played=played,
+        )
+
+    @staticmethod
+    def _message() -> Message:
+        return Message(chat_jid="contact@example.org", sender_jid="contact@example.org", body="Hola")
+
+    def test_uses_open_chat_sound_only_when_window_is_active(self) -> None:
+        window = self._window(active=True)
+
+        MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
+
+        self.assertEqual(window.played, ["open"])
+
+    def test_uses_normal_sound_when_open_chat_window_is_not_active(self) -> None:
+        window = self._window(active=False)
+
+        MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
+
+        self.assertEqual(window.played, ["new"])
+
+    def test_silenced_chat_plays_no_incoming_sound(self) -> None:
+        window = self._window(active=True, muted=True)
+
+        MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
+
+        self.assertEqual(window.played, [])
+
+
 class WhatsAppPairingCodeTests(unittest.TestCase):
     def test_extracts_code_after_label_instead_of_whatsapp_word(self) -> None:
         text = (

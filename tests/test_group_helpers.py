@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -235,6 +236,50 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         )
 
         self.assertEqual(BridgeXmppClient._delivery_marker_id(message), "wa-message-id")
+
+    def test_reads_avatar_metadata_from_pubsub_iq(self) -> None:
+        iq = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <iq>
+                  <pubsub xmlns="http://jabber.org/protocol/pubsub">
+                    <items node="urn:xmpp:avatar:metadata">
+                      <item id="current">
+                        <metadata xmlns="urn:xmpp:avatar:metadata">
+                          <info id="avatar-id" type="image/png" bytes="1234" />
+                        </metadata>
+                      </item>
+                    </items>
+                  </pubsub>
+                </iq>
+                """
+            )
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._avatar_metadata_from_iq(iq),
+            ("avatar-id", "image/png"),
+        )
+
+    def test_reads_avatar_data_from_pubsub_iq(self) -> None:
+        encoded = base64.b64encode(b"avatar-bytes").decode("ascii")
+        iq = SimpleNamespace(
+            xml=ET.fromstring(
+                f"""
+                <iq>
+                  <pubsub xmlns="http://jabber.org/protocol/pubsub">
+                    <items node="urn:xmpp:avatar:data">
+                      <item id="avatar-id">
+                        <data xmlns="urn:xmpp:avatar:data">{encoded}</data>
+                      </item>
+                    </items>
+                  </pubsub>
+                </iq>
+                """
+            )
+        )
+
+        self.assertEqual(BridgeXmppClient._avatar_data_from_iq(iq), b"avatar-bytes")
 
 
 class ContactStateTests(unittest.TestCase):

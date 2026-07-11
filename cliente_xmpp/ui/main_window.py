@@ -7,6 +7,7 @@ import unicodedata
 import uuid
 import webbrowser
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,6 +50,8 @@ from cliente_xmpp.xmpp.events import (
     ChatActivityLoadFinished,
     ChatStateUpdated,
     ChatsDiscovered,
+    ContactAvatarReceived,
+    ContactAvatarUnavailable,
     ContactPresenceUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
@@ -73,6 +76,7 @@ MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 GROUP_SELF_ECHO_WINDOW_SECONDS = 10
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
+CONTACT_AVATARS_DIR = APP_DIR / "avatars"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
@@ -109,6 +113,8 @@ class MainWindow(wx.Frame):
         self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.contact_presence_by_chat: dict[str, ContactPresenceUpdated] = {}
+        self.contact_avatar_paths_by_chat: dict[str, Path] = {}
+        self.contact_avatar_requests_in_progress: set[str] = set()
         self.chat_state_by_chat: dict[str, str] = {}
         self.searchable_chats_by_jid: dict[str, Chat] = {}
         self.roster_jids: set[str] = set()
@@ -130,6 +136,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_downloads_in_progress: set[str] = set()
+        self.contact_info_dialog: ContactInfoDialog | None = None
         self.audio_recorder = MciAudioRecorder()
 
         self.startup_panel: wx.Panel
@@ -219,6 +226,7 @@ class MainWindow(wx.Frame):
         self.chat_list.search_ctrl.Bind(wx.EVT_KEY_DOWN, self._on_search_key_down)
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
+        self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
         self.conversation.attach_button.Bind(wx.EVT_BUTTON, self._on_attach_file)
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
@@ -1975,6 +1983,15 @@ class MainWindow(wx.Frame):
             case ContactPresenceUpdated(chat_jid=chat_jid):
                 self.contact_presence_by_chat[chat_jid] = event
                 self._refresh_current_chat_status_title()
+            case ContactAvatarReceived(
+                chat_jid=chat_jid,
+                data=data,
+                mime=mime,
+                avatar_id=avatar_id,
+            ):
+                self._handle_contact_avatar_received(chat_jid, data, mime, avatar_id)
+            case ContactAvatarUnavailable(chat_jid=chat_jid, detail=detail):
+                self._handle_contact_avatar_unavailable(chat_jid, detail)
             case ChatStateUpdated(chat_jid=chat_jid, state=state, media=media):
                 self._set_chat_state(chat_jid, state, media)
             case ChatActivityLoaded(
@@ -3140,6 +3157,10 @@ class MainWindow(wx.Frame):
             return
 
         status = self._conversation_status_text(chat.jid)
+        self.conversation.set_contact_summary(
+            chat.name,
+            self._contact_connection_status_text(chat.jid),
+        )
         if status:
             self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name} - {status}")
         else:
@@ -3169,6 +3190,150 @@ class MainWindow(wx.Frame):
         if presence.status:
             return presence.status
         return ""
+
+    def _contact_connection_status_text(self, chat_jid: str) -> str:
+        presence = self.contact_presence_by_chat.get(chat_jid)
+        if presence is None:
+            return "estado desconocido"
+
+        if presence.availability == "online":
+            return "en línea"
+        if presence.availability == "away":
+            return "ausente"
+        if presence.availability == "busy":
+            return "ocupado"
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
+        if presence.status:
+            return presence.status
+        return "estado desconocido"
+
+    def _on_contact_info(self, _event: wx.CommandEvent) -> None:
+        chat = self.conversation.current_chat
+        if chat is None:
+            return
+
+        avatar_path = self._contact_avatar_path(chat)
+        dialog = ContactInfoDialog(
+            self,
+            chat=chat,
+            status=self._contact_connection_status_text(chat.jid),
+            avatar_path=avatar_path,
+            on_describe_photo=self._send_contact_photo_to_rayoai,
+        )
+        self.contact_info_dialog = dialog
+        if avatar_path is None:
+            self._request_contact_avatar(chat.jid)
+        try:
+            dialog.ShowModal()
+        finally:
+            if self.contact_info_dialog is dialog:
+                self.contact_info_dialog = None
+            dialog.Destroy()
+
+    def _contact_avatar_path(self, chat: Chat) -> Path | None:
+        path = self.contact_avatar_paths_by_chat.get(chat.jid)
+        if path is not None and path.exists():
+            return path
+
+        existing_paths = sorted(CONTACT_AVATARS_DIR.glob(f"{self._avatar_filename_prefix(chat.jid)}.*"))
+        for existing_path in existing_paths:
+            if existing_path.is_file():
+                self.contact_avatar_paths_by_chat[chat.jid] = existing_path
+                return existing_path
+
+        return None
+
+    def _request_contact_avatar(self, chat_jid: str) -> None:
+        if not self.whatsapp_verified:
+            return
+        if chat_jid in self.contact_avatar_requests_in_progress:
+            return
+
+        self.contact_avatar_requests_in_progress.add(chat_jid)
+        self.status_bar.SetStatusText("Buscando foto de perfil...")
+        self.xmpp.fetch_contact_avatar(chat_jid)
+
+    def _handle_contact_avatar_received(
+        self,
+        chat_jid: str,
+        data: bytes,
+        mime: str,
+        avatar_id: str,
+    ) -> None:
+        self.contact_avatar_requests_in_progress.discard(chat_jid)
+        try:
+            path = self._save_contact_avatar(chat_jid, data, mime, avatar_id)
+        except OSError as exc:
+            self.status_bar.SetStatusText(f"No se pudo guardar la foto de perfil: {exc}")
+            return
+
+        self.contact_avatar_paths_by_chat[chat_jid] = path
+        if (
+            self.contact_info_dialog is not None
+            and self.contact_info_dialog.chat_jid == chat_jid
+        ):
+            self.contact_info_dialog.set_avatar_path(path)
+        self.status_bar.SetStatusText("Foto de perfil descargada")
+
+    def _handle_contact_avatar_unavailable(self, chat_jid: str, detail: str) -> None:
+        self.contact_avatar_requests_in_progress.discard(chat_jid)
+        message = detail or "Foto de perfil no disponible."
+        if (
+            self.contact_info_dialog is not None
+            and self.contact_info_dialog.chat_jid == chat_jid
+        ):
+            self.contact_info_dialog.set_avatar_unavailable(message)
+        self.status_bar.SetStatusText(message)
+
+    def _save_contact_avatar(
+        self,
+        chat_jid: str,
+        data: bytes,
+        mime: str,
+        avatar_id: str,
+    ) -> Path:
+        CONTACT_AVATARS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = (
+            f"{self._avatar_filename_prefix(chat_jid)}-"
+            f"{self._safe_avatar_token(avatar_id or hashlib.sha256(data).hexdigest()[:16])}"
+            f"{self._avatar_extension(mime)}"
+        )
+        path = CONTACT_AVATARS_DIR / filename
+        path.write_bytes(data)
+        return path
+
+    @staticmethod
+    def _avatar_filename_prefix(chat_jid: str) -> str:
+        return hashlib.sha256(chat_jid.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _safe_avatar_token(value: str) -> str:
+        cleaned = "".join(
+            character if character.isalnum() or character in ("-", "_") else "-"
+            for character in value.strip()
+        ).strip("-")
+        return cleaned[:48] or "avatar"
+
+    @staticmethod
+    def _avatar_extension(mime: str) -> str:
+        normalized = mime.lower().split(";", 1)[0].strip()
+        if normalized in {"image/jpeg", "image/jpg"}:
+            return ".jpg"
+        if normalized == "image/png":
+            return ".png"
+        if normalized == "image/webp":
+            return ".webp"
+        if normalized == "image/gif":
+            return ".gif"
+        return ".jpg"
+
+    def _send_contact_photo_to_rayoai(self, path: Path) -> None:
+        if rayoai.send_open_path(path):
+            self.status_bar.SetStatusText("Foto enviada a RayoAI")
+            return
+
+        self.status_bar.SetStatusText("No se pudo enviar a RayoAI. Verifica que esté abierto.")
 
     @staticmethod
     def _format_presence_time(value: datetime) -> str:
@@ -3265,3 +3430,121 @@ class MainWindow(wx.Frame):
     @staticmethod
     def _fallback_display_name_for_jid(jid: str) -> str:
         return display_label_from_jid(jid) or jid
+
+
+class ContactInfoDialog(wx.Dialog):
+    def __init__(
+        self,
+        parent: wx.Window,
+        chat: Chat,
+        status: str,
+        avatar_path: Path | None = None,
+        on_describe_photo: Callable[[Path], None] | None = None,
+    ) -> None:
+        super().__init__(parent, title=f"Información de {chat.name}", size=(620, 420))
+        self._chat = chat
+        self._status = status
+        self._avatar_path = avatar_path
+        self._avatar_status = ""
+        self._on_describe_photo = on_describe_photo
+
+        body = self._format_contact_info(chat, status, avatar_path, self._avatar_status)
+        self._text = wx.TextCtrl(
+            self,
+            value=body,
+            style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        self._text.SetInsertionPoint(0)
+
+        self._describe_button = wx.Button(self, label="Describir foto con RayoAI")
+        self._describe_button.Enable(avatar_path is not None and on_describe_photo is not None)
+        close_button = wx.Button(self, wx.ID_OK, "Cerrar")
+
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        buttons.Add(self._describe_button, 0, wx.RIGHT, 8)
+        buttons.Add(close_button, 0)
+
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self._text, 1, wx.ALL | wx.EXPAND, 12)
+        box.Add(buttons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_RIGHT, 12)
+        self.SetSizer(box)
+        apply_theme(self)
+        self.Bind(wx.EVT_BUTTON, self._on_describe_photo_clicked, self._describe_button)
+        self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_OK), close_button)
+        wx.CallAfter(self._text.SetFocus)
+
+    @property
+    def chat_jid(self) -> str:
+        return self._chat.jid
+
+    def set_avatar_path(self, path: Path) -> None:
+        self._avatar_path = path
+        self._avatar_status = ""
+        self._text.SetValue(
+            self._format_contact_info(self._chat, self._status, path, self._avatar_status)
+        )
+        self._text.SetInsertionPoint(0)
+        self._describe_button.Enable(self._on_describe_photo is not None)
+
+    def set_avatar_unavailable(self, detail: str) -> None:
+        self._avatar_path = None
+        self._avatar_status = detail
+        self._text.SetValue(
+            self._format_contact_info(
+                self._chat,
+                self._status,
+                self._avatar_path,
+                self._avatar_status,
+            )
+        )
+        self._text.SetInsertionPoint(0)
+        self._describe_button.Enable(False)
+
+    @classmethod
+    def _format_contact_info(
+        cls,
+        chat: Chat,
+        status: str,
+        avatar_path: Path | None = None,
+        avatar_status: str = "",
+    ) -> str:
+        lines = [
+            f"Nombre: {chat.name}",
+            f"Tipo: {'grupo' if chat.is_group else 'contacto'}",
+            f"Estado: {status}",
+        ]
+        phone = cls._phone_from_jid(chat.jid)
+        if phone:
+            lines.append(f"Número: {phone}")
+        if chat.custom_name:
+            lines.append(f"Nombre personalizado: {chat.custom_name}")
+        if chat.notifications_muted:
+            lines.append("Notificaciones: silenciadas")
+        if chat.is_group and chat.group_member_count:
+            lines.append(f"Participantes: {chat.group_member_count}")
+
+        lines.extend(
+            (
+                "",
+                (
+                    "Foto de perfil: lista para describir con RayoAI"
+                    if avatar_path is not None
+                    else f"Foto de perfil: {avatar_status or 'pendiente de consulta'}"
+                ),
+                "Mensaje de estado: no disponible por ahora",
+            )
+        )
+        return "\n".join(lines)
+
+    def _on_describe_photo_clicked(self, _event: wx.CommandEvent) -> None:
+        if self._avatar_path is None or self._on_describe_photo is None:
+            return
+
+        self._on_describe_photo(self._avatar_path)
+
+    @staticmethod
+    def _phone_from_jid(jid: str) -> str:
+        local = jid.split("@", 1)[0].strip()
+        if not local.startswith("+"):
+            return ""
+        return local

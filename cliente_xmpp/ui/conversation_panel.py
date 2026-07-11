@@ -142,7 +142,11 @@ class ConversationPanel(wx.Panel):
             )
             restore_focused_message = self._focus_target_index is not None
         elif had_message_focus:
-            self._focus_target_index = None
+            if self._unread_marker_index is not None:
+                self._focus_target_index = self._unread_marker_index
+            elif self._message_rows:
+                self._focus_target_index = len(self._message_rows) - 1
+            restore_focused_message = self._focus_target_index is not None
         elif self._unread_marker_index is not None:
             self._focus_target_index = self._unread_marker_index
         elif self._message_rows:
@@ -452,8 +456,11 @@ class ConversationPanel(wx.Panel):
     def _next_audio_message(self, start_index: int) -> tuple[int | None, Message | None]:
         for index in range(start_index, len(self._message_rows)):
             message = self._message_at_row(index)
-            if message is not None and message.audio_url:
+            if message is None:
+                continue
+            if message.audio_url:
                 return index, message
+            return None, None
 
         return None, None
 

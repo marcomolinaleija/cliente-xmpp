@@ -14,7 +14,7 @@ from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -297,6 +297,7 @@ class MessageStore:
                     reactions_json TEXT NOT NULL DEFAULT '[]',
                     reply_quote TEXT NOT NULL DEFAULT '',
                     retracted INTEGER NOT NULL DEFAULT 0,
+                    edited INTEGER NOT NULL DEFAULT 0,
                     received_at TEXT NOT NULL,
                     PRIMARY KEY (account_jid, chat_jid, message_key)
                 );
@@ -335,6 +336,7 @@ class MessageStore:
             "chat_is_group": "INTEGER NOT NULL DEFAULT 0",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
             "retracted": "INTEGER NOT NULL DEFAULT 0",
+            "edited": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in columns.items():
             if column not in existing_columns:
@@ -548,9 +550,9 @@ class MessageStore:
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
                 media_local_path, chat_is_group, starred, reactions_json, reply_quote,
-                retracted, received_at
+                retracted, edited, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
                 sender_jid = excluded.sender_jid,
@@ -594,6 +596,10 @@ class MessageStore:
                 retracted = CASE
                     WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN 1
                     ELSE 0
+                END,
+                edited = CASE
+                    WHEN excluded.edited = 1 OR messages.edited = 1 THEN 1
+                    ELSE 0
                 END
             """,
             (
@@ -619,6 +625,7 @@ class MessageStore:
                 json.dumps(list(message.reactions), ensure_ascii=False),
                 message.reply_quote,
                 int(message.retracted),
+                int(message.edited),
                 now,
             ),
         )
@@ -973,6 +980,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         reactions=tuple(json.loads(str(row["reactions_json"] or "[]"))),
         reply_quote=str(row["reply_quote"] or ""),
         retracted=bool(row["retracted"]),
+        edited=bool(row["edited"]),
     )
 
 

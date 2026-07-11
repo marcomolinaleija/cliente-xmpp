@@ -738,6 +738,43 @@ class GroupMessageParsingTests(unittest.TestCase):
         messages = window.messages_by_chat[first.chat_jid]
         self.assertEqual([message.message_id for message in messages], [first.message_id, second.message_id])
 
+    def test_message_correction_replaces_original_message(self) -> None:
+        original = Message(
+            chat_jid="+5218126462159@whatsapp.example.org",
+            sender_jid="me",
+            body="texto con error",
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            message_id="original-id",
+        )
+        correction = Message(
+            chat_jid=original.chat_jid,
+            sender_jid="me",
+            body="texto corregido",
+            sent_at=original.sent_at + timedelta(seconds=5),
+            outgoing=True,
+            message_id="correction-id",
+            replaces_id="original-id",
+        )
+
+        self.assertTrue(MainWindow._apply_message_correction([original], correction))
+        self.assertEqual(original.body, "texto corregido")
+        self.assertTrue(original.edited)
+
+    def test_reads_message_correction_target_id(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message>
+                <replace xmlns="urn:xmpp:message-correct:0" id="original-id" />
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._message_correction_id_from_xml(xml),
+            "original-id",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

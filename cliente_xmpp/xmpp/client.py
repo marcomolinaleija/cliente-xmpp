@@ -7,6 +7,7 @@ import mimetypes
 import re
 import threading
 import unicodedata
+import uuid
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +74,7 @@ REACTIONS_NS = "urn:xmpp:reactions:0"
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
 MESSAGE_RETRACT_NS = "urn:xmpp:message-retract:1"
+MESSAGE_CORRECT_NS = "urn:xmpp:message-correct:0"
 DELAY_NS = "urn:xmpp:delay"
 FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
@@ -295,6 +297,7 @@ class BridgeXmppClient(ClientXMPP):
                     media_duration_seconds=media_duration,
                     message_id=str(msg["id"] or ""),
                     reply_quote=reply_quote,
+                    replaces_id=self._message_correction_id_from_xml(msg.xml),
                 )
             )
         )
@@ -2190,6 +2193,7 @@ class BridgeXmppClient(ClientXMPP):
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             chat_is_group=is_group or message_chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
         )
 
@@ -2253,6 +2257,7 @@ class BridgeXmppClient(ClientXMPP):
                     message_id=str(stanza["id"] or ""),
                     chat_is_group=is_group,
                     reply_quote=reply_quote,
+                    replaces_id=self._message_correction_id_from_xml(stanza.xml),
                     delivery_state="sent" if outgoing else "",
                 )
             )
@@ -2304,6 +2309,7 @@ class BridgeXmppClient(ClientXMPP):
             message_id=str(stanza["id"] or ""),
             chat_is_group=True,
             reply_quote=reply_quote,
+            replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
         )
 
@@ -2428,6 +2434,7 @@ class BridgeXmppClient(ClientXMPP):
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            replaces_id=self._message_correction_id_from_xml(message),
             delivery_state="sent" if outgoing else "",
         )
 
@@ -2529,6 +2536,14 @@ class BridgeXmppClient(ClientXMPP):
             return ""
 
         return retract.attrib.get("id", "").strip()
+
+    @staticmethod
+    def _message_correction_id_from_xml(xml: ET.Element) -> str:
+        replace = xml.find(f".//{{{MESSAGE_CORRECT_NS}}}replace")
+        if replace is None:
+            return ""
+
+        return replace.attrib.get("id", "").strip()
 
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
@@ -3401,6 +3416,44 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
+    def correct_message(
+        self,
+        to_jid: str,
+        body: str,
+        original_message_id: str,
+        is_group: bool = False,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexión XMPP activa."))
+            return
+
+        if not original_message_id:
+            self._emit(XmppError("No se puede editar: el mensaje no tiene ID XMPP."))
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            try:
+                if is_group:
+                    self._client._join_group_chat(to_jid)
+                message_type = "groupchat" if is_group else "chat"
+                msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
+                msg["id"] = f"cliente-xmpp-{uuid.uuid4().hex}"
+                msg.append(
+                    ET.Element(
+                        f"{{{MESSAGE_CORRECT_NS}}}replace",
+                        {"id": original_message_id},
+                    )
+                )
+                self._request_delivery_updates(msg, message_type)
+                msg.send()
+            except Exception as exc:
+                self._emit(XmppError(f"No se pudo editar el mensaje: {exc}"))
+
+        self._loop.call_soon_threadsafe(send)
+
     @staticmethod
     def _request_delivery_updates(msg: object, message_type: str) -> None:
         if message_type != "groupchat":
@@ -3698,6 +3751,7 @@ class XmppService:
                     )
                 else:
                     self._client.register_plugin(plugin)
+            self._client["xep_0030"].add_feature(MESSAGE_CORRECT_NS)
 
             if settings.host:
                 self._client.connect(settings.host, settings.port)

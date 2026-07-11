@@ -81,6 +81,7 @@ CONTACT_AVATARS_DIR = APP_DIR / "avatars"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
+MESSAGE_EDIT_WINDOW = timedelta(minutes=15)
 APP_WINDOW_TITLE = "whatsapp-CAN"
 PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
 
@@ -126,6 +127,7 @@ class MainWindow(wx.Frame):
         self.loaded_chat_summaries = 0
         self.search_debounce_timer: wx.CallLater | None = None
         self.reply_context: Message | None = None
+        self.edit_context: Message | None = None
         self.current_jid = ""
         self.whatsapp_component_jid = ""
         self.whatsapp_link_status = "unknown"
@@ -1128,6 +1130,9 @@ class MainWindow(wx.Frame):
             if self.reply_context:
                 self._cancel_reply()
                 return
+            if self.edit_context:
+                self._cancel_editing()
+                return
             selected_jid = self._show_chat_list()
             self._clear_chat_search(focus_list=True, selected_jid=selected_jid)
             return
@@ -1183,6 +1188,10 @@ class MainWindow(wx.Frame):
         chat = self.conversation.current_chat
         body = self.conversation.consume_composed_message()
         if not chat or not body:
+            return
+
+        if self.edit_context is not None:
+            self._send_message_correction(self.edit_context, body)
             return
 
         message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
@@ -1420,6 +1429,9 @@ class MainWindow(wx.Frame):
             event.Skip()
             return
 
+        if self._is_edit_last_message_shortcut(event) and self._edit_last_message():
+            return
+
         if self._is_enter_without_shift(event):
             if self.audio_recorder.is_recording or self.conversation.has_composed_text():
                 self._on_primary_send_action(wx.CommandEvent())
@@ -1452,6 +1464,14 @@ class MainWindow(wx.Frame):
         return (
             event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER)
             and not event.ShiftDown()
+        )
+
+    @staticmethod
+    def _is_edit_last_message_shortcut(event: wx.KeyEvent) -> bool:
+        return (
+            event.ControlDown()
+            and not event.AltDown()
+            and event.GetKeyCode() == wx.WXK_UP
         )
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
@@ -1515,7 +1535,6 @@ class MainWindow(wx.Frame):
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
         describe_item: wx.MenuItem | None = None
-        play_item: wx.MenuItem | None = None
         links = message_links(message)
         if links:
             link_item = menu.Append(wx.ID_ANY, "Abrir enlace")
@@ -1525,17 +1544,13 @@ class MainWindow(wx.Frame):
                 media_label = "Abrir foto" if local_media_path(message) else "Descargar foto"
             elif message.media_kind == "video":
                 media_label = "Abrir video" if local_media_path(message) else "Descargar video"
-            elif message.media_kind == "audio":
-                media_label = "Reproducir audio" if message.audio_url else media_label
             if not is_link_preview(message):
-                media_item = menu.Append(wx.ID_ANY, media_label)
+                if message.media_kind != "audio":
+                    media_item = menu.Append(wx.ID_ANY, media_label)
                 copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
                 copy_file_item.Enable(local_media_path(message) is not None)
                 if message.media_kind in {"image", "video"}:
                     describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
-        else:
-            play_item = menu.Append(wx.ID_ANY, "Reproducir audio")
-            play_item.Enable(False)
 
         reaction_menu = wx.Menu()
         reaction_items: list[tuple[wx.MenuItem, str]] = []
@@ -1546,27 +1561,25 @@ class MainWindow(wx.Frame):
         star_label = "No destacar" if message.starred else "Destacar"
         star_item = menu.Append(wx.ID_ANY, star_label)
         delete_item: wx.MenuItem | None = None
+        edit_item: wx.MenuItem | None = None
+        if self._message_can_be_edited(message):
+            edit_item = menu.Append(wx.ID_ANY, "Editar mensaje")
         if message.outgoing:
             delete_item = menu.Append(wx.ID_ANY, "Eliminar mensaje")
             delete_item.Enable(self._message_can_be_deleted(message))
 
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        if edit_item:
+            self.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
         if link_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._open_message_link(message), link_item)
         if media_item:
-            if message.media_kind == "audio":
-                self.Bind(
-                    wx.EVT_MENU,
-                    lambda _event: self.conversation.play_selected_audio(),
-                    media_item,
-                )
-            else:
-                self.Bind(
-                    wx.EVT_MENU,
-                    lambda _event: self._open_or_download_media(message),
-                    media_item,
-                )
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._open_or_download_media(message),
+                media_item,
+            )
         if copy_file_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._copy_media_file(message), copy_file_item)
         if describe_item:
@@ -1574,12 +1587,6 @@ class MainWindow(wx.Frame):
                 wx.EVT_MENU,
                 lambda _event: self._describe_media_with_rayoai(message),
                 describe_item,
-            )
-        if play_item:
-            self.Bind(
-                wx.EVT_MENU,
-                lambda _event: self.conversation.play_selected_audio(),
-                play_item,
             )
         self.Bind(wx.EVT_MENU, lambda _event: self._toggle_starred_message(message), star_item)
         for item, reaction in reaction_items:
@@ -1604,6 +1611,71 @@ class MainWindow(wx.Frame):
     def _cancel_reply(self) -> None:
         self.reply_context = None
         self.conversation.clear_reply_quote()
+
+    def _message_can_be_edited(self, message: Message) -> bool:
+        age = datetime.now(message.sent_at.tzinfo) - message.sent_at
+        return bool(
+            message.outgoing
+            and message.message_id
+            and message.body
+            and not message.media_url
+            and not message.audio_url
+            and not message.reply_quote
+            and not message.retracted
+            and message.delivery_state not in {"pending", "failed"}
+            and timedelta() <= age <= MESSAGE_EDIT_WINDOW
+        )
+
+    def _edit_last_message(self) -> bool:
+        chat = self.conversation.current_chat
+        if chat is None or self.conversation.has_composed_text():
+            return False
+
+        messages = self.messages_by_chat.get(chat.jid, [])
+        if not messages or not self._message_can_be_edited(messages[-1]):
+            return False
+
+        self._begin_editing(messages[-1])
+        return True
+
+    def _begin_editing(self, message: Message) -> None:
+        if not self._message_can_be_edited(message):
+            self.status_bar.SetStatusText("Ese mensaje ya no se puede editar")
+            return
+
+        if self.reply_context:
+            self._cancel_reply()
+        self.edit_context = message
+        self.conversation.begin_editing(message)
+        self.status_bar.SetStatusText("Editando mensaje")
+
+    def _cancel_editing(self) -> None:
+        self.edit_context = None
+        self.conversation.clear_editing()
+        self.conversation.compose.Clear()
+        self.status_bar.SetStatusText("Edición cancelada")
+
+    def _send_message_correction(self, message: Message, body: str) -> None:
+        if not self._message_can_be_edited(message):
+            self._cancel_editing()
+            self.status_bar.SetStatusText("Ese mensaje ya no se puede editar")
+            return
+
+        message.body = body
+        message.edited = True
+        self._persist_messages([message])
+        self.conversation.refresh_message(message)
+        self._update_chat_from_message(message)
+        self._refresh_chat_order(message.chat_jid)
+        self.xmpp.correct_message(
+            message.chat_jid,
+            body,
+            message.message_id,
+            is_group=message.chat_is_group,
+        )
+        self.edit_context = None
+        self.conversation.clear_editing()
+        self.status_bar.SetStatusText("Mensaje editado")
 
     def _delete_selected_message(self) -> bool:
         message = self.conversation.selected_message()
@@ -2138,11 +2210,21 @@ class MainWindow(wx.Frame):
 
         self._normalize_audio_metadata_for_messages(messages)
         self._merge_messages(chat_jid, messages)
-        self._persist_messages(messages)
-        if messages:
-            self._update_chat_activity_from_messages(chat_jid, messages)
-            self._update_chat_preview_from_messages(chat_jid, messages)
-            self._auto_download_audio_messages(messages)
+        corrections = {message.replaces_id for message in messages if message.replaces_id}
+        corrected_messages = [
+            message
+            for message in self.messages_by_chat.get(chat_jid, [])
+            if message.message_id in corrections
+        ]
+        self._persist_messages(
+            [message for message in messages if not message.replaces_id] + corrected_messages
+        )
+        activity_messages = [message for message in messages if not message.replaces_id]
+        activity_messages.extend(corrected_messages)
+        if activity_messages:
+            self._update_chat_activity_from_messages(chat_jid, activity_messages)
+            self._update_chat_preview_from_messages(chat_jid, activity_messages)
+            self._auto_download_audio_messages(activity_messages)
         self._refresh_chat_order()
         if (
             not background
@@ -2175,6 +2257,8 @@ class MainWindow(wx.Frame):
         indexes_by_content: dict[tuple[object, ...], list[int]] = {}
         unique_messages: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
+            if MainWindow._apply_message_correction(unique_messages, message):
+                continue
             key = self._message_merge_key(message)
             existing_index = self._matching_group_self_echo_index(message, unique_messages)
             if existing_index is None:
@@ -2196,6 +2280,27 @@ class MainWindow(wx.Frame):
             unique_messages.append(message)
 
         self.messages_by_chat[chat_jid] = unique_messages
+
+    @staticmethod
+    def _apply_message_correction(messages: list[Message], correction: Message) -> bool:
+        if not correction.replaces_id:
+            return False
+
+        for target in messages:
+            if (
+                target.message_id != correction.replaces_id
+                or target.outgoing != correction.outgoing
+            ):
+                continue
+            if target.retracted:
+                return True
+
+            target.body = correction.body
+            target.reply_quote = correction.reply_quote
+            target.edited = True
+            return True
+
+        return False
 
     @classmethod
     def _matching_group_self_echo_index(
@@ -2533,6 +2638,7 @@ class MainWindow(wx.Frame):
         self._merge_messages(message.chat_jid, [message])
         stored_message = (
             existing_group_echo
+            or self._message_by_id(message.chat_jid, message.replaces_id)
             or self._message_by_merge_key(message.chat_jid, message_key)
             or message
         )
@@ -2541,10 +2647,24 @@ class MainWindow(wx.Frame):
         self._persist_messages([stored_message])
         added_message = (
             existing_group_echo is None
+            and not message.replaces_id
             and message_key not in existing_keys
             and all(existing is not stored_message for existing in existing_messages)
         )
         return stored_message, added_message
+
+    def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
+        if not message_id:
+            return None
+
+        return next(
+            (
+                message
+                for message in self.messages_by_chat.get(chat_jid, [])
+                if message.message_id == message_id
+            ),
+            None,
+        )
 
     def _add_pending_outgoing_message(self, message: Message) -> None:
         message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
@@ -3306,6 +3426,8 @@ class MainWindow(wx.Frame):
             self.conversation.set_recording_state(False)
         self.reply_context = None
         self.conversation.clear_reply_quote()
+        self.edit_context = None
+        self.conversation.clear_editing()
         self.conversation.clear_unread_marker()
         self._reset_window_title()
         self.conversation.Hide()

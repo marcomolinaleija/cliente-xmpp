@@ -336,6 +336,11 @@ Un `Message` representa el contenido normalizado que entiende la UI. Puede conte
 Para respuestas/citas, separa el texto real del mensaje y la cita. La UI debe renderizarlo de
 forma consistente, por ejemplo: `usuario, mensaje, respondiendo a: cita`.
 
+Para editar mensajes de WhatsApp usa XEP-0308 (`urn:xmpp:message-correct:0`): reenvia el
+cuerpo completo con un ID nuevo y `<replace id="id-original"/>`. Solo se ofrece para mensajes
+propios de texto, ya enviados y con menos de 15 minutos; conserva el ID y hora del original,
+marca el mensaje como editado y no lo muestres como un duplicado al recibir su correccion.
+
 Para multimedia, soporta como minimo URLs OOB, URLs embebidas en body y metadatos compatibles
 con los XEPs usados por bridges modernos. Si implementas descargas, no bloquees la UI y guarda
 la ruta local solo cuando el archivo se haya escrito correctamente.

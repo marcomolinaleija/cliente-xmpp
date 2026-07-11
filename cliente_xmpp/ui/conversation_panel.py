@@ -58,6 +58,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_index: int | None = None
         self._focus_target_index: int | None = None
         self._replying = False
+        self._editing = False
         self._audio_durations_by_url: dict[str, float] = {}
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
@@ -93,6 +94,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = None
         self._pending_audio_message = None
         self._replying = False
+        self._editing = False
         self._set_compose_label_for_chat()
         self.send_button.Enable(True)
         self.attach_button.Enable(True)
@@ -235,6 +237,18 @@ class ConversationPanel(wx.Panel):
         self._replying = True
         self.compose_label.SetLabel(f"Respondiendo a {sender}:")
         self.compose.SetFocus()
+
+    def begin_editing(self, message: Message) -> None:
+        self._editing = True
+        self.compose.SetValue(message.body)
+        self.compose.SetInsertionPointEnd()
+        recipient = self.current_chat.name if self.current_chat else "el chat"
+        self.compose_label.SetLabel(f"Editando mensaje para {recipient}:")
+        self.compose.SetFocus()
+
+    def clear_editing(self) -> None:
+        self._editing = False
+        self._set_compose_label_for_chat()
 
     def clear_reply_quote(self) -> None:
         self._replying = False
@@ -624,19 +638,20 @@ class ConversationPanel(wx.Panel):
         timestamp = self._format_message_time(message)
         body = self._format_message_body(message)
         starred = "Destacado. " if message.starred else ""
+        edited = "Editado. " if message.edited else ""
         reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
         reply = self._format_reply_summary(message)
         if message.outgoing:
             delivery = self._format_delivery_state(message)
             if reply:
-                return f"{starred}Tú, {body}, {reply}, {timestamp} {delivery}.{reactions}"
-            return f"{starred}Tú {body} {timestamp} {delivery}.{reactions}"
+                return f"{starred}{edited}Tú, {body}, {reply}, {timestamp} {delivery}.{reactions}"
+            return f"{starred}{edited}Tú {body} {timestamp} {delivery}.{reactions}"
 
         sender = self._sender_label(message)
         if reply:
-            return f"{starred}{sender}, {body}, {reply}, {timestamp}.{reactions}"
+            return f"{starred}{edited}{sender}, {body}, {reply}, {timestamp}.{reactions}"
 
-        return f"{starred}{sender} {body} {timestamp}.{reactions}"
+        return f"{starred}{edited}{sender} {body} {timestamp}.{reactions}"
 
     @staticmethod
     def _format_delivery_state(message: Message) -> str:
@@ -659,6 +674,8 @@ class ConversationPanel(wx.Panel):
         metadata = f"{sender} {timestamp}"
         if message.starred:
             metadata = f"Destacado. {metadata}"
+        if message.edited:
+            metadata = f"Editado. {metadata}"
         if message.reactions:
             metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
 

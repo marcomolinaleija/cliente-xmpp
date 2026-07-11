@@ -42,3 +42,5 @@ class Message:
     reply_quote: str = ""
     delivery_state: str = ""
     retracted: bool = False
+    edited: bool = False
+    replaces_id: str = ""

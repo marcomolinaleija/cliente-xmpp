@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 from importlib import resources
 from pathlib import Path
 from typing import Literal
@@ -9,6 +10,7 @@ from typing import Literal
 PlaybackStatus = Literal["playing", "paused"]
 MPV_FORMAT_FLAG = 3
 MPV_FORMAT_DOUBLE = 5
+MPV_EVENT_SHUTDOWN = 1
 AUDIO_SPEEDS = (1.0, 1.5, 2.0)
 VIDEO_KEY_BINDINGS = (
     ("SPACE", "cycle pause"),
@@ -17,11 +19,21 @@ VIDEO_KEY_BINDINGS = (
     ("LEFT", "seek -5"),
     ("RIGHT", "seek 5"),
     ("Alt+F4", "quit"),
+    ("ESC", "quit"),
 )
 
 
 class MpvPlaybackError(RuntimeError):
     pass
+
+
+class _MpvEvent(ctypes.Structure):
+    _fields_ = [
+        ("event_id", ctypes.c_int),
+        ("error", ctypes.c_int),
+        ("reply_userdata", ctypes.c_uint64),
+        ("data", ctypes.c_void_p),
+    ]
 
 
 class MpvAudioPlayer:
@@ -33,12 +45,17 @@ class MpvAudioPlayer:
         self._current_url = ""
         self._paused = False
         self._speed = self._nearest_speed(speed)
+        self._state_lock = threading.Lock()
+        self._event_stop = threading.Event()
+        self._event_thread: threading.Thread | None = None
 
     def play(self, url: str) -> PlaybackStatus:
         if not url:
             raise MpvPlaybackError("No hay URL de audio para reproducir.")
 
         handle = self._ensure_handle()
+        if self._video:
+            self._start_event_monitor(handle)
         if url == self._current_url:
             if self._playback_finished(handle):
                 self._load_url(handle, url)
@@ -95,11 +112,14 @@ class MpvAudioPlayer:
         return self._get_double_property(self._handle, "duration")
 
     def close(self) -> None:
-        if self._handle and self._dll:
-            self._dll.mpv_terminate_destroy(self._handle)
-        self._handle = None
-        self._current_url = ""
-        self._paused = False
+        self._stop_event_monitor()
+        with self._state_lock:
+            handle = self._handle
+            self._handle = None
+            self._current_url = ""
+            self._paused = False
+        if handle and self._dll:
+            self._dll.mpv_terminate_destroy(handle)
 
     def _ensure_handle(self) -> ctypes.c_void_p:
         if self._handle:
@@ -120,12 +140,67 @@ class MpvAudioPlayer:
         self._check_error(dll.mpv_initialize(handle))
         if self._video:
             self._configure_video_key_bindings(handle)
-        self._handle = handle
+        with self._state_lock:
+            self._handle = handle
         return handle
 
     def _configure_video_key_bindings(self, handle: ctypes.c_void_p) -> None:
         for key, command in VIDEO_KEY_BINDINGS:
             self._command(handle, ["keybind", key, command])
+
+    def _start_event_monitor(self, handle: ctypes.c_void_p) -> None:
+        if self._event_thread is not None and self._event_thread.is_alive():
+            return
+
+        self._event_stop.clear()
+        self._event_thread = threading.Thread(
+            target=self._monitor_events,
+            args=(handle,),
+            name="cliente-xmpp-mpv-events",
+            daemon=True,
+        )
+        self._event_thread.start()
+
+    def _stop_event_monitor(self) -> None:
+        self._event_stop.set()
+        thread = self._event_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._event_thread = None
+
+    def _monitor_events(self, handle: ctypes.c_void_p) -> None:
+        try:
+            while not self._event_stop.is_set():
+                event = self._ensure_dll().mpv_wait_event(handle, 0.1)
+                if event and event.contents.event_id == MPV_EVENT_SHUTDOWN:
+                    self._event_stop.set()
+                    self._handle_video_shutdown(handle)
+                    return
+        except (OSError, ValueError):
+            return
+
+    def _handle_video_shutdown(self, handle: ctypes.c_void_p) -> None:
+        with self._state_lock:
+            if not self._same_handle(self._handle, handle):
+                return
+            self._handle = None
+            self._current_url = ""
+            self._paused = False
+
+        if self._dll:
+            self._dll.mpv_terminate_destroy(handle)
+
+    @staticmethod
+    def _same_handle(
+        first: ctypes.c_void_p | None,
+        second: ctypes.c_void_p,
+    ) -> bool:
+        if first is None:
+            return False
+
+        first_value = getattr(first, "value", first)
+        second_value = getattr(second, "value", second)
+        return first_value == second_value
 
     def _ensure_dll(self) -> ctypes.CDLL:
         if self._dll:
@@ -149,6 +224,8 @@ class MpvAudioPlayer:
         dll.mpv_set_option_string.restype = ctypes.c_int
         dll.mpv_command.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p)]
         dll.mpv_command.restype = ctypes.c_int
+        dll.mpv_wait_event.argtypes = [ctypes.c_void_p, ctypes.c_double]
+        dll.mpv_wait_event.restype = ctypes.POINTER(_MpvEvent)
         dll.mpv_get_property.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,

@@ -8,6 +8,8 @@ APP_DIR = Path.home() / ".cliente-xmpp"
 SETTINGS_PATH = APP_DIR / "settings.json"
 DEFAULT_AUDIO_SPEED = 1.0
 SUPPORTED_AUDIO_SPEEDS = (1.0, 1.5, 2.0)
+DEFAULT_OPEN_CHAT_MESSAGE_SOUND_ENABLED = True
+DEFAULT_SENT_MESSAGE_SOUND_ENABLED = True
 
 
 @dataclass(slots=True)
@@ -59,6 +61,38 @@ class SettingsStore:
             audio = {}
         audio["speed"] = speed
         payload["audio"] = audio
+        self._save_payload(payload)
+
+    def load_notification_sound_settings(self) -> tuple[bool, bool]:
+        data = self._load_payload()
+        sounds = data.get("notification_sounds", {})
+        if not isinstance(sounds, dict):
+            return (
+                DEFAULT_OPEN_CHAT_MESSAGE_SOUND_ENABLED,
+                DEFAULT_SENT_MESSAGE_SOUND_ENABLED,
+            )
+
+        return (
+            bool(
+                sounds.get(
+                    "open_chat_message",
+                    DEFAULT_OPEN_CHAT_MESSAGE_SOUND_ENABLED,
+                )
+            ),
+            bool(sounds.get("sent_message", DEFAULT_SENT_MESSAGE_SOUND_ENABLED)),
+        )
+
+    def save_notification_sound_settings(
+        self,
+        *,
+        open_chat_message_enabled: bool,
+        sent_message_enabled: bool,
+    ) -> None:
+        payload = self._load_payload()
+        payload["notification_sounds"] = {
+            "open_chat_message": bool(open_chat_message_enabled),
+            "sent_message": bool(sent_message_enabled),
+        }
         self._save_payload(payload)
 
     def _load_payload(self) -> dict[str, object]:

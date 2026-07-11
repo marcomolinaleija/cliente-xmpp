@@ -71,6 +71,25 @@ class MessageStoreTests(unittest.TestCase):
             with closing(sqlite3.connect(path)) as conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
             self.assertIn("retracted", columns)
+            self.assertIn("edited", columns)
+
+    def test_edited_message_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            message = Message(
+                chat_jid="chat@example.test",
+                sender_jid="Yo",
+                body="Texto corregido",
+                sent_at=datetime(2026, 7, 10, 12, 0),
+                outgoing=True,
+                message_id="wa-id-1",
+                edited=True,
+            )
+
+            store.upsert_messages("me@example.test", [message])
+
+            loaded = store.load_recent_messages("me@example.test", "chat@example.test")
+            self.assertTrue(loaded[0].edited)
 
 
 if __name__ == "__main__":

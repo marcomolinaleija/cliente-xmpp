@@ -54,6 +54,7 @@ class IncomingMessageSoundTests(unittest.TestCase):
         return SimpleNamespace(
             IsActive=lambda: active,
             _message_notifications_muted=lambda _message: muted,
+            open_chat_message_sound_enabled=True,
             open_chat_message_sound=SimpleNamespace(play=lambda: played.append("open")),
             new_message_sound=SimpleNamespace(play=lambda: played.append("new")),
             played=played,
@@ -79,6 +80,14 @@ class IncomingMessageSoundTests(unittest.TestCase):
 
     def test_silenced_chat_plays_no_incoming_sound(self) -> None:
         window = self._window(active=True, muted=True)
+
+        MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
+
+        self.assertEqual(window.played, [])
+
+    def test_disabled_open_chat_sound_plays_no_sound(self) -> None:
+        window = self._window(active=True)
+        window.open_chat_message_sound_enabled = False
 
         MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
 

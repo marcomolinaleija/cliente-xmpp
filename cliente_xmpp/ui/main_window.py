@@ -108,6 +108,10 @@ class MainWindow(wx.Frame):
         self.new_message_sound = NewMessageSound()
         self.open_chat_message_sound = OpenChatMessageSound()
         self.sent_message_sound = SentMessageSound()
+        (
+            self.open_chat_message_sound_enabled,
+            self.sent_message_sound_enabled,
+        ) = self.settings_store.load_notification_sound_settings()
         self.message_store = MessageStore()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
@@ -287,6 +291,15 @@ class MainWindow(wx.Frame):
     def _save_audio_speed(self, speed: float) -> None:
         try:
             self.settings_store.save_audio_speed(speed)
+        except Exception:
+            return
+
+    def _save_notification_sound_settings(self) -> None:
+        try:
+            self.settings_store.save_notification_sound_settings(
+                open_chat_message_enabled=self.open_chat_message_sound_enabled,
+                sent_message_enabled=self.sent_message_sound_enabled,
+            )
         except Exception:
             return
 
@@ -1116,6 +1129,14 @@ class MainWindow(wx.Frame):
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        sound_shortcut = self._notification_sound_shortcut(event)
+        if sound_shortcut == "open_chat_message":
+            self._toggle_open_chat_message_sound()
+            return
+        if sound_shortcut == "sent_message":
+            self._toggle_sent_message_sound()
+            return
+
         if self._is_find_shortcut(event):
             self._focus_chat_search()
             return
@@ -1482,6 +1503,29 @@ class MainWindow(wx.Frame):
         key_code = event.GetKeyCode()
         unicode_key = event.GetUnicodeKey()
         return key_code in (ord("F"), ord("f")) or unicode_key in (ord("F"), ord("f"))
+
+    @staticmethod
+    def _notification_sound_shortcut(event: wx.KeyEvent) -> str | None:
+        if event.GetKeyCode() != wx.WXK_F8 or event.ControlDown() or event.AltDown():
+            return None
+
+        return "sent_message" if event.ShiftDown() else "open_chat_message"
+
+    def _toggle_open_chat_message_sound(self) -> None:
+        self.open_chat_message_sound_enabled = not self.open_chat_message_sound_enabled
+        self._save_notification_sound_settings()
+        state = "activado" if self.open_chat_message_sound_enabled else "desactivado"
+        message = f"Sonido de mensajes en el chat abierto {state}"
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _toggle_sent_message_sound(self) -> None:
+        self.sent_message_sound_enabled = not self.sent_message_sound_enabled
+        self._save_notification_sound_settings()
+        state = "activado" if self.sent_message_sound_enabled else "desactivado"
+        message = f"Sonido al enviar mensajes {state}"
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
 
     @staticmethod
     def _is_enter_without_shift(event: wx.KeyEvent) -> bool:
@@ -2662,7 +2706,8 @@ class MainWindow(wx.Frame):
             return
 
         if current_chat_is_open and self.IsActive():
-            self.open_chat_message_sound.play()
+            if getattr(self, "open_chat_message_sound_enabled", True):
+                self.open_chat_message_sound.play()
             return
 
         self.new_message_sound.play()
@@ -2801,6 +2846,7 @@ class MainWindow(wx.Frame):
                 message.outgoing
                 and delivery_state == "sent"
                 and previous_delivery_state != "sent"
+                and getattr(self, "sent_message_sound_enabled", True)
             ):
                 self.sent_message_sound.play()
             if detail:

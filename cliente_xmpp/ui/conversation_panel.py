@@ -69,9 +69,12 @@ class ConversationPanel(wx.Panel):
         self._current_audio_row_index: int | None = None
         self._current_audio_source = ""
         self._pending_audio_message: Message | None = None
+        self._contact_avatar_bitmap: wx.Bitmap | None = None
 
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
+        self.contact_avatar = wx.StaticBitmap(self, bitmap=wx.Bitmap())
+        self.contact_avatar.Hide()
         self.contact_info_button = wx.Button(self, label="Información del contacto")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
@@ -86,6 +89,7 @@ class ConversationPanel(wx.Panel):
     def set_chat(self, chat: Chat) -> None:
         self.current_chat = chat
         self.set_contact_summary(chat.name, "")
+        self.set_contact_avatar(None)
         self.messages.DeleteAllItems()
         self._messages = []
         self._message_rows = []
@@ -105,6 +109,27 @@ class ConversationPanel(wx.Panel):
     def set_contact_summary(self, name: str, status: str = "") -> None:
         label = f"{name} | {status}" if status else name
         self.contact_info_button.SetLabel(label)
+
+    def set_contact_avatar(self, path: Path | None) -> None:
+        """Muestra el avatar cacheado sin quitar el nombre accesible del boton."""
+        bitmap = wx.Bitmap()
+        self._contact_avatar_bitmap = None
+        if path is not None and path.is_file():
+            try:
+                image = wx.Image(str(path), wx.BITMAP_TYPE_ANY)
+                if image.IsOk():
+                    image = image.Scale(32, 32, wx.IMAGE_QUALITY_HIGH)
+                    bitmap = wx.Bitmap(image)
+                    if bitmap.IsOk():
+                        self._contact_avatar_bitmap = bitmap
+            except Exception:
+                bitmap = wx.Bitmap()
+
+        self.contact_info_button.SetBitmap(bitmap)
+        self.contact_info_button.SetBitmapPosition(wx.LEFT)
+        self.contact_avatar.SetBitmap(bitmap)
+        self.contact_avatar.Show(bitmap.IsOk())
+        self.Layout()
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
         previous_focus_index = self.messages.GetFirstSelected()
@@ -486,6 +511,7 @@ class ConversationPanel(wx.Panel):
         header.AddStretchSpacer(1)
         header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
         header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
+        header.Add(self.contact_avatar, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
         header.Add(self.contact_info_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
 
         box = wx.BoxSizer(wx.VERTICAL)

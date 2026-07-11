@@ -73,6 +73,8 @@ class MessageStoreTests(unittest.TestCase):
             self.assertIn("retracted", columns)
             self.assertIn("edited", columns)
             self.assertIn("delivery_state", columns)
+            self.assertIn("reply_to_jid", columns)
+            self.assertIn("reply_to_id", columns)
 
     def test_edited_message_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -85,12 +87,16 @@ class MessageStoreTests(unittest.TestCase):
                 outgoing=True,
                 message_id="wa-id-1",
                 edited=True,
+                reply_to_jid="contact@example.test",
+                reply_to_id="quoted-id",
             )
 
             store.upsert_messages("me@example.test", [message])
 
             loaded = store.load_recent_messages("me@example.test", "chat@example.test")
             self.assertTrue(loaded[0].edited)
+            self.assertEqual(loaded[0].reply_to_jid, "contact@example.test")
+            self.assertEqual(loaded[0].reply_to_id, "quoted-id")
 
     def test_delivery_state_is_persisted_without_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

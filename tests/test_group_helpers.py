@@ -761,6 +761,44 @@ class GroupMessageParsingTests(unittest.TestCase):
         self.assertEqual(original.body, "texto corregido")
         self.assertTrue(original.edited)
 
+    def test_delivery_state_does_not_go_backwards(self) -> None:
+        self.assertEqual(MainWindow._merge_delivery_state("delivered", "sent"), "delivered")
+        self.assertEqual(MainWindow._merge_delivery_state("read", "delivered"), "read")
+        self.assertEqual(MainWindow._merge_delivery_state("pending", "sent"), "sent")
+
+    def test_history_state_keeps_known_delivery_state(self) -> None:
+        chat_jid = "+5215555555555@whatsapp.example.org"
+        message = Message(
+            chat_jid=chat_jid,
+            sender_jid="Yo",
+            body="historial",
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            message_id="message-1",
+            delivery_state="sent",
+        )
+
+        class MergeHarness:
+            _message_timestamp = staticmethod(MainWindow._message_timestamp)
+            _message_merge_key = staticmethod(MainWindow._message_merge_key)
+            _matching_group_self_echo_index = staticmethod(
+                MainWindow._matching_group_self_echo_index
+            )
+            _matching_content_message_index = staticmethod(
+                MainWindow._matching_content_message_index
+            )
+            _message_content_key = staticmethod(MainWindow._message_content_key)
+            _merge_message_metadata = staticmethod(MainWindow._merge_message_metadata)
+
+            def __init__(self) -> None:
+                self.messages_by_chat: dict[str, list[Message]] = {}
+                self.delivery_states_by_message = {(chat_jid, "message-1"): "delivered"}
+
+        window = MergeHarness()
+        MainWindow._merge_messages(window, chat_jid, [message])
+
+        self.assertEqual(window.messages_by_chat[chat_jid][0].delivery_state, "delivered")
+
     def test_reads_message_correction_target_id(self) -> None:
         xml = ET.fromstring(
             """

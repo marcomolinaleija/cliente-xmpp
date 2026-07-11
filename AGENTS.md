@@ -269,6 +269,9 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - Conserva metadata enriquecida: un evento posterior puede traer menos datos que el cache
   (por ejemplo, perder `media_local_path` o `reply_quote`). Los upserts deben completar, no
   degradar, esos campos.
+- Los estados de entrega son monotónicos: `pending -> sent -> delivered/received ->
+  read/displayed`. Un carbon, eco o resultado MAM con `sent` no puede degradar un estado
+  superior; `delivery_state` se persiste en SQLite para conservarlo al reabrir el chat.
 - El preview y la hora de un chat solo avanzan con mensajes mas recientes; una pagina vieja no
   debe pisar el preview nuevo.
 - SQLite usa WAL y migraciones defensivas. No borres mensajes ni reinicialices la base para

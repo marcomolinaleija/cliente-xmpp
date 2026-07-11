@@ -697,6 +697,47 @@ class GroupMessageParsingTests(unittest.TestCase):
         self.assertTrue(MainWindow._messages_are_group_self_echo(outgoing, echo))
         self.assertFalse(MainWindow._messages_are_group_self_echo(outgoing, bot))
 
+    def test_repeated_fast_local_messages_are_not_merged_by_content(self) -> None:
+        first = Message(
+            chat_jid="+5218126462159@whatsapp.example.org",
+            sender_jid="me",
+            body="a",
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            message_id="cliente-xmpp-first",
+            delivery_state="pending",
+        )
+        second = Message(
+            chat_jid="+5218126462159@whatsapp.example.org",
+            sender_jid="me",
+            body="a",
+            sent_at=first.sent_at + timedelta(milliseconds=50),
+            outgoing=True,
+            message_id="cliente-xmpp-second",
+            delivery_state="pending",
+        )
+        class MergeHarness:
+            _matching_group_self_echo_index = staticmethod(
+                MainWindow._matching_group_self_echo_index
+            )
+            _message_timestamp = staticmethod(MainWindow._message_timestamp)
+            _message_merge_key = staticmethod(MainWindow._message_merge_key)
+            _matching_content_message_index = staticmethod(
+                MainWindow._matching_content_message_index
+            )
+            _message_content_key = staticmethod(MainWindow._message_content_key)
+            _merge_message_metadata = staticmethod(MainWindow._merge_message_metadata)
+
+            def __init__(self) -> None:
+                self.messages_by_chat: dict[str, list[Message]] = {}
+
+        window = MergeHarness()
+
+        MainWindow._merge_messages(window, first.chat_jid, [first, second])
+
+        messages = window.messages_by_chat[first.chat_jid]
+        self.assertEqual([message.message_id for message in messages], [first.message_id, second.message_id])
+
 
 if __name__ == "__main__":
     unittest.main()

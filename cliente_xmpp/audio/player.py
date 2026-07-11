@@ -10,6 +10,14 @@ PlaybackStatus = Literal["playing", "paused"]
 MPV_FORMAT_FLAG = 3
 MPV_FORMAT_DOUBLE = 5
 AUDIO_SPEEDS = (1.0, 1.5, 2.0)
+VIDEO_KEY_BINDINGS = (
+    ("SPACE", "cycle pause"),
+    ("UP", "add volume 5"),
+    ("DOWN", "add volume -5"),
+    ("LEFT", "seek -5"),
+    ("RIGHT", "seek 5"),
+    ("Alt+F4", "quit"),
+)
 
 
 class MpvPlaybackError(RuntimeError):
@@ -105,9 +113,19 @@ class MpvAudioPlayer:
         if not self._video:
             self._check_error(dll.mpv_set_option_string(handle, b"video", b"no"))
         self._check_error(dll.mpv_set_option_string(handle, b"terminal", b"no"))
+        self._check_error(
+            dll.mpv_set_option_string(handle, b"input-default-bindings", b"yes")
+        )
+        self._check_error(dll.mpv_set_option_string(handle, b"input-vo-keyboard", b"yes"))
         self._check_error(dll.mpv_initialize(handle))
+        if self._video:
+            self._configure_video_key_bindings(handle)
         self._handle = handle
         return handle
+
+    def _configure_video_key_bindings(self, handle: ctypes.c_void_p) -> None:
+        for key, command in VIDEO_KEY_BINDINGS:
+            self._command(handle, ["keybind", key, command])
 
     def _ensure_dll(self) -> ctypes.CDLL:
         if self._dll:

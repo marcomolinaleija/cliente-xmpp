@@ -256,6 +256,10 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
   solicita/espera la descarga y reproduce al terminar; no hagas fallback a streaming HTTP,
   porque provoca cortes y ruido.
+- La reproduccion de video usa una ventana nativa de libmpv. Al crear el reproductor de video
+  deben habilitarse `input-default-bindings=yes` e `input-vo-keyboard=yes` antes de inicializar
+  libmpv y enlazar explicitamente Space, Up/Down, Left/Right y Alt+F4 para controlar pausa,
+  volumen, saltos de 5 segundos y cierre de la ventana.
 - Para diagnosticar un audio, comprueba primero ruta local, tamano, `ffprobe` y decodificacion
   `ffmpeg`; no culpes al bridge sin distinguir archivo corrupto de streaming inestable.
 - El audio enviado desde el cliente se normaliza a OGG/Opus; no reutilices esa regla para

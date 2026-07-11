@@ -30,6 +30,8 @@ from cliente_xmpp.xmpp.events import (
     ChatActivityLoadFinished,
     ChatStateUpdated,
     ChatsDiscovered,
+    ContactAvatarReceived,
+    ContactAvatarUnavailable,
     ContactPresenceUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
@@ -79,6 +81,8 @@ REFERENCE_NS = "urn:xmpp:reference:0"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 BOB_NS = "urn:xmpp:bob"
+AVATAR_METADATA_NS = "urn:xmpp:avatar:metadata"
+AVATAR_DATA_NS = "urn:xmpp:avatar:data"
 SLIDGE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/groups"
 SLIDGE_REINVITE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/re-invite"
 SLIDGE_RELOGIN_COMMAND = "https://slidge.im/command/core/re-login"
@@ -2064,6 +2068,74 @@ class BridgeXmppClient(ClientXMPP):
         except Exception:
             pass
 
+    async def fetch_contact_avatar(self, chat_jid: str) -> None:
+        metadata = await self["xep_0060"].get_items(
+            chat_jid,
+            AVATAR_METADATA_NS,
+            max_items=1,
+            timeout=10,
+        )
+        avatar_id, mime = self._avatar_metadata_from_iq(metadata)
+        if not avatar_id:
+            self._emit(
+                ContactAvatarUnavailable(
+                    chat_jid=chat_jid,
+                    detail="Este contacto no tiene foto de perfil disponible.",
+                )
+            )
+            return
+
+        avatar = await self["xep_0084"].retrieve_avatar(
+            chat_jid,
+            avatar_id,
+            timeout=10,
+        )
+        data = self._avatar_data_from_iq(avatar)
+        if not data:
+            self._emit(
+                ContactAvatarUnavailable(
+                    chat_jid=chat_jid,
+                    detail="No se pudo descargar la foto de perfil.",
+                )
+            )
+            return
+
+        self._emit(
+            ContactAvatarReceived(
+                chat_jid=chat_jid,
+                data=data,
+                mime=mime,
+                avatar_id=avatar_id,
+            )
+        )
+
+    @staticmethod
+    def _avatar_metadata_from_iq(iq: object) -> tuple[str, str]:
+        xml = getattr(iq, "xml", None)
+        if xml is None:
+            return "", ""
+
+        info = xml.find(f".//{{{AVATAR_METADATA_NS}}}info")
+        if info is None:
+            return "", ""
+
+        return info.attrib.get("id", "").strip(), info.attrib.get("type", "").strip()
+
+    @staticmethod
+    def _avatar_data_from_iq(iq: object) -> bytes:
+        xml = getattr(iq, "xml", None)
+        if xml is None:
+            return b""
+
+        data = xml.find(f".//{{{AVATAR_DATA_NS}}}data")
+        if data is None or not data.text:
+            return b""
+
+        try:
+            return base64.b64decode(data.text.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            return b""
+
     def _message_from_mam_result(self, chat_jid: str, result: object) -> Message | None:
         retraction = self._message_retraction_from_mam_result(chat_jid, result)
         if retraction is not None:
@@ -3564,6 +3636,31 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(load)
 
+    def fetch_contact_avatar(self, chat_jid: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexión XMPP activa."))
+            return
+
+        def fetch() -> None:
+            if self._client:
+                self._loop.create_task(self._fetch_contact_avatar(chat_jid))
+
+        self._loop.call_soon_threadsafe(fetch)
+
+    async def _fetch_contact_avatar(self, chat_jid: str) -> None:
+        if not self._client:
+            return
+
+        try:
+            await self._client.fetch_contact_avatar(chat_jid)
+        except Exception as exc:
+            self._emit(
+                ContactAvatarUnavailable(
+                    chat_jid=chat_jid,
+                    detail=f"No se pudo obtener la foto de perfil: {_format_xmpp_error(exc)}",
+                )
+            )
+
     def _run_client(self, settings: ConnectionSettings, password: str) -> None:
         try:
             self._loop = asyncio.new_event_loop()
@@ -3575,8 +3672,9 @@ class XmppService:
                 "xep_0049",
                 "xep_0050",
                 "xep_0060",
-                "xep_0085",
                 "xep_0163",
+                "xep_0084",
+                "xep_0085",
                 "xep_0128",
                 "xep_0184",
                 "xep_0199",

@@ -69,9 +69,9 @@ class ConversationPanel(wx.Panel):
         self._current_audio_source = ""
         self._pending_audio_message: Message | None = None
 
-        self.title = wx.StaticText(self, label="Selecciona un chat")
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
+        self.contact_info_button = wx.Button(self, label="Información del contacto")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
         self.attach_button: wx.Button
@@ -84,7 +84,7 @@ class ConversationPanel(wx.Panel):
 
     def set_chat(self, chat: Chat) -> None:
         self.current_chat = chat
-        self.title.SetLabel(chat.name)
+        self.set_contact_summary(chat.name, "")
         self.messages.DeleteAllItems()
         self._messages = []
         self._message_rows = []
@@ -99,6 +99,10 @@ class ConversationPanel(wx.Panel):
         self.set_recording_state(False)
         self.update_send_button_state()
         self.load_older_button.Enable(True)
+
+    def set_contact_summary(self, name: str, status: str = "") -> None:
+        label = f"{name} | {status}" if status else name
+        self.contact_info_button.SetLabel(label)
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
         previous_focus_index = self.messages.GetFirstSelected()
@@ -458,9 +462,10 @@ class ConversationPanel(wx.Panel):
 
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
-        header.Add(self.title, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
+        header.AddStretchSpacer(1)
         header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
         header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
+        header.Add(self.contact_info_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(header, 0, wx.EXPAND)

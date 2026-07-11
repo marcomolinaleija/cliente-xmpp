@@ -109,6 +109,20 @@ class ContactPresenceUpdated:
 
 
 @dataclass(slots=True)
+class ContactAvatarReceived:
+    chat_jid: str
+    data: bytes
+    mime: str = ""
+    avatar_id: str = ""
+
+
+@dataclass(slots=True)
+class ContactAvatarUnavailable:
+    chat_jid: str
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class ChatStateUpdated:
     chat_jid: str
     state: str
@@ -145,6 +159,8 @@ XmppEvent = (
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
     | ContactPresenceUpdated
+    | ContactAvatarReceived
+    | ContactAvatarUnavailable
     | ChatStateUpdated
     | ChatActivityLoaded
     | ChatActivityLoadFinished

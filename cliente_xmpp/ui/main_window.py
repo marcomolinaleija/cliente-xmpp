@@ -17,7 +17,11 @@ import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.duration import media_duration_seconds
-from cliente_xmpp.audio.notification import NewMessageSound, SentMessageSound
+from cliente_xmpp.audio.notification import (
+    NewMessageSound,
+    OpenChatMessageSound,
+    SentMessageSound,
+)
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import APP_DIR, SettingsStore
@@ -102,6 +106,7 @@ class MainWindow(wx.Frame):
         self.connection_settings = self.settings_store.load_connection()
         self.speaker = NvdaSpeaker()
         self.new_message_sound = NewMessageSound()
+        self.open_chat_message_sound = OpenChatMessageSound()
         self.sent_message_sound = SentMessageSound()
         self.message_store = MessageStore()
         self.xmpp = XmppService(self._post_xmpp_event)
@@ -1370,7 +1375,8 @@ class MainWindow(wx.Frame):
         return path, ""
 
     def _start_recording(self) -> None:
-        if not self.conversation.current_chat:
+        chat = self.conversation.current_chat
+        if not chat:
             return
 
         try:
@@ -1379,21 +1385,25 @@ class MainWindow(wx.Frame):
             wx.MessageBox(str(exc), "Grabación")
             return
 
+        self.xmpp.send_chat_state(chat.jid, "composing", is_group=chat.is_group, media="audio")
         self.conversation.set_recording_state(True)
         self.status_bar.SetStatusText("Grabando audio...")
         self.speaker.speak("Grabando audio")
 
     def _on_pause_recording(self, _event: wx.CommandEvent) -> None:
-        if not self.audio_recorder.is_recording:
+        chat = self.conversation.current_chat
+        if not self.audio_recorder.is_recording or not chat:
             return
 
         try:
             if self.audio_recorder.is_paused:
                 self.audio_recorder.resume()
+                self.xmpp.send_chat_state(chat.jid, "composing", is_group=chat.is_group, media="audio")
                 self.status_bar.SetStatusText("Grabando audio...")
                 self.speaker.speak("Grabando")
             else:
                 self.audio_recorder.pause()
+                self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
                 self.status_bar.SetStatusText("Grabación pausada")
                 self.speaker.speak("Pausado")
         except AudioRecordingError as exc:
@@ -1403,7 +1413,10 @@ class MainWindow(wx.Frame):
         self.conversation.set_recording_state(True, self.audio_recorder.is_paused)
 
     def _on_cancel_recording(self, _event: wx.CommandEvent) -> None:
+        chat = self.conversation.current_chat
         self.audio_recorder.cancel()
+        if chat:
+            self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
         self.conversation.set_recording_state(False)
         self.status_bar.SetStatusText("Grabación cancelada")
         self.speaker.speak("Cancelado")
@@ -1421,8 +1434,11 @@ class MainWindow(wx.Frame):
             return
 
         self.conversation.set_recording_state(False)
+        self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
         self.status_bar.SetStatusText("Subiendo audio...")
-        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
+        view_once = self.conversation.view_once_audio.GetValue()
+        self.conversation.view_once_audio.SetValue(False)
+        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, view_once=view_once)
 
     def _on_composer_paste(self, event: wx.CommandEvent) -> None:
         if self._attach_clipboard_files():
@@ -2110,7 +2126,7 @@ class MainWindow(wx.Frame):
                 self._select_first_chat_if_needed()
                 if added_message and not suppress_notification:
                     self._speak_incoming_message(message)
-                    self._play_new_message_sound(message)
+                    self._play_incoming_message_sound(message, current_chat_is_open)
             case MessageHistoryLoaded(
                 chat_jid=chat_jid,
                 messages=messages,
@@ -2641,8 +2657,12 @@ class MainWindow(wx.Frame):
         else:
             self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
 
-    def _play_new_message_sound(self, message: Message) -> None:
+    def _play_incoming_message_sound(self, message: Message, current_chat_is_open: bool) -> None:
         if message.outgoing or self._message_notifications_muted(message):
+            return
+
+        if current_chat_is_open and self.IsActive():
+            self.open_chat_message_sound.play()
             return
 
         self.new_message_sound.play()

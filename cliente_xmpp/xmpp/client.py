@@ -297,6 +297,8 @@ class BridgeXmppClient(ClientXMPP):
                     media_duration_seconds=media_duration,
                     message_id=str(msg["id"] or ""),
                     reply_quote=reply_quote,
+                    reply_to_jid=self._reply_to_jid_from_xml(msg.xml),
+                    reply_to_id=self._reply_to_id_from_xml(msg.xml),
                     replaces_id=self._message_correction_id_from_xml(msg.xml),
                 )
             )
@@ -2193,6 +2195,8 @@ class BridgeXmppClient(ClientXMPP):
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             chat_is_group=is_group or message_chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
+            reply_to_id=self._reply_to_id_from_xml(stanza.xml),
             replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
         )
@@ -2257,6 +2261,8 @@ class BridgeXmppClient(ClientXMPP):
                     message_id=str(stanza["id"] or ""),
                     chat_is_group=is_group,
                     reply_quote=reply_quote,
+                    reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
+                    reply_to_id=self._reply_to_id_from_xml(stanza.xml),
                     replaces_id=self._message_correction_id_from_xml(stanza.xml),
                     delivery_state="sent" if outgoing else "",
                 )
@@ -2309,6 +2315,8 @@ class BridgeXmppClient(ClientXMPP):
             message_id=str(stanza["id"] or ""),
             chat_is_group=True,
             reply_quote=reply_quote,
+            reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
+            reply_to_id=self._reply_to_id_from_xml(stanza.xml),
             replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
         )
@@ -2434,6 +2442,8 @@ class BridgeXmppClient(ClientXMPP):
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
+            reply_to_jid=self._reply_to_jid_from_xml(message),
+            reply_to_id=self._reply_to_id_from_xml(message),
             replaces_id=self._message_correction_id_from_xml(message),
             delivery_state="sent" if outgoing else "",
         )
@@ -2544,6 +2554,22 @@ class BridgeXmppClient(ClientXMPP):
             return ""
 
         return replace.attrib.get("id", "").strip()
+
+    @staticmethod
+    def _reply_to_jid_from_xml(xml: ET.Element) -> str:
+        reply = xml.find(f".//{{{REPLY_NS}}}reply")
+        if reply is None:
+            return ""
+
+        return reply.attrib.get("to", "").strip()
+
+    @staticmethod
+    def _reply_to_id_from_xml(xml: ET.Element) -> str:
+        reply = xml.find(f".//{{{REPLY_NS}}}reply")
+        if reply is None:
+            return ""
+
+        return reply.attrib.get("id", "").strip()
 
     def _message_xml_is_outgoing(self, message: ET.Element, is_group: bool = False) -> bool:
         from_jid = message.attrib.get("from", "")
@@ -3422,6 +3448,8 @@ class XmppService:
         body: str,
         original_message_id: str,
         is_group: bool = False,
+        reply_to_jid: str = "",
+        reply_to_id: str = "",
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
@@ -3441,6 +3469,16 @@ class XmppService:
                 message_type = "groupchat" if is_group else "chat"
                 msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
                 msg["id"] = f"cliente-xmpp-{uuid.uuid4().hex}"
+                if reply_to_id:
+                    msg.append(
+                        ET.Element(
+                            f"{{{REPLY_NS}}}reply",
+                            {
+                                "to": reply_to_jid,
+                                "id": reply_to_id,
+                            },
+                        )
+                    )
                 msg.append(
                     ET.Element(
                         f"{{{MESSAGE_CORRECT_NS}}}replace",

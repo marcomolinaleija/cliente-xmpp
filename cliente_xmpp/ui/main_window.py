@@ -1206,6 +1206,11 @@ class MainWindow(wx.Frame):
             chat_is_group=chat.is_group,
             message_id=message_id,
             reply_quote=self.reply_context.body if self.reply_context else "",
+            reply_to_jid=(
+                self.current_jid if self.reply_context and self.reply_context.outgoing
+                else self.reply_context.sender_jid if self.reply_context else ""
+            ),
+            reply_to_id=self.reply_context.message_id if self.reply_context else "",
             delivery_state="pending",
         )
         self._add_pending_outgoing_message(message)
@@ -1622,7 +1627,6 @@ class MainWindow(wx.Frame):
             and message.body
             and not message.media_url
             and not message.audio_url
-            and not message.reply_quote
             and not message.retracted
             and message.delivery_state not in {"pending", "failed"}
             and timedelta() <= age <= MESSAGE_EDIT_WINDOW
@@ -1674,6 +1678,8 @@ class MainWindow(wx.Frame):
             body,
             message.message_id,
             is_group=message.chat_is_group,
+            reply_to_jid=message.reply_to_jid,
+            reply_to_id=message.reply_to_id,
         )
         self.edit_context = None
         self.conversation.clear_editing()
@@ -2326,7 +2332,10 @@ class MainWindow(wx.Frame):
                 return True
 
             target.body = correction.body
-            target.reply_quote = correction.reply_quote
+            if correction.reply_quote:
+                target.reply_quote = correction.reply_quote
+            target.reply_to_jid = correction.reply_to_jid or target.reply_to_jid
+            target.reply_to_id = correction.reply_to_id or target.reply_to_id
             target.edited = True
             return True
 
@@ -2484,6 +2493,10 @@ class MainWindow(wx.Frame):
         if incoming.reply_quote and not target.reply_quote:
             target.body = incoming.body
             target.reply_quote = incoming.reply_quote
+        if incoming.reply_to_jid and not target.reply_to_jid:
+            target.reply_to_jid = incoming.reply_to_jid
+        if incoming.reply_to_id and not target.reply_to_id:
+            target.reply_to_id = incoming.reply_to_id
         if not target.body and incoming.body:
             target.body = incoming.body
         if not target.audio_url and incoming.audio_url:

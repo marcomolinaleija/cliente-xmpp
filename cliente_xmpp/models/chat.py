@@ -40,6 +40,8 @@ class Message:
     starred: bool = False
     reactions: tuple[str, ...] = ()
     reply_quote: str = ""
+    reply_to_jid: str = ""
+    reply_to_id: str = ""
     delivery_state: str = ""
     retracted: bool = False
     edited: bool = False

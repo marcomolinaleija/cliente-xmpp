@@ -747,6 +747,9 @@ class GroupMessageParsingTests(unittest.TestCase):
             sent_at=datetime.now().astimezone(),
             outgoing=True,
             message_id="original-id",
+            reply_quote="cita original",
+            reply_to_jid="contact@example.org",
+            reply_to_id="quoted-id",
         )
         correction = Message(
             chat_jid=original.chat_jid,
@@ -756,11 +759,14 @@ class GroupMessageParsingTests(unittest.TestCase):
             outgoing=True,
             message_id="correction-id",
             replaces_id="original-id",
+            reply_to_jid="contact@example.org",
+            reply_to_id="quoted-id",
         )
 
         self.assertTrue(MainWindow._apply_message_correction([original], correction))
         self.assertEqual(original.body, "texto corregido")
         self.assertTrue(original.edited)
+        self.assertEqual(original.reply_quote, "cita original")
 
     def test_delivery_state_does_not_go_backwards(self) -> None:
         self.assertEqual(MainWindow._merge_delivery_state("delivered", "sent"), "delivered")
@@ -836,6 +842,18 @@ class GroupMessageParsingTests(unittest.TestCase):
             BridgeXmppClient._message_correction_id_from_xml(xml),
             "original-id",
         )
+
+    def test_reads_reply_metadata_for_message_edit(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message>
+                <reply xmlns="urn:xmpp:reply:0" to="contact@example.org" id="quoted-id" />
+            </message>
+            """
+        )
+
+        self.assertEqual(BridgeXmppClient._reply_to_jid_from_xml(xml), "contact@example.org")
+        self.assertEqual(BridgeXmppClient._reply_to_id_from_xml(xml), "quoted-id")
 
 
 if __name__ == "__main__":

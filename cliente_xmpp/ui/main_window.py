@@ -3103,7 +3103,16 @@ class MainWindow(wx.Frame):
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
         started_at = time.perf_counter()
         self._load_cached_messages_for_chat(chat.jid)
-        self.conversation.set_chat(chat)
+        preserving_visible_chat = bool(
+            self.conversation.IsShown()
+            and self.conversation.current_chat
+            and self.conversation.current_chat.jid == chat.jid
+        )
+        if preserving_visible_chat:
+            self.conversation.current_chat = chat
+            self.conversation.set_contact_summary(chat.name, "")
+        else:
+            self.conversation.set_chat(chat)
         render_started_at = time.perf_counter()
         self.conversation.set_messages(
             self.messages_by_chat.get(chat.jid, []),

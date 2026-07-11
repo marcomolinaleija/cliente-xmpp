@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
+from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient
 
@@ -798,6 +799,29 @@ class GroupMessageParsingTests(unittest.TestCase):
         MainWindow._merge_messages(window, chat_jid, [message])
 
         self.assertEqual(window.messages_by_chat[chat_jid][0].delivery_state, "delivered")
+
+    def test_audio_autoplay_stops_at_non_audio_message(self) -> None:
+        audio_one = Message(
+            chat_jid="chat@example.org",
+            sender_jid="contact@example.org",
+            body="",
+            audio_url="https://example.org/one.ogg",
+        )
+        text = Message(
+            chat_jid="chat@example.org",
+            sender_jid="contact@example.org",
+            body="intermedio",
+        )
+        audio_two = Message(
+            chat_jid="chat@example.org",
+            sender_jid="contact@example.org",
+            body="",
+            audio_url="https://example.org/two.ogg",
+        )
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._message_rows = [audio_one, text, audio_two]
+
+        self.assertEqual(panel._next_audio_message(1), (None, None))
 
     def test_reads_message_correction_target_id(self) -> None:
         xml = ET.fromstring(

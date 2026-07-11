@@ -17,7 +17,7 @@ import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.duration import media_duration_seconds
-from cliente_xmpp.audio.notification import NewMessageSound
+from cliente_xmpp.audio.notification import NewMessageSound, SentMessageSound
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import APP_DIR, SettingsStore
@@ -101,6 +101,7 @@ class MainWindow(wx.Frame):
         self.connection_settings = self.settings_store.load_connection()
         self.speaker = NvdaSpeaker()
         self.new_message_sound = NewMessageSound()
+        self.sent_message_sound = SentMessageSound()
         self.message_store = MessageStore()
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
@@ -2263,6 +2264,8 @@ class MainWindow(wx.Frame):
     ) -> int | None:
         for index in indexes_by_content.get(cls._message_content_key(message), []):
             candidate = unique_messages[index]
+            if cls._messages_are_distinct_local_outgoing(candidate, message):
+                continue
             if not message.message_id and not candidate.message_id:
                 continue
             if not cls._messages_have_compatible_reply_quotes(candidate, message):
@@ -2275,6 +2278,16 @@ class MainWindow(wx.Frame):
                 return index
 
         return None
+
+    @classmethod
+    def _messages_are_distinct_local_outgoing(cls, first: Message, second: Message) -> bool:
+        return (
+            first.outgoing
+            and second.outgoing
+            and cls._message_has_local_pending_id(first)
+            and cls._message_has_local_pending_id(second)
+            and first.message_id != second.message_id
+        )
 
     @staticmethod
     def _message_duplicate_window_seconds(first: Message, second: Message) -> int:
@@ -2585,10 +2598,17 @@ class MainWindow(wx.Frame):
         for message in self.messages_by_chat.get(chat_jid, []):
             if message.message_id != message_id:
                 continue
+            previous_delivery_state = message.delivery_state
             message.delivery_state = delivery_state
             self.conversation.refresh_message(message)
             self._update_chat_from_message(message)
             self._refresh_chat_order(chat_jid)
+            if (
+                message.outgoing
+                and delivery_state == "sent"
+                and previous_delivery_state != "sent"
+            ):
+                self.sent_message_sound.play()
             if detail:
                 self.status_bar.SetStatusText(detail)
             return

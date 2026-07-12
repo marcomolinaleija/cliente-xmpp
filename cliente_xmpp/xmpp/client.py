@@ -343,6 +343,17 @@ class BridgeXmppClient(ClientXMPP):
     def _on_marker_displayed(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "read")
 
+    def send_displayed_marker(self, to_jid: str, message_id: str) -> None:
+        if not to_jid or not message_id:
+            return
+
+        self["xep_0333"].send_marker(
+            mto=to_jid,
+            id=message_id,
+            marker="displayed",
+            mtype="chat",
+        )
+
     def _emit_delivery_update_from_marker(self, msg: object, delivery_state: str) -> None:
         message_id = self._delivery_marker_id(msg)
         if not message_id:
@@ -3692,6 +3703,21 @@ class XmppService:
             if state == "composing" and media == "audio":
                 msg.append(ET.Element(f"{{{RECORDING_AUDIO_NS}}}recording"))
             msg.send()
+
+        self._loop.call_soon_threadsafe(send)
+
+    def mark_chat_displayed(self, to_jid: str, message_id: str) -> None:
+        if not self._client or not self._loop or not to_jid or not message_id:
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            try:
+                self._client.send_displayed_marker(to_jid, message_id)
+            except Exception:
+                return
 
         self._loop.call_soon_threadsafe(send)
 

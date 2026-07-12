@@ -11,7 +11,7 @@ from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
-from cliente_xmpp.xmpp.client import BridgeXmppClient
+from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import GroupParticipantsLoaded, GroupParticipantUpdated
 
 
@@ -181,6 +181,103 @@ class IncomingMessageSoundTests(unittest.TestCase):
         MainWindow._play_incoming_message_sound(window, self._message(), current_chat_is_open=True)
 
         self.assertEqual(window.played, [])
+
+
+class DisplayedMarkerTests(unittest.TestCase):
+    def test_bridge_sends_displayed_marker_for_individual_chat(self) -> None:
+        calls: list[dict[str, str]] = []
+        requested_plugins: list[str] = []
+
+        class ChatMarkers:
+            def send_marker(self, **kwargs: str) -> None:
+                calls.append(kwargs)
+
+        class Client:
+            def __getitem__(self, key: str) -> ChatMarkers:
+                requested_plugins.append(key)
+                return ChatMarkers()
+
+        BridgeXmppClient.send_displayed_marker(Client(), "contact@example.org", "incoming-id")
+
+        self.assertEqual(requested_plugins, ["xep_0333"])
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "mto": "contact@example.org",
+                    "id": "incoming-id",
+                    "marker": "displayed",
+                    "mtype": "chat",
+                }
+            ],
+        )
+
+    def test_service_schedules_displayed_marker(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class Loop:
+            def call_soon_threadsafe(self, callback: object) -> None:
+                callback()  # type: ignore[operator]
+
+        service = SimpleNamespace(
+            _client=SimpleNamespace(
+                send_displayed_marker=lambda chat_jid, message_id: calls.append(
+                    (chat_jid, message_id)
+                )
+            ),
+            _loop=Loop(),
+        )
+
+        XmppService.mark_chat_displayed(service, "contact@example.org", "incoming-id")
+
+        self.assertEqual(calls, [("contact@example.org", "incoming-id")])
+
+    def test_marks_only_the_latest_received_message_in_individual_chat(self) -> None:
+        chat = Chat(jid="contact@example.org", name="Contacto")
+        received = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="pendiente",
+            sent_at=datetime.now().astimezone(),
+            message_id="incoming-id",
+        )
+        outgoing = Message(
+            chat_jid=chat.jid,
+            sender_jid="me",
+            body="respuesta",
+            sent_at=received.sent_at + timedelta(seconds=1),
+            outgoing=True,
+            message_id="outgoing-id",
+        )
+        calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            conversation=SimpleNamespace(current_chat=chat),
+            messages_by_chat={chat.jid: [received, outgoing]},
+            displayed_marker_ids_by_chat={},
+            xmpp=SimpleNamespace(
+                mark_chat_displayed=lambda chat_jid, message_id: calls.append(
+                    (chat_jid, message_id)
+                )
+            ),
+            _message_timestamp=MainWindow._message_timestamp,
+        )
+
+        MainWindow._mark_current_chat_displayed(window, chat.jid)
+        MainWindow._mark_current_chat_displayed(window, chat.jid)
+
+        self.assertEqual(calls, [(chat.jid, "incoming-id")])
+
+    def test_does_not_mark_group_chats(self) -> None:
+        chat = Chat(jid="#group@example.org", name="Grupo", is_group=True)
+        window = SimpleNamespace(
+            conversation=SimpleNamespace(current_chat=chat),
+            messages_by_chat={},
+            displayed_marker_ids_by_chat={},
+            xmpp=SimpleNamespace(mark_chat_displayed=lambda *_args: self.fail("No debe enviarse")),
+            _message_timestamp=MainWindow._message_timestamp,
+        )
+
+        MainWindow._mark_current_chat_displayed(window, chat.jid)
 
 
 class WhatsAppPairingCodeTests(unittest.TestCase):

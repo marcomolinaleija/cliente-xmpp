@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.mentions import GroupParticipant
 
 
 @dataclass(slots=True)
@@ -75,6 +76,17 @@ class RosterLoaded:
 @dataclass(slots=True)
 class ChatsDiscovered:
     chats: list[Chat]
+
+
+@dataclass(slots=True)
+class GroupParticipantUpdated:
+    participant: GroupParticipant
+
+
+@dataclass(slots=True)
+class GroupParticipantsLoaded:
+    group_jid: str
+    participants: list[GroupParticipant]
 
 
 @dataclass(slots=True)
@@ -155,6 +167,8 @@ XmppEvent = (
     | WhatsAppQrImageDataReceived
     | RosterLoaded
     | ChatsDiscovered
+    | GroupParticipantUpdated
+    | GroupParticipantsLoaded
     | MessageReceived
     | MessageHistoryLoaded
     | MessageDeliveryUpdated

@@ -35,6 +35,14 @@ from cliente_xmpp.media.downloads import (
 )
 from cliente_xmpp.media.links import MessageLink, is_link_preview, message_links
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.mentions import (
+    GroupParticipant,
+    MentionCandidate,
+    MentionReference,
+    active_mention_query,
+    mention_references_in_text,
+    matching_mention_candidates,
+)
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -58,6 +66,8 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
+    GroupParticipantUpdated,
+    GroupParticipantsLoaded,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -126,6 +136,8 @@ class MainWindow(wx.Frame):
         self.preloaded_history_chats: set[str] = set()
         self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
+        self.group_participants_by_chat: dict[str, dict[str, GroupParticipant]] = {}
+        self.mention_candidates: list[MentionCandidate] = []
         self.contact_presence_by_chat: dict[str, ContactPresenceUpdated] = {}
         self.contact_avatar_paths_by_chat: dict[str, Path] = {}
         self.contact_avatar_requests_in_progress: set[str] = set()
@@ -1223,6 +1235,7 @@ class MainWindow(wx.Frame):
             return
 
         message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
+        mentions = self._mention_references_for_message(chat, body)
         message = Message(
             chat_jid=chat.jid,
             sender_jid="me",
@@ -1254,17 +1267,25 @@ class MainWindow(wx.Frame):
                 fallback_end=0,
                 is_group=chat.is_group,
                 message_id=message_id,
+                mentions=mentions,
             )
             self.reply_context = None
             self.conversation.clear_reply_quote()
         else:
-            self.xmpp.send_message(chat.jid, body, is_group=chat.is_group, message_id=message_id)
+            self.xmpp.send_message(
+                chat.jid,
+                body,
+                is_group=chat.is_group,
+                message_id=message_id,
+                mentions=mentions,
+            )
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
         self.conversation.update_send_button_state(
             self.audio_recorder.is_recording,
             self.audio_recorder.is_paused,
         )
+        self._refresh_mention_suggestions()
         event.Skip()
 
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
@@ -1477,6 +1498,9 @@ class MainWindow(wx.Frame):
         if self._is_edit_last_message_shortcut(event) and self._edit_last_message():
             return
 
+        if self._handle_mention_suggestion_key(event):
+            return
+
         if self._is_enter_without_shift(event):
             if self.audio_recorder.is_recording or self.conversation.has_composed_text():
                 self._on_primary_send_action(wx.CommandEvent())
@@ -1485,6 +1509,96 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    def _handle_mention_suggestion_key(self, event: wx.KeyEvent) -> bool:
+        if not self.conversation.has_mention_suggestions():
+            return False
+
+        key_code = event.GetKeyCode()
+        if key_code == wx.WXK_ESCAPE:
+            self.conversation.hide_mention_suggestions()
+            self.mention_candidates = []
+            return True
+        if key_code in (wx.WXK_UP, wx.WXK_DOWN):
+            offset = -1 if key_code == wx.WXK_UP else 1
+            index = self.conversation.move_mention_suggestion(offset)
+            if 0 <= index < len(self.mention_candidates):
+                self.speaker.speak(self.mention_candidates[index].label)
+            return True
+        if key_code == wx.WXK_TAB or self._is_enter_without_shift(event):
+            return self._accept_selected_mention()
+        return False
+
+    def _accept_selected_mention(self) -> bool:
+        index = self.conversation.selected_mention_suggestion_index()
+        if index < 0 or index >= len(self.mention_candidates):
+            return False
+
+        mention_query = active_mention_query(
+            self.conversation.compose.GetValue(),
+            self.conversation.compose.GetInsertionPoint(),
+        )
+        if mention_query is None:
+            self.conversation.hide_mention_suggestions()
+            return False
+
+        start, end, _query = mention_query
+        candidate = self.mention_candidates[index]
+        text = self.conversation.compose.GetValue()
+        suffix = "" if end < len(text) and text[end].isspace() else " "
+        self.conversation.replace_mention_query(start, end, candidate.mention_text + suffix)
+        self.status_bar.SetStatusText(f"Mención seleccionada: {candidate.display_name}")
+        self.speaker.speak(f"Mención: {candidate.display_name}")
+        self.mention_candidates = []
+        return True
+
+    def _refresh_mention_suggestions(self) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or not chat.is_group or self.audio_recorder.is_recording:
+            self.conversation.hide_mention_suggestions()
+            self.mention_candidates = []
+            return
+
+        mention_query = active_mention_query(
+            self.conversation.compose.GetValue(),
+            self.conversation.compose.GetInsertionPoint(),
+        )
+        if mention_query is None:
+            self.conversation.hide_mention_suggestions()
+            self.mention_candidates = []
+            return
+
+        _start, _end, query = mention_query
+        self.mention_candidates = matching_mention_candidates(
+            self._mention_candidates_for_chat(chat.jid),
+            query,
+        )
+        self.conversation.show_mention_suggestions(
+            [candidate.label for candidate in self.mention_candidates]
+        )
+
+    def _mention_candidates_for_chat(self, group_jid: str) -> list[MentionCandidate]:
+        participants = self.group_participants_by_chat.get(group_jid, {})
+        candidates: list[MentionCandidate] = []
+        for participant in participants.values():
+            if participant.jid.split("/", 1)[0] == self.current_jid.split("/", 1)[0]:
+                continue
+            display_name = self._display_name_for_jid(participant.jid)
+            if display_name == self._fallback_display_name_for_jid(participant.jid):
+                display_name = participant.nick
+            candidates.append(
+                MentionCandidate(
+                    participant_jid=participant.jid,
+                    display_name=display_name,
+                    mention_text=participant.nick,
+                )
+            )
+        return candidates
+
+    def _mention_references_for_message(self, chat: Chat, body: str) -> list[MentionReference]:
+        if not chat.is_group:
+            return []
+        return mention_references_in_text(body, self._mention_candidates_for_chat(chat.jid))
 
     @staticmethod
     def _is_paste_shortcut(event: wx.KeyEvent) -> bool:
@@ -2126,6 +2240,10 @@ class MainWindow(wx.Frame):
                     return
                 self._upsert_discovered_chats(chats)
                 self._preload_recent_histories()
+            case GroupParticipantUpdated(participant=participant):
+                self._remember_group_participant(participant)
+            case GroupParticipantsLoaded(participants=participants):
+                self._remember_group_participants(participants)
             case MessageReceived(message=message, notify=notify):
                 message, added_message = self._store_message(message)
                 if not message.outgoing:
@@ -2802,7 +2920,60 @@ class MainWindow(wx.Frame):
         if not message.chat_is_group or message.outgoing or not message.sender_name:
             return
 
-        self.chat_names_by_jid.setdefault(message.sender_jid, message.sender_name)
+        remember_participant = getattr(self, "_remember_group_participant", None)
+        if callable(remember_participant):
+            remember_participant(
+                GroupParticipant(
+                    group_jid=message.chat_jid,
+                    jid=message.sender_jid,
+                    nick=message.sender_name,
+                )
+            )
+
+    def _load_cached_group_participants(self, chat: Chat) -> None:
+        if not chat.is_group or not self.current_jid or chat.jid in self.group_participants_by_chat:
+            return
+
+        try:
+            participants = self.message_store.load_group_participants(self.current_jid, chat.jid)
+        except Exception:
+            return
+
+        self.group_participants_by_chat[chat.jid] = {
+            participant.jid: participant for participant in participants
+        }
+
+    def _remember_group_participant(self, participant: GroupParticipant) -> None:
+        self._remember_group_participants([participant])
+
+    def _remember_group_participants(self, participants: list[GroupParticipant]) -> None:
+        valid_participants = [
+            participant
+            for participant in participants
+            if participant.group_jid and participant.jid and participant.nick
+        ]
+        if not valid_participants:
+            return
+
+        changed_participants: list[GroupParticipant] = []
+        for participant in valid_participants:
+            known_participants = self.group_participants_by_chat.setdefault(
+                participant.group_jid,
+                {},
+            )
+            previous = known_participants.get(participant.jid)
+            if previous == participant:
+                continue
+            known_participants[participant.jid] = participant
+            changed_participants.append(participant)
+
+        if not changed_participants or not self.current_jid:
+            return
+
+        try:
+            self.message_store.upsert_group_participants(self.current_jid, changed_participants)
+        except Exception:
+            return
 
     def _message_by_merge_key(
         self,
@@ -2854,15 +3025,19 @@ class MainWindow(wx.Frame):
             return
 
     def _ensure_chat_for_message(self, message: Message) -> None:
-        if self.chat_list.has_chat(message.chat_jid):
+        existing_chat = self._chat_by_jid(message.chat_jid)
+        if existing_chat is not None:
+            if not self.chat_list.has_chat(message.chat_jid):
+                self.chat_list.upsert_chat(existing_chat)
             return
 
+        is_group = message.chat_is_group or self._message_jid_may_be_group_chat(message.chat_jid)
         name = self._display_name_for_jid(message.chat_jid)
         preview = self._chat_preview_for_message(message)
         chat = Chat(
             jid=message.chat_jid,
             name=name,
-            is_group=message.chat_is_group or self._message_jid_may_be_group_chat(message.chat_jid),
+            is_group=is_group,
             notifications_muted=self._chat_notifications_muted(message.chat_jid),
             notification_settings_known=self._chat_notification_settings_known(message.chat_jid),
             last_message_preview=preview,
@@ -2870,7 +3045,8 @@ class MainWindow(wx.Frame):
         )
         self._upsert_searchable_chat(chat)
         self.chat_list.upsert_chat(chat)
-        self.chat_names_by_jid.setdefault(message.chat_jid, name)
+        if not is_group:
+            self.chat_names_by_jid.setdefault(message.chat_jid, name)
 
     def _select_first_chat(self) -> None:
         chat = self.chat_list.select_first()
@@ -3072,7 +3248,7 @@ class MainWindow(wx.Frame):
 
             chats_by_jid[chat.jid] = Chat(
                 jid=chat.jid,
-                name=chat.custom_name or chat.name or existing.name,
+                name=MainWindow._preferred_chat_name(existing, chat),
                 custom_name=chat.custom_name or existing.custom_name,
                 is_group=chat.is_group or existing.is_group,
                 notifications_muted=(
@@ -3091,6 +3267,32 @@ class MainWindow(wx.Frame):
             )
 
         return list(chats_by_jid.values())
+
+    @staticmethod
+    def _is_fallback_chat_name(name: str, jid: str) -> bool:
+        """Return whether *name* is only the technical label derived from a JID."""
+        normalized_name = " ".join(name.split())
+        return not normalized_name or normalized_name in {
+            jid,
+            display_label_from_jid(jid),
+        }
+
+    @staticmethod
+    def _preferred_chat_name(existing: Chat, incoming: Chat) -> str:
+        """Keep a known group title when discovery has no title to contribute."""
+        if existing.custom_name:
+            return existing.custom_name
+
+        incoming_name = incoming.name.strip()
+        existing_name = existing.name.strip()
+        is_group = existing.is_group or incoming.is_group
+        if (
+            is_group
+            and MainWindow._is_fallback_chat_name(incoming_name, incoming.jid)
+            and not MainWindow._is_fallback_chat_name(existing_name, existing.jid)
+        ):
+            return existing_name
+        return incoming_name or existing_name
 
     def _load_cached_messages_for_chat(self, chat_jid: str) -> None:
         started_at = time.perf_counter()
@@ -3183,6 +3385,7 @@ class MainWindow(wx.Frame):
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
         started_at = time.perf_counter()
         self._load_cached_messages_for_chat(chat.jid)
+        self._load_cached_group_participants(chat)
         preserving_visible_chat = bool(
             self.conversation.IsShown()
             and self.conversation.current_chat
@@ -3381,7 +3584,8 @@ class MainWindow(wx.Frame):
         if preview or sent_at is not None:
             self.chat_list.upsert_chat(updated_chat)
         self._persist_chat(updated_chat)
-        self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
+        if not is_group:
+            self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
 
     def _updated_chat_summary(
         self,
@@ -3821,7 +4025,7 @@ class MainWindow(wx.Frame):
             if existing is not None:
                 merged_chat = Chat(
                     jid=existing.jid,
-                    name=existing.custom_name or chat.name or existing.name,
+                    name=self._preferred_chat_name(existing, chat),
                     custom_name=existing.custom_name,
                     is_group=existing.is_group or chat.is_group,
                     notifications_muted=(
@@ -3844,7 +4048,11 @@ class MainWindow(wx.Frame):
                 if not self.chat_list.has_chat(chat.jid):
                     added += 1
 
-            self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
+            if not (
+                merged_chat.is_group
+                and self._is_fallback_chat_name(merged_chat.name, merged_chat.jid)
+            ):
+                self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
             self._upsert_searchable_chat(merged_chat)
             self.chat_list.upsert_chat(merged_chat)
             merged_chats.append(merged_chat)
@@ -3881,7 +4089,10 @@ class MainWindow(wx.Frame):
 
     def _update_chat_names(self, chats: list[Chat]) -> None:
         for chat in chats:
-            self.chat_names_by_jid[chat.jid] = normalize_chat_name(chat.jid, chat.name)
+            name = normalize_chat_name(chat.jid, chat.name)
+            if chat.is_group and self._is_fallback_chat_name(name, chat.jid):
+                continue
+            self.chat_names_by_jid[chat.jid] = name
 
     def _display_name_for_jid(self, jid: str) -> str:
         if jid in self.chat_names_by_jid:

@@ -1,5 +1,20 @@
 # Actualizar el puente personalizado de WhatsApp
 
+## Menciones nativas de WhatsApp
+
+El cliente envía referencias XEP-0372 con el JID real de cada integrante del grupo. Para que se
+conviertan en menciones nativas de WhatsApp, la fuente de Slidge usada en la imagen debe recibir
+este parche antes de construirla:
+
+```bash
+python tools/patch_slidge_whatsapp_mentions.py RUTA_A_LA_FUENTE_DE_SLIDGE
+```
+
+El parche adapta el dispatcher de Slidge para leer las referencias y conservar la identidad del
+contacto hasta `slidge-whatsapp`, que escribe `ContextInfo.MentionedJID`. Después hay que
+reconstruir y publicar la imagen `cliente-xmpp-bridge:v1` con el mismo procedimiento habitual.
+No basta con actualizar sólo el cliente: WhatsApp requiere esa metadata en el mensaje saliente.
+
 Esta guía instala la imagen personalizada del bridge que usa `cliente-xmpp`.
 Incluye las extensiones de visualización única y estados de grabación de audio.
 

@@ -216,6 +216,8 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - Para identificar al participante, prioriza `muc#user item jid`; usa despues el recurso/nick
   del ocupante y finalmente un fallback tolerante. El nombre visible debe parecerse al nombre
   que el usuario tiene registrado, no depender ciegamente del nick tecnico.
+- Una actualizacion de descubrimiento cuyo nombre sea solo el JID tecnico del grupo no puede
+  reemplazar un titulo de grupo ya conocido desde roster, cache o una actualizacion anterior.
 - La clasificacion de saliente en MUC debe aceptar JID local y nick propio con comparacion
   tolerante a mayusculas y acentos, pero nunca asumir que todo lo que aparece en un grupo es
   entrante.
@@ -230,6 +232,15 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - Un resultado MAM cuyo XML sea `groupchat` debe conservar el JID del room. Si aparece durante
   una consulta de chat individual, se descarta de esa conversacion; no se debe pintar con el
   nombre o el nick del contacto individual.
+- Al entrar a un grupo, Slidge llena el roster MUC con una presencia inicial por participante.
+  El cliente toma esa foto completa una vez, extrae el JID real y el nick, y la guarda por lote en
+  SQLite; no consulta la red al escribir una mencion.
+- El autocompletado de menciones se activa con `@` dentro del compositor de un grupo. Busca sin
+  distinguir tildes en el nombre personalizado y el nick de WhatsApp, pero inserta el nick MUC
+  sin el `@`. El cliente adjunta ademas referencias XEP-0372 con JID y rango; el bridge debe tener
+  aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
+  referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
+  parser de compatibilidad de Slidge espera el nick sin prefijo.
 
 ### Notificaciones y accesibilidad
 

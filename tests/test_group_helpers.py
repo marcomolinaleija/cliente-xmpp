@@ -6,11 +6,13 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
-from cliente_xmpp.models.chat import Message
+from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient
+from cliente_xmpp.xmpp.events import GroupParticipantsLoaded, GroupParticipantUpdated
 
 
 class GroupNameTests(unittest.TestCase):
@@ -28,6 +30,24 @@ class GroupNameTests(unittest.TestCase):
             normalize_chat_name("mi\\20grupo@groups.example.org"),
             "mi grupo",
         )
+
+    def test_keeps_known_group_title_when_discovery_only_has_its_jid(self) -> None:
+        jid = "#5214492757727-1485039809@whatsapp.xmpp.rayoscompany.com"
+        known_group = Chat(jid=jid, name="La familia de la Burra", is_group=True)
+        incomplete_discovery = Chat(jid=jid, name=jid, is_group=True)
+
+        merged = MainWindow._merge_chat_lists([known_group], [incomplete_discovery])
+
+        self.assertEqual(merged[0].name, "La familia de la Burra")
+
+    def test_uses_new_group_title_when_discovery_has_one(self) -> None:
+        jid = "#120363418240465691@whatsapp.xmpp.rayoscompany.com"
+        incomplete_group = Chat(jid=jid, name=jid, is_group=True)
+        discovered_group = Chat(jid=jid, name="Cielo lluvioso", is_group=True)
+
+        merged = MainWindow._merge_chat_lists([incomplete_group], [discovered_group])
+
+        self.assertEqual(merged[0].name, "Cielo lluvioso")
 
 
 class ChatListFocusTests(unittest.TestCase):
@@ -568,6 +588,122 @@ class GroupArchiveTests(unittest.TestCase):
 
 
 class GroupMessageParsingTests(unittest.TestCase):
+    def test_existing_group_keeps_its_name_when_message_arrives(self) -> None:
+        group = Chat(
+            jid="#5214492757727-1485039809@whatsapp.example.org",
+            name="La familia de la Burra",
+            is_group=True,
+        )
+        upserted = []
+        window = SimpleNamespace(
+            _chat_by_jid=lambda _jid: group,
+            chat_list=SimpleNamespace(
+                has_chat=lambda _jid: False,
+                upsert_chat=upserted.append,
+            ),
+        )
+        message = Message(
+            chat_jid=group.jid,
+            sender_jid="+5214495380505@whatsapp.example.org",
+            sender_name="Jessy Herrera",
+            body="Soy yo jaja con la santa muerte",
+            chat_is_group=True,
+        )
+
+        MainWindow._ensure_chat_for_message(window, message)
+
+        self.assertEqual(upserted, [group])
+
+    def test_joined_group_emits_cached_roster_in_one_event(self) -> None:
+        events = []
+
+        class FakeMuc:
+            @staticmethod
+            def get_joined_rooms() -> list[str]:
+                return ["#room@whatsapp.example.org"]
+
+            def get_roster(self, _group_jid: str) -> list[str]:
+                return ["Jessy Herrera", "Ángel Alcantar"]
+
+            def get_jid_property(self, _group_jid: str, nick: str, _property: str) -> str:
+                return {
+                    "Jessy Herrera": "+5214495380505@whatsapp.example.org",
+                    "Ángel Alcantar": "+5218126462159@whatsapp.example.org",
+                }[nick]
+
+        class FakeClient:
+            def __getitem__(self, _key: str) -> FakeMuc:
+                return FakeMuc()
+
+            @staticmethod
+            def _emit(event: object) -> None:
+                events.append(event)
+
+        BridgeXmppClient._emit_group_participants_from_roster(
+            FakeClient(),
+            "#room@whatsapp.example.org",
+        )
+
+        self.assertEqual(
+            events,
+            [
+                GroupParticipantsLoaded(
+                    "#room@whatsapp.example.org",
+                    [
+                        GroupParticipant(
+                            "#room@whatsapp.example.org",
+                            "+5214495380505@whatsapp.example.org",
+                            "Jessy Herrera",
+                        ),
+                        GroupParticipant(
+                            "#room@whatsapp.example.org",
+                            "+5218126462159@whatsapp.example.org",
+                            "Ángel Alcantar",
+                        ),
+                    ],
+                )
+            ],
+        )
+
+    def test_group_presence_remembers_real_jid_and_muc_nick(self) -> None:
+        events = []
+        client = SimpleNamespace(
+            _emit=events.append,
+            _muc_user_item_jid=BridgeXmppClient._muc_user_item_jid,
+            _jid_resource=BridgeXmppClient._jid_resource,
+        )
+        presence = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <presence xmlns="jabber:client" from="#room@whatsapp.example.org/Jessy Herrera">
+                  <x xmlns="http://jabber.org/protocol/muc#user">
+                    <item jid="+5214495380505@whatsapp.example.org" />
+                  </x>
+                </presence>
+                """
+            )
+        )
+
+        BridgeXmppClient._emit_group_participant_from_presence(
+            client,
+            "#room@whatsapp.example.org",
+            "#room@whatsapp.example.org/Jessy Herrera",
+            presence,
+        )
+
+        self.assertEqual(
+            events,
+            [
+                GroupParticipantUpdated(
+                    GroupParticipant(
+                        group_jid="#room@whatsapp.example.org",
+                        jid="+5214495380505@whatsapp.example.org",
+                        nick="Jessy Herrera",
+                    )
+                )
+            ],
+        )
+
     def test_retracted_message_id_from_xml(self) -> None:
         message = ET.fromstring(
             """
@@ -662,7 +798,7 @@ class GroupMessageParsingTests(unittest.TestCase):
 
         self.assertEqual(window.chat_names_by_jid[sender_jid], "Burra")
 
-    def test_group_sender_is_remembered_when_contact_is_unknown(self) -> None:
+    def test_group_sender_does_not_promote_group_nick_to_global_contact_name(self) -> None:
         sender_jid = "+5214495380505@whatsapp.example.org"
         window = SimpleNamespace(chat_names_by_jid={})
         message = Message(
@@ -675,7 +811,7 @@ class GroupMessageParsingTests(unittest.TestCase):
 
         MainWindow._remember_message_sender(window, message)
 
-        self.assertEqual(window.chat_names_by_jid[sender_jid], "Jessy Herrera")
+        self.assertNotIn(sender_jid, window.chat_names_by_jid)
 
     def test_group_sender_matches_local_nick_case_and_accents_insensitively(self) -> None:
         client = SimpleNamespace(

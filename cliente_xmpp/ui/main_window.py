@@ -2823,6 +2823,8 @@ class MainWindow(wx.Frame):
             not target.message_id or MainWindow._message_has_local_pending_id(target)
         ):
             target.message_id = incoming.message_id
+        if incoming.displayed_marker_id and not target.displayed_marker_id:
+            target.displayed_marker_id = incoming.displayed_marker_id
         incoming_state = incoming.delivery_state or ("sent" if incoming.outgoing else "")
         target.delivery_state = MainWindow._merge_delivery_state(
             target.delivery_state,
@@ -3879,24 +3881,29 @@ class MainWindow(wx.Frame):
 
     def _mark_current_chat_displayed(self, chat_jid: str) -> None:
         chat = self.conversation.current_chat
-        if chat is None or chat.jid != chat_jid or chat.is_group:
+        if chat is None or chat.jid != chat_jid:
             return
 
         messages = self.messages_by_chat.get(chat_jid, [])
         received_messages = [
             message
             for message in messages
-            if message.chat_jid == chat_jid and not message.outgoing and message.message_id
+            if message.chat_jid == chat_jid
+            and not message.outgoing
+            and (message.displayed_marker_id if chat.is_group else message.message_id)
         ]
         if not received_messages:
             return
 
         latest_message = max(received_messages, key=self._message_timestamp)
-        if self.displayed_marker_ids_by_chat.get(chat_jid) == latest_message.message_id:
+        marker_id = (
+            latest_message.displayed_marker_id if chat.is_group else latest_message.message_id
+        )
+        if self.displayed_marker_ids_by_chat.get(chat_jid) == marker_id:
             return
 
-        self.xmpp.mark_chat_displayed(chat_jid, latest_message.message_id)
-        self.displayed_marker_ids_by_chat[chat_jid] = latest_message.message_id
+        self.xmpp.mark_chat_displayed(chat_jid, marker_id, is_group=chat.is_group)
+        self.displayed_marker_ids_by_chat[chat_jid] = marker_id
 
     def _show_selected_chat(self) -> None:
         item = self.chat_list.selected_item()

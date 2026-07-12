@@ -102,6 +102,7 @@ AUDIO_EXTENSIONS = (".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".
 IMAGE_EXTENSIONS = (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp")
 VIDEO_EXTENSIONS = (".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")
 CHAT_MARKERS_NS = "urn:xmpp:chat-markers:0"
+STANZA_ID_NS = "urn:xmpp:sid:0"
 CHATSTATES_NS = "http://jabber.org/protocol/chatstates"
 RECORDING_AUDIO_NS = "urn:marco-ml:whatsapp:recording:0"
 IDLE_NS = "urn:xmpp:idle:1"
@@ -343,7 +344,7 @@ class BridgeXmppClient(ClientXMPP):
     def _on_marker_displayed(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "read")
 
-    def send_displayed_marker(self, to_jid: str, message_id: str) -> None:
+    def send_displayed_marker(self, to_jid: str, message_id: str, is_group: bool = False) -> None:
         if not to_jid or not message_id:
             return
 
@@ -351,7 +352,7 @@ class BridgeXmppClient(ClientXMPP):
             mto=to_jid,
             id=message_id,
             marker="displayed",
-            mtype="chat",
+            mtype="groupchat" if is_group else "chat",
         )
 
     def _emit_delivery_update_from_marker(self, msg: object, delivery_state: str) -> None:
@@ -2272,6 +2273,9 @@ class BridgeXmppClient(ClientXMPP):
             media_size=media_size,
             media_duration_seconds=media_duration,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
+            displayed_marker_id=(
+                self._room_stanza_id_from_xml(stanza.xml, message_chat_jid) if is_group else ""
+            ),
             chat_is_group=is_group or message_chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
             reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
@@ -2338,6 +2342,9 @@ class BridgeXmppClient(ClientXMPP):
                     media_size=media_size,
                     media_duration_seconds=media_duration,
                     message_id=str(stanza["id"] or ""),
+                    displayed_marker_id=(
+                        self._room_stanza_id_from_xml(stanza.xml, chat_jid) if is_group else ""
+                    ),
                     chat_is_group=is_group,
                     reply_quote=reply_quote,
                     reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
@@ -2392,6 +2399,10 @@ class BridgeXmppClient(ClientXMPP):
             media_size=media_size,
             media_duration_seconds=media_duration,
             message_id=str(stanza["id"] or ""),
+            displayed_marker_id=self._room_stanza_id_from_xml(
+                stanza.xml,
+                str(stanza["from"].bare),
+            ),
             chat_is_group=True,
             reply_quote=reply_quote,
             reply_to_jid=self._reply_to_jid_from_xml(stanza.xml),
@@ -2696,6 +2707,19 @@ class BridgeXmppClient(ClientXMPP):
     @staticmethod
     def _bare_jid(jid: str) -> str:
         return jid.split("/", 1)[0]
+
+    @classmethod
+    def _room_stanza_id_from_xml(cls, xml: ET.Element | None, room_jid: str) -> str:
+        if xml is None:
+            return ""
+
+        bare_room_jid = cls._bare_jid(room_jid)
+        for stanza_id in xml.findall(f".//{{{STANZA_ID_NS}}}stanza-id"):
+            if cls._bare_jid(stanza_id.attrib.get("by", "")) != bare_room_jid:
+                continue
+            return stanza_id.attrib.get("id", "").strip()
+
+        return ""
 
     @staticmethod
     def _jid_resource(jid: str) -> str:
@@ -3706,7 +3730,12 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
-    def mark_chat_displayed(self, to_jid: str, message_id: str) -> None:
+    def mark_chat_displayed(
+        self,
+        to_jid: str,
+        message_id: str,
+        is_group: bool = False,
+    ) -> None:
         if not self._client or not self._loop or not to_jid or not message_id:
             return
 
@@ -3715,7 +3744,7 @@ class XmppService:
                 return
 
             try:
-                self._client.send_displayed_marker(to_jid, message_id)
+                self._client.send_displayed_marker(to_jid, message_id, is_group=is_group)
             except Exception:
                 return
 

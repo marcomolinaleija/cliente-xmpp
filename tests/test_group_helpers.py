@@ -283,8 +283,8 @@ class DisplayedMarkerTests(unittest.TestCase):
             _message_timestamp=MainWindow._message_timestamp,
         )
 
-        MainWindow._mark_current_chat_displayed(window, chat.jid)
-        MainWindow._mark_current_chat_displayed(window, chat.jid)
+        MainWindow._mark_chat_displayed(window, chat)
+        MainWindow._mark_chat_displayed(window, chat)
 
         self.assertEqual(calls, [(chat.jid, "incoming-id", False)])
 
@@ -312,7 +312,7 @@ class DisplayedMarkerTests(unittest.TestCase):
             _message_timestamp=MainWindow._message_timestamp,
         )
 
-        MainWindow._mark_current_chat_displayed(window, chat.jid)
+        MainWindow._mark_chat_displayed(window, chat)
 
         self.assertEqual(calls, [(chat.jid, "room-stanza-id", True)])
 

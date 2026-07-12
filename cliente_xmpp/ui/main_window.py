@@ -85,6 +85,8 @@ from cliente_xmpp.xmpp.events import (
 )
 
 HISTORY_PAGE_SIZE = 20
+MARK_ALL_READ_DELAY_MS = 750
+MARK_ALL_READ_HISTORY_TIMEOUT_MS = 8000
 PRELOAD_CHAT_LIMIT = 20
 BACKGROUND_SYNC_DELAY_MS = 350
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
@@ -127,6 +129,8 @@ class MainWindow(wx.Frame):
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.displayed_marker_ids_by_chat: dict[str, str] = {}
+        self.mark_all_read_queue: deque[Chat] = deque()
+        self.mark_all_read_waiting_chat_jid = ""
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.history_exhausted_chats: set[str] = set()
@@ -242,6 +246,10 @@ class MainWindow(wx.Frame):
     def _bind_events(self) -> None:
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
         self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
+        self.connection_header.mark_all_read_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_mark_all_chats_read,
+        )
         self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
         self.whatsapp_link_panel.show_qr_button.Bind(wx.EVT_BUTTON, self._on_show_whatsapp_qr)
         self.whatsapp_link_panel.cancel_button.Bind(
@@ -1311,6 +1319,10 @@ class MainWindow(wx.Frame):
             self._focus_chat_search()
             return
 
+        if self._is_mark_all_chats_read_shortcut(event):
+            self._mark_all_chats_read()
+            return
+
         if key_code == wx.WXK_F5:
             self._refresh_current_view()
             return
@@ -1343,6 +1355,69 @@ class MainWindow(wx.Frame):
 
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:
         self._show_chat_list()
+
+    def _on_mark_all_chats_read(self, _event: wx.CommandEvent) -> None:
+        self._mark_all_chats_read()
+
+    def _mark_all_chats_read(self) -> None:
+        chats_by_jid = self._searchable_chats_by_jid()
+        unread_chats = [chat for chat in chats_by_jid.values() if chat.unread_count > 0]
+        if not unread_chats:
+            self.status_bar.SetStatusText("No hay chats no leídos")
+            return
+
+        updated_by_jid = {
+            chat_jid: replace(chat, unread_count=0)
+            for chat_jid, chat in chats_by_jid.items()
+        }
+        visible_chats = [
+            updated_by_jid.get(chat.jid, chat)
+            for chat in self.chat_list.chats()
+        ]
+        selected_chat = self.chat_list.selected_chat()
+        selected_jid = selected_chat.jid if selected_chat else ""
+
+        self._set_searchable_chats(list(updated_by_jid.values()))
+        self._persist_chats(list(updated_by_jid.values()))
+        self.chat_list.set_chats(visible_chats, selected_jid=selected_jid)
+        if self.chat_list.is_searching:
+            self._apply_chat_search()
+        else:
+            self.chat_list.force_refresh_visible(selected_jid)
+
+        self.mark_all_read_queue = deque(unread_chats)
+        self.mark_all_read_waiting_chat_jid = ""
+        self._process_next_mark_all_read_chat()
+        count = len(unread_chats)
+        message = f"Marcando {count} chats como leídos en segundo plano"
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _process_next_mark_all_read_chat(self) -> None:
+        if self.mark_all_read_waiting_chat_jid:
+            return
+        if not self.mark_all_read_queue:
+            self.status_bar.SetStatusText("Todos los chats fueron marcados como leídos")
+            return
+
+        chat = self.mark_all_read_queue.popleft()
+        self.mark_all_read_waiting_chat_jid = chat.jid
+        self.xmpp.load_history(chat.jid, limit=1, background=True)
+        wx.CallLater(
+            MARK_ALL_READ_HISTORY_TIMEOUT_MS,
+            self._finish_mark_all_read_chat,
+            chat.jid,
+        )
+
+    def _finish_mark_all_read_chat(self, chat_jid: str) -> None:
+        if self.mark_all_read_waiting_chat_jid != chat_jid:
+            return
+
+        self.mark_all_read_waiting_chat_jid = ""
+        chat = self._chat_by_jid(chat_jid)
+        if chat is not None:
+            self._mark_chat_displayed(chat)
+        wx.CallLater(MARK_ALL_READ_DELAY_MS, self._process_next_mark_all_read_chat)
 
     def _refresh_current_view(self) -> None:
         if self.conversation.IsShown() and self.conversation.current_chat:
@@ -1777,6 +1852,13 @@ class MainWindow(wx.Frame):
         key_code = event.GetKeyCode()
         unicode_key = event.GetUnicodeKey()
         return key_code in (ord("F"), ord("f")) or unicode_key in (ord("F"), ord("f"))
+
+    @staticmethod
+    def _is_mark_all_chats_read_shortcut(event: wx.KeyEvent) -> bool:
+        if not event.AltDown() or event.ControlDown() or event.ShiftDown():
+            return False
+
+        return event.GetKeyCode() in (ord("M"), ord("m"))
 
     @staticmethod
     def _notification_sound_shortcut(event: wx.KeyEvent) -> str | None:
@@ -2586,6 +2668,7 @@ class MainWindow(wx.Frame):
             self._mark_current_chat_displayed(chat_jid)
 
         if background:
+            self._finish_mark_all_read_chat(chat_jid)
             if messages and not complete:
                 self._enqueue_background_history_sync([chat_jid])
             wx.CallLater(BACKGROUND_SYNC_DELAY_MS, self._pump_background_history_sync)
@@ -3883,6 +3966,11 @@ class MainWindow(wx.Frame):
         chat = self.conversation.current_chat
         if chat is None or chat.jid != chat_jid:
             return
+
+        self._mark_chat_displayed(chat)
+
+    def _mark_chat_displayed(self, chat: Chat) -> None:
+        chat_jid = chat.jid
 
         messages = self.messages_by_chat.get(chat_jid, [])
         received_messages = [

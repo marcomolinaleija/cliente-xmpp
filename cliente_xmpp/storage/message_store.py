@@ -15,7 +15,7 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -341,6 +341,7 @@ class MessageStore:
                     chat_jid TEXT NOT NULL,
                     message_key TEXT NOT NULL,
                     message_id TEXT NOT NULL DEFAULT '',
+                    displayed_marker_id TEXT NOT NULL DEFAULT '',
                     sender_jid TEXT NOT NULL,
                     sender_name TEXT NOT NULL DEFAULT '',
                     body TEXT NOT NULL DEFAULT '',
@@ -458,6 +459,7 @@ class MessageStore:
             str(row["name"]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()
         }
         columns = {
+            "displayed_marker_id": "TEXT NOT NULL DEFAULT ''",
             "media_url": "TEXT NOT NULL DEFAULT ''",
             "media_kind": "TEXT NOT NULL DEFAULT ''",
             "media_mime": "TEXT NOT NULL DEFAULT ''",
@@ -545,6 +547,7 @@ class MessageStore:
             UPDATE messages
             SET
                 message_id = COALESCE(NULLIF(message_id, ''), ?),
+                displayed_marker_id = COALESCE(NULLIF(displayed_marker_id, ''), ?),
                 audio_url = COALESCE(NULLIF(audio_url, ''), ?),
                 media_url = COALESCE(NULLIF(media_url, ''), ?),
                 media_kind = COALESCE(NULLIF(media_kind, ''), ?),
@@ -564,6 +567,7 @@ class MessageStore:
             """,
             (
                 duplicate["message_id"],
+                duplicate["displayed_marker_id"],
                 duplicate["audio_url"],
                 duplicate["media_url"],
                 duplicate["media_kind"],
@@ -686,15 +690,21 @@ class MessageStore:
         conn.execute(
             """
             INSERT INTO messages (
-                account_jid, chat_jid, message_key, message_id, sender_jid,
+                account_jid, chat_jid, message_key, message_id, displayed_marker_id, sender_jid,
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
                 media_local_path, chat_is_group, starred, reactions_json, reply_quote,
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
+                displayed_marker_id = COALESCE(
+                    NULLIF(excluded.displayed_marker_id, ''),
+                    messages.displayed_marker_id
+                ),
                 sender_jid = excluded.sender_jid,
                 sender_name = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
                 body = CASE
@@ -767,6 +777,7 @@ class MessageStore:
                 message.chat_jid,
                 message_key,
                 message.message_id,
+                message.displayed_marker_id,
                 message.sender_jid,
                 message.sender_name,
                 message.body,
@@ -1146,6 +1157,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
         message_id=str(row["message_id"] or ""),
+        displayed_marker_id=str(row["displayed_marker_id"] or ""),
         chat_is_group=bool(row["chat_is_group"]),
         starred=bool(row["starred"]),
         reactions=tuple(json.loads(str(row["reactions_json"] or "[]"))),

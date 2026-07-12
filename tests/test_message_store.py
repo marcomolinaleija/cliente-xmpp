@@ -75,6 +75,25 @@ class MessageStoreTests(unittest.TestCase):
             self.assertIn("delivery_state", columns)
             self.assertIn("reply_to_jid", columns)
             self.assertIn("reply_to_id", columns)
+            self.assertIn("displayed_marker_id", columns)
+
+    def test_persists_group_displayed_marker_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            message = Message(
+                chat_jid="#group@example.test",
+                sender_jid="member@example.test",
+                body="Mensaje de grupo",
+                sent_at=datetime(2026, 7, 12, 12, 0),
+                message_id="bridge-id",
+                displayed_marker_id="room-stanza-id",
+                chat_is_group=True,
+            )
+
+            store.upsert_messages("me@example.test", [message])
+
+            loaded = store.load_recent_messages("me@example.test", message.chat_jid)
+            self.assertEqual(loaded[0].displayed_marker_id, "room-stanza-id")
 
     def test_edited_message_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

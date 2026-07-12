@@ -36,6 +36,7 @@ class Message:
     media_duration_seconds: float = 0.0
     media_local_path: str = ""
     message_id: str = ""
+    displayed_marker_id: str = ""
     chat_is_group: bool = False
     starred: bool = False
     reactions: tuple[str, ...] = ()

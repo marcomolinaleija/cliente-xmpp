@@ -212,8 +212,29 @@ class DisplayedMarkerTests(unittest.TestCase):
             ],
         )
 
+    def test_bridge_sends_groupchat_displayed_marker_for_group(self) -> None:
+        calls: list[dict[str, str]] = []
+
+        class ChatMarkers:
+            def send_marker(self, **kwargs: str) -> None:
+                calls.append(kwargs)
+
+        class Client:
+            def __getitem__(self, _key: str) -> ChatMarkers:
+                return ChatMarkers()
+
+        BridgeXmppClient.send_displayed_marker(
+            Client(),
+            "#group@example.org",
+            "room-stanza-id",
+            is_group=True,
+        )
+
+        self.assertEqual(calls[0]["mtype"], "groupchat")
+        self.assertEqual(calls[0]["id"], "room-stanza-id")
+
     def test_service_schedules_displayed_marker(self) -> None:
-        calls: list[tuple[str, str]] = []
+        calls: list[tuple[str, str, bool]] = []
 
         class Loop:
             def call_soon_threadsafe(self, callback: object) -> None:
@@ -221,8 +242,8 @@ class DisplayedMarkerTests(unittest.TestCase):
 
         service = SimpleNamespace(
             _client=SimpleNamespace(
-                send_displayed_marker=lambda chat_jid, message_id: calls.append(
-                    (chat_jid, message_id)
+                send_displayed_marker=lambda chat_jid, message_id, is_group=False: calls.append(
+                    (chat_jid, message_id, is_group)
                 )
             ),
             _loop=Loop(),
@@ -230,7 +251,7 @@ class DisplayedMarkerTests(unittest.TestCase):
 
         XmppService.mark_chat_displayed(service, "contact@example.org", "incoming-id")
 
-        self.assertEqual(calls, [("contact@example.org", "incoming-id")])
+        self.assertEqual(calls, [("contact@example.org", "incoming-id", False)])
 
     def test_marks_only_the_latest_received_message_in_individual_chat(self) -> None:
         chat = Chat(jid="contact@example.org", name="Contacto")
@@ -249,14 +270,14 @@ class DisplayedMarkerTests(unittest.TestCase):
             outgoing=True,
             message_id="outgoing-id",
         )
-        calls: list[tuple[str, str]] = []
+        calls: list[tuple[str, str, bool]] = []
         window = SimpleNamespace(
             conversation=SimpleNamespace(current_chat=chat),
             messages_by_chat={chat.jid: [received, outgoing]},
             displayed_marker_ids_by_chat={},
             xmpp=SimpleNamespace(
-                mark_chat_displayed=lambda chat_jid, message_id: calls.append(
-                    (chat_jid, message_id)
+                mark_chat_displayed=lambda chat_jid, message_id, is_group=False: calls.append(
+                    (chat_jid, message_id, is_group)
                 )
             ),
             _message_timestamp=MainWindow._message_timestamp,
@@ -265,19 +286,50 @@ class DisplayedMarkerTests(unittest.TestCase):
         MainWindow._mark_current_chat_displayed(window, chat.jid)
         MainWindow._mark_current_chat_displayed(window, chat.jid)
 
-        self.assertEqual(calls, [(chat.jid, "incoming-id")])
+        self.assertEqual(calls, [(chat.jid, "incoming-id", False)])
 
-    def test_does_not_mark_group_chats(self) -> None:
+    def test_uses_room_stanza_id_for_group_chats(self) -> None:
         chat = Chat(jid="#group@example.org", name="Grupo", is_group=True)
+        message = Message(
+            chat_jid=chat.jid,
+            sender_jid="member@example.org",
+            body="pendiente",
+            sent_at=datetime.now().astimezone(),
+            message_id="bridge-message-id",
+            displayed_marker_id="room-stanza-id",
+            chat_is_group=True,
+        )
+        calls: list[tuple[str, str, bool]] = []
         window = SimpleNamespace(
             conversation=SimpleNamespace(current_chat=chat),
-            messages_by_chat={},
+            messages_by_chat={chat.jid: [message]},
             displayed_marker_ids_by_chat={},
-            xmpp=SimpleNamespace(mark_chat_displayed=lambda *_args: self.fail("No debe enviarse")),
+            xmpp=SimpleNamespace(
+                mark_chat_displayed=lambda chat_jid, marker_id, is_group=False: calls.append(
+                    (chat_jid, marker_id, is_group)
+                )
+            ),
             _message_timestamp=MainWindow._message_timestamp,
         )
 
         MainWindow._mark_current_chat_displayed(window, chat.jid)
+
+        self.assertEqual(calls, [(chat.jid, "room-stanza-id", True)])
+
+    def test_reads_room_stanza_id_only_for_the_matching_room(self) -> None:
+        message = ET.fromstring(
+            """
+            <message>
+              <stanza-id xmlns="urn:xmpp:sid:0" by="#other@example.org" id="other-id" />
+              <stanza-id xmlns="urn:xmpp:sid:0" by="#group@example.org" id="room-id" />
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._room_stanza_id_from_xml(message, "#group@example.org"),
+            "room-id",
+        )
 
 
 class WhatsAppPairingCodeTests(unittest.TestCase):

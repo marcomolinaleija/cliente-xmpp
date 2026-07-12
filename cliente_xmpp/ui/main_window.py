@@ -1632,11 +1632,10 @@ class MainWindow(wx.Frame):
             self.conversation.set_recording_state(False)
             return
 
+        view_once = self.conversation.view_once_audio.GetValue()
         self.conversation.set_recording_state(False)
         self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
         self.status_bar.SetStatusText("Subiendo audio...")
-        view_once = self.conversation.view_once_audio.GetValue()
-        self.conversation.view_once_audio.SetValue(False)
         self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, view_once=view_once)
 
     def _on_composer_paste(self, event: wx.CommandEvent) -> None:

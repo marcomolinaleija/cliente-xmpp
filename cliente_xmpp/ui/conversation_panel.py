@@ -302,6 +302,9 @@ class ConversationPanel(wx.Panel):
         self.attach_button.Enable(not recording)
         self.pause_recording_button.Show(recording)
         self.cancel_recording_button.Show(recording)
+        self.view_once_audio.Show(recording)
+        if not recording:
+            self.view_once_audio.SetValue(False)
         self.update_send_button_state(recording, paused)
         self.Layout()
 
@@ -587,9 +590,12 @@ class ConversationPanel(wx.Panel):
         self.pause_recording_button = wx.Button(self, label="Pausar")
         self.cancel_recording_button = wx.Button(self, label="Cancelar")
         self.view_once_audio = wx.CheckBox(self, label="Audio de una sola escucha")
-        self.view_once_audio.SetToolTip("Envía la próxima nota de voz para una sola escucha en WhatsApp.")
+        self.view_once_audio.SetToolTip(
+            "Envía la próxima nota de voz para una sola escucha en WhatsApp."
+        )
         self.pause_recording_button.Hide()
         self.cancel_recording_button.Hide()
+        self.view_once_audio.Hide()
         composer.Add(self.attach_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.pause_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.cancel_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)

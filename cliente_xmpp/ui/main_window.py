@@ -126,6 +126,7 @@ class MainWindow(wx.Frame):
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
+        self.displayed_marker_ids_by_chat: dict[str, str] = {}
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
         self.history_loaded_chats: set[str] = set()
         self.history_exhausted_chats: set[str] = set()
@@ -1411,6 +1412,7 @@ class MainWindow(wx.Frame):
             delivery_state="pending",
         )
         self._add_pending_outgoing_message(message)
+        self._mark_current_chat_displayed(chat.jid)
         self.status_bar.SetStatusText("Enviando mensaje...")
         if self.reply_context:
             reply_to_jid = (
@@ -1512,6 +1514,7 @@ class MainWindow(wx.Frame):
 
         for path in files:
             self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
+        self._mark_current_chat_displayed(chat.jid)
 
     def _set_clipboard_status(self, message: str) -> None:
         self.status_bar.SetStatusText(message)
@@ -1637,6 +1640,7 @@ class MainWindow(wx.Frame):
         self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
         self.status_bar.SetStatusText("Subiendo audio...")
         self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, view_once=view_once)
+        self._mark_current_chat_displayed(chat.jid)
 
     def _on_composer_paste(self, event: wx.CommandEvent) -> None:
         if self._attach_clipboard_files():
@@ -2579,6 +2583,7 @@ class MainWindow(wx.Frame):
                 unread_count=self.conversation.unread_marker_count(),
             )
             self._refresh_load_older_button(chat_jid)
+            self._mark_current_chat_displayed(chat_jid)
 
         if background:
             if messages and not complete:
@@ -3872,6 +3877,27 @@ class MainWindow(wx.Frame):
 
         return current + unread_delta
 
+    def _mark_current_chat_displayed(self, chat_jid: str) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or chat.jid != chat_jid or chat.is_group:
+            return
+
+        messages = self.messages_by_chat.get(chat_jid, [])
+        received_messages = [
+            message
+            for message in messages
+            if message.chat_jid == chat_jid and not message.outgoing and message.message_id
+        ]
+        if not received_messages:
+            return
+
+        latest_message = max(received_messages, key=self._message_timestamp)
+        if self.displayed_marker_ids_by_chat.get(chat_jid) == latest_message.message_id:
+            return
+
+        self.xmpp.mark_chat_displayed(chat_jid, latest_message.message_id)
+        self.displayed_marker_ids_by_chat[chat_jid] = latest_message.message_id
+
     def _show_selected_chat(self) -> None:
         item = self.chat_list.selected_item()
         chat = item.chat if item is not None else self.chat_list.selected_chat()
@@ -3895,6 +3921,7 @@ class MainWindow(wx.Frame):
         self.content_panel.Layout()
         self.workspace_panel.Layout()
         self.Layout()
+        self._mark_current_chat_displayed(chat.jid)
         if target_message is not None:
             self.conversation.focus_message(target_message)
         else:
@@ -3921,6 +3948,7 @@ class MainWindow(wx.Frame):
         self.conversation.clear_unread_marker()
         self._reset_window_title()
         self.conversation.Hide()
+        self._mark_current_chat_displayed(selected_jid)
         self.chat_list.Show()
         self.chat_list.refresh_visible_if_stale()
         self._restore_chat_list_focus(selected_jid)

@@ -12,9 +12,10 @@ from pathlib import Path
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.mentions import GroupParticipant
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -208,6 +209,67 @@ class MessageStore:
                 (int(muted), now, account_jid, chat_jid),
             )
 
+    def load_group_participants(self, account_jid: str, group_jid: str) -> list[GroupParticipant]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT group_jid, participant_jid, nick
+                FROM group_participants
+                WHERE account_jid = ? AND group_jid = ?
+                ORDER BY nick COLLATE NOCASE
+                """,
+                (account_jid, group_jid),
+            ).fetchall()
+
+        return [
+            GroupParticipant(
+                group_jid=str(row["group_jid"]),
+                jid=str(row["participant_jid"]),
+                nick=str(row["nick"]),
+            )
+            for row in rows
+        ]
+
+    def upsert_group_participant(self, account_jid: str, participant: GroupParticipant) -> None:
+        self.upsert_group_participants(account_jid, [participant])
+
+    def upsert_group_participants(
+        self,
+        account_jid: str,
+        participants: list[GroupParticipant],
+    ) -> None:
+        valid_participants = [
+            participant
+            for participant in participants
+            if participant.group_jid and participant.jid and participant.nick
+        ]
+        if not valid_participants:
+            return
+
+        with self._connect() as conn:
+            now = _datetime_to_db(datetime.now())
+            conn.executemany(
+                """
+                INSERT INTO group_participants (
+                    account_jid, group_jid, participant_jid, nick, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_jid, group_jid, participant_jid) DO UPDATE SET
+                    nick = excluded.nick,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        account_jid,
+                        participant.group_jid,
+                        participant.jid,
+                        participant.nick,
+                        now,
+                    )
+                    for participant in valid_participants
+                ],
+            )
+
     def update_message_media_local_path(
         self,
         account_jid: str,
@@ -307,6 +369,15 @@ class MessageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_messages_chat_sent
                 ON messages (account_jid, chat_jid, sent_at);
+
+                CREATE TABLE IF NOT EXISTS group_participants (
+                    account_jid TEXT NOT NULL,
+                    group_jid TEXT NOT NULL,
+                    participant_jid TEXT NOT NULL,
+                    nick TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_jid, group_jid, participant_jid)
+                );
                 """
             )
             self._ensure_message_columns(conn)

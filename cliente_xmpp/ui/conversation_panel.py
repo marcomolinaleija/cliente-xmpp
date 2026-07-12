@@ -78,6 +78,7 @@ class ConversationPanel(wx.Panel):
         self.contact_info_button = wx.Button(self, label="Información del contacto")
         self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
         self.compose: wx.TextCtrl
+        self.mention_suggestions: wx.ListBox
         self.attach_button: wx.Button
         self.send_button: wx.Button
         self.pause_recording_button: wx.Button
@@ -100,6 +101,7 @@ class ConversationPanel(wx.Panel):
         self._pending_audio_message = None
         self._replying = False
         self._editing = False
+        self.hide_mention_suggestions()
         self._set_compose_label_for_chat()
         self.send_button.Enable(True)
         self.attach_button.Enable(True)
@@ -237,8 +239,49 @@ class ConversationPanel(wx.Panel):
         body = self.compose.GetValue().strip()
         if body:
             self.compose.Clear()
+            self.hide_mention_suggestions()
             self.update_send_button_state()
         return body
+
+    def show_mention_suggestions(self, labels: list[str]) -> None:
+        if not labels:
+            self.hide_mention_suggestions()
+            return
+
+        self.mention_suggestions.Set(labels)
+        self.mention_suggestions.SetSelection(0)
+        self.mention_suggestions.Show()
+        self.Layout()
+
+    def hide_mention_suggestions(self) -> None:
+        if hasattr(self, "mention_suggestions") and self.mention_suggestions.IsShown():
+            self.mention_suggestions.Hide()
+            self.Layout()
+
+    def has_mention_suggestions(self) -> bool:
+        return self.mention_suggestions.IsShown() and self.mention_suggestions.GetCount() > 0
+
+    def selected_mention_suggestion_index(self) -> int:
+        return self.mention_suggestions.GetSelection()
+
+    def move_mention_suggestion(self, offset: int) -> int:
+        count = self.mention_suggestions.GetCount()
+        if count <= 0:
+            return wx.NOT_FOUND
+
+        selected = self.mention_suggestions.GetSelection()
+        if selected == wx.NOT_FOUND:
+            selected = 0
+        selected = (selected + offset) % count
+        self.mention_suggestions.SetSelection(selected)
+        return selected
+
+    def replace_mention_query(self, start: int, end: int, value: str) -> None:
+        text = self.compose.GetValue()
+        self.compose.SetValue(f"{text[:start]}{value}{text[end:]}")
+        self.compose.SetInsertionPoint(start + len(value))
+        self.compose.SetFocus()
+        self.hide_mention_suggestions()
 
     def has_composed_text(self) -> bool:
         return bool(self.compose.GetValue().strip())
@@ -523,6 +566,14 @@ class ConversationPanel(wx.Panel):
 
         self.compose_label = wx.StaticText(self, label="Mensaje:")
         box.Add(self.compose_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
+
+        self.mention_suggestions = wx.ListBox(self, style=wx.LB_SINGLE)
+        self.mention_suggestions.SetName("Sugerencias de menciones")
+        self.mention_suggestions.SetToolTip(
+            "Usa flecha arriba o abajo y Tab o Enter para elegir una mención."
+        )
+        self.mention_suggestions.Hide()
+        box.Add(self.mention_suggestions, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 12)
 
         composer = wx.BoxSizer(wx.HORIZONTAL)
         self.compose = wx.TextCtrl(self, style=wx.TE_MULTILINE)

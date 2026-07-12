@@ -25,7 +25,12 @@ from cliente_xmpp.audio.opus import (
 )
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
-from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name
+from cliente_xmpp.models.mentions import GroupParticipant, MentionReference
+from cliente_xmpp.models.names import (
+    display_label_from_jid,
+    normalize_chat_name,
+    unescape_jid_text,
+)
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
@@ -34,6 +39,8 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
+    GroupParticipantUpdated,
+    GroupParticipantsLoaded,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -380,6 +387,7 @@ class BridgeXmppClient(ClientXMPP):
     def _on_presence_debug(self, presence: object) -> None:
         try:
             from_jid = str(presence["from"].bare)
+            full_from_jid = str(presence["from"])
             presence_type = str(presence["type"] or "available")
             show = str(presence["show"] or "")
             status = str(presence["status"] or "")
@@ -398,7 +406,28 @@ class BridgeXmppClient(ClientXMPP):
                 self._emit_whatsapp_status(from_jid, state, status)
                 return
 
+        if self._jid_may_be_group_chat(from_jid):
+            self._emit_group_participant_from_presence(from_jid, full_from_jid, presence)
+            return
+
         self._emit_contact_presence(from_jid, presence_type, show, status, presence)
+
+    def _emit_group_participant_from_presence(
+        self,
+        group_jid: str,
+        full_from_jid: str,
+        presence: object,
+    ) -> None:
+        participant_jid = self._muc_user_item_jid(getattr(presence, "xml", None))
+        nick = unescape_jid_text(self._jid_resource(full_from_jid)).strip()
+        if not participant_jid or not nick:
+            return
+
+        self._emit(
+            GroupParticipantUpdated(
+                GroupParticipant(group_jid=group_jid, jid=participant_jid, nick=nick)
+            )
+        )
 
     def _emit_contact_presence(
         self,
@@ -1775,8 +1804,46 @@ class BridgeXmppClient(ClientXMPP):
             task.result()
         except (asyncio.TimeoutError, IqError, IqTimeout):
             self._joined_group_chat_jids.discard(jid)
+            return
         except Exception:
             self._joined_group_chat_jids.discard(jid)
+            return
+
+        self._emit_group_participants_from_roster(jid)
+
+    def _emit_group_participants_from_roster(self, group_jid: str) -> None:
+        try:
+            muc = self["xep_0045"]
+            room = next(
+                (
+                    joined_room
+                    for joined_room in muc.get_joined_rooms()
+                    if str(joined_room) == group_jid
+                ),
+                group_jid,
+            )
+            nicks = muc.get_roster(room)
+        except (KeyError, ValueError):
+            return
+
+        participants: list[GroupParticipant] = []
+        for nick in nicks:
+            try:
+                participant_jid = str(muc.get_jid_property(room, nick, "jid") or "")
+            except (KeyError, ValueError):
+                continue
+            if not participant_jid:
+                continue
+            participants.append(
+                GroupParticipant(
+                    group_jid=group_jid,
+                    jid=participant_jid,
+                    nick=unescape_jid_text(nick).strip(),
+                )
+            )
+
+        if participants:
+            self._emit(GroupParticipantsLoaded(group_jid, participants))
 
     def _muc_nick(self) -> str:
         return str(self.boundjid.user or self.boundjid.bare or self.settings.jid)
@@ -2606,7 +2673,9 @@ class BridgeXmppClient(ClientXMPP):
         return display_label_from_jid(cls._jid_resource(from_jid) or from_jid)
 
     @staticmethod
-    def _muc_user_item_jid(xml: ET.Element) -> str:
+    def _muc_user_item_jid(xml: ET.Element | None) -> str:
+        if xml is None:
+            return ""
         item = xml.find(f".//{{{MUC_USER_NS}}}item")
         if item is None:
             return ""
@@ -3319,6 +3388,7 @@ class XmppService:
         body: str,
         is_group: bool = False,
         message_id: str = "",
+        mentions: list[MentionReference] | None = None,
     ) -> None:
         if not self._client or not self._loop:
             if message_id:
@@ -3342,6 +3412,7 @@ class XmppService:
                     msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
                     if message_id:
                         msg["id"] = message_id
+                    self._append_mentions(msg, mentions or [])
                     self._request_delivery_updates(msg, message_type)
                     msg.send()
                     if message_id:
@@ -3375,6 +3446,7 @@ class XmppService:
         fallback_end: int = 0,
         is_group: bool = False,
         message_id: str = "",
+        mentions: list[MentionReference] | None = None,
     ) -> None:
         if not self._client or not self._loop:
             if message_id:
@@ -3400,6 +3472,7 @@ class XmppService:
                 msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
                 if message_id:
                     msg["id"] = message_id
+                self._append_mentions(msg, mentions or [])
                 self._request_delivery_updates(msg, message_type)
                 if reply_to_id:
                     msg.append(
@@ -3494,6 +3567,23 @@ class XmppService:
                 self._emit(XmppError(f"No se pudo editar el mensaje: {exc}"))
 
         self._loop.call_soon_threadsafe(send)
+
+    @staticmethod
+    def _append_mentions(msg: object, mentions: list[MentionReference]) -> None:
+        for mention in mentions:
+            if not mention.participant_jid or mention.start < 0 or mention.end <= mention.start:
+                continue
+            msg.append(
+                ET.Element(
+                    f"{{{REFERENCE_NS}}}reference",
+                    {
+                        "type": "mention",
+                        "uri": f"xmpp:{mention.participant_jid}",
+                        "begin": str(mention.start),
+                        "end": str(mention.end),
+                    },
+                )
+            )
 
     @staticmethod
     def _request_delivery_updates(msg: object, message_type: str) -> None:

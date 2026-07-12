@@ -8,8 +8,8 @@ import unicodedata
 import uuid
 import webbrowser
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -148,6 +148,7 @@ class MainWindow(wx.Frame):
         self.pending_chat_activity: dict[str, ChatActivityLoaded] = {}
         self.loaded_chat_summaries = 0
         self.search_debounce_timer: wx.CallLater | None = None
+        self.search_request_id = 0
         self.reply_context: Message | None = None
         self.edit_context: Message | None = None
         self.current_jid = ""
@@ -936,6 +937,7 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("Buscar chats y mensajes")
 
     def _clear_chat_search(self, focus_list: bool = False, selected_jid: str = "") -> None:
+        self.search_request_id += 1
         self._cancel_scheduled_chat_search()
         if self.chat_list.search_ctrl.GetValue():
             self.chat_list.search_ctrl.ChangeValue("")
@@ -958,6 +960,8 @@ class MainWindow(wx.Frame):
             self.search_debounce_timer.Stop()
 
     def _apply_chat_search(self) -> None:
+        self.search_request_id += 1
+        request_id = self.search_request_id
         query = self.chat_list.search_ctrl.GetValue().strip()
         if not query:
             selected_chat = self.chat_list.selected_chat()
@@ -972,19 +976,82 @@ class MainWindow(wx.Frame):
             return
 
         chats_by_jid = self._searchable_chats_by_jid()
-        contact_results: list[ChatListItem] = []
-        for chat in self._sort_chats_by_recency(chats_by_jid.values()):
-            if self._chat_matches_search(chat, terms):
-                contact_results.append(ChatListItem(chat=chat))
-                if len(contact_results) >= SEARCH_RESULT_LIMIT:
-                    break
+        contact_results = [
+            ChatListItem(chat=chat)
+            for chat in self._sort_chats_for_search(chats_by_jid.values(), terms)
+        ][:SEARCH_RESULT_LIMIT]
+        self.chat_list.set_search_results(contact_results)
+        if contact_results and self.chat_list.list_box.GetSelection() == wx.NOT_FOUND:
+            self.chat_list.select_first()
 
         remaining_message_results = max(0, SEARCH_RESULT_LIMIT - len(contact_results))
-        message_results = (
-            self._message_search_results(terms, chats_by_jid, limit=remaining_message_results)
-            if remaining_message_results
-            else []
+        if not remaining_message_results:
+            self.status_bar.SetStatusText(f"{len(contact_results)} resultados")
+            return
+
+        messages_snapshot = {
+            chat_jid: tuple(messages)
+            for chat_jid, messages in self.messages_by_chat.items()
+        }
+        self.status_bar.SetStatusText(
+            f"{len(contact_results)} chats; buscando mensajes..."
         )
+        threading.Thread(
+            target=self._run_message_search,
+            args=(
+                request_id,
+                query,
+                terms,
+                chats_by_jid,
+                messages_snapshot,
+                self.current_jid,
+                remaining_message_results,
+                contact_results,
+            ),
+            daemon=True,
+        ).start()
+
+    def _run_message_search(
+        self,
+        request_id: int,
+        query: str,
+        terms: list[str],
+        chats_by_jid: dict[str, Chat],
+        messages_by_chat: dict[str, tuple[Message, ...]],
+        account_jid: str,
+        limit: int,
+        contact_results: list[ChatListItem],
+    ) -> None:
+        message_results = self._message_search_results(
+            terms,
+            chats_by_jid,
+            limit=limit,
+            messages_by_chat=messages_by_chat,
+            account_jid=account_jid,
+        )
+        wx.CallAfter(
+            self._finish_message_search,
+            request_id,
+            query,
+            contact_results,
+            message_results,
+        )
+
+    def _finish_message_search(
+        self,
+        request_id: int,
+        query: str,
+        contact_results: list[ChatListItem],
+        message_results: list[ChatListItem],
+    ) -> None:
+        if request_id != self.search_request_id:
+            return
+        if (
+            not self._search_is_active()
+            or self.chat_list.search_ctrl.GetValue().strip() != query
+        ):
+            return
+
         results = contact_results + message_results
         self.chat_list.set_search_results(results)
         if results and self.chat_list.list_box.GetSelection() == wx.NOT_FOUND:
@@ -996,6 +1063,8 @@ class MainWindow(wx.Frame):
         terms: list[str],
         chats_by_jid: dict[str, Chat],
         limit: int = SEARCH_RESULT_LIMIT,
+        messages_by_chat: dict[str, tuple[Message, ...]] | None = None,
+        account_jid: str = "",
     ) -> list[ChatListItem]:
         started_at = time.perf_counter()
         if limit <= 0:
@@ -1003,7 +1072,15 @@ class MainWindow(wx.Frame):
 
         memory_started_at = time.perf_counter()
         messages_by_key: dict[tuple[object, ...], Message] = {}
-        for messages in self.messages_by_chat.values():
+        message_sources = (
+            messages_by_chat
+            if messages_by_chat is not None
+            else {
+                chat_jid: tuple(messages)
+                for chat_jid, messages in self.messages_by_chat.items()
+            }
+        )
+        for messages in message_sources.values():
             for message in messages:
                 chat = chats_by_jid.get(message.chat_jid)
                 if self._message_matches_search(message, terms, chat):
@@ -1014,11 +1091,12 @@ class MainWindow(wx.Frame):
             matches=len(messages_by_key),
         )
 
-        if self.current_jid:
+        account_jid = account_jid or self.current_jid
+        if account_jid:
             try:
                 sqlite_started_at = time.perf_counter()
                 cached_messages = self.message_store.search_messages(
-                    self.current_jid,
+                    account_jid,
                     " ".join(terms),
                     limit=limit,
                 )
@@ -1042,7 +1120,16 @@ class MainWindow(wx.Frame):
         )[:limit]
         results: list[ChatListItem] = []
         for message in messages:
-            chat = chats_by_jid.get(message.chat_jid) or self._chat_for_message(message)
+            chat = chats_by_jid.get(message.chat_jid) or Chat(
+                jid=message.chat_jid,
+                name=self._fallback_display_name_for_jid(message.chat_jid),
+                is_group=message.chat_is_group
+                or MainWindow._jid_may_be_group_chat(message.chat_jid),
+                last_message_preview=(
+                    media_description(message) if has_media(message) else message.body
+                ),
+                last_message_at=message.sent_at,
+            )
             results.append(ChatListItem(chat=chat, message=message))
         self._debug_perf(
             "_message_search_results.total",
@@ -1072,27 +1159,97 @@ class MainWindow(wx.Frame):
 
     def _searchable_chats_by_jid(self) -> dict[str, Chat]:
         chats = dict(self.searchable_chats_by_jid)
-        for chat in self.chat_list.chats():
-            chats[chat.jid] = chat
+        for visible_chat in self.chat_list.chats():
+            known_chat = chats.get(visible_chat.jid)
+            if known_chat is None:
+                chats[visible_chat.jid] = self._chat_with_search_name(visible_chat)
+                continue
+
+            chats[visible_chat.jid] = self._chat_with_search_name(
+                known_chat,
+                visible_chat=visible_chat,
+            )
         return chats
+
+    def _chat_with_search_name(
+        self,
+        chat: Chat,
+        visible_chat: Chat | None = None,
+    ) -> Chat:
+        visible_chat = visible_chat or chat
+        custom_name = visible_chat.custom_name or chat.custom_name
+        known_name = self.chat_names_by_jid.get(chat.jid, "").strip()
+        if custom_name:
+            name = custom_name
+        elif known_name and known_name != chat.jid:
+            name = known_name
+        elif not self._is_fallback_chat_name(chat.name, chat.jid):
+            name = chat.name
+        else:
+            name = visible_chat.name or chat.name
+
+        return replace(
+            chat,
+            name=name,
+            custom_name=custom_name,
+            last_message_preview=(
+                visible_chat.last_message_preview or chat.last_message_preview
+            ),
+            last_message_at=visible_chat.last_message_at or chat.last_message_at,
+        )
 
     def _upsert_searchable_chat(self, chat: Chat) -> None:
         self.searchable_chats_by_jid[chat.jid] = chat
 
     def _chat_matches_search(self, chat: Chat, terms: list[str]) -> bool:
-        haystack = self._normalize_search_text(
-            " ".join(
-                (
-                    chat.name,
-                    chat.custom_name,
-                    chat.jid,
-                    self._fallback_display_name_for_jid(chat.jid),
-                    chat.last_message_preview,
-                )
-            )
+        return self._chat_search_rank(chat, terms) is not None
+
+    def _sort_chats_for_search(
+        self,
+        chats: Iterable[Chat],
+        terms: list[str],
+    ) -> list[Chat]:
+        matching_chats = [
+            chat for chat in chats if self._chat_search_rank(chat, terms) is not None
+        ]
+        return sorted(
+            matching_chats,
+            key=lambda chat: (
+                self._chat_search_rank(chat, terms),
+                *self._chat_recency_key(chat),
+            ),
         )
-        digits = self._digits_only(chat.jid)
-        return all(term in haystack or term in digits for term in terms)
+
+    @staticmethod
+    def _chat_search_rank(chat: Chat, terms: list[str]) -> int | None:
+        """Rank a chat name ahead of identifiers and latest-message previews."""
+        query = " ".join(terms)
+        name_fields = [
+            MainWindow._normalize_search_text(chat.name),
+            MainWindow._normalize_search_text(chat.custom_name),
+            MainWindow._normalize_search_text(
+                MainWindow._fallback_display_name_for_jid(chat.jid)
+            ),
+        ]
+        name_fields = [field for field in name_fields if field]
+
+        if any(field == query for field in name_fields):
+            return 0
+        if any(field.startswith(query) for field in name_fields):
+            return 1
+        if any(
+            query in field or all(term in field for term in terms)
+            for field in name_fields
+        ):
+            return 2
+
+        auxiliary_text = MainWindow._normalize_search_text(
+            " ".join((chat.jid, chat.last_message_preview))
+        )
+        digits = MainWindow._digits_only(chat.jid)
+        if all(term in auxiliary_text or term in digits for term in terms):
+            return 3
+        return None
 
     def _message_matches_search(
         self,

@@ -68,6 +68,75 @@ class ChatListFocusTests(unittest.TestCase):
         self.assertEqual(calls, [("select", "marco@example.org"), ("focus", "")])
 
 
+class ChatSearchRankingTests(unittest.TestCase):
+    def test_exact_chat_name_beats_group_name_and_message_preview(self) -> None:
+        exact = Chat(
+            jid="+521000000000@example.org",
+            name="Burra",
+            last_message_preview="aburrida",
+        )
+        group = Chat(
+            jid="#group@example.org",
+            name="La familia de la Burra",
+            is_group=True,
+        )
+        preview_only = Chat(
+            jid="+522000000000@example.org",
+            name="Otro chat",
+            last_message_preview="burra",
+        )
+
+        terms = MainWindow._search_terms("burra")
+
+        self.assertEqual(MainWindow._chat_search_rank(exact, terms), 0)
+        self.assertEqual(MainWindow._chat_search_rank(group, terms), 2)
+        self.assertEqual(MainWindow._chat_search_rank(preview_only, terms), 3)
+
+        window = SimpleNamespace(
+            _chat_search_rank=MainWindow._chat_search_rank,
+            _chat_recency_key=lambda chat: (0, 0, chat.name.casefold()),
+        )
+        ordered = MainWindow._sort_chats_for_search(
+            window,
+            [exact, group, preview_only],
+            terms,
+        )
+        self.assertEqual(
+            [chat.name for chat in ordered],
+            ["Burra", "La familia de la Burra", "Otro chat"],
+        )
+
+    def test_chat_name_search_is_accent_insensitive(self) -> None:
+        chat = Chat(jid="contact@example.org", name="La familia de la Burrá")
+
+        self.assertEqual(
+            MainWindow._chat_search_rank(chat, MainWindow._search_terms("burra")),
+            2,
+        )
+
+    def test_cached_fallback_name_does_not_hide_known_contact_name(self) -> None:
+        jid = "+521000000000@example.org"
+        window = SimpleNamespace(
+            searchable_chats_by_jid={jid: Chat(jid=jid, name="Burra")},
+            chat_names_by_jid={},
+            _is_fallback_chat_name=MainWindow._is_fallback_chat_name,
+            chat_list=SimpleNamespace(
+                chats=lambda: [Chat(jid=jid, name=jid)],
+            ),
+        )
+        window._chat_with_search_name = (
+            lambda chat, visible_chat=None: MainWindow._chat_with_search_name(
+                window,
+                chat,
+                visible_chat,
+            )
+        )
+
+        searchable = MainWindow._searchable_chats_by_jid(window)
+
+        self.assertEqual(searchable[jid].name, "Burra")
+
+
 class IncomingMessageSoundTests(unittest.TestCase):
     def _window(self, *, active: bool, muted: bool = False) -> SimpleNamespace:
         played: list[str] = []

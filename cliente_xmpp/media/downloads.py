@@ -52,6 +52,12 @@ def media_display_name(message: Message) -> str:
     return filename or "archivo"
 
 
+def is_opaque_media_filename(filename: str) -> bool:
+    """Reconoce los nombres hash que el bridge genera para notas de video."""
+    path = Path(filename)
+    return bool(re.fullmatch(r"[0-9a-f]{64}", path.stem, flags=re.IGNORECASE))
+
+
 def media_size_label(size: int) -> str:
     if size <= 0:
         return "peso desconocido"
@@ -77,6 +83,9 @@ def media_description(message: Message) -> str:
             return f"voz, {format_duration(message.media_duration_seconds)}"
 
         return "voz"
+
+    if message.media_kind == "video" and is_opaque_media_filename(media_filename(message)):
+        return f"Nota de video, {media_size_label(message.media_size)}"
 
     kind = {
         "audio": "audio",

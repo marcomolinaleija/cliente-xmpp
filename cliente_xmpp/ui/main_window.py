@@ -2476,8 +2476,17 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("Descarga el archivo antes de enviarlo a RayoAI")
             return
 
-        if rayoai.send_open_path(path):
-            self.status_bar.SetStatusText("Archivo enviado a RayoAI")
+        self.status_bar.SetStatusText("Enviando a RayoAI...")
+
+        def worker() -> None:
+            sent = rayoai.send_open_path(path)
+            wx.CallAfter(self._finish_send_media_to_rayoai, sent)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_send_media_to_rayoai(self, sent: bool) -> None:
+        if sent:
+            self.status_bar.SetStatusText("Imagen enviada a RayoAI para describir")
             return
 
         self.status_bar.SetStatusText("No se pudo enviar a RayoAI. Verifica que esté abierto.")

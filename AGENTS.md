@@ -273,7 +273,12 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - Al recibirse un mensaje con `media_kind="audio"` y `audio_url` o `media_url`, `MainWindow`
   inicia descarga automatica aunque el usuario no haya pulsado reproducir.
 - Los stickers entrantes llevan XEP-0449, se conservan como `Message.is_sticker` y se descargan
-  automáticamente para disponer de archivo local y miniatura sin anunciar el nombre hash.
+  automáticamente para disponer de archivo local y miniatura sin anunciar el nombre hash. Si
+  el bridge pierde el marcador al convertirlos, el cliente admite como fallback únicamente un
+  WebP de imagen cuyo nombre sea el SHA-256 generado por el bridge, incluido el sufijo local
+  ` (N)` por colisión; no clasifiques todos los WebP como stickers.
+- Toda fila sin miniatura debe usar explícitamente el índice de imagen `-1` en `wx.ListCtrl`.
+  Dejar el índice implícito puede reutilizar la primera miniatura en mensajes de texto.
 - Las descargas escriben a `.part` y solo hacen `replace` al terminar. Persiste
   `media_local_path` despues de una escritura valida y conserva esa ruta en upserts posteriores.
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
@@ -313,6 +318,10 @@ usuario, no una regla para todos los grupos. Los mensajes que el bot devuelve po
 pueden verse como `outgoing=True`; no los filtres por esa bandera. La regla de eco propio debe
 ser estructural (room JID, ID y ventana temporal), no textual (por ejemplo, no filtres todo lo
 que contenga "Zapia").
+
+La acción `Describir con RayoAI` usa el IPC local de RayoAI para Windows, no el bridge XMPP.
+Entrega la ruta local original, incluidos stickers WebP, y hace la llamada al socket en un hilo
+de fondo para no bloquear wx. RayoAI es responsable de admitir y decodificar esos formatos.
 
 ### Estado de tests y diagnostico
 

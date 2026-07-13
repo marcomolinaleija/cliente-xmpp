@@ -24,6 +24,7 @@ from cliente_xmpp.audio.opus import (
     convert_to_voice_note,
 )
 from cliente_xmpp.config.settings import ConnectionSettings
+from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant, MentionReference
 from cliente_xmpp.models.names import (
@@ -2253,7 +2254,13 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
-        is_sticker = self._message_is_sticker(stanza.xml)
+        is_sticker = self._message_is_sticker(
+            stanza.xml,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_url=media_url,
+        )
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2328,7 +2335,13 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid = str(stanza["from"].bare)
         sender_jid = "Yo" if outgoing else self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = "" if outgoing else self._sender_name_from_stanza(stanza, is_group=is_group)
-        is_sticker = self._message_is_sticker(stanza.xml)
+        is_sticker = self._message_is_sticker(
+            stanza.xml,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_url=media_url,
+        )
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2391,7 +2404,13 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=True)
         sender_name = self._sender_name_from_stanza(stanza, is_group=True)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
-        is_sticker = self._message_is_sticker(stanza.xml)
+        is_sticker = self._message_is_sticker(
+            stanza.xml,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_url=media_url,
+        )
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2475,7 +2494,9 @@ class BridgeXmppClient(ClientXMPP):
             if message is not None:
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
-                media_url, media_kind, _, _, media_size, _ = self._media_from_xml(message)
+                media_url, media_kind, media_mime, media_filename, media_size, _ = (
+                    self._media_from_xml(message)
+                )
                 if media_url:
                     preview = self._message_body_for_display(
                         preview,
@@ -2483,7 +2504,13 @@ class BridgeXmppClient(ClientXMPP):
                         media_kind,
                         "",
                         media_size,
-                        is_sticker=self._message_is_sticker(message),
+                        is_sticker=self._message_is_sticker(
+                            message,
+                            media_kind=media_kind,
+                            media_mime=media_mime,
+                            media_filename=media_filename,
+                            media_url=media_url,
+                        ),
                     )
                 message_model = self._message_from_forwarded_xml(chat_jid, result)
                 if message_model is not None and message_model.retracted:
@@ -2527,7 +2554,13 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
         sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
-        is_sticker = self._message_is_sticker(message)
+        is_sticker = self._message_is_sticker(
+            message,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_url=media_url,
+        )
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2746,8 +2779,23 @@ class BridgeXmppClient(ClientXMPP):
         return ""
 
     @staticmethod
-    def _message_is_sticker(xml: ET.Element) -> bool:
-        return xml.find(f".//{{{STICKER_NS}}}sticker") is not None
+    def _message_is_sticker(
+        xml: ET.Element,
+        *,
+        media_kind: str = "",
+        media_mime: str = "",
+        media_filename: str = "",
+        media_url: str = "",
+    ) -> bool:
+        if xml.find(f".//{{{STICKER_NS}}}sticker") is not None:
+            return True
+
+        return looks_like_bridge_sticker(
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_url=media_url,
+        )
 
     @staticmethod
     def _message_is_forwarded(xml: ET.Element) -> bool:

@@ -11,11 +11,12 @@ from pathlib import Path
 
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
+from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -387,6 +388,7 @@ class MessageStore:
             self._ensure_chat_columns(conn)
             if previous_version < SCHEMA_VERSION:
                 self._normalize_datetime_columns(conn)
+                self._backfill_sticker_flags(conn)
                 self._compact_duplicate_messages(conn)
                 self._rebuild_chat_summaries(conn)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -411,6 +413,31 @@ class MessageStore:
                         f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
                         (normalized, row["rowid"]),
                     )
+
+    def _backfill_sticker_flags(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT rowid, media_url, media_kind, media_mime, media_filename
+            FROM messages
+            WHERE is_sticker = 0
+                AND lower(media_kind) = 'image'
+                AND lower(media_mime) LIKE 'image/webp%'
+            """
+        ).fetchall()
+        sticker_rowids = [
+            row["rowid"]
+            for row in rows
+            if looks_like_bridge_sticker(
+                media_kind=str(row["media_kind"] or ""),
+                media_mime=str(row["media_mime"] or ""),
+                media_filename=str(row["media_filename"] or ""),
+                media_url=str(row["media_url"] or ""),
+            )
+        ]
+        conn.executemany(
+            "UPDATE messages SET is_sticker = 1 WHERE rowid = ?",
+            ((rowid,) for rowid in sticker_rowids),
+        )
 
     def _rebuild_chat_summaries(self, conn: sqlite3.Connection) -> None:
         chats = conn.execute(
@@ -1179,6 +1206,16 @@ def _format_duration(duration_seconds: float) -> str:
 
 
 def _message_from_row(row: sqlite3.Row) -> Message:
+    media_url = str(row["media_url"] or "")
+    media_kind = str(row["media_kind"] or "")
+    media_mime = str(row["media_mime"] or "")
+    media_filename = str(row["media_filename"] or "")
+    is_sticker = bool(row["is_sticker"]) or looks_like_bridge_sticker(
+        media_kind=media_kind,
+        media_mime=media_mime,
+        media_filename=media_filename,
+        media_url=media_url,
+    )
     return Message(
         chat_jid=str(row["chat_jid"]),
         sender_jid=str(row["sender_jid"]),
@@ -1187,14 +1224,14 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         sent_at=_datetime_from_db(row["sent_at"]) or datetime.now(),
         outgoing=bool(row["outgoing"]),
         audio_url=str(row["audio_url"] or ""),
-        media_url=str(row["media_url"] or ""),
-        media_kind=str(row["media_kind"] or ""),
-        media_mime=str(row["media_mime"] or ""),
-        media_filename=str(row["media_filename"] or ""),
+        media_url=media_url,
+        media_kind=media_kind,
+        media_mime=media_mime,
+        media_filename=media_filename,
         media_size=int(row["media_size"] or 0),
         media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
-        is_sticker=bool(row["is_sticker"]),
+        is_sticker=is_sticker,
         is_forwarded=bool(row["is_forwarded"]),
         message_id=str(row["message_id"] or ""),
         displayed_marker_id=str(row["displayed_marker_id"] or ""),

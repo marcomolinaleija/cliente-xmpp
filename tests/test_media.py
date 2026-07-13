@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import media_description
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
@@ -34,6 +38,88 @@ class MediaDescriptionTests(unittest.TestCase):
         )
 
         self.assertEqual(media_description(message), "video, cumpleanos.mp4, 1.0 KB")
+
+
+class RayoAiMediaTests(unittest.TestCase):
+    def test_sends_original_webp_path_without_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "sticker.webp"
+            source.write_bytes(b"webp")
+            with patch.object(rayoai, "send_payload", return_value=True) as send_payload:
+                sent = rayoai.send_open_path(source)
+
+        self.assertTrue(sent)
+        self.assertEqual(
+            send_payload.call_args.args[0],
+            {"cmd": "open", "path": str(source.resolve())},
+        )
+
+
+class _FakeListItem:
+    def __init__(self) -> None:
+        self.image: int | None = None
+
+    def SetImage(self, image: int) -> None:
+        self.image = image
+
+
+class _FakeMessageList:
+    def __init__(self) -> None:
+        self.insert_args: tuple[object, ...] | None = None
+        self.item = _FakeListItem()
+
+    @staticmethod
+    def GetItemCount() -> int:
+        return 0
+
+    def InsertItem(self, *args: object) -> None:
+        self.insert_args = args
+
+    def SetItem(self, *args: object) -> None:
+        return None
+
+    def GetItem(self, _index: int) -> _FakeListItem:
+        return self.item
+
+
+class MessageThumbnailTests(unittest.TestCase):
+    def test_text_row_explicitly_clears_image_index(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="",
+        )
+        messages = _FakeMessageList()
+        panel = SimpleNamespace(
+            messages=messages,
+            _message_rows=[],
+            _thumbnail_index_for_message=lambda _message: -1,
+            _format_message_row=lambda _message: "texto",
+            _style_message_item=lambda _index: None,
+        )
+
+        ConversationPanel._append_message_row(panel, message)
+
+        self.assertEqual(messages.insert_args, (0, "texto", -1))
+
+    def test_refresh_clears_previous_thumbnail(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="",
+        )
+        messages = _FakeMessageList()
+        panel = SimpleNamespace(
+            messages=messages,
+            _message_rows=[message],
+            _thumbnail_index_for_message=lambda _message: -1,
+            _format_message_row=lambda _message: "texto",
+            _style_message_item=lambda _index: None,
+        )
+
+        ConversationPanel.refresh_message(panel, message)
+
+        self.assertEqual(messages.item.image, -1)
 
 
 class RecordingControlsTests(unittest.TestCase):

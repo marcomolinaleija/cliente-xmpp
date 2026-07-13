@@ -10,6 +10,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.media.downloads import media_description
+from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.xmpp.client import (
@@ -71,6 +72,37 @@ class MessageFeatureParsingTests(unittest.TestCase):
 
         self.assertEqual(media_description(message), "Sticker")
 
+    def test_recognizes_converted_bridge_sticker_without_xep_marker(self) -> None:
+        hash_name = "4591049791d5593e12e82d0fa0e8236024150d6b397ac20c26c8dc0d823cd191"
+        xml = ET.fromstring('<message xmlns="jabber:client" />')
+
+        for filename in (f"{hash_name}.webp", f"{hash_name} (1).webp"):
+            with self.subTest(filename=filename):
+                self.assertTrue(
+                    BridgeXmppClient._message_is_sticker(
+                        xml,
+                        media_kind="image",
+                        media_mime="image/webp",
+                        media_filename=filename,
+                    )
+                )
+
+    def test_does_not_classify_regular_webp_image_as_sticker(self) -> None:
+        self.assertFalse(
+            looks_like_bridge_sticker(
+                media_kind="image",
+                media_mime="image/webp",
+                media_filename="vacaciones.webp",
+            )
+        )
+        self.assertFalse(
+            looks_like_bridge_sticker(
+                media_kind="image",
+                media_mime="image/jpeg",
+                media_filename="a" * 64 + ".webp",
+            )
+        )
+
 
 class MessageFeatureStoreTests(unittest.TestCase):
     def test_persists_enriched_flags_without_later_downgrade(self) -> None:
@@ -123,6 +155,40 @@ class MessageFeatureStoreTests(unittest.TestCase):
             loaded = reopened.load_recent_messages("me@example.test", plain.chat_jid)
             self.assertEqual(len(loaded), 2)
             self.assertEqual([message.is_forwarded for message in loaded], [False, True])
+
+    def test_migration_marks_cached_bridge_webp_as_sticker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            account_jid = "me@example.test"
+            hash_name = "4591049791d5593e12e82d0fa0e8236024150d6b397ac20c26c8dc0d823cd191"
+            store = MessageStore(path)
+            message = Message(
+                chat_jid="contact@example.test",
+                sender_jid="contact@example.test",
+                body=f"https://upload.example/{hash_name}.webp",
+                sent_at=datetime(2026, 7, 13, 13, 33),
+                media_url=f"https://upload.example/{hash_name}.webp",
+                media_kind="image",
+                media_mime="image/webp",
+                media_filename=f"{hash_name} (1).webp",
+                message_id="cached-sticker",
+            )
+            store.upsert_messages(account_jid, [message])
+            with closing(sqlite3.connect(path)) as conn, conn:
+                conn.execute("UPDATE messages SET is_sticker = 0")
+                conn.execute("PRAGMA user_version = 14")
+
+            reopened = MessageStore(path)
+            loaded = reopened.load_recent_messages(account_jid, message.chat_jid)
+            self.assertTrue(loaded[0].is_sticker)
+            self.assertEqual(loaded[0].body, message.body)
+            with closing(sqlite3.connect(path)) as conn:
+                stored_flag = conn.execute("SELECT is_sticker FROM messages").fetchone()[0]
+                preview = conn.execute(
+                    "SELECT last_message_preview FROM chats"
+                ).fetchone()[0]
+            self.assertEqual(stored_flag, 1)
+            self.assertEqual(preview, "Sticker")
 
     def test_normal_message_keeps_legacy_fallback_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

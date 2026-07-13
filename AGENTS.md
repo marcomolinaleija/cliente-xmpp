@@ -291,6 +291,12 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   el bridge pierde el marcador al convertirlos, el cliente admite como fallback únicamente un
   WebP de imagen cuyo nombre sea el SHA-256 generado por el bridge, incluido el sufijo local
   ` (N)` por colisión; no clasifiques todos los WebP como stickers.
+- Algunos stickers animados enviados desde WhatsApp regresan en el eco como un nombre SHA-256
+  `.bin`, MIME `application/octet-stream` y un ZIP Lottie con `animation/animation.json`. El
+  cliente descarga únicamente esos candidatos pequeños, valida el contenido sin extraerlo y
+  genera en segundo plano un WebP local de un fotograma representativo con `rlottie-python`.
+  Conserva URL, MIME y nombre remotos para reenvíos; solo el preview local se entrega a RayoAI.
+  Un `.bin` normal nunca debe clasificarse como sticker solo por su extensión.
 - Toda fila sin miniatura debe usar explícitamente el índice de imagen `-1` en `wx.ListCtrl`.
   Dejar el índice implícito puede reutilizar la primera miniatura en mensajes de texto.
 - Las descargas escriben a `.part` y solo hacen `replace` al terminar. Persiste
@@ -337,8 +343,9 @@ ser estructural (room JID, ID y ventana temporal), no textual (por ejemplo, no f
 que contenga "Zapia").
 
 La acción `Describir con RayoAI` usa el IPC local de RayoAI para Windows, no el bridge XMPP.
-Entrega la ruta local original, incluidos stickers WebP, y hace la llamada al socket en un hilo
-de fondo para no bloquear wx. RayoAI es responsable de admitir y decodificar esos formatos.
+Entrega la ruta local original para imágenes y stickers WebP; para un paquete Lottie `.bin`
+entrega el WebP representativo generado localmente. La llamada al socket y la conversión se
+hacen en hilos de fondo para no bloquear wx. RayoAI es responsable de decodificar WebP.
 
 ### Estado de tests y diagnostico
 

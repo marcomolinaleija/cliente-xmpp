@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.media.downloads import media_description
-from cliente_xmpp.media.stickers import looks_like_bridge_sticker
+from cliente_xmpp.media.stickers import (
+    convert_lottie_sticker_package,
+    looks_like_bridge_sticker,
+    looks_like_lottie_sticker_attachment,
+)
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.xmpp.client import (
@@ -103,8 +109,86 @@ class MessageFeatureParsingTests(unittest.TestCase):
             )
         )
 
+    def test_recognizes_only_opaque_hash_bins_as_lottie_candidates(self) -> None:
+        hash_name = "f033edb72c3926b34d9e29df2cb13b2d6c23a2f550b854edd4b4c5e97db56c06"
+
+        self.assertTrue(
+            looks_like_lottie_sticker_attachment(
+                media_kind="file",
+                media_mime="application/octet-stream",
+                media_filename=f"{hash_name}.bin",
+                media_size=66_944,
+            )
+        )
+        self.assertFalse(
+            looks_like_lottie_sticker_attachment(
+                media_kind="file",
+                media_mime="application/octet-stream",
+                media_filename="reporte.bin",
+                media_size=66_944,
+            )
+        )
+
+    def test_converts_lottie_zip_to_a_local_webp_frame(self) -> None:
+        lottie = {
+            "v": "5.7.4",
+            "fr": 30,
+            "ip": 0,
+            "op": 1,
+            "w": 32,
+            "h": 32,
+            "layers": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / ("a" * 64 + ".bin")
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("animation/animation.json", json.dumps(lottie))
+
+            destination = convert_lottie_sticker_package(source)
+
+            self.assertIsNotNone(destination)
+            assert destination is not None
+            self.assertEqual(destination.suffix, ".webp")
+            payload = destination.read_bytes()
+            self.assertEqual(payload[:4], b"RIFF")
+            self.assertEqual(payload[8:12], b"WEBP")
+
+    def test_does_not_convert_an_arbitrary_bin_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / ("b" * 64 + ".bin")
+            source.write_bytes(b"not a sticker")
+
+            self.assertIsNone(convert_lottie_sticker_package(source))
+
 
 class MessageFeatureStoreTests(unittest.TestCase):
+    def test_persists_local_lottie_normalization_without_changing_remote_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            message = Message(
+                chat_jid="chat@example.test",
+                sender_jid="me@example.test",
+                body="Archivo",
+                message_id="lottie-sticker-1",
+                media_url="https://upload.example/raw.bin",
+                media_kind="file",
+                media_mime="application/octet-stream",
+                media_filename="raw.bin",
+            )
+            store.upsert_messages("me@example.test", [message])
+            message.media_local_path = str(Path(temp_dir) / "preview.webp")
+            message.is_sticker = True
+
+            store.update_message_media_local_path("me@example.test", message)
+
+            loaded = store.load_recent_messages("me@example.test", message.chat_jid)
+            self.assertEqual(len(loaded), 1)
+            self.assertTrue(loaded[0].is_sticker)
+            self.assertEqual(loaded[0].media_kind, "file")
+            self.assertEqual(loaded[0].media_mime, "application/octet-stream")
+            self.assertEqual(loaded[0].media_filename, "raw.bin")
+            self.assertEqual(loaded[0].media_local_path, message.media_local_path)
+
     def test_persists_enriched_flags_without_later_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

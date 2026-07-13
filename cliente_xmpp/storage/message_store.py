@@ -289,8 +289,16 @@ class MessageStore:
                         NULLIF(?, ''),
                         media_mime
                     ),
-                    media_filename = COALESCE(NULLIF(?, ''), media_filename)
-                WHERE account_jid = ? AND chat_jid = ? AND message_key = ?
+                    media_filename = COALESCE(NULLIF(?, ''), media_filename),
+                    is_sticker = CASE
+                        WHEN ? = 1 OR is_sticker = 1 THEN 1
+                        ELSE 0
+                    END
+                WHERE account_jid = ? AND chat_jid = ?
+                    AND (
+                        message_key = ?
+                        OR (? != '' AND media_url = ?)
+                    )
                 """,
                 (
                     message.media_local_path,
@@ -298,9 +306,12 @@ class MessageStore:
                     message.media_duration_seconds,
                     message.media_mime,
                     message.media_filename,
+                    int(message.is_sticker),
                     account_jid,
                     message.chat_jid,
                     _message_key(message),
+                    message.media_url,
+                    message.media_url,
                 ),
             )
             self._upsert_message_chat_summary(conn, account_jid, message)

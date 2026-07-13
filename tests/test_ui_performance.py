@@ -63,6 +63,27 @@ class ChatListPerformanceTests(unittest.TestCase):
 
 
 class MainWindowPerformanceTests(unittest.TestCase):
+    def test_outgoing_lottie_candidate_is_downloaded_for_local_inspection(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="me@example.test",
+            body="Archivo",
+            outgoing=True,
+            media_url="https://upload.example/" + "a" * 64 + ".bin",
+            media_kind="file",
+            media_mime="application/octet-stream",
+            media_filename="a" * 64 + ".bin",
+            media_size=66_944,
+            message_id="outgoing-lottie",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.auto_downloading_media_keys = set()
+
+        with patch.object(window, "_download_media") as download:
+            window._auto_download_media_message(message)
+
+        download.assert_called_once_with(message, silent=True)
+
     def test_empty_roster_contacts_stay_out_of_the_visible_chat_list(self) -> None:
         empty_contact = Chat(jid="empty@example.test", name="Sin mensajes")
         preview_chat = Chat(

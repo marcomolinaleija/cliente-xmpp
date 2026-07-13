@@ -88,7 +88,10 @@ class WhatsAppLinkDialog(wx.Dialog):
         box.Add(
             wx.StaticText(
                 self,
-                label="Recomendado: usa codigo por telefono. El QR puede perderse si cierras la app.",
+                label=(
+                    "Recomendado: usa codigo por telefono. "
+                    "El QR puede perderse si cierras la app."
+                ),
             ),
             0,
             wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,

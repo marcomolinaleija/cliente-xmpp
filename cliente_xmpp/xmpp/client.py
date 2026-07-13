@@ -34,13 +34,13 @@ from cliente_xmpp.models.names import (
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
-    ChatStateUpdated,
     ChatsDiscovered,
+    ChatStateUpdated,
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
-    GroupParticipantUpdated,
     GroupParticipantsLoaded,
+    GroupParticipantUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -1330,7 +1330,10 @@ class BridgeXmppClient(ClientXMPP):
             return True
 
         status = self._last_whatsapp_status_by_component.get(from_jid.split("/", 1)[0], "")
-        if BridgeXmppClient._is_slidge_attachment_image_url(media_url) and not status.startswith("connected"):
+        if (
+            BridgeXmppClient._is_slidge_attachment_image_url(media_url)
+            and not status.startswith("connected")
+        ):
             return True
 
         return any(
@@ -1807,14 +1810,16 @@ class BridgeXmppClient(ClientXMPP):
         self._joined_group_chat_jids.add(jid)
         try:
             future = self["xep_0045"].join_muc(jid, self._muc_nick(), maxhistory="0")
-            future.add_done_callback(lambda task, room_jid=jid: self._finish_group_join(room_jid, task))
+            future.add_done_callback(
+                lambda task, room_jid=jid: self._finish_group_join(room_jid, task)
+            )
         except Exception:
             self._joined_group_chat_jids.discard(jid)
 
     def _finish_group_join(self, jid: str, task: asyncio.Future) -> None:
         try:
             task.result()
-        except (asyncio.TimeoutError, IqError, IqTimeout):
+        except (TimeoutError, IqError, IqTimeout):
             self._joined_group_chat_jids.discard(jid)
             return
         except Exception:
@@ -3235,7 +3240,13 @@ class BridgeXmppClient(ClientXMPP):
 
         return mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
 
-    async def send_file(self, to_jid: str, path: str, is_group: bool = False, view_once: bool = False) -> Message:
+    async def send_file(
+        self,
+        to_jid: str,
+        path: str,
+        is_group: bool = False,
+        view_once: bool = False,
+    ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
@@ -3691,7 +3702,13 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(send)
 
-    def send_file(self, to_jid: str, path: str, is_group: bool = False, view_once: bool = False) -> None:
+    def send_file(
+        self,
+        to_jid: str,
+        path: str,
+        is_group: bool = False,
+        view_once: bool = False,
+    ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
             return
@@ -3701,7 +3718,12 @@ class XmppService:
                 return
 
             try:
-                message = await self._client.send_file(to_jid, path, is_group=is_group, view_once=view_once)
+                message = await self._client.send_file(
+                    to_jid,
+                    path,
+                    is_group=is_group,
+                    view_once=view_once,
+                )
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
                 return
@@ -3714,7 +3736,13 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(schedule)
 
-    def send_chat_state(self, to_jid: str, state: str, is_group: bool = False, media: str = "") -> None:
+    def send_chat_state(
+        self,
+        to_jid: str,
+        state: str,
+        is_group: bool = False,
+        media: str = "",
+    ) -> None:
         if not self._client or not self._loop:
             return
 

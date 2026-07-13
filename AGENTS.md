@@ -241,6 +241,14 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
+- Desde el 13 de julio de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713` con menciones,
+  conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
+  `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`; el colaborador sólo debe implementar
+  su presentación y emisión en `cliente-xmpp`, sin repetir los parches del puente. En otra
+  instalación, configura esa etiqueta, ejecuta `docker compose pull
+  slidge-whatsapp` y recrea únicamente ese servicio con `docker compose up -d --no-deps
+  --force-recreate slidge-whatsapp`.
 
 ### Notificaciones y accesibilidad
 

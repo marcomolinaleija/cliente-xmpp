@@ -4,6 +4,22 @@ Guia unica para Marco. Este documento describe los cambios que pertenecen al
 bridge `Slidge + slidge-whatsapp`; no son cambios que se puedan resolver solo
 desde `cliente-xmpp`.
 
+## Estado de implementación
+
+Los tres cambios de esta guía quedaron implementados, probados, publicados y
+activos en `marco-vps` el 13 de julio de 2026. La imagen completa es:
+
+```text
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713
+sha256:82540ad56a6b4b293252b1dc864689ea39baac37a092a6a3c4597a4153b586b0
+```
+
+También existe el alias `v3`. El servicio recuperó la sesión con
+`Successfully authenticated` y `Login success`, sin reinicios. El cliente no
+se modificó durante este trabajo. El colaborador sólo debe hacer pull de esta
+imagen, implementar en el cliente el uso de
+`urn:marco-ml:whatsapp:forwarded:0` y reconstruir `cliente-xmpp`.
+
 ## Alcance y regla de trabajo
 
 - Trabajar sobre los checkouts exactos de Slidge y `slidge-whatsapp` usados por
@@ -185,7 +201,7 @@ El mismo elemento debe poder acompanar la stanza que transporta una imagen,
 audio, video o documento. Es una bandera; no debe incluir el JID ni el XML
 original del remitente, porque reenviar no debe filtrar identidad ajena.
 
-### Cambios de bridge requeridos
+### Cambios aplicados al bridge
 
 #### WhatsApp -> XMPP
 
@@ -220,6 +236,10 @@ original del remitente, porque reenviar no debe filtrar identidad ajena.
 4. Un texto reenviado no puede quedarse como `Conversation` plano: para llevar
    `ContextInfo` debe enviarse como `ExtendedTextMessage` con `Text` y
    `ContextInfo`.
+
+La implementación reproducible vive en `tools/patch_bridge_forwarding.py` y
+se valida con `tools/smoke_bridge_forwarding_runtime.py` y
+`tools/bridge_forwarding_session_test.go`.
 
 No marcar correcciones, reacciones ni retractaciones como reenvios. Para la
 primera entrega basta `isForwarded=true`; `forwardingScore` se conserva solo si

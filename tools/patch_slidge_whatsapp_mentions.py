@@ -108,9 +108,9 @@ def patch_room(path: Path, *, backup: bool) -> bool:
         with self.xmpp.store.session() as orm:
             await self.__fill_participants()
             orm.add(self.stored)
-            participants = {{
+            participants = {
                 p.nickname: p for p in self.stored.participants if len(p.nickname) > 1
-            }}
+            }
 
             if message_xml is not None:
                 explicit_mentions = []

@@ -375,10 +375,9 @@ class ConversationPanel(wx.Panel):
             self.messages.SetItem(index, 0, self._format_message_row(message))
             self._style_message_item(index)
             image_index = self._thumbnail_index_for_message(message)
-            if image_index >= 0:
-                item = self.messages.GetItem(index)
-                item.SetImage(image_index)
-                self.messages.SetItem(item)
+            item = self.messages.GetItem(index)
+            item.SetImage(image_index)
+            self.messages.SetItem(item)
             return
 
     def speak_selected_text_message(self) -> bool:
@@ -684,10 +683,7 @@ class ConversationPanel(wx.Panel):
         index = self.messages.GetItemCount()
         self._message_rows.append(message)
         image_index = self._thumbnail_index_for_message(message)
-        if image_index >= 0:
-            self.messages.InsertItem(index, self._format_message_row(message), image_index)
-        else:
-            self.messages.InsertItem(index, self._format_message_row(message))
+        self.messages.InsertItem(index, self._format_message_row(message), image_index)
         self._style_message_item(index)
 
         return index
@@ -705,7 +701,7 @@ class ConversationPanel(wx.Panel):
     def _insert_date_separator(self, message_date: date) -> None:
         index = self.messages.GetItemCount()
         self._message_rows.append(f"{DATE_SEPARATOR_PREFIX}{message_date.isoformat()}")
-        self.messages.InsertItem(index, self._format_date_separator(message_date))
+        self.messages.InsertItem(index, self._format_date_separator(message_date), -1)
         self.messages.SetItemTextColour(index, YELLOW)
         self.messages.SetItemBackgroundColour(index, NAVY_BLUE)
 
@@ -718,7 +714,7 @@ class ConversationPanel(wx.Panel):
     def _insert_unread_marker(self) -> None:
         self._unread_marker_index = self.messages.GetItemCount()
         self._message_rows.append(UNREAD_MARKER_ROW)
-        self.messages.InsertItem(self._unread_marker_index, "No leídos")
+        self.messages.InsertItem(self._unread_marker_index, "No leídos", -1)
 
         self._style_message_item(self._unread_marker_index)
 

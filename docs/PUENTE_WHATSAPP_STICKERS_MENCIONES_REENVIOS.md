@@ -27,6 +27,14 @@ checkout.
 - Los stickers entrantes se reconocen por
   `<sticker xmlns="urn:xmpp:stickers:0"/>`, se muestran como `Sticker`, se
   descargan en segundo plano y no exponen nombres hash a NVDA.
+- Si una conversión del bridge entrega un WebP sin conservar XEP-0449, el
+  cliente usa un fallback acotado: `image/webp` y nombre SHA-256 de 64
+  caracteres generado por el bridge. También reconoce el sufijo local ` (N)`
+  añadido al descargar duplicados. Las fotos WebP con nombre normal siguen
+  tratándose como fotos.
+- `Describir con RayoAI` entrega la ruta WebP original por el IPC local de
+  RayoAI para Windows. RayoAI debe aceptar y decodificar ese formato; el
+  cliente no crea una conversión intermedia.
 - El botón `Enviar sticker...` adjunta XEP-0449 al archivo para activar
   `on_sticker` en Slidge.
 - Los mensajes reenviados conservan `is_forwarded` en vivo, inbox, MAM y

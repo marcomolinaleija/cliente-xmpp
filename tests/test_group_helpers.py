@@ -151,7 +151,11 @@ class IncomingMessageSoundTests(unittest.TestCase):
 
     @staticmethod
     def _message() -> Message:
-        return Message(chat_jid="contact@example.org", sender_jid="contact@example.org", body="Hola")
+        return Message(
+            chat_jid="contact@example.org",
+            sender_jid="contact@example.org",
+            body="Hola",
+        )
 
     def test_uses_open_chat_sound_only_when_window_is_active(self) -> None:
         window = self._window(active=True)
@@ -1137,7 +1141,10 @@ class GroupMessageParsingTests(unittest.TestCase):
         MainWindow._merge_messages(window, first.chat_jid, [first, second])
 
         messages = window.messages_by_chat[first.chat_jid]
-        self.assertEqual([message.message_id for message in messages], [first.message_id, second.message_id])
+        self.assertEqual(
+            [message.message_id for message in messages],
+            [first.message_id, second.message_id],
+        )
 
     def test_message_correction_replaces_original_message(self) -> None:
         original = Message(

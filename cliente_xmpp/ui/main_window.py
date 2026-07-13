@@ -40,8 +40,8 @@ from cliente_xmpp.models.mentions import (
     MentionCandidate,
     MentionReference,
     active_mention_query,
-    mention_references_in_text,
     matching_mention_candidates,
+    mention_references_in_text,
 )
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name
 from cliente_xmpp.storage.message_store import MessageStore
@@ -61,13 +61,13 @@ from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
-    ChatStateUpdated,
     ChatsDiscovered,
+    ChatStateUpdated,
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
-    GroupParticipantUpdated,
     GroupParticipantsLoaded,
+    GroupParticipantUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
@@ -1675,7 +1675,12 @@ class MainWindow(wx.Frame):
         try:
             if self.audio_recorder.is_paused:
                 self.audio_recorder.resume()
-                self.xmpp.send_chat_state(chat.jid, "composing", is_group=chat.is_group, media="audio")
+                self.xmpp.send_chat_state(
+                    chat.jid,
+                    "composing",
+                    is_group=chat.is_group,
+                    media="audio",
+                )
                 self.status_bar.SetStatusText("Grabando audio...")
                 self.speaker.speak("Grabando")
             else:
@@ -4160,7 +4165,8 @@ class MainWindow(wx.Frame):
         if path is not None and path.exists():
             return path
 
-        existing_paths = sorted(CONTACT_AVATARS_DIR.glob(f"{self._avatar_filename_prefix(chat.jid)}.*"))
+        avatar_prefix = self._avatar_filename_prefix(chat.jid)
+        existing_paths = sorted(CONTACT_AVATARS_DIR.glob(f"{avatar_prefix}.*"))
         for existing_path in existing_paths:
             if existing_path.is_file():
                 self.contact_avatar_paths_by_chat[chat.jid] = existing_path

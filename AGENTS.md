@@ -244,9 +244,11 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - Desde el 13 de julio de 2026, `marco-vps` usa la imagen
   `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
-  `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`; el colaborador sólo debe implementar
-  su presentación y emisión en `cliente-xmpp`, sin repetir los parches del puente. En otra
-  instalación, configura esa etiqueta, ejecuta `docker compose pull
+  `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
+  XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
+  `Reenviado`, permite elegir otro chat desde el menú contextual y ofrece envío explícito de
+  stickers; no repitas estos parches en el puente. En otra instalación, configura esa etiqueta,
+  ejecuta `docker compose pull
   slidge-whatsapp` y recrea únicamente ese servicio con `docker compose up -d --no-deps
   --force-recreate slidge-whatsapp`.
 
@@ -270,6 +272,8 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
   una nota de voz siempre termina en `.ogg`.
 - Al recibirse un mensaje con `media_kind="audio"` y `audio_url` o `media_url`, `MainWindow`
   inicia descarga automatica aunque el usuario no haya pulsado reproducir.
+- Los stickers entrantes llevan XEP-0449, se conservan como `Message.is_sticker` y se descargan
+  automáticamente para disponer de archivo local y miniatura sin anunciar el nombre hash.
 - Las descargas escriben a `.part` y solo hacen `replace` al terminar. Persiste
   `media_local_path` despues de una escritura valida y conserva esa ruta en upserts posteriores.
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
@@ -319,6 +323,7 @@ conda activate XMPP
 python -m compileall cliente_xmpp tests
 python -m ruff check .
 python -m unittest tests.test_group_helpers
+python -m unittest tests.test_whatsapp_message_features
 git diff --check
 ```
 

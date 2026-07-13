@@ -7,7 +7,7 @@ import time
 import unicodedata
 import uuid
 import webbrowser
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -139,7 +139,7 @@ class MainWindow(wx.Frame):
         self.background_history_queued_chats: set[str] = set()
         self.background_history_loading_chat = ""
         self.preloaded_history_chats: set[str] = set()
-        self.auto_downloading_audio_keys: set[tuple[str, str]] = set()
+        self.auto_downloading_media_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.group_participants_by_chat: dict[str, dict[str, GroupParticipant]] = {}
         self.mention_candidates: list[MentionCandidate] = []
@@ -266,6 +266,7 @@ class MainWindow(wx.Frame):
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
         self.conversation.attach_button.Bind(wx.EVT_BUTTON, self._on_attach_file)
+        self.conversation.sticker_button.Bind(wx.EVT_BUTTON, self._on_send_sticker)
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)
@@ -1553,6 +1554,31 @@ class MainWindow(wx.Frame):
 
         self._send_files_to_chat(chat, [Path(path)])
 
+    def _on_send_sticker(self, _event: wx.CommandEvent) -> None:
+        chat = self.conversation.current_chat
+        if not chat:
+            return
+
+        dialog = wx.FileDialog(
+            self,
+            "Selecciona una imagen para enviar como sticker",
+            wildcard=(
+                "Imágenes (*.webp;*.png;*.jpg;*.jpeg)|*.webp;*.png;*.jpg;*.jpeg|"
+                "Todos los archivos (*.*)|*.*"
+            ),
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            path = Path(dialog.GetPath())
+        finally:
+            dialog.Destroy()
+
+        self.status_bar.SetStatusText(f"Subiendo sticker: {path.name}")
+        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, as_sticker=True)
+        self._mark_current_chat_displayed(chat.jid)
+
     def _attach_clipboard_files(self, report_empty: bool = False) -> bool:
         result = self._clipboard_attachment_paths()
         if not result.paths:
@@ -1960,6 +1986,10 @@ class MainWindow(wx.Frame):
         menu = wx.Menu()
         reply_item = menu.Append(wx.ID_ANY, "Responder")
         copy_item = menu.Append(wx.ID_ANY, "Copiar texto")
+        forward_item = menu.Append(wx.ID_ANY, "Reenviar...")
+        forward_item.Enable(
+            not message.retracted and bool(message.body or message.media_url or message.audio_url)
+        )
         media_item: wx.MenuItem | None = None
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
@@ -1999,6 +2029,7 @@ class MainWindow(wx.Frame):
 
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
         if edit_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
         if link_item:
@@ -2170,6 +2201,88 @@ class MainWindow(wx.Frame):
         finally:
             wx.TheClipboard.Close()
 
+    def _forward_message(self, source: Message) -> None:
+        if source.retracted or not (source.body or source.media_url or source.audio_url):
+            self.status_bar.SetStatusText("Ese mensaje no se puede reenviar")
+            return
+
+        chats = self._sort_chats_by_recency(list(self.searchable_chats_by_jid.values()))
+        if not chats:
+            self.status_bar.SetStatusText("No hay chats disponibles para reenviar")
+            return
+
+        base_choices = [
+            f"{chat.name or chat.jid}{' (grupo)' if chat.is_group else ''}" for chat in chats
+        ]
+        choice_counts = Counter(base_choices)
+        choices = [
+            f"{label} — {chat.jid}" if choice_counts[label] > 1 else label
+            for chat, label in zip(chats, base_choices, strict=True)
+        ]
+        dialog = wx.SingleChoiceDialog(
+            self,
+            "Elige el chat de destino:",
+            "Reenviar mensaje",
+            choices,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            selection = dialog.GetSelection()
+        finally:
+            dialog.Destroy()
+            wx.CallAfter(self.conversation.messages.SetFocus)
+
+        if selection == wx.NOT_FOUND:
+            return
+        target = chats[selection]
+        forward_source = source
+        if is_link_preview(source):
+            forward_source = replace(
+                source,
+                audio_url="",
+                media_url="",
+                media_kind="",
+                media_mime="",
+                media_filename="",
+                media_size=0,
+                media_duration_seconds=0,
+                media_local_path="",
+                is_sticker=False,
+            )
+        message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
+        forwarded = Message(
+            chat_jid=target.jid,
+            sender_jid="me",
+            sender_name="Tú",
+            body="Sticker" if forward_source.is_sticker else forward_source.body,
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            audio_url=forward_source.audio_url,
+            media_url=forward_source.media_url,
+            media_kind=forward_source.media_kind,
+            media_mime=forward_source.media_mime,
+            media_filename=forward_source.media_filename,
+            media_size=forward_source.media_size,
+            media_duration_seconds=forward_source.media_duration_seconds,
+            media_local_path=forward_source.media_local_path,
+            is_sticker=forward_source.is_sticker,
+            is_forwarded=True,
+            message_id=message_id,
+            chat_is_group=target.is_group,
+            delivery_state="pending",
+        )
+        self._add_pending_outgoing_message(forwarded)
+        self.xmpp.send_forward(
+            target.jid,
+            forward_source,
+            is_group=target.is_group,
+            message_id=message_id,
+        )
+        status = f"Reenviando a {target.name or target.jid}"
+        self.status_bar.SetStatusText(status)
+        self.speaker.speak(status)
+
     def _open_selected_message_link(self) -> bool:
         message = self.conversation.selected_message()
         if message is None:
@@ -2247,7 +2360,7 @@ class MainWindow(wx.Frame):
                         f"No se pudo descargar el archivo: {exc}",
                     )
                 if silent:
-                    wx.CallAfter(self._discard_auto_audio_download, message)
+                    wx.CallAfter(self._discard_auto_media_download, message)
                 return
 
             wx.CallAfter(
@@ -2279,14 +2392,14 @@ class MainWindow(wx.Frame):
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
         if silent:
-            self._discard_auto_audio_download(message)
+            self._discard_auto_media_download(message)
         else:
             self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
         if send_to_rayoai:
             self._send_media_to_rayoai(message)
 
-    def _discard_auto_audio_download(self, message: Message) -> None:
-        self.auto_downloading_audio_keys.discard(self._auto_audio_download_key(message))
+    def _discard_auto_media_download(self, message: Message) -> None:
+        self.auto_downloading_media_keys.discard(self._auto_media_download_key(message))
 
     def _persist_message_media_path(self, message: Message) -> None:
         if not self.current_jid:
@@ -2297,22 +2410,24 @@ class MainWindow(wx.Frame):
         except Exception:
             return
 
-    def _auto_download_audio_messages(self, messages: list[Message]) -> None:
+    def _auto_download_media_messages(self, messages: list[Message]) -> None:
         for message in messages:
-            self._auto_download_audio_message(message)
+            self._auto_download_media_message(message)
 
-    def _auto_download_audio_message(self, message: Message) -> None:
-        if message.media_kind != "audio" or not (message.audio_url or message.media_url):
+    def _auto_download_media_message(self, message: Message) -> None:
+        if not (message.media_kind == "audio" or message.is_sticker):
+            return
+        if not (message.audio_url or message.media_url):
             return
 
         if message.outgoing or local_media_path(message) is not None:
             return
 
-        key = self._auto_audio_download_key(message)
-        if key in self.auto_downloading_audio_keys:
+        key = self._auto_media_download_key(message)
+        if key in self.auto_downloading_media_keys:
             return
 
-        self.auto_downloading_audio_keys.add(key)
+        self.auto_downloading_media_keys.add(key)
         self._download_media(message, silent=True)
 
     def _request_audio_download_for_playback(self, message: Message) -> None:
@@ -2320,14 +2435,14 @@ class MainWindow(wx.Frame):
             self.conversation.audio_download_completed(message)
             return
 
-        key = self._auto_audio_download_key(message)
-        if key not in self.auto_downloading_audio_keys:
-            self.auto_downloading_audio_keys.add(key)
+        key = self._auto_media_download_key(message)
+        if key not in self.auto_downloading_media_keys:
+            self.auto_downloading_media_keys.add(key)
             self._download_media(message, silent=True)
         self.status_bar.SetStatusText("Descargando audio para reproducir...")
 
     @staticmethod
-    def _auto_audio_download_key(message: Message) -> tuple[str, str]:
+    def _auto_media_download_key(message: Message) -> tuple[str, str]:
         stable_id = message.message_id or message.audio_url or message.media_url
         return message.chat_jid, stable_id
 
@@ -2531,7 +2646,7 @@ class MainWindow(wx.Frame):
                         self.conversation.append_message(message)
                     else:
                         self.conversation.refresh_message(message)
-                self._auto_download_audio_message(message)
+                self._auto_download_media_message(message)
                 self._select_first_chat_if_needed()
                 if added_message and not suppress_notification:
                     self._speak_incoming_message(message)
@@ -2658,7 +2773,7 @@ class MainWindow(wx.Frame):
         if activity_messages:
             self._update_chat_activity_from_messages(chat_jid, activity_messages)
             self._update_chat_preview_from_messages(chat_jid, activity_messages)
-            self._auto_download_audio_messages(activity_messages)
+            self._auto_download_media_messages(activity_messages)
         self._refresh_chat_order()
         if (
             not background
@@ -2799,6 +2914,8 @@ class MainWindow(wx.Frame):
             or outgoing.audio_url != incoming.audio_url
             or outgoing.media_url != incoming.media_url
             or outgoing.media_kind != incoming.media_kind
+            or outgoing.is_sticker != incoming.is_sticker
+            or outgoing.is_forwarded != incoming.is_forwarded
         ):
             return False
         if not cls._messages_have_compatible_reply_quotes(outgoing, incoming):
@@ -2825,6 +2942,8 @@ class MainWindow(wx.Frame):
             message.audio_url,
             message.media_url,
             message.media_kind,
+            message.is_sticker,
+            message.is_forwarded,
         )
 
     @classmethod
@@ -2945,6 +3064,8 @@ class MainWindow(wx.Frame):
             target.media_duration_seconds = incoming.media_duration_seconds
         if not target.media_local_path and incoming.media_local_path:
             target.media_local_path = incoming.media_local_path
+        target.is_sticker = target.is_sticker or incoming.is_sticker
+        target.is_forwarded = target.is_forwarded or incoming.is_forwarded
         target.chat_is_group = target.chat_is_group or incoming.chat_is_group
 
     def _request_full_history(self, chat_jid: str) -> None:
@@ -3322,6 +3443,8 @@ class MainWindow(wx.Frame):
             participant = message.sender_name or self._display_name_for_jid(message.sender_jid)
             sender = f"{participant} en {sender}"
         preview = media_description(message) if has_media(message) else message.body
+        if message.is_forwarded:
+            preview = f"Reenviado. {preview}"
         preview = " ".join(preview.split())
         if len(preview) > 160:
             preview = f"{preview[:157]}..."
@@ -3776,6 +3899,8 @@ class MainWindow(wx.Frame):
         if message.retracted:
             return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
         preview = media_description(message) if has_media(message) else message.body
+        if message.is_forwarded:
+            preview = f"Reenviado. {preview}"
         if message.outgoing and message.delivery_state == "pending":
             return f"{preview} | Enviando"
         if message.outgoing and message.delivery_state == "failed":

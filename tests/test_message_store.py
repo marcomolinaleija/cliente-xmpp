@@ -76,6 +76,8 @@ class MessageStoreTests(unittest.TestCase):
             self.assertIn("reply_to_jid", columns)
             self.assertIn("reply_to_id", columns)
             self.assertIn("displayed_marker_id", columns)
+            self.assertIn("is_sticker", columns)
+            self.assertIn("is_forwarded", columns)
 
     def test_persists_group_displayed_marker_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

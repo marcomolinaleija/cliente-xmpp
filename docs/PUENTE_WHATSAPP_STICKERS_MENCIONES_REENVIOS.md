@@ -16,9 +16,33 @@ sha256:82540ad56a6b4b293252b1dc864689ea39baac37a092a6a3c4597a4153b586b0
 
 También existe el alias `v3`. El servicio recuperó la sesión con
 `Successfully authenticated` y `Login success`, sin reinicios. El cliente no
-se modificó durante este trabajo. El colaborador sólo debe hacer pull de esta
-imagen, implementar en el cliente el uso de
-`urn:marco-ml:whatsapp:forwarded:0` y reconstruir `cliente-xmpp`.
+se modificó durante el despliegue del puente. El checkout actual de
+`cliente-xmpp` ya consume `urn:marco-ml:whatsapp:forwarded:0`, reconoce
+XEP-0449 para stickers y conserva ambas banderas en SQLite. Para usar la
+integración completa sólo falta reconstruir o reiniciar el cliente con este
+checkout.
+
+## Contrato implementado en cliente-xmpp
+
+- Los stickers entrantes se reconocen por
+  `<sticker xmlns="urn:xmpp:stickers:0"/>`, se muestran como `Sticker`, se
+  descargan en segundo plano y no exponen nombres hash a NVDA.
+- El botón `Enviar sticker...` adjunta XEP-0449 al archivo para activar
+  `on_sticker` en Slidge.
+- Los mensajes reenviados conservan `is_forwarded` en vivo, inbox, MAM y
+  SQLite. La lista, el lector detallado, los previews y NVDA anuncian
+  `Reenviado`.
+- `Reenviar...` permite elegir un chat individual o grupo y emite la bandera
+  privada tanto para texto como para foto, audio, video, documento o sticker.
+  Sólo se reutiliza el contenido y la URL del adjunto; no se copia la identidad
+  del remitente ni la cita original.
+- Las menciones siguen emitiendo XEP-0372 con JID y rangos Unicode desde el
+  autocompletado de grupos. No se sustituyen por texto `@nick`.
+
+Las pruebas locales de contrato viven en
+`tests/test_whatsapp_message_features.py` y `tests/test_mentions.py`. La prueba
+final en las aplicaciones oficiales de WhatsApp sigue siendo necesaria después
+de reconstruir el cliente.
 
 ## Alcance y regla de trabajo
 

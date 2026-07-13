@@ -55,12 +55,14 @@ class RecordingControlsTests(unittest.TestCase):
 
         compose = Control()
         attach = Control()
+        sticker = Control()
         pause = Control()
         cancel = Control()
         view_once = Control()
         panel = SimpleNamespace(
             compose=compose,
             attach_button=attach,
+            sticker_button=sticker,
             pause_recording_button=pause,
             cancel_recording_button=cancel,
             view_once_audio=view_once,
@@ -71,11 +73,13 @@ class RecordingControlsTests(unittest.TestCase):
         ConversationPanel.set_recording_state(panel, True)
         self.assertTrue(view_once.visible)
         self.assertFalse(view_once.value)
+        self.assertFalse(sticker.enabled)
 
         view_once.value = True
         ConversationPanel.set_recording_state(panel, False)
         self.assertFalse(view_once.visible)
         self.assertFalse(view_once.value)
+        self.assertTrue(sticker.enabled)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,18 @@ class MentionQueryTests(unittest.TestCase):
             "</message>",
         )
 
+    def test_mention_ranges_use_unicode_code_points(self) -> None:
+        candidate = MentionCandidate(
+            participant_jid="+521@whatsapp.example.org",
+            display_name="Jessy",
+            mention_text="Jessy",
+        )
+
+        self.assertEqual(
+            mention_references_in_text("👋 Hola Jessy", [candidate]),
+            [MentionReference(candidate.participant_jid, 7, 12)],
+        )
+
 
 class GroupParticipantStoreTests(unittest.TestCase):
     def test_persists_latest_group_nick(self) -> None:

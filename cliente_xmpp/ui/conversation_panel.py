@@ -80,6 +80,7 @@ class ConversationPanel(wx.Panel):
         self.compose: wx.TextCtrl
         self.mention_suggestions: wx.ListBox
         self.attach_button: wx.Button
+        self.sticker_button: wx.Button
         self.send_button: wx.Button
         self.pause_recording_button: wx.Button
         self.cancel_recording_button: wx.Button
@@ -105,6 +106,7 @@ class ConversationPanel(wx.Panel):
         self._set_compose_label_for_chat()
         self.send_button.Enable(True)
         self.attach_button.Enable(True)
+        self.sticker_button.Enable(True)
         self.set_recording_state(False)
         self.update_send_button_state()
         self.load_older_button.Enable(True)
@@ -300,6 +302,7 @@ class ConversationPanel(wx.Panel):
     def set_recording_state(self, recording: bool, paused: bool = False) -> None:
         self.compose.Enable(not recording)
         self.attach_button.Enable(not recording)
+        self.sticker_button.Enable(not recording)
         self.pause_recording_button.Show(recording)
         self.cancel_recording_button.Show(recording)
         self.view_once_audio.Show(recording)
@@ -587,6 +590,9 @@ class ConversationPanel(wx.Panel):
         self.send_button.Enable(False)
         self.attach_button = wx.Button(self, label="&Adjuntar")
         self.attach_button.Enable(False)
+        self.sticker_button = wx.Button(self, label="Enviar &sticker...")
+        self.sticker_button.SetToolTip("Selecciona una imagen para enviarla como sticker.")
+        self.sticker_button.Enable(False)
         self.pause_recording_button = wx.Button(self, label="Pausar")
         self.cancel_recording_button = wx.Button(self, label="Cancelar")
         self.view_once_audio = wx.CheckBox(self, label="Audio de una sola escucha")
@@ -597,6 +603,7 @@ class ConversationPanel(wx.Panel):
         self.cancel_recording_button.Hide()
         self.view_once_audio.Hide()
         composer.Add(self.attach_button, 0, wx.EXPAND | wx.RIGHT, 8)
+        composer.Add(self.sticker_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.pause_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.cancel_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.view_once_audio, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
@@ -733,19 +740,26 @@ class ConversationPanel(wx.Panel):
         body = self._format_message_body(message)
         starred = "Destacado. " if message.starred else ""
         edited = "Editado. " if message.edited else ""
+        forwarded = "Reenviado. " if message.is_forwarded else ""
         reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
         reply = self._format_reply_summary(message)
         if message.outgoing:
             delivery = self._format_delivery_state(message)
             if reply:
-                return f"{starred}{edited}Tú, {body}, {reply}, {timestamp} {delivery}.{reactions}"
-            return f"{starred}{edited}Tú {body} {timestamp} {delivery}.{reactions}"
+                return (
+                    f"{starred}{edited}{forwarded}Tú, {body}, {reply}, "
+                    f"{timestamp} {delivery}.{reactions}"
+                )
+            return f"{starred}{edited}{forwarded}Tú {body} {timestamp} {delivery}.{reactions}"
 
         sender = self._sender_label(message)
         if reply:
-            return f"{starred}{edited}{sender}, {body}, {reply}, {timestamp}.{reactions}"
+            return (
+                f"{starred}{edited}{forwarded}{sender}, {body}, {reply}, "
+                f"{timestamp}.{reactions}"
+            )
 
-        return f"{starred}{edited}{sender} {body} {timestamp}.{reactions}"
+        return f"{starred}{edited}{forwarded}{sender} {body} {timestamp}.{reactions}"
 
     @staticmethod
     def _format_delivery_state(message: Message) -> str:
@@ -770,6 +784,8 @@ class ConversationPanel(wx.Panel):
             metadata = f"Destacado. {metadata}"
         if message.edited:
             metadata = f"Editado. {metadata}"
+        if message.is_forwarded:
+            metadata = f"Reenviado. {metadata}"
         if message.reactions:
             metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
 

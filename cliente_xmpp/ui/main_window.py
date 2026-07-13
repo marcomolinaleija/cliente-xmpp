@@ -9,6 +9,7 @@ import uuid
 import webbrowser
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -100,6 +101,11 @@ SEARCH_DEBOUNCE_MS = 250
 MESSAGE_EDIT_WINDOW = timedelta(minutes=15)
 APP_WINDOW_TITLE = "whatsapp-CAN"
 PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
+PERF_DEBUG_ENABLED = os.environ.get("CLIENTE_XMPP_PERF_DEBUG", "").casefold() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +131,10 @@ class MainWindow(wx.Frame):
             self.sent_message_sound_enabled,
         ) = self.settings_store.load_notification_sound_settings()
         self.message_store = MessageStore()
+        self.storage_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cliente-xmpp-storage",
+        )
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
@@ -139,6 +149,8 @@ class MainWindow(wx.Frame):
         self.background_history_queued_chats: set[str] = set()
         self.background_history_loading_chat = ""
         self.preloaded_history_chats: set[str] = set()
+        self.cached_message_loads: set[tuple[str, str]] = set()
+        self.audio_metadata_in_progress: set[str] = set()
         self.auto_downloading_media_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
         self.group_participants_by_chat: dict[str, dict[str, GroupParticipant]] = {}
@@ -353,6 +365,9 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _debug_perf(label: str, started_at: float, **details: object) -> None:
+        if not PERF_DEBUG_ENABLED:
+            return
+
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         rendered_details = " ".join(
             f"{key}={value}" for key, value in details.items() if value is not None
@@ -769,13 +784,15 @@ class MainWindow(wx.Frame):
         self.xmpp.monitor_group_chats([chat.jid for chat in cached_chats if chat.is_group])
         self.loading_initial_chat_activity = True
         self.pending_chat_activity = {}
-        self.loaded_chat_summaries = len(cached_chats)
+        visible_cached_chats = self._chats_with_activity(cached_chats)
+        self.loaded_chat_summaries = len(visible_cached_chats)
         render_started_at = time.perf_counter()
-        self.chat_list.set_chats(self._sort_chats_by_recency(cached_chats))
+        self.chat_list.set_chats(self._sort_chats_by_recency(visible_cached_chats))
         self._debug_perf(
             "_apply_roster_chats.render_local_list",
             render_started_at,
             cached=len(cached_chats),
+            visible=len(visible_cached_chats),
         )
         if not self.chat_list.selected_chat():
             self.chat_list.select_first()
@@ -2353,6 +2370,11 @@ class MainWindow(wx.Frame):
         def worker() -> None:
             try:
                 downloaded = download_media(message, self.current_jid)
+                duration = (
+                    media_duration_seconds(downloaded.path)
+                    if message.media_kind == "audio"
+                    else 0.0
+                )
             except Exception as exc:
                 if not silent:
                     wx.CallAfter(
@@ -2369,6 +2391,7 @@ class MainWindow(wx.Frame):
                 downloaded,
                 send_to_rayoai,
                 silent,
+                duration,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2379,13 +2402,14 @@ class MainWindow(wx.Frame):
         downloaded: DownloadedMedia,
         send_to_rayoai: bool,
         silent: bool = False,
+        duration_seconds: float = 0.0,
     ) -> None:
         message.media_local_path = str(downloaded.path)
         message.media_size = downloaded.size
         message.media_mime = downloaded.mime or message.media_mime
         message.media_filename = downloaded.filename or message.media_filename
-        if message.media_kind == "audio":
-            message.media_duration_seconds = media_duration_seconds(downloaded.path)
+        if message.media_kind == "audio" and duration_seconds > 0:
+            message.media_duration_seconds = duration_seconds
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
         self.conversation.audio_download_completed(message)
@@ -2405,10 +2429,11 @@ class MainWindow(wx.Frame):
         if not self.current_jid:
             return
 
-        try:
-            self.message_store.update_message_media_local_path(self.current_jid, message)
-        except Exception:
-            return
+        self._queue_storage_write(
+            self.message_store.update_message_media_local_path,
+            self.current_jid,
+            replace(message),
+        )
 
     def _auto_download_media_messages(self, messages: list[Message]) -> None:
         for message in messages:
@@ -2527,6 +2552,9 @@ class MainWindow(wx.Frame):
         self.conversation.close_audio()
         self.audio_recorder.cancel()
         self.xmpp.disconnect()
+        storage_executor = getattr(self, "storage_executor", None)
+        if storage_executor is not None:
+            storage_executor.shutdown(wait=False, cancel_futures=False)
         event.Skip()
 
     def _post_xmpp_event(self, event: XmppEvent) -> None:
@@ -2899,7 +2927,15 @@ class MainWindow(wx.Frame):
         message: Message,
         candidates: list[Message],
     ) -> int | None:
-        for index, candidate in enumerate(candidates):
+        if not message.chat_is_group:
+            return None
+
+        message_timestamp = cls._message_timestamp(message)
+        for index in range(len(candidates) - 1, -1, -1):
+            candidate = candidates[index]
+            candidate_age = message_timestamp - cls._message_timestamp(candidate)
+            if candidate_age > GROUP_SELF_ECHO_WINDOW_SECONDS:
+                break
             if cls._messages_are_group_self_echo(candidate, message):
                 return index
 
@@ -3117,11 +3153,8 @@ class MainWindow(wx.Frame):
         )
 
     def _chat_has_preview(self, chat_jid: str) -> bool:
-        for chat in self.chat_list.chats():
-            if chat.jid == chat_jid:
-                return bool(chat.last_message_preview or chat.last_message_at)
-
-        return False
+        chat = self.chat_list.chat_by_jid(chat_jid)
+        return bool(chat and (chat.last_message_preview or chat.last_message_at))
 
     def _chat_history_needs_reload(self, chat_jid: str) -> bool:
         if not self._chat_has_preview(chat_jid):
@@ -3229,7 +3262,7 @@ class MainWindow(wx.Frame):
         message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
             message.chat_jid
         )
-        self._normalize_audio_metadata(message)
+        self._normalize_audio_metadata_for_messages([message])
         existing_messages = self.messages_by_chat.get(message.chat_jid, [])
         existing_keys = {
             self._message_merge_key(existing)
@@ -3279,7 +3312,7 @@ class MainWindow(wx.Frame):
         message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
             message.chat_jid
         )
-        self._normalize_audio_metadata(message)
+        self._normalize_audio_metadata_for_messages([message])
         self._merge_messages(message.chat_jid, [message])
         stored_message = self._message_by_merge_key(
             message.chat_jid,
@@ -3351,10 +3384,11 @@ class MainWindow(wx.Frame):
         if not changed_participants or not self.current_jid:
             return
 
-        try:
-            self.message_store.upsert_group_participants(self.current_jid, changed_participants)
-        except Exception:
-            return
+        self._queue_storage_write(
+            self.message_store.upsert_group_participants,
+            self.current_jid,
+            list(changed_participants),
+        )
 
     def _message_by_merge_key(
         self,
@@ -3460,9 +3494,9 @@ class MainWindow(wx.Frame):
         self.speaker.speak(f"Mensaje de {sender}: {preview}")
 
     def _speakable_chat_name(self, jid: str) -> str:
-        for chat in self.chat_list.chats():
-            if chat.jid == jid and chat.name and chat.name != jid:
-                return chat.name
+        chat = self.chat_list.chat_by_jid(jid)
+        if chat is not None and chat.name and chat.name != jid:
+            return chat.name
 
         name = self.chat_names_by_jid.get(jid, "")
         if name and name != jid:
@@ -3512,11 +3546,12 @@ class MainWindow(wx.Frame):
         )
 
         self.pending_chat_activity = {}
-        chats = self._sort_chats_by_recency(list(chats_by_jid.values()))
+        all_chats = list(chats_by_jid.values())
+        chats = self._sort_chats_by_recency(self._chats_with_activity(all_chats))
         self.loaded_chat_summaries = max(len(chats), loaded_count)
         render_started_at = time.perf_counter()
         self._set_searchable_chats(
-            self._merge_chat_lists(list(self.searchable_chats_by_jid.values()), chats)
+            self._merge_chat_lists(list(self.searchable_chats_by_jid.values()), all_chats)
         )
         self.chat_list.set_chats(chats, preserve_focused_order=False)
         self.chat_list.force_refresh_visible()
@@ -3682,6 +3717,10 @@ class MainWindow(wx.Frame):
         if not self.current_jid:
             return
 
+        cache_key = (self.current_jid, chat_jid)
+        if cache_key in self.cached_message_loads:
+            return
+
         try:
             load_started_at = time.perf_counter()
             cached_messages = self.message_store.load_recent_messages(
@@ -3697,6 +3736,7 @@ class MainWindow(wx.Frame):
             )
         except Exception:
             return
+        self.cached_message_loads.add(cache_key)
 
         if cached_messages:
             merge_started_at = time.perf_counter()
@@ -3721,49 +3761,103 @@ class MainWindow(wx.Frame):
         if not self.current_jid:
             return
 
-        try:
-            self.message_store.upsert_chat(self.current_jid, chat)
-        except Exception:
-            return
+        self._queue_storage_write(
+            self.message_store.upsert_chat,
+            self.current_jid,
+            replace(chat),
+        )
 
     def _persist_chats(self, chats: list[Chat]) -> None:
         if not self.current_jid or not chats:
             return
 
-        try:
-            self.message_store.upsert_chats(self.current_jid, chats)
-        except Exception:
-            return
+        self._queue_storage_write(
+            self.message_store.upsert_chats,
+            self.current_jid,
+            [replace(chat) for chat in chats],
+        )
 
     def _persist_messages(self, messages: list[Message]) -> None:
         if not self.current_jid or not messages:
             return
 
+        self._queue_storage_write(
+            self.message_store.upsert_messages,
+            self.current_jid,
+            [replace(message) for message in messages],
+        )
+
+    def _queue_storage_write(
+        self,
+        operation: Callable[..., object],
+        *args: object,
+    ) -> None:
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            self._run_storage_write(operation, *args)
+            return
+
         try:
-            self.message_store.upsert_messages(self.current_jid, messages)
+            executor.submit(self._run_storage_write, operation, *args)
+        except RuntimeError:
+            return
+
+    @staticmethod
+    def _run_storage_write(operation: Callable[..., object], *args: object) -> None:
+        try:
+            operation(*args)
         except Exception:
             return
 
     def _normalize_audio_metadata_for_messages(self, messages: list[Message]) -> None:
-        changed_messages = [
-            message for message in messages if self._normalize_audio_metadata(message)
-        ]
+        candidates: list[tuple[Message, Path, str]] = []
+        for message in messages:
+            if message.media_kind != "audio" or message.media_duration_seconds > 0:
+                continue
+            path = local_media_path(message)
+            if path is None:
+                continue
+            key = str(path)
+            if key in self.audio_metadata_in_progress:
+                continue
+            self.audio_metadata_in_progress.add(key)
+            candidates.append((message, path, key))
+
+        if not candidates:
+            return
+
+        def worker() -> None:
+            results = [
+                (message, media_duration_seconds(path), key)
+                for message, path, key in candidates
+            ]
+            wx.CallAfter(self._finish_audio_metadata_normalization, results)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_audio_metadata_normalization(
+        self,
+        results: list[tuple[Message, float, str]],
+    ) -> None:
+        changed_messages: list[Message] = []
+        visible_chat_jid = (
+            self.conversation.current_chat.jid
+            if self.conversation.IsShown() and self.conversation.current_chat
+            else ""
+        )
+        for message, duration, key in results:
+            self.audio_metadata_in_progress.discard(key)
+            if duration <= 0 or message.media_duration_seconds > 0:
+                continue
+            message.media_duration_seconds = duration
+            changed_messages.append(message)
+            if message.chat_jid == visible_chat_jid:
+                self.conversation.refresh_message(message)
+            self._update_chat_from_message(message)
+
         self._persist_messages(changed_messages)
-
-    def _normalize_audio_metadata(self, message: Message) -> bool:
-        if message.media_kind != "audio" or message.media_duration_seconds > 0:
-            return False
-
-        path = local_media_path(message)
-        if path is None:
-            return False
-
-        duration = media_duration_seconds(path)
-        if duration <= 0:
-            return False
-
-        message.media_duration_seconds = duration
-        return True
+        if changed_messages:
+            self._refresh_chat_order()
 
     def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
         started_at = time.perf_counter()
@@ -3820,11 +3914,22 @@ class MainWindow(wx.Frame):
             selected_jid=selected_jid,
             preserve_focused_order=preserve_focused_order,
         )
-        if self._search_is_active():
+        if self._search_is_active() and self.chat_list.IsShown():
             self._apply_chat_search()
 
     def _sort_chats_by_recency(self, chats: list[Chat]) -> list[Chat]:
         return sorted(chats, key=self._chat_recency_key)
+
+    @staticmethod
+    def _chats_with_activity(chats: Iterable[Chat]) -> list[Chat]:
+        """Keep roster-only contacts searchable without rendering empty chat rows."""
+        return [
+            chat
+            for chat in chats
+            if chat.last_message_at is not None
+            or bool(chat.last_message_preview.strip())
+            or chat.unread_count > 0
+        ]
 
     def _chat_recency_key(self, chat: Chat) -> tuple[int, float, str]:
         latest = self._latest_message_timestamp(chat.jid)
@@ -4184,7 +4289,10 @@ class MainWindow(wx.Frame):
         self.conversation.Hide()
         self._mark_current_chat_displayed(selected_jid)
         self.chat_list.Show()
-        self.chat_list.refresh_visible_if_stale()
+        if self._search_is_active():
+            self._apply_chat_search()
+        else:
+            self.chat_list.refresh_visible_if_stale()
         self._restore_chat_list_focus(selected_jid)
         self.content_panel.Layout()
         self.workspace_panel.Layout()
@@ -4489,11 +4597,7 @@ class MainWindow(wx.Frame):
         return self._visible_chat_by_jid(jid) or self.searchable_chats_by_jid.get(jid)
 
     def _visible_chat_by_jid(self, jid: str) -> Chat | None:
-        for chat in self.chat_list.chats():
-            if chat.jid == jid:
-                return chat
-
-        return None
+        return self.chat_list.chat_by_jid(jid)
 
     def _chat_notifications_muted(self, jid: str) -> bool:
         chat = self._chat_by_jid(jid)

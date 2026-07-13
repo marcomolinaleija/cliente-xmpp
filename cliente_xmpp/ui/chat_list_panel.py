@@ -22,6 +22,7 @@ class ChatListPanel(wx.Panel):
     def __init__(self, parent: wx.Window) -> None:
         super().__init__(parent)
         self._chats: list[Chat] = []
+        self._chat_indexes_by_jid: dict[str, int] = {}
         self._items: list[ChatListItem] = []
         self._last_selected_jid = ""
         self._updating = False
@@ -58,9 +59,10 @@ class ChatListPanel(wx.Panel):
         preserve_focused_order: bool = True,
     ) -> None:
         self._chats = list(chats)
+        self._rebuild_chat_indexes()
         if self._searching:
             return
-        if self.list_box.HasFocus() and self._items:
+        if not self.IsShown() or (self.list_box.HasFocus() and self._items):
             self._visible_stale = True
             return
 
@@ -76,6 +78,7 @@ class ChatListPanel(wx.Panel):
 
     def set_placeholder(self, text: str) -> None:
         self._chats = []
+        self._chat_indexes_by_jid = {}
         self._items = []
         self._last_selected_jid = ""
         self._visible_stale = False
@@ -144,17 +147,18 @@ class ChatListPanel(wx.Panel):
             self.list_box.Thaw()
 
     def upsert_chat(self, chat: Chat) -> None:
-        for index, current in enumerate(self._chats):
-            if current.jid == chat.jid:
-                self._chats[index] = chat
-                if self.list_box.HasFocus():
-                    self._visible_stale = True
-                    return
-                self._update_visible_chat(chat)
+        index = self._chat_indexes_by_jid.get(chat.jid)
+        if index is not None:
+            self._chats[index] = chat
+            if not self.IsShown() or self.list_box.HasFocus():
+                self._visible_stale = True
                 return
+            self._update_visible_chat(chat)
+            return
 
+        self._chat_indexes_by_jid[chat.jid] = len(self._chats)
         self._chats.append(chat)
-        if self.list_box.HasFocus():
+        if not self.IsShown() or self.list_box.HasFocus():
             self._visible_stale = True
             return
         if not self._searching:
@@ -282,9 +286,9 @@ class ChatListPanel(wx.Panel):
         if not jid:
             return None
 
-        for chat in self._chats:
-            if chat.jid == jid:
-                return chat
+        index = self._chat_indexes_by_jid.get(jid)
+        if index is not None and index < len(self._chats):
+            return self._chats[index]
 
         return None
 
@@ -296,10 +300,18 @@ class ChatListPanel(wx.Panel):
         self.search_ctrl.SelectAll()
 
     def has_chat(self, jid: str) -> bool:
-        return any(chat.jid == jid for chat in self._chats)
+        return jid in self._chat_indexes_by_jid
+
+    def chat_by_jid(self, jid: str) -> Chat | None:
+        return self._chat_by_jid(jid)
 
     def chats(self) -> list[Chat]:
         return list(self._chats)
+
+    def _rebuild_chat_indexes(self) -> None:
+        self._chat_indexes_by_jid = {
+            chat.jid: index for index, chat in enumerate(self._chats)
+        }
 
     def _format_item_row(self, item: ChatListItem) -> str:
         if item.message is not None:

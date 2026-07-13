@@ -7,7 +7,6 @@ from pathlib import Path
 import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
-from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.player import MpvAudioPlayer, MpvPlaybackError
 from cliente_xmpp.media.downloads import (
     audio_description,
@@ -22,6 +21,8 @@ from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
 
 DATE_SEPARATOR_PREFIX = "date:"
 UNREAD_MARKER_ROW = "unread"
+MESSAGE_ROW_TEXT_LIMIT = 500
+MESSAGE_ROW_REPLY_LIMIT = 240
 MONTH_NAMES = (
     "enero",
     "febrero",
@@ -54,6 +55,7 @@ class ConversationPanel(wx.Panel):
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
+        self._message_row_indexes: dict[int, int] = {}
         self._unread_marker_count = 0
         self._unread_marker_index: int | None = None
         self._focus_target_index: int | None = None
@@ -96,6 +98,7 @@ class ConversationPanel(wx.Panel):
         self.messages.DeleteAllItems()
         self._messages = []
         self._message_rows = []
+        self._message_row_indexes = {}
         self._unread_marker_count = 0
         self._unread_marker_index = None
         self._focus_target_index = None
@@ -140,29 +143,34 @@ class ConversationPanel(wx.Panel):
         previous_focus_index = self.messages.GetFirstSelected()
         previous_focus_key = self._row_focus_key(previous_focus_index)
         had_message_focus = self.messages.HasFocus()
-        self.messages.DeleteAllItems()
-        self._messages = list(messages)
-        self._message_rows = []
-        self._unread_marker_count = max(0, unread_count)
-        self._unread_marker_index = None
-        self._focus_target_index = None
+        self.messages.Freeze()
+        try:
+            self.messages.DeleteAllItems()
+            self._messages = list(messages)
+            self._message_rows = []
+            self._message_row_indexes = {}
+            self._unread_marker_count = max(0, unread_count)
+            self._unread_marker_index = None
+            self._focus_target_index = None
 
-        marker_message_index = self._unread_marker_message_index(
-            len(self._messages),
-            self._unread_marker_count,
-        )
-        previous_message_date: date | None = None
-        for message_index, message in enumerate(self._messages):
-            previous_message_date = self._insert_date_separator_if_needed(
-                message,
-                previous_message_date,
+            marker_message_index = self._unread_marker_message_index(
+                len(self._messages),
+                self._unread_marker_count,
             )
-            if marker_message_index == message_index:
-                self._insert_unread_marker()
-            self._append_message_row(message)
+            previous_message_date: date | None = None
+            for message_index, message in enumerate(self._messages):
+                previous_message_date = self._insert_date_separator_if_needed(
+                    message,
+                    previous_message_date,
+                )
+                if marker_message_index == message_index:
+                    self._insert_unread_marker()
+                self._append_message_row(message)
 
-        if marker_message_index == len(self._messages) and self._unread_marker_count > 0:
-            self._insert_unread_marker()
+            if marker_message_index == len(self._messages) and self._unread_marker_count > 0:
+                self._insert_unread_marker()
+        finally:
+            self.messages.Thaw()
 
         restore_focused_message = False
         if had_message_focus and previous_focus_index != wx.NOT_FOUND:
@@ -368,17 +376,34 @@ class ConversationPanel(wx.Panel):
         return row if isinstance(row, Message) else None
 
     def refresh_message(self, message: Message) -> None:
-        for index, current in enumerate(self._message_rows):
-            if current is not message:
-                continue
+        indexes = getattr(self, "_message_row_indexes", None)
+        if indexes is None:
+            indexes = {}
+            self._message_row_indexes = indexes
+        index = indexes.get(id(message))
+        if (
+            index is None
+            or index >= len(self._message_rows)
+            or self._message_rows[index] is not message
+        ):
+            index = next(
+                (
+                    row_index
+                    for row_index, current in enumerate(self._message_rows)
+                    if current is message
+                ),
+                None,
+            )
+            if index is None:
+                return
+            indexes[id(message)] = index
 
-            self.messages.SetItem(index, 0, self._format_message_row(message))
-            self._style_message_item(index)
-            image_index = self._thumbnail_index_for_message(message)
-            item = self.messages.GetItem(index)
-            item.SetImage(image_index)
-            self.messages.SetItem(item)
-            return
+        self.messages.SetItem(index, 0, self._format_message_row(message))
+        self._style_message_item(index)
+        image_index = self._thumbnail_index_for_message(message)
+        item = self.messages.GetItem(index)
+        item.SetImage(image_index)
+        self.messages.SetItem(item)
 
     def speak_selected_text_message(self) -> bool:
         message = self.selected_message()
@@ -682,6 +707,11 @@ class ConversationPanel(wx.Panel):
     def _append_message_row(self, message: Message) -> int:
         index = self.messages.GetItemCount()
         self._message_rows.append(message)
+        indexes = getattr(self, "_message_row_indexes", None)
+        if indexes is None:
+            indexes = {}
+            self._message_row_indexes = indexes
+        indexes[id(message)] = index
         image_index = self._thumbnail_index_for_message(message)
         self.messages.InsertItem(index, self._format_message_row(message), image_index)
         self._style_message_item(index)
@@ -733,12 +763,15 @@ class ConversationPanel(wx.Panel):
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = self._format_message_time(message)
-        body = self._format_message_body(message)
+        body = self._truncate_row_text(self._format_message_body(message))
         starred = "Destacado. " if message.starred else ""
         edited = "Editado. " if message.edited else ""
         forwarded = "Reenviado. " if message.is_forwarded else ""
         reactions = f" Reacciones: {' '.join(message.reactions)}." if message.reactions else ""
-        reply = self._format_reply_summary(message)
+        reply = self._truncate_row_text(
+            self._format_reply_summary(message),
+            MESSAGE_ROW_REPLY_LIMIT,
+        )
         if message.outgoing:
             delivery = self._format_delivery_state(message)
             if reply:
@@ -756,6 +789,14 @@ class ConversationPanel(wx.Panel):
             )
 
         return f"{starred}{edited}{forwarded}{sender} {body} {timestamp}.{reactions}"
+
+    @staticmethod
+    def _truncate_row_text(text: str, max_length: int = MESSAGE_ROW_TEXT_LIMIT) -> str:
+        normalized = " ".join(text.split())
+        if len(normalized) <= max_length:
+            return normalized
+
+        return f"{normalized[: max_length - 3]}..."
 
     @staticmethod
     def _format_delivery_state(message: Message) -> str:
@@ -829,10 +870,6 @@ class ConversationPanel(wx.Panel):
 
         if not message.audio_url:
             return self._body_without_reply_fallback(message)
-
-        path = local_media_path(message)
-        if message.media_duration_seconds <= 0 and path is not None:
-            message.media_duration_seconds = media_duration_seconds(path)
 
         if message.media_duration_seconds > 0:
             return audio_description(message)

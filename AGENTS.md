@@ -209,6 +209,17 @@ Al abrir un chat, primero se muestran mensajes cacheados y luego se pide histori
 se marca como leido; al volver a la lista se limpia el marcador visual. Las actualizaciones de
 fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 
+Para evitar pausas con cuentas grandes, `ChatListPanel` no reconstruye el `wx.ListBox` mientras
+está oculto: actualiza el modelo y marca la vista como pendiente hasta volver con Escape. La
+caché SQLite de cada conversación se fusiona una sola vez por cuenta y chat durante la sesión;
+las páginas MAM posteriores trabajan sobre la memoria ya cargada.
+Las métricas impresas por `_debug_perf` están desactivadas normalmente; para una sesión de
+diagnóstico inicia el proceso con `CLIENTE_XMPP_PERF_DEBUG=1`.
+
+La lista principal solo materializa chats con preview, fecha o no leidos. Los contactos del
+roster sin actividad permanecen en `searchable_chats_by_jid` para encontrarlos por nombre o
+telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son grupos.
+
 ### Grupos, identidad y ecos propios
 
 - Los grupos del bridge suelen tener JID con `#` y usan el room archive MAM. No trates un JID
@@ -263,6 +274,9 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
 - La lista de mensajes mantiene una columna estable y ofrece el lector detallado con Enter.
   No muevas el foco en actualizaciones de fondo ni reconstruyas la lista mientras el usuario la
   esta leyendo si puede evitarse.
+- Las reconstrucciones completas del historial deben ejecutarse con el `wx.ListCtrl` congelado
+  y reanudarse siempre con `Thaw`. La etiqueta accesible de una fila se limita a 500 caracteres;
+  el cuerpo completo permanece en el lector detallado con Enter, copia y almacenamiento.
 - Cambios de UI deben probar teclado, Escape, Enter, flechas, lector de mensaje, foco de lista
   y lectura NVDA con chats de mas de 300 mensajes y textos largos.
 
@@ -292,6 +306,9 @@ fondo deben conservar seleccion, foco, orden legible y posicion de lectura.
   tambien la ventana nativa, no solo detengan la reproduccion.
 - Para diagnosticar un audio, comprueba primero ruta local, tamano, `ffprobe` y decodificacion
   `ffmpeg`; no culpes al bridge sin distinguir archivo corrupto de streaming inestable.
+- `ffprobe` y las descargas nunca se ejecutan en el hilo wx. Las escrituras rutinarias de chats,
+  mensajes, participantes y rutas multimedia pasan por un único ejecutor para conservar orden
+  sin exponer la interfaz al timeout de SQLite.
 - El audio enviado desde el cliente se normaliza a OGG/Opus; no reutilices esa regla para
   interpretar automaticamente los audios entrantes.
 

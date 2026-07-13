@@ -87,6 +87,8 @@ FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
 SIMS_NS = "urn:xmpp:sims:1"
 REFERENCE_NS = "urn:xmpp:reference:0"
+STICKER_NS = "urn:xmpp:stickers:0"
+WHATSAPP_FORWARDED_NS = "urn:marco-ml:whatsapp:forwarded:0"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 BOB_NS = "urn:xmpp:bob"
@@ -2251,6 +2253,7 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
+        is_sticker = self._message_is_sticker(stanza.xml)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2258,6 +2261,7 @@ class BridgeXmppClient(ClientXMPP):
             media_filename,
             media_size,
             stanza.xml,
+            is_sticker=is_sticker,
         )
         sent_at = self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
         if sent_at is None:
@@ -2277,6 +2281,8 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_size=media_size,
             media_duration_seconds=media_duration,
+            is_sticker=is_sticker,
+            is_forwarded=self._message_is_forwarded(stanza.xml),
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             displayed_marker_id=(
                 self._room_stanza_id_from_xml(stanza.xml, message_chat_jid) if is_group else ""
@@ -2322,6 +2328,7 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid = str(stanza["from"].bare)
         sender_jid = "Yo" if outgoing else self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = "" if outgoing else self._sender_name_from_stanza(stanza, is_group=is_group)
+        is_sticker = self._message_is_sticker(stanza.xml)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2329,6 +2336,7 @@ class BridgeXmppClient(ClientXMPP):
             media_filename,
             media_size,
             stanza.xml,
+            is_sticker=is_sticker,
         )
         self._emit(
             MessageReceived(
@@ -2346,6 +2354,8 @@ class BridgeXmppClient(ClientXMPP):
                     media_filename=media_filename,
                     media_size=media_size,
                     media_duration_seconds=media_duration,
+                    is_sticker=is_sticker,
+                    is_forwarded=self._message_is_forwarded(stanza.xml),
                     message_id=str(stanza["id"] or ""),
                     displayed_marker_id=(
                         self._room_stanza_id_from_xml(stanza.xml, chat_jid) if is_group else ""
@@ -2381,6 +2391,7 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=True)
         sender_name = self._sender_name_from_stanza(stanza, is_group=True)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
+        is_sticker = self._message_is_sticker(stanza.xml)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2388,6 +2399,7 @@ class BridgeXmppClient(ClientXMPP):
             media_filename,
             media_size,
             stanza.xml,
+            is_sticker=is_sticker,
         )
         return Message(
             chat_jid=str(stanza["from"].bare),
@@ -2403,6 +2415,8 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_size=media_size,
             media_duration_seconds=media_duration,
+            is_sticker=is_sticker,
+            is_forwarded=self._message_is_forwarded(stanza.xml),
             message_id=str(stanza["id"] or ""),
             displayed_marker_id=self._room_stanza_id_from_xml(
                 stanza.xml,
@@ -2469,6 +2483,7 @@ class BridgeXmppClient(ClientXMPP):
                         media_kind,
                         "",
                         media_size,
+                        is_sticker=self._message_is_sticker(message),
                     )
                 message_model = self._message_from_forwarded_xml(chat_jid, result)
                 if message_model is not None and message_model.retracted:
@@ -2512,6 +2527,7 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
         sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        is_sticker = self._message_is_sticker(message)
         display_body, reply_quote = self._message_display_parts(
             body,
             media_url,
@@ -2519,6 +2535,7 @@ class BridgeXmppClient(ClientXMPP):
             media_filename,
             media_size,
             message,
+            is_sticker=is_sticker,
         )
         return Message(
             chat_jid=chat_jid,
@@ -2534,6 +2551,8 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_size=media_size,
             media_duration_seconds=media_duration,
+            is_sticker=is_sticker,
+            is_forwarded=self._message_is_forwarded(message),
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
@@ -2725,6 +2744,14 @@ class BridgeXmppClient(ClientXMPP):
             return stanza_id.attrib.get("id", "").strip()
 
         return ""
+
+    @staticmethod
+    def _message_is_sticker(xml: ET.Element) -> bool:
+        return xml.find(f".//{{{STICKER_NS}}}sticker") is not None
+
+    @staticmethod
+    def _message_is_forwarded(xml: ET.Element) -> bool:
+        return xml.find(f".//{{{WHATSAPP_FORWARDED_NS}}}forwarded") is not None
 
     @staticmethod
     def _jid_resource(jid: str) -> str:
@@ -2947,10 +2974,14 @@ class BridgeXmppClient(ClientXMPP):
         media_kind: str,
         media_filename: str = "",
         media_size: int = 0,
+        is_sticker: bool = False,
     ) -> str:
         body = body.strip()
         if not media_url:
             return body
+
+        if is_sticker:
+            return "Sticker"
 
         if body and media_url not in cls._urls_from_text(body):
             return body
@@ -2983,6 +3014,7 @@ class BridgeXmppClient(ClientXMPP):
         media_filename: str,
         media_size: int,
         xml: ET.Element,
+        is_sticker: bool = False,
     ) -> tuple[str, str]:
         reply_quote = ""
         display_body = body
@@ -3004,6 +3036,7 @@ class BridgeXmppClient(ClientXMPP):
             media_kind,
             media_filename,
             media_size,
+            is_sticker=is_sticker,
         ), reply_quote
 
     @staticmethod
@@ -3246,6 +3279,7 @@ class BridgeXmppClient(ClientXMPP):
         path: str,
         is_group: bool = False,
         view_once: bool = False,
+        as_sticker: bool = False,
     ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
@@ -3255,6 +3289,8 @@ class BridgeXmppClient(ClientXMPP):
             self._join_group_chat(to_jid)
         mime = self._mime_type_for_file(file_path)
         media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
+        if as_sticker and media_kind != "image":
+            raise ValueError("Los stickers deben ser archivos de imagen.")
         upload_mime = mime
         if media_kind == "audio":
             file_path = convert_to_voice_note(file_path)
@@ -3274,6 +3310,8 @@ class BridgeXmppClient(ClientXMPP):
         message = self.make_message(mto=to_jid, mbody=get_url, mtype=message_type)
         if view_once and media_kind == "audio":
             message["thread"] = "urn:marco-ml:whatsapp:view-once:0"
+        if as_sticker:
+            message.append(ET.Element(f"{{{STICKER_NS}}}sticker"))
         message_id = str(message["id"] or "")
         self._append_file_metadata(
             message,
@@ -3285,7 +3323,14 @@ class BridgeXmppClient(ClientXMPP):
             duration=duration,
         )
         message.send()
-        body = self._message_body_for_display("", get_url, media_kind, file_path.name, size)
+        body = self._message_body_for_display(
+            "",
+            get_url,
+            media_kind,
+            file_path.name,
+            size,
+            is_sticker=as_sticker,
+        )
         return Message(
             chat_jid=to_jid,
             sender_jid="Yo",
@@ -3300,6 +3345,7 @@ class BridgeXmppClient(ClientXMPP):
             media_size=size,
             media_duration_seconds=duration,
             media_local_path=str(file_path),
+            is_sticker=as_sticker,
             message_id=message_id,
             chat_is_group=is_group,
             delivery_state="sent",
@@ -3632,6 +3678,18 @@ class XmppService:
             )
 
     @staticmethod
+    def _append_message_flags(
+        msg: object,
+        *,
+        is_sticker: bool = False,
+        is_forwarded: bool = False,
+    ) -> None:
+        if is_sticker:
+            msg.append(ET.Element(f"{{{STICKER_NS}}}sticker"))
+        if is_forwarded:
+            msg.append(ET.Element(f"{{{WHATSAPP_FORWARDED_NS}}}forwarded"))
+
+    @staticmethod
     def _request_delivery_updates(msg: object, message_type: str) -> None:
         if message_type != "groupchat":
             msg["request_receipt"] = True
@@ -3708,6 +3766,7 @@ class XmppService:
         path: str,
         is_group: bool = False,
         view_once: bool = False,
+        as_sticker: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
@@ -3723,6 +3782,7 @@ class XmppService:
                     path,
                     is_group=is_group,
                     view_once=view_once,
+                    as_sticker=as_sticker,
                 )
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
@@ -3735,6 +3795,84 @@ class XmppService:
                 self._loop.create_task(send())
 
         self._loop.call_soon_threadsafe(schedule)
+
+    def send_forward(
+        self,
+        to_jid: str,
+        source: Message,
+        is_group: bool = False,
+        message_id: str = "",
+    ) -> None:
+        if not self._client or not self._loop:
+            if message_id:
+                self._emit(
+                    MessageDeliveryUpdated(
+                        chat_jid=to_jid,
+                        message_id=message_id,
+                        delivery_state="failed",
+                        detail="No hay una conexión XMPP activa.",
+                    )
+                )
+            self._emit(XmppError("No hay una conexión XMPP activa."))
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+
+            try:
+                if is_group:
+                    self._client._join_group_chat(to_jid)
+                message_type = "groupchat" if is_group else "chat"
+                attachment_url = source.media_url or source.audio_url
+                body = attachment_url or source.body
+                if not body:
+                    raise ValueError("El mensaje no tiene contenido reenviable.")
+
+                msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
+                if message_id:
+                    msg["id"] = message_id
+                if attachment_url:
+                    self._client._append_file_metadata(
+                        msg,
+                        url=attachment_url,
+                        filename=(
+                            source.media_filename
+                            or self._client._filename_from_url(attachment_url)
+                        ),
+                        size=source.media_size,
+                        mime=source.media_mime,
+                        media_kind=source.media_kind or "file",
+                        duration=source.media_duration_seconds,
+                    )
+                self._append_message_flags(
+                    msg,
+                    is_sticker=source.is_sticker,
+                    is_forwarded=True,
+                )
+                self._request_delivery_updates(msg, message_type)
+                msg.send()
+                if message_id:
+                    self._emit(
+                        MessageDeliveryUpdated(
+                            chat_jid=to_jid,
+                            message_id=message_id,
+                            delivery_state="sent",
+                        )
+                    )
+            except Exception as exc:
+                if message_id:
+                    self._emit(
+                        MessageDeliveryUpdated(
+                            chat_jid=to_jid,
+                            message_id=message_id,
+                            delivery_state="failed",
+                            detail=f"No se pudo reenviar el mensaje: {exc}",
+                        )
+                    )
+                self._emit(XmppError(f"No se pudo reenviar el mensaje: {exc}"))
+
+        self._loop.call_soon_threadsafe(send)
 
     def send_chat_state(
         self,

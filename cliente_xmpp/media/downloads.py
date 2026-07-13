@@ -78,6 +78,9 @@ def media_description(message: Message) -> str:
     if is_link_preview(message):
         return link_description(message)
 
+    if message.is_sticker:
+        return "Sticker"
+
     if message.media_kind == "audio":
         if message.media_duration_seconds > 0:
             return f"voz, {format_duration(message.media_duration_seconds)}"

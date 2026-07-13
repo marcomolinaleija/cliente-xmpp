@@ -15,7 +15,7 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 
@@ -355,6 +355,8 @@ class MessageStore:
                     media_size INTEGER NOT NULL DEFAULT 0,
                     media_duration_seconds REAL NOT NULL DEFAULT 0,
                     media_local_path TEXT NOT NULL DEFAULT '',
+                    is_sticker INTEGER NOT NULL DEFAULT 0,
+                    is_forwarded INTEGER NOT NULL DEFAULT 0,
                     chat_is_group INTEGER NOT NULL DEFAULT 0,
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
@@ -467,6 +469,8 @@ class MessageStore:
             "media_size": "INTEGER NOT NULL DEFAULT 0",
             "media_duration_seconds": "REAL NOT NULL DEFAULT 0",
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
+            "is_sticker": "INTEGER NOT NULL DEFAULT 0",
+            "is_forwarded": "INTEGER NOT NULL DEFAULT 0",
             "sender_name": "TEXT NOT NULL DEFAULT ''",
             "chat_is_group": "INTEGER NOT NULL DEFAULT 0",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
@@ -556,6 +560,8 @@ class MessageStore:
                 media_size = COALESCE(NULLIF(media_size, 0), ?),
                 media_duration_seconds = COALESCE(NULLIF(media_duration_seconds, 0), ?),
                 media_local_path = COALESCE(NULLIF(media_local_path, ''), ?),
+                is_sticker = CASE WHEN is_sticker = 1 OR ? = 1 THEN 1 ELSE 0 END,
+                is_forwarded = CASE WHEN is_forwarded = 1 OR ? = 1 THEN 1 ELSE 0 END,
                 reply_quote = COALESCE(NULLIF(reply_quote, ''), ?),
                 reply_to_jid = COALESCE(NULLIF(reply_to_jid, ''), ?),
                 reply_to_id = COALESCE(NULLIF(reply_to_id, ''), ?),
@@ -576,6 +582,8 @@ class MessageStore:
                 duplicate["media_size"],
                 duplicate["media_duration_seconds"],
                 duplicate["media_local_path"],
+                duplicate["is_sticker"],
+                duplicate["is_forwarded"],
                 duplicate["reply_quote"],
                 duplicate["reply_to_jid"],
                 duplicate["reply_to_id"],
@@ -693,11 +701,13 @@ class MessageStore:
                 account_jid, chat_jid, message_key, message_id, displayed_marker_id, sender_jid,
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
-                media_local_path, chat_is_group, starred, reactions_json, reply_quote,
+                media_local_path, is_sticker, is_forwarded, chat_is_group, starred,
+                reactions_json, reply_quote,
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -733,6 +743,14 @@ class MessageStore:
                     NULLIF(excluded.media_local_path, ''),
                     messages.media_local_path
                 ),
+                is_sticker = CASE
+                    WHEN excluded.is_sticker = 1 OR messages.is_sticker = 1 THEN 1
+                    ELSE 0
+                END,
+                is_forwarded = CASE
+                    WHEN excluded.is_forwarded = 1 OR messages.is_forwarded = 1 THEN 1
+                    ELSE 0
+                END,
                 chat_is_group = CASE
                     WHEN excluded.chat_is_group = 1 OR messages.chat_is_group = 1 THEN 1
                     ELSE 0
@@ -791,6 +809,8 @@ class MessageStore:
                 message.media_size,
                 message.media_duration_seconds,
                 message.media_local_path,
+                int(message.is_sticker),
+                int(message.is_forwarded),
                 int(message.chat_is_group),
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
@@ -921,6 +941,8 @@ def _duplicate_content_key(row: sqlite3.Row) -> tuple[object, ...]:
         row["audio_url"],
         row["media_url"],
         row["media_kind"],
+        bool(row["is_sticker"]),
+        bool(row["is_forwarded"]),
     )
 
 
@@ -1011,6 +1033,8 @@ def _find_duplicate_message_row(
             AND audio_url = ?
             AND media_url = ?
             AND media_kind = ?
+            AND is_sticker = ?
+            AND is_forwarded = ?
             AND (? = '' OR reply_quote = '' OR reply_quote = ?)
             AND (? != '' OR message_id != '')
         """,
@@ -1024,6 +1048,8 @@ def _find_duplicate_message_row(
             message.audio_url,
             message.media_url,
             message.media_kind,
+            int(message.is_sticker),
+            int(message.is_forwarded),
             message.reply_quote,
             message.reply_quote,
             message.message_id,
@@ -1056,17 +1082,24 @@ def _message_key(message: Message) -> str:
     if message.message_id:
         return f"id:{message.message_id}"
 
-    payload = "|".join(
-        (
-            message.sent_at.isoformat(),
-            message.sender_jid,
-            message.body,
-            str(message.outgoing),
-            message.audio_url,
-            message.media_url,
-            message.media_kind,
-            message.reply_quote,
-        )
+    payload_parts = (
+        message.sent_at.isoformat(),
+        message.sender_jid,
+        message.body,
+        str(message.outgoing),
+        message.audio_url,
+        message.media_url,
+        message.media_kind,
+        message.reply_quote,
+    )
+    feature_parts = (
+        "sticker" if message.is_sticker else "",
+        "forwarded" if message.is_forwarded else "",
+    )
+    payload = (
+        "|".join(payload_parts + feature_parts)
+        if any(feature_parts)
+        else "|".join(payload_parts)
     )
     return f"hash:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
@@ -1075,7 +1108,9 @@ def _message_preview(message: Message) -> str:
     if message.retracted:
         return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
 
-    if not message.media_url:
+    if message.is_sticker:
+        preview = "Sticker"
+    elif not message.media_url:
         preview = message.body
     elif is_link_preview(message):
         preview = link_description(message)
@@ -1098,6 +1133,9 @@ def _message_preview(message: Message) -> str:
         if message.media_size > 0:
             details.append(_format_size(message.media_size))
         preview = ", ".join(details)
+
+    if message.is_forwarded:
+        preview = f"Reenviado. {preview}"
 
     if message.outgoing and message.delivery_state in {"delivered", "received"}:
         return f"{preview} | Entregado"
@@ -1156,6 +1194,8 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_size=int(row["media_size"] or 0),
         media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
+        is_sticker=bool(row["is_sticker"]),
+        is_forwarded=bool(row["is_forwarded"]),
         message_id=str(row["message_id"] or ""),
         displayed_marker_id=str(row["displayed_marker_id"] or ""),
         chat_is_group=bool(row["chat_is_group"]),

@@ -35,6 +35,10 @@ from cliente_xmpp.media.downloads import (
     media_description,
 )
 from cliente_xmpp.media.links import MessageLink, is_link_preview, message_links
+from cliente_xmpp.media.stickers import (
+    convert_lottie_sticker_package,
+    looks_like_lottie_sticker_attachment,
+)
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import (
     GroupParticipant,
@@ -2020,12 +2024,14 @@ class MainWindow(wx.Frame):
                 media_label = "Abrir foto" if local_media_path(message) else "Descargar foto"
             elif message.media_kind == "video":
                 media_label = "Abrir video" if local_media_path(message) else "Descargar video"
+            if message.is_sticker:
+                media_label = "Abrir sticker" if local_media_path(message) else "Descargar sticker"
             if not is_link_preview(message):
                 if message.media_kind != "audio":
                     media_item = menu.Append(wx.ID_ANY, media_label)
                 copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
                 copy_file_item.Enable(local_media_path(message) is not None)
-                if message.media_kind in {"image", "video"}:
+                if message.media_kind in {"image", "video"} or message.is_sticker:
                     describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
 
         reaction_menu = wx.Menu()
@@ -2370,6 +2376,16 @@ class MainWindow(wx.Frame):
         def worker() -> None:
             try:
                 downloaded = download_media(message, self.current_jid)
+                lottie_sticker_path = None
+                if self._message_may_be_lottie_sticker(message):
+                    lottie_sticker_path = convert_lottie_sticker_package(downloaded.path)
+                    if lottie_sticker_path is not None:
+                        downloaded = DownloadedMedia(
+                            path=lottie_sticker_path,
+                            size=lottie_sticker_path.stat().st_size,
+                            mime="image/webp",
+                            filename=lottie_sticker_path.name,
+                        )
                 duration = (
                     media_duration_seconds(downloaded.path)
                     if message.media_kind == "audio"
@@ -2392,6 +2408,7 @@ class MainWindow(wx.Frame):
                 send_to_rayoai,
                 silent,
                 duration,
+                lottie_sticker_path is not None,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2403,11 +2420,15 @@ class MainWindow(wx.Frame):
         send_to_rayoai: bool,
         silent: bool = False,
         duration_seconds: float = 0.0,
+        normalized_lottie_sticker: bool = False,
     ) -> None:
         message.media_local_path = str(downloaded.path)
-        message.media_size = downloaded.size
-        message.media_mime = downloaded.mime or message.media_mime
-        message.media_filename = downloaded.filename or message.media_filename
+        if normalized_lottie_sticker:
+            message.is_sticker = True
+        else:
+            message.media_size = downloaded.size
+            message.media_mime = downloaded.mime or message.media_mime
+            message.media_filename = downloaded.filename or message.media_filename
         if message.media_kind == "audio" and duration_seconds > 0:
             message.media_duration_seconds = duration_seconds
         self._persist_message_media_path(message)
@@ -2440,12 +2461,19 @@ class MainWindow(wx.Frame):
             self._auto_download_media_message(message)
 
     def _auto_download_media_message(self, message: Message) -> None:
-        if not (message.media_kind == "audio" or message.is_sticker):
+        may_be_lottie_sticker = self._message_may_be_lottie_sticker(message)
+        if not (message.media_kind == "audio" or message.is_sticker or may_be_lottie_sticker):
             return
         if not (message.audio_url or message.media_url):
             return
 
-        if message.outgoing or local_media_path(message) is not None:
+        path = local_media_path(message)
+        if path is not None:
+            if may_be_lottie_sticker and not message.is_sticker:
+                self._normalize_cached_lottie_sticker(message, path)
+            return
+
+        if message.outgoing and not may_be_lottie_sticker:
             return
 
         key = self._auto_media_download_key(message)
@@ -2454,6 +2482,48 @@ class MainWindow(wx.Frame):
 
         self.auto_downloading_media_keys.add(key)
         self._download_media(message, silent=True)
+
+    @staticmethod
+    def _message_may_be_lottie_sticker(message: Message) -> bool:
+        return looks_like_lottie_sticker_attachment(
+            media_kind=message.media_kind,
+            media_mime=message.media_mime,
+            media_filename=message.media_filename,
+            media_url=message.media_url,
+            media_size=message.media_size,
+        )
+
+    def _normalize_cached_lottie_sticker(self, message: Message, source: Path) -> None:
+        key = self._auto_media_download_key(message)
+        if key in self.auto_downloading_media_keys:
+            return
+        self.auto_downloading_media_keys.add(key)
+
+        def worker() -> None:
+            destination = convert_lottie_sticker_package(source)
+            wx.CallAfter(
+                self._finish_cached_lottie_sticker_normalization,
+                message,
+                destination,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_cached_lottie_sticker_normalization(
+        self,
+        message: Message,
+        destination: Path | None,
+    ) -> None:
+        self._discard_auto_media_download(message)
+        if destination is None:
+            return
+
+        message.media_local_path = str(destination)
+        message.is_sticker = True
+        self._persist_message_media_path(message)
+        self.conversation.refresh_message(message)
+        self._update_chat_from_message(message)
+        self._refresh_chat_order(message.chat_jid)
 
     def _request_audio_download_for_playback(self, message: Message) -> None:
         if local_media_path(message) is not None:
@@ -3744,6 +3814,9 @@ class MainWindow(wx.Frame):
             self._merge_messages(chat_jid, cached_messages)
             self._update_chat_activity_from_messages(chat_jid, cached_messages)
             self._update_chat_preview_from_messages(chat_jid, cached_messages)
+            for message in cached_messages:
+                if self._message_may_be_lottie_sticker(message):
+                    self._auto_download_media_message(message)
             self._debug_perf(
                 "_load_cached_messages_for_chat.merge",
                 merge_started_at,

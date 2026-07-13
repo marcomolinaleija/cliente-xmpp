@@ -33,8 +33,9 @@ checkout.
   añadido al descargar duplicados. Las fotos WebP con nombre normal siguen
   tratándose como fotos.
 - `Describir con RayoAI` entrega la ruta WebP original por el IPC local de
-  RayoAI para Windows. RayoAI debe aceptar y decodificar ese formato; el
-  cliente no crea una conversión intermedia.
+  RayoAI para Windows. Si un sticker animado llega como paquete Lottie `.bin`,
+  el cliente valida el ZIP y genera en segundo plano un WebP estático de un
+  fotograma representativo. RayoAI debe aceptar y decodificar WebP.
 - El botón `Enviar sticker...` adjunta XEP-0449 al archivo para activar
   `on_sticker` en Slidge.
 - Los mensajes reenviados conservan `is_forwarded` en vivo, inbox, MAM y
@@ -80,8 +81,10 @@ rg -n "IsForwarded|MentionJIDs|ContextInfo" \
 
 Un sticker Lottie puede llegar como un ZIP con `animation/animation.json`, pero
 con nombre `.bin` y MIME `application/octet-stream`. El cliente lo interpreta
-entonces como archivo generico. No hay que renombrar manualmente ni borrar esos
-archivos historicos.
+entonces como candidato opaco hasta poder inspeccionar su contenido. El fallback
+local reconoce solo nombres SHA-256 pequeños, valida el ZIP sin extraerlo y crea
+un WebP representativo con `rlottie-python`; los `.bin` arbitrarios permanecen
+como archivos. No hay que renombrar manualmente ni borrar archivos históricos.
 
 ### Cambio en configuracion
 
@@ -115,9 +118,10 @@ versiones publican exactamente las mismas opciones.
 2. Confirmar que llega con MIME de imagen y extension `.webp`, no `.bin`.
 3. Confirmar que `cliente-xmpp` lo clasifica como imagen/sticker y que NVDA no
    anuncia un hash como nombre principal.
-4. Repetir con un sticker estatico y otro paquete animado.
-5. Conservar los `.bin` existentes como evidencia y para soporte futuro; esta
-   configuracion no los transforma retroactivamente.
+4. Si todavía llega `.bin`, confirmar que el cliente genera un WebP local, lo
+   muestra como `Sticker` y habilita `Describir con RayoAI`.
+5. Repetir con un sticker estatico, otro animado y un `.bin` ordinario; el
+   archivo ordinario no debe reclasificarse.
 
 ### Rollback
 

@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from cliente_xmpp.audio.process import no_window_creation_flags
+
 
 def media_duration_seconds(path: Path) -> float:
     if not path.exists():
@@ -30,6 +32,7 @@ def media_duration_seconds(path: Path) -> float:
             text=True,
             timeout=10,
             check=False,
+            creationflags=no_window_creation_flags(),
         )
     except Exception:
         return 0.0

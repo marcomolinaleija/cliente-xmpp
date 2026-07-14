@@ -11,12 +11,14 @@ escritorio consume:
 La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
-sha256:a4cd6fe1e86d7c2c638a996bb9842343cb660a0004ab87a0291f3ad3da0bbb6c
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714
+sha256:094882e54b4939c4ed7c74873c79b27ab92b043a238c0b72015e9b6e21979d46
 ```
 
-También está publicada como `v4`. La etiqueta anterior `puente-completo-20260713` y su alias `v3`
-se conservan para rollback.
+También está publicada como `v5`. `read-sync-20260714`/`v4` conserva el primer despliegue de
+lecturas, pero no debe usarse porque borra los adjuntos entrantes servidos localmente. La etiqueta
+`puente-completo-20260713` y su alias `v3` se conservan como rollback anterior sin sincronización
+de lecturas.
 
 ## Evidencia de la incidencia
 
@@ -51,7 +53,7 @@ python tools/patch_slidge_whatsapp_read_sync.py RUTA_A_SLIDGE_WHATSAPP
 `tools/Dockerfile.bridge-read-sync.patch` aplica ese script durante la construcción, copia
 `tools/bridge_read_sync_event_test.go`, ejecuta `go test ./...` y sólo después instala la fuente
 en la imagen. La base construida era `88b2f91` y el commit final de la fuente en la VPS es
-`ba2490b`.
+`25431c4`.
 
 ### 1. Convertir `events.MarkChatAsRead` en `EventReceipt`
 
@@ -151,6 +153,18 @@ No llamar `client.MarkRead()` desde este handler. Esa funcion envia una lectura 
 crearia un bucle. Este evento ya describe una accion realizada en otro dispositivo; solo debe
 reflejarse hacia XMPP.
 
+### 3. Conservar los adjuntos servidos por Slidge
+
+La primera imagen de lecturas adaptó el código a la ausencia de `NO_UPLOAD_METHOD`, pero dejó la
+condición de limpieza con sentido inverso. En Slidge actual, `send_files` copia el adjunto a
+`NO_UPLOAD_PATH` y actualiza `attachment.path` para apuntar a ese archivo persistente. El bucle
+posterior lo eliminaba de inmediato y la URL anunciada devolvía HTTP 404.
+
+El parche ahora omite toda limpieza cuando `NO_UPLOAD_PATH` está configurado. Para instalaciones
+antiguas conserva también los archivos servidos mediante `NO_UPLOAD_METHOD == "symlink"`; sólo
+elimina temporales cuando ninguna modalidad persistente está activa. No se corrige recreando la
+base, borrando volúmenes ni cambiando el cliente de escritorio.
+
 ## Configuración requerida de Prosody
 
 Los mensajes privilegiados ya funcionaban para chats individuales, pero XEP-0490 necesita además
@@ -215,6 +229,10 @@ Confirmar que el `switch`, el conversor y la corrección de adjuntos están pres
 docker run --rm --entrypoint python \
   -v "$PWD/tools/smoke_bridge_read_sync_runtime.py:/tmp/smoke.py:ro" \
   IMAGEN_CANDIDATA /tmp/smoke.py
+
+docker run --rm --entrypoint python \
+  -v "$PWD/tools/smoke_bridge_attachment_persistence_runtime.py:/tmp/smoke.py:ro" \
+  IMAGEN_CANDIDATA /tmp/smoke.py
 ```
 
 ### Prueba funcional obligatoria
@@ -229,13 +247,15 @@ docker run --rm --entrypoint python \
    permanece no leido.
 7. Usar "marcar como no leido" en WhatsApp oficial y confirmar que el cliente no retrocede su
    horizonte de lectura.
+8. Recibir una nota de voz nueva, confirmar que su URL devuelve HTTP 200, que el archivo sigue en
+   `/opt/xmpp/slidge-attachments` y que `cliente-xmpp` lo descarga y reproduce localmente.
 
 ## Construccion y despliegue
 
 La versión publicada es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714
 ```
 
 En la VPS:
@@ -245,7 +265,7 @@ cd /opt/xmpp
 cp -p compose.yml compose.yml.before-read-sync
 # Seleccionar Prosody 0.12 y la imagen publicada del puente.
 python RUTA_REPO/tools/patch_marco_vps_compose_read_sync.py \
-  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714 \
+  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714 \
   compose.yml
 docker compose config -q
 docker compose pull prosody

@@ -192,7 +192,7 @@ Reglas obligatorias:
   `<displayed/>` XEP-0333 dentro de `carbon_sent` en chats individuales y XEP-0490
   (`urn:xmpp:mds:displayed:0`) en grupos. Conserva el marcador hasta conocer el mensaje local,
   solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. Desde el 14
-  de julio de 2026, la imagen `read-sync-20260714` convierte `events.MarkChatAsRead` y Prosody 0.12
+  de julio de 2026, la imagen `audio-fix-20260714` convierte `events.MarkChatAsRead` y Prosody 0.12
   concede los privilegios PubSub requeridos. La implementación reproducible está en
   `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No conviertas este flujo en polling de inbox ni
   confundas esos markers propios con el estado de entrega de mensajes salientes.
@@ -265,7 +265,7 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
 - Desde el 14 de julio de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714` con menciones,
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -276,6 +276,12 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   --force-recreate slidge-whatsapp`. Esta etiqueta también incluye la propagación de
   `events.MarkChatAsRead`; los privilegios XEP-0490 requieren `prosodyim/prosody:0.12` y la
   configuración descrita en la guía específica de sincronización de leídos.
+- En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
+  `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
+  ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría
+  descargar ni reproducir el audio. La protección reproducible y su smoke test están en
+  `tools/patch_slidge_whatsapp_read_sync.py` y
+  `tools/smoke_bridge_attachment_persistence_runtime.py`.
 
 ### Notificaciones y accesibilidad
 

@@ -132,16 +132,38 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 
 def patch_session_py(path: Path, *, backup: bool) -> bool:
     text = read_expected(path)
-    marker = 'getattr(global_config, "NO_UPLOAD_METHOD", None)'
+    marker = 'if getattr(global_config, "NO_UPLOAD_PATH", None):'
     if marker in text:
         return False
 
-    updated = replace_once(
-        text,
-        '            if global_config.NO_UPLOAD_METHOD != "symlink":\n',
-        f"            if {marker} != \"symlink\":\n",
-        path,
+    original_cleanup = """        for attachment in attachments:
+            if global_config.NO_UPLOAD_METHOD != "symlink":
+                self.log.debug("Removing '%s' from disk", attachment.path)
+                if attachment.path is None:
+                    continue
+                Path(attachment.path).unlink(missing_ok=True)
+"""
+    compatibility_cleanup = original_cleanup.replace(
+        'global_config.NO_UPLOAD_METHOD != "symlink"',
+        'getattr(global_config, "NO_UPLOAD_METHOD", None) != "symlink"',
     )
+    new_cleanup = """        for attachment in attachments:
+            if getattr(global_config, "NO_UPLOAD_PATH", None):
+                continue
+            if getattr(global_config, "NO_UPLOAD_METHOD", None) == "symlink":
+                continue
+            self.log.debug("Removing '%s' from disk", attachment.path)
+            if attachment.path is None:
+                continue
+            Path(attachment.path).unlink(missing_ok=True)
+"""
+    candidates = [old for old in (original_cleanup, compatibility_cleanup) if old in text]
+    if len(candidates) != 1:
+        raise SystemExit(
+            f"Could not patch {path}: expected one attachment cleanup block, "
+            f"found {len(candidates)}."
+        )
+    updated = text.replace(candidates[0], new_cleanup, 1)
     write_text(path, updated, backup=backup)
     return True
 

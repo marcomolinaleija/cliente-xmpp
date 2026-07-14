@@ -6,11 +6,11 @@ Desde el 14 de julio de 2026, las modificaciones del puente están construidas, 
 activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
-sha256:a4cd6fe1e86d7c2c638a996bb9842343cb660a0004ab87a0291f3ad3da0bbb6c
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714
+sha256:094882e54b4939c4ed7c74873c79b27ab92b043a238c0b72015e9b6e21979d46
 ```
 
-También está publicada con el alias `v4`. Esta imagen incluye:
+También está publicada con el alias `v5`. Esta imagen incluye:
 
 - Las extensiones anteriores de visualización única y grabación de audio.
 - El parche de Slidge core para menciones nativas XEP-0372.
@@ -20,7 +20,8 @@ También está publicada con el alias `v4`. Esta imagen incluye:
   `urn:marco-ml:whatsapp:forwarded:0`.
 - Propagación de `events.MarkChatAsRead` desde WhatsApp oficial hacia XEP-0333 en chats
   individuales y XEP-0490 en grupos.
-- Compatibilidad con Slidge nuevo al limpiar adjuntos sin depender de `NO_UPLOAD_METHOD`.
+- Persistencia correcta de los adjuntos servidos mediante `NO_UPLOAD_PATH`; el puente ya no
+  elimina el archivo que el cliente debe descargar.
 
 El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
 Si trabaja en otra instalación, debe configurar esa etiqueta, aplicar una vez los privilegios de
@@ -39,7 +40,9 @@ cliente no fue modificado durante este despliegue del puente.
 La implementación, el despliegue y la lista de validación de lecturas desde WhatsApp oficial se
 documentan en
 `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. La etiqueta anterior
-`puente-completo-20260713` se conserva exclusivamente para rollback.
+`read-sync-20260714`/`v4` se conserva para auditoría, pero no debe usarse: esa imagen elimina
+los adjuntos entrantes inmediatamente después de anunciar su URL. `puente-completo-20260713`/`v3`
+se conserva como rollback anterior sin sincronización de lecturas.
 
 ## Menciones nativas de WhatsApp
 
@@ -70,7 +73,7 @@ python tools/patch_slidge_whatsapp_read_sync.py RUTA_A_SLIDGE_WHATSAPP
 `slidge-whatsapp`: aplicar los parches antes y después de instalar dependencias y fijar
 `rlottie-python==1.3.8`. `tools/Dockerfile.bridge-read-sync.patch` agrega el parche de lecturas y
 ejecuta las pruebas Go durante la construcción. Se partió del checkout exacto `88b2f91`; el commit
-de fuente finalmente construido en la VPS fue `ba2490b`.
+de fuente finalmente construido en la VPS fue `25431c4`.
 
 En el servicio `slidge-whatsapp`, activa además estas variables sin cambiar el comando ni los
 volúmenes existentes:
@@ -84,8 +87,11 @@ environment:
 Antes de publicar, ejecuta dentro de la imagen los smoke tests
 `tools/smoke_bridge_mentions_runtime.py`, `tools/smoke_bridge_stickers_runtime.py` y
 `tools/smoke_bridge_forwarding_runtime.py`, además de
-`tools/smoke_bridge_read_sync_runtime.py`. El segundo debe producir un WebP válido; comprobar sólo
-`--help` no demuestra que el motor Lottie esté instalado. La escritura de
+`tools/smoke_bridge_read_sync_runtime.py` y
+`tools/smoke_bridge_attachment_persistence_runtime.py`. La prueba de stickers debe producir un
+WebP válido; comprobar sólo `--help` no demuestra que el motor Lottie esté instalado. La prueba de
+persistencia ejecuta el flujo posterior a `send_files` con `NO_UPLOAD_PATH` activo y falla si el
+archivo servido desaparece. La escritura de
 `ContextInfo.IsForwarded` se cubre con `tools/bridge_forwarding_session_test.go`; las cinco reglas
 de `MarkChatAsRead` se cubren con `tools/bridge_read_sync_event_test.go` y `go test ./...`.
 
@@ -122,7 +128,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714
 ```
 
 No cambies el `command:`, los volúmenes, la red ni las opciones de Prosody.
@@ -160,6 +166,9 @@ Desde el cliente actualizado, comprueba:
    audio`.
 4. Un mensaje entrante en chat abierto y con la ventana activa usa
    `message.mp3`; en los demás casos usa el sonido normal.
+5. Una nota de voz entrante nueva devuelve HTTP 200, aparece bajo
+   `/opt/xmpp/slidge-attachments`, se descarga a `%USERPROFILE%\.cliente-xmpp\downloads` y se
+   reproduce desde la ruta local.
 
 ## Rollback
 

@@ -50,18 +50,46 @@ class PatchSlidgeReadSyncTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "session.py"
             path.write_text(
+                "        for attachment in attachments:\n"
                 '            if global_config.NO_UPLOAD_METHOD != "symlink":\n'
-                "                pass\n",
+                '                self.log.debug("Removing \'%s\' from disk", attachment.path)\n'
+                "                if attachment.path is None:\n"
+                "                    continue\n"
+                "                Path(attachment.path).unlink(missing_ok=True)\n",
                 encoding="utf-8",
             )
 
             self.assertTrue(patch_session_py(path, backup=False))
             updated = path.read_text(encoding="utf-8")
             self.assertIn(
-                'getattr(global_config, "NO_UPLOAD_METHOD", None)',
+                'if getattr(global_config, "NO_UPLOAD_PATH", None):',
                 updated,
             )
+            self.assertIn(
+                'getattr(global_config, "NO_UPLOAD_METHOD", None) == "symlink"',
+                updated,
+            )
+            self.assertNotIn('NO_UPLOAD_METHOD != "symlink"', updated)
             self.assertFalse(patch_session_py(path, backup=False))
+
+    def test_attachment_cleanup_repairs_previous_compatibility_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "session.py"
+            path.write_text(
+                "        for attachment in attachments:\n"
+                "            if getattr("
+                'global_config, "NO_UPLOAD_METHOD", None) != "symlink":\n'
+                '                self.log.debug("Removing \'%s\' from disk", attachment.path)\n'
+                "                if attachment.path is None:\n"
+                "                    continue\n"
+                "                Path(attachment.path).unlink(missing_ok=True)\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(patch_session_py(path, backup=False))
+            updated = path.read_text(encoding="utf-8")
+            self.assertIn('getattr(global_config, "NO_UPLOAD_PATH", None)', updated)
+            self.assertNotIn('NO_UPLOAD_METHOD", None) !=', updated)
 
     def test_prosody_pubsub_privileges_are_inserted_once(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

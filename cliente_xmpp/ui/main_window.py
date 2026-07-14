@@ -407,7 +407,7 @@ class MainWindow(wx.Frame):
         )
         self.open_chat_message_sound_enabled = self.settings_panel.open_chat_sound.GetValue()
         self.sent_message_sound_enabled = self.settings_panel.sent_message_sound.GetValue()
-        self.settings_panel.refresh_accessible_states()
+        self.settings_panel.apply_interactive_state()
         self._save_desktop_notification_settings()
         self._save_notification_sound_settings()
         changed_control = event.GetEventObject()

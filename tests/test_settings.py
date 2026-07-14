@@ -136,7 +136,7 @@ class AccessibleSettingStateTests(unittest.TestCase):
             announce_with_nvda=CheckBox(False),
             open_chat_sound=CheckBox(True),
             sent_message_sound=CheckBox(True),
-            refresh_accessible_states=lambda: None,
+            apply_interactive_state=lambda: None,
             checkbox_state_text=lambda control: (
                 "Mostrar el contenido del mensaje en la notificación: desactivado"
                 if control is changed_control

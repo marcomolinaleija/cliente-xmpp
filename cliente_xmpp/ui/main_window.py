@@ -25,7 +25,7 @@ from cliente_xmpp.audio.notification import (
 )
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
-from cliente_xmpp.config.settings import APP_DIR, SettingsStore
+from cliente_xmpp.config.settings import APP_DIR, DesktopNotificationSettings, SettingsStore
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
@@ -53,12 +53,14 @@ from cliente_xmpp.models.names import (
     is_fallback_chat_name,
     normalize_chat_name,
 )
+from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
+from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkDialog,
@@ -139,6 +141,12 @@ class MainWindow(wx.Frame):
             self.open_chat_message_sound_enabled,
             self.sent_message_sound_enabled,
         ) = self.settings_store.load_notification_sound_settings()
+        desktop_notifications = self.settings_store.load_desktop_notification_settings()
+        self.windows_notifications_enabled = desktop_notifications.enabled
+        self.windows_notification_previews_enabled = desktop_notifications.show_preview
+        self.windows_notification_nvda_announcements_enabled = (
+            desktop_notifications.announce_with_nvda
+        )
         self.message_store = MessageStore()
         self.storage_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -193,6 +201,11 @@ class MainWindow(wx.Frame):
         self.whatsapp_qr_downloads_in_progress: set[str] = set()
         self.contact_info_dialog: ContactInfoDialog | None = None
         self.audio_recorder = MciAudioRecorder()
+        self.settings_return_to_conversation = False
+        self.windows_notification_service = WindowsNotificationService(
+            on_open_chat=self._open_chat_from_windows_notification,
+            on_mark_read=self._mark_chat_read_from_windows_notification,
+        )
 
         self.startup_panel: wx.Panel
         self.startup_message: wx.TextCtrl
@@ -204,6 +217,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_link_panel: WhatsAppLinkPanel
         self.chat_list: ChatListPanel
         self.conversation: ConversationPanel
+        self.settings_panel: SettingsPanel
         self.status_bar = self.CreateStatusBar()
 
         self._layout()
@@ -249,10 +263,13 @@ class MainWindow(wx.Frame):
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
         )
+        self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
         self.content_box.Add(self.conversation, 1, wx.EXPAND)
+        self.content_box.Add(self.settings_panel, 1, wx.EXPAND)
         self.content_panel.SetSizer(self.content_box)
         self.conversation.Hide()
+        self.settings_panel.Hide()
 
         workspace_box.Add(self.connection_header, 0, wx.EXPAND)
         workspace_box.Add(self.whatsapp_link_panel, 0, wx.EXPAND)
@@ -272,6 +289,7 @@ class MainWindow(wx.Frame):
             wx.EVT_BUTTON,
             self._on_mark_all_chats_read,
         )
+        self.connection_header.settings_button.Bind(wx.EVT_BUTTON, self._on_open_settings)
         self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
         self.whatsapp_link_panel.show_qr_button.Bind(wx.EVT_BUTTON, self._on_show_whatsapp_qr)
         self.whatsapp_link_panel.cancel_button.Bind(
@@ -291,6 +309,19 @@ class MainWindow(wx.Frame):
         self.conversation.sticker_button.Bind(wx.EVT_BUTTON, self._on_send_sticker)
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
+        self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
+        self.settings_panel.test_notification_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_test_windows_notification,
+        )
+        for checkbox in (
+            self.settings_panel.windows_notifications,
+            self.settings_panel.show_preview,
+            self.settings_panel.announce_with_nvda,
+            self.settings_panel.open_chat_sound,
+            self.settings_panel.sent_message_sound,
+        ):
+            checkbox.Bind(wx.EVT_CHECKBOX, self._on_settings_changed)
         self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
         text_paste_event = getattr(wx, "EVT_TEXT_PASTE", None)
@@ -347,6 +378,55 @@ class MainWindow(wx.Frame):
             )
         except Exception:
             return
+
+    def _save_desktop_notification_settings(self) -> None:
+        settings = DesktopNotificationSettings(
+            enabled=self.windows_notifications_enabled,
+            show_preview=self.windows_notification_previews_enabled,
+            announce_with_nvda=self.windows_notification_nvda_announcements_enabled,
+        )
+        try:
+            self.settings_store.save_desktop_notification_settings(settings)
+        except Exception:
+            return
+
+    def _sync_settings_panel(self) -> None:
+        self.settings_panel.set_values(
+            windows_notifications=self.windows_notifications_enabled,
+            show_preview=self.windows_notification_previews_enabled,
+            announce_with_nvda=self.windows_notification_nvda_announcements_enabled,
+            open_chat_sound=self.open_chat_message_sound_enabled,
+            sent_message_sound=self.sent_message_sound_enabled,
+        )
+
+    def _on_settings_changed(self, _event: wx.CommandEvent) -> None:
+        self.windows_notifications_enabled = self.settings_panel.windows_notifications.GetValue()
+        self.windows_notification_previews_enabled = self.settings_panel.show_preview.GetValue()
+        self.windows_notification_nvda_announcements_enabled = (
+            self.settings_panel.announce_with_nvda.GetValue()
+        )
+        self.open_chat_message_sound_enabled = self.settings_panel.open_chat_sound.GetValue()
+        self.sent_message_sound_enabled = self.settings_panel.sent_message_sound.GetValue()
+        self._save_desktop_notification_settings()
+        self._save_notification_sound_settings()
+        self.status_bar.SetStatusText("Configuración guardada")
+
+    def _on_test_windows_notification(self, _event: wx.CommandEvent) -> None:
+        shown = self.windows_notification_service.show_message(
+            title="WhatsApp CAN",
+            message="Las notificaciones nativas de Windows están funcionando.",
+            chat_jid="",
+        )
+        if shown:
+            if not self.windows_notification_service.native_toasts_enabled:
+                self.status_bar.SetStatusText(
+                    "Notificación enviada en modo de compatibilidad de Windows"
+                )
+                return
+            self.status_bar.SetStatusText("Notificación de prueba enviada")
+            return
+        self.status_bar.SetStatusText("Windows no pudo mostrar la notificación de prueba")
+        self.speaker.speak("Windows no pudo mostrar la notificación de prueba")
 
     def _schedule_auto_connect(self) -> None:
         if not self._auto_connect_enabled():
@@ -1355,6 +1435,10 @@ class MainWindow(wx.Frame):
             self._refresh_current_view()
             return
 
+        if key_code == wx.WXK_ESCAPE and self.settings_panel.IsShown():
+            self._close_settings()
+            return
+
         if key_code == wx.WXK_RETURN and self.chat_list.IsShown():
             self._show_selected_chat()
             return
@@ -1383,6 +1467,44 @@ class MainWindow(wx.Frame):
 
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:
         self._show_chat_list()
+
+    def _on_open_settings(self, _event: wx.CommandEvent) -> None:
+        self._show_settings()
+
+    def _on_close_settings(self, _event: wx.CommandEvent) -> None:
+        self._close_settings()
+
+    def _show_settings(self) -> None:
+        self.settings_return_to_conversation = bool(
+            self.conversation.IsShown() and self.conversation.current_chat
+        )
+        self._sync_settings_panel()
+        self.chat_list.Hide()
+        self.conversation.Hide()
+        self.settings_panel.Show()
+        self.content_panel.Layout()
+        self.workspace_panel.Layout()
+        self.Layout()
+        self.settings_panel.focus()
+        self.status_bar.SetStatusText("Configuración")
+
+    def _close_settings(self) -> None:
+        if not self.settings_panel.IsShown():
+            return
+        self.settings_panel.Hide()
+        if self.settings_return_to_conversation and self.conversation.current_chat:
+            self.conversation.Show()
+            self.conversation.focus_composer()
+            self._refresh_current_chat_status_title()
+        else:
+            self.chat_list.Show()
+            self.chat_list.refresh_visible_if_stale()
+            self.chat_list.focus()
+            self.status_bar.SetStatusText("Lista de chats")
+        self.settings_return_to_conversation = False
+        self.content_panel.Layout()
+        self.workspace_panel.Layout()
+        self.Layout()
 
     def _on_mark_all_chats_read(self, _event: wx.CommandEvent) -> None:
         self._mark_all_chats_read()
@@ -2625,6 +2747,7 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        self.windows_notification_service.close_all()
         self.conversation.close_audio()
         self.audio_recorder.cancel()
         self.xmpp.disconnect()
@@ -2762,8 +2885,20 @@ class MainWindow(wx.Frame):
                 self._auto_download_media_message(message)
                 self._select_first_chat_if_needed()
                 if added_message and not suppress_notification:
-                    self._speak_incoming_message(message)
-                    self._play_incoming_message_sound(message, current_chat_is_open)
+                    windows_notification_shown = self._show_windows_notification(
+                        message,
+                        current_chat_is_open=current_chat_is_open,
+                    )
+                    if (
+                        not windows_notification_shown
+                        or self.windows_notification_nvda_announcements_enabled
+                    ):
+                        self._speak_incoming_message(message)
+                    self._play_incoming_message_sound(
+                        message,
+                        current_chat_is_open,
+                        windows_notification_shown=windows_notification_shown,
+                    )
             case MessageHistoryLoaded(
                 chat_jid=chat_jid,
                 messages=messages,
@@ -3312,8 +3447,17 @@ class MainWindow(wx.Frame):
         else:
             self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
 
-    def _play_incoming_message_sound(self, message: Message, current_chat_is_open: bool) -> None:
+    def _play_incoming_message_sound(
+        self,
+        message: Message,
+        current_chat_is_open: bool,
+        *,
+        windows_notification_shown: bool = False,
+    ) -> None:
         if message.outgoing or self._message_notifications_muted(message):
+            return
+
+        if windows_notification_shown:
             return
 
         if current_chat_is_open and self.IsActive():
@@ -3571,6 +3715,77 @@ class MainWindow(wx.Frame):
         if len(preview) > 160:
             preview = f"{preview[:157]}..."
         self.speaker.speak(f"Mensaje de {sender}: {preview}")
+
+    def _show_windows_notification(
+        self,
+        message: Message,
+        *,
+        current_chat_is_open: bool,
+    ) -> bool:
+        if (
+            not self.windows_notifications_enabled
+            or message.outgoing
+            or self._message_notifications_muted(message)
+            or (current_chat_is_open and self.IsActive())
+        ):
+            return False
+
+        chat_name = self._speakable_chat_name(message.chat_jid)
+        title = chat_name
+        if message.chat_is_group and message.sender_jid:
+            participant = message.sender_name or self._display_name_for_jid(message.sender_jid)
+            title = f"{participant} en {chat_name}"
+
+        preview = "Nuevo mensaje"
+        if self.windows_notification_previews_enabled:
+            preview = media_description(message) if has_media(message) else message.body
+            if message.is_forwarded:
+                preview = f"Reenviado. {preview}"
+
+        return self.windows_notification_service.show_message(
+            title=title,
+            message=preview,
+            chat_jid=message.chat_jid,
+        )
+
+    def _open_chat_from_windows_notification(self, chat_jid: str) -> None:
+        wx.CallAfter(self._activate_chat_from_windows_notification, chat_jid)
+
+    def _activate_chat_from_windows_notification(self, chat_jid: str) -> None:
+        chat = self._chat_by_jid(chat_jid)
+        if chat is None:
+            self.status_bar.SetStatusText("El chat de la notificación ya no está disponible")
+            return
+
+        if self.IsIconized():
+            self.Iconize(False)
+        if not self.IsShown():
+            self.Show()
+        self.settings_panel.Hide()
+        self.conversation.Hide()
+        self.chat_list.Show()
+        if self._search_is_active():
+            self._clear_chat_search(selected_jid=chat_jid)
+        if not self.chat_list.has_chat(chat_jid):
+            self.chat_list.upsert_chat(chat)
+        self.chat_list.force_refresh_visible(selected_jid=chat_jid)
+        self.chat_list.select_chat_by_jid(chat_jid)
+        self._show_selected_chat()
+        self.Raise()
+        self.RequestUserAttention()
+
+    def _mark_chat_read_from_windows_notification(self, chat_jid: str) -> None:
+        wx.CallAfter(self._apply_windows_notification_mark_read, chat_jid)
+
+    def _apply_windows_notification_mark_read(self, chat_jid: str) -> None:
+        chat = self._chat_by_jid(chat_jid)
+        if chat is None:
+            return
+        self._update_chat_summary(chat_jid, mark_read=True)
+        self._mark_chat_displayed(chat)
+        if self.chat_list.IsShown() and not self.chat_list.is_searching:
+            self.chat_list.force_refresh_visible(selected_jid=chat_jid)
+        self.status_bar.SetStatusText(f"{chat.name}: marcado como leído")
 
     def _speakable_chat_name(self, jid: str) -> str:
         chat = self.chat_list.chat_by_jid(jid)
@@ -4416,6 +4631,7 @@ class MainWindow(wx.Frame):
             self.xmpp.request_contact_presence_subscription(chat.jid)
         self._load_conversation(chat, unread_count=chat.unread_count)
         self._update_chat_summary(chat.jid, mark_read=True)
+        self.settings_panel.Hide()
         self.chat_list.Hide()
         self.conversation.Show()
         self.content_panel.Layout()
@@ -4447,6 +4663,7 @@ class MainWindow(wx.Frame):
         self.conversation.clear_editing()
         self.conversation.clear_unread_marker()
         self._reset_window_title()
+        self.settings_panel.Hide()
         self.conversation.Hide()
         self._mark_current_chat_displayed(selected_jid)
         self.chat_list.Show()

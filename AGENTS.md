@@ -288,6 +288,15 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
 - Las notificaciones de texto usan `_speak_incoming_message` y las de audio usan el mismo
   control de mute; ambas deben respetar `message.outgoing`, `notify` y
   `notifications_muted`.
+- Las notificaciones nativas de Windows viven en `notifications/windows.py` y se configuran en
+  `ui/settings_panel.py`. Solo se muestran para mensajes vivos agregados, fuera del chat activo;
+  si Windows acepta el toast, no reproduzcas tambien el sonido local de mensaje nuevo.
+- El clic y las acciones de un toast regresan a wx mediante `wx.CallAfter`. `Responder` abre el
+  chat y enfoca el compositor; `Marcar como leido` reutiliza `_mark_chat_displayed`. No toques
+  controles wx desde el callback de Windows Runtime.
+- La opcion de anuncio directo con NVDA es adicional y viene desactivada para evitar duplicados.
+  Si el toast falla, conserva NVDA y el sonido como respaldo. La guia de mantenimiento y prueba
+  esta en `docs/NOTIFICACIONES_WINDOWS.md`.
 - No generes tooltips con el cuerpo completo de un mensaje ni autoajustes una lista de cientos
   de filas con `LIST_AUTOSIZE`. NVDA puede bloquearse durante varios segundos con textos de
   miles de caracteres.

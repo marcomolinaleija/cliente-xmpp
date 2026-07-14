@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import wx
 
-from cliente_xmpp.config.settings import SettingsStore
+from cliente_xmpp.config.settings import DesktopNotificationSettings, SettingsStore
 from cliente_xmpp.ui.main_window import MainWindow
 
 
@@ -76,3 +76,31 @@ class NotificationSoundShortcutTests(unittest.TestCase):
             "Sonido al enviar mensajes desactivado",
         ])
         self.assertEqual(status_messages, announcements)
+
+
+class DesktopNotificationSettingsTests(unittest.TestCase):
+    def test_windows_notifications_have_accessible_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            self.assertEqual(
+                store.load_desktop_notification_settings(),
+                DesktopNotificationSettings(
+                    enabled=True,
+                    show_preview=True,
+                    announce_with_nvda=False,
+                ),
+            )
+
+    def test_windows_notification_settings_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            expected = DesktopNotificationSettings(
+                enabled=False,
+                show_preview=False,
+                announce_with_nvda=True,
+            )
+
+            store.save_desktop_notification_settings(expected)
+
+            self.assertEqual(store.load_desktop_notification_settings(), expected)

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from cliente_xmpp.audio.process import no_window_creation_flags
+from cliente_xmpp.audio.process import hidden_subprocess_kwargs
 
 
 def media_duration_seconds(path: Path) -> float:
@@ -32,7 +32,7 @@ def media_duration_seconds(path: Path) -> float:
             text=True,
             timeout=10,
             check=False,
-            creationflags=no_window_creation_flags(),
+            **hidden_subprocess_kwargs(),
         )
     except Exception:
         return 0.0

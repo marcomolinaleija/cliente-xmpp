@@ -292,9 +292,11 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   WebP de imagen cuyo nombre sea el SHA-256 generado por el bridge, incluido el sufijo local
   ` (N)` por colisión; no clasifiques todos los WebP como stickers.
 - Algunos stickers animados enviados desde WhatsApp regresan en el eco como un nombre SHA-256
-  `.bin`, MIME `application/octet-stream` y un ZIP Lottie con `animation/animation.json`. El
-  cliente descarga únicamente esos candidatos pequeños, valida el contenido sin extraerlo y
-  genera en segundo plano un WebP local de un fotograma representativo con `rlottie-python`.
+  `.bin` y un ZIP Lottie con `animation/animation.json`. El MIME no es confiable: además de
+  `application/octet-stream`, el bridge real ha emitido `application/was`. El cliente descarga
+  únicamente esos candidatos pequeños por nombre, tipo de adjunto y tamaño; valida el contenido
+  sin extraerlo y genera en segundo plano un WebP local de un fotograma representativo con
+  `rlottie-python`.
   Conserva URL, MIME y nombre remotos para reenvíos; solo el preview local se entrega a RayoAI.
   Un `.bin` normal nunca debe clasificarse como sticker solo por su extensión.
 - Toda fila sin miniatura debe usar explícitamente el índice de imagen `-1` en `wx.ListCtrl`.

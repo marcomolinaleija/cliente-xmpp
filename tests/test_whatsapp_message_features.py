@@ -112,20 +112,36 @@ class MessageFeatureParsingTests(unittest.TestCase):
     def test_recognizes_only_opaque_hash_bins_as_lottie_candidates(self) -> None:
         hash_name = "f033edb72c3926b34d9e29df2cb13b2d6c23a2f550b854edd4b4c5e97db56c06"
 
-        self.assertTrue(
+        for mime in (
+            "application/octet-stream",
+            "application/zip",
+            "application/was",
+            "application/x-bridge-specific",
+        ):
+            with self.subTest(mime=mime):
+                self.assertTrue(
+                    looks_like_lottie_sticker_attachment(
+                        media_kind="file",
+                        media_mime=mime,
+                        media_filename=f"{hash_name}.bin",
+                        media_size=66_944,
+                    )
+                )
+
+        self.assertFalse(
             looks_like_lottie_sticker_attachment(
                 media_kind="file",
-                media_mime="application/octet-stream",
-                media_filename=f"{hash_name}.bin",
+                media_mime="application/was",
+                media_filename="reporte.bin",
                 media_size=66_944,
             )
         )
         self.assertFalse(
             looks_like_lottie_sticker_attachment(
                 media_kind="file",
-                media_mime="application/octet-stream",
-                media_filename="reporte.bin",
-                media_size=66_944,
+                media_mime="application/was",
+                media_filename=f"{hash_name}.bin",
+                media_size=5 * 1024 * 1024 + 1,
             )
         )
 

@@ -58,16 +58,22 @@ def looks_like_lottie_sticker_attachment(
     if media_kind.casefold() not in {"", "file"}:
         return False
 
-    mime = media_mime.partition(";")[0].strip().casefold()
-    if mime not in {"", "application/octet-stream", "application/zip"}:
-        return False
     if media_size > MAX_LOTTIE_PACKAGE_BYTES:
         return False
 
     filename = media_filename.strip()
     if not filename and media_url:
         filename = PurePosixPath(unquote(urlparse(media_url).path)).name
-    return _BRIDGE_LOTTIE_FILENAME.fullmatch(filename) is not None
+    if _BRIDGE_LOTTIE_FILENAME.fullmatch(filename) is None:
+        return False
+
+    # Slidge/WhatsApp has advertised these packages with inconsistent MIME values,
+    # including the non-standard ``application/was``.  The MIME is therefore only
+    # metadata: the downloaded payload is not marked as a sticker until its bounded
+    # ZIP structure and Lottie JSON have been validated by
+    # ``convert_lottie_sticker_package``.
+    _ = media_mime
+    return True
 
 
 def convert_lottie_sticker_package(source: Path) -> Path | None:

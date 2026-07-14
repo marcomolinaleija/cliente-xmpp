@@ -44,6 +44,11 @@ documentan en
 los adjuntos entrantes inmediatamente después de anunciar su URL. `puente-completo-20260713`/`v3`
 se conserva como rollback anterior sin sincronización de lecturas.
 
+La corrección evita pérdidas nuevas, pero no reconstruye archivos que `v4` ya eliminó. Un mensaje
+afectado conservará su URL histórica en el cliente y seguirá devolviendo HTTP 404 hasta que
+WhatsApp vuelva a entregar el adjunto; para comprobar la reparación debe recibirse o reenviarse
+una nota de voz nueva. No se debe borrar la caché SQLite para intentar recuperarlo.
+
 ## Menciones nativas de WhatsApp
 
 El cliente envía referencias XEP-0372 con el JID real de cada integrante del grupo. La imagen

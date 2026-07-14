@@ -13,7 +13,7 @@ from cliente_xmpp.audio.opus import (
     ffmpeg_path,
     voice_note_path,
 )
-from cliente_xmpp.audio.process import no_window_creation_flags
+from cliente_xmpp.audio.process import hidden_subprocess_kwargs
 
 SAMPLE_WIDTH_BYTES = 2
 DEFAULT_CHANNELS = 1
@@ -227,7 +227,7 @@ class SoundDeviceAudioRecorder:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=no_window_creation_flags(),
+                **hidden_subprocess_kwargs(),
             )
         except Exception as exc:
             raise AudioRecordingError(f"No se pudo iniciar el codificador de audio: {exc}") from exc

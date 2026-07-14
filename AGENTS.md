@@ -346,9 +346,12 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   tambien la ventana nativa, no solo detengan la reproduccion.
 - Para diagnosticar un audio, comprueba primero ruta local, tamano, `ffprobe` y decodificacion
   `ffmpeg`; no culpes al bridge sin distinguir archivo corrupto de streaming inestable.
-- `ffprobe` y las descargas nunca se ejecutan en el hilo wx. Las escrituras rutinarias de chats,
-  mensajes, participantes y rutas multimedia pasan por un único ejecutor para conservar orden
-  sin exponer la interfaz al timeout de SQLite.
+- Todo proceso `ffmpeg` o `ffprobe` debe iniciarse con `hidden_subprocess_kwargs()` para combinar
+  `CREATE_NO_WINDOW` y `STARTUPINFO` oculto en Windows; no lances estas herramientas directamente.
+- `ffprobe` y las descargas nunca se ejecutan en el hilo wx. Los análisis de metadata de audio
+  pasan por un único ejecutor para no lanzar varias instancias a la vez durante la precarga. Las
+  escrituras rutinarias de chats, mensajes, participantes y rutas multimedia también pasan por
+  su propio ejecutor único para conservar orden sin exponer la interfaz al timeout de SQLite.
 - El audio enviado desde el cliente se normaliza a OGG/Opus; no reutilices esa regla para
   interpretar automaticamente los audios entrantes.
 

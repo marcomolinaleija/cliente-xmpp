@@ -18,8 +18,10 @@ from cliente_xmpp.ui.main_window import MainWindow
 class _CapturingExecutor:
     def __init__(self) -> None:
         self.pending: tuple[object, tuple[object, ...]] | None = None
+        self.submit_count = 0
 
     def submit(self, callback: object, *args: object) -> None:
+        self.submit_count += 1
         self.pending = callback, args
 
     def run(self) -> None:
@@ -200,6 +202,7 @@ class MainWindowPerformanceTests(unittest.TestCase):
             )
             window = MainWindow.__new__(MainWindow)
             window.audio_metadata_in_progress = set()
+            window.audio_metadata_executor = _CapturingExecutor()
 
             with (
                 patch("cliente_xmpp.ui.main_window.media_duration_seconds") as probe,
@@ -208,7 +211,36 @@ class MainWindowPerformanceTests(unittest.TestCase):
                 window._normalize_audio_metadata_for_messages([message])
 
             probe.assert_not_called()
-            thread.return_value.start.assert_called_once_with()
+            thread.assert_not_called()
+            self.assertIsNotNone(window.audio_metadata_executor.pending)
+
+    def test_audio_probes_share_one_serial_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = [Path(temp_dir) / f"audio-{index}.ogg" for index in range(2)]
+            for path in paths:
+                path.write_bytes(b"audio")
+            messages = [
+                Message(
+                    chat_jid=f"chat-{index}@example.test",
+                    sender_jid="contact@example.test",
+                    body="",
+                    media_kind="audio",
+                    media_local_path=str(path),
+                )
+                for index, path in enumerate(paths)
+            ]
+            executor = _CapturingExecutor()
+            window = MainWindow.__new__(MainWindow)
+            window.audio_metadata_in_progress = set()
+            window.audio_metadata_executor = executor
+
+            with patch("cliente_xmpp.ui.main_window.threading.Thread") as thread:
+                window._normalize_audio_metadata_for_messages([messages[0]])
+                window._normalize_audio_metadata_for_messages([messages[1]])
+
+        self.assertIsNotNone(executor.pending)
+        self.assertEqual(executor.submit_count, 2)
+        thread.assert_not_called()
 
     def test_individual_message_merge_skips_group_echo_scan(self) -> None:
         message = Message(

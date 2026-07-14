@@ -152,6 +152,10 @@ class MainWindow(wx.Frame):
             max_workers=1,
             thread_name_prefix="cliente-xmpp-storage",
         )
+        self.audio_metadata_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cliente-xmpp-audio-metadata",
+        )
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
@@ -2758,6 +2762,9 @@ class MainWindow(wx.Frame):
         storage_executor = getattr(self, "storage_executor", None)
         if storage_executor is not None:
             storage_executor.shutdown(wait=False, cancel_futures=False)
+        audio_metadata_executor = getattr(self, "audio_metadata_executor", None)
+        if audio_metadata_executor is not None:
+            audio_metadata_executor.shutdown(wait=False, cancel_futures=True)
         event.Skip()
 
     def _post_xmpp_event(self, event: XmppEvent) -> None:
@@ -4138,7 +4145,16 @@ class MainWindow(wx.Frame):
             ]
             wx.CallAfter(self._finish_audio_metadata_normalization, results)
 
-        threading.Thread(target=worker, daemon=True).start()
+        executor = getattr(self, "audio_metadata_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            for _message, _path, key in candidates:
+                self.audio_metadata_in_progress.discard(key)
 
     def _finish_audio_metadata_normalization(
         self,

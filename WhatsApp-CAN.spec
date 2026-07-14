@@ -4,6 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
+import imageio_ffmpeg
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
@@ -50,6 +51,7 @@ nvda_controller = required_file(
     "el controlador de NVDA",
 )
 ffprobe = shutil.which("ffprobe")
+ffmpeg = required_file(Path(imageio_ffmpeg.get_ffmpeg_exe()), "ffmpeg")
 if not ffprobe:
     raise SystemExit("No se encontró ffprobe en PATH; es obligatorio para el build de Windows.")
 
@@ -69,7 +71,8 @@ datas += [
 binaries = [
     (str(libmpv), "cliente_xmpp/lib"),
     (str(nvda_controller), "cliente_xmpp/lib"),
-    (str(ffprobe), "imageio_ffmpeg/binaries"),
+    (str(ffmpeg), "bin"),
+    (str(ffprobe), "bin"),
 ]
 
 a = Analysis(
@@ -90,8 +93,6 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
     name=APP_NAME,
     debug=False,
@@ -105,4 +106,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=str(ROOT / "windows_version_info.txt"),
+    exclude_binaries=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name=APP_NAME,
 )

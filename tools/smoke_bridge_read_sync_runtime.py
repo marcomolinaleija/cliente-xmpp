@@ -11,7 +11,9 @@ def main() -> None:
     assert "newMarkChatAsReadEvent" in event_go
     assert "ReceiptRead" in event_go
     assert "message.GetTimestamp() >= latestTimestamp" in event_go
-    assert 'getattr(global_config, "NO_UPLOAD_METHOD", None)' in session_py
+    assert 'if getattr(global_config, "NO_UPLOAD_PATH", None):' in session_py
+    assert 'getattr(global_config, "NO_UPLOAD_METHOD", None) == "symlink"' in session_py
+    assert 'getattr(global_config, "NO_UPLOAD_METHOD", None) != "symlink"' not in session_py
     print("read-sync runtime smoke: ok")
 
 

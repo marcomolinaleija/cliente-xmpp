@@ -59,7 +59,6 @@ class SettingsPanel(wx.Panel):
         )
         self.back_button = wx.Button(self, label="&Volver")
 
-        self.windows_notifications.Bind(wx.EVT_CHECKBOX, self._on_windows_notifications_changed)
         self._layout()
 
     def set_values(
@@ -76,15 +75,13 @@ class SettingsPanel(wx.Panel):
         self.announce_with_nvda.SetValue(announce_with_nvda)
         self.open_chat_sound.SetValue(open_chat_sound)
         self.sent_message_sound.SetValue(sent_message_sound)
-        self._sync_windows_controls()
         self.refresh_accessible_states()
 
     def refresh_accessible_states(self) -> None:
-        for checkbox, base_label in self._checkboxes_with_labels():
-            label = format_setting_state(base_label, checkbox.GetValue())
-            checkbox.SetLabel(label)
-            checkbox.SetName(label)
-        self.Layout()
+        self._apply_control_state()
+
+    def apply_interactive_state(self) -> None:
+        wx.CallAfter(self._apply_control_state)
 
     def checkbox_state_text(self, checkbox: object) -> str:
         for candidate, base_label in self._checkboxes_with_labels():
@@ -95,16 +92,44 @@ class SettingsPanel(wx.Panel):
     def focus(self) -> None:
         self.windows_notifications.SetFocus()
 
-    def _on_windows_notifications_changed(self, event: wx.CommandEvent) -> None:
-        self._sync_windows_controls()
-        self.refresh_accessible_states()
-        event.Skip()
-
     def _sync_windows_controls(self) -> None:
         enabled = self.windows_notifications.GetValue()
-        self.show_preview.Enable(enabled)
-        self.announce_with_nvda.Enable(enabled)
-        self.test_notification_button.Enable(enabled)
+        for control in (
+            self.show_preview,
+            self.announce_with_nvda,
+            self.test_notification_button,
+        ):
+            if control.IsEnabled() != enabled:
+                control.Enable(enabled)
+
+    def _apply_control_state(self) -> None:
+        self.Freeze()
+        try:
+            self._sync_windows_controls()
+            for checkbox, base_label in self._checkboxes_with_labels():
+                label = format_setting_state(base_label, checkbox.GetValue())
+                if checkbox.GetLabel() != label:
+                    checkbox.SetLabel(label)
+                if checkbox.GetName() != label:
+                    checkbox.SetName(label)
+            self.Layout()
+        finally:
+            self.Thaw()
+
+        for control in (
+            self.windows_notifications,
+            self.show_preview,
+            self.announce_with_nvda,
+            self.open_chat_sound,
+            self.sent_message_sound,
+            self.test_notification_button,
+        ):
+            control.Refresh()
+        self.Refresh()
+        parent = self.GetParent()
+        if parent is not None:
+            parent.Layout()
+            parent.Refresh()
 
     def _checkboxes_with_labels(self) -> tuple[tuple[wx.CheckBox, str], ...]:
         return (

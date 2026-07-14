@@ -37,6 +37,20 @@ python -m cliente_xmpp.app.main
 
 La configuracion local se guarda en `%USERPROFILE%\.cliente-xmpp\settings.json`.
 
+## Compilacion de Windows
+
+La configuracion reproducible de PyInstaller vive en `WhatsApp-CAN.spec`. El build necesita el
+entorno Conda `XMPP`, los dos DLL de `cliente_xmpp/lib` y `ffprobe` disponible en `PATH`.
+
+```powershell
+conda activate XMPP
+python -m pip install -e .
+python -m PyInstaller --clean --noconfirm WhatsApp-CAN.spec
+```
+
+El ejecutable de la version 1.0.0 se genera en `dist/WhatsApp-CAN-1.0.0.exe`. Es una aplicacion
+de ventana y no abre una consola al iniciar.
+
 ## Configuracion y notificaciones de Windows
 
 Al conectar la cuenta, el boton `Configuracion` de la cabecera abre una pantalla separada. Desde

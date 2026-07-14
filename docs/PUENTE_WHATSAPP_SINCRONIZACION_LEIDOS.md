@@ -2,20 +2,21 @@
 
 ## Estado
 
-Este cambio esta **pendiente en el puente**. El cliente de escritorio ya esta preparado para
-consumir:
+Este cambio está **publicado y activo en `marco-vps` desde el 14 de julio de 2026**. El cliente de
+escritorio consume:
 
 - `<displayed xmlns="urn:xmpp:chat-markers:0"/>` dentro de `carbon_sent` en chats 1 a 1.
 - Publicaciones XEP-0490 `urn:xmpp:mds:displayed:0` en grupos.
 
-La imagen activa al investigar el problema era:
+La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
+sha256:a4cd6fe1e86d7c2c638a996bb9842343cb660a0004ab87a0291f3ad3da0bbb6c
 ```
 
-No reutilizar esa etiqueta para el arreglo. Publicar una etiqueta nueva y conservar la anterior
-para rollback.
+También está publicada como `v4`. La etiqueta anterior `puente-completo-20260713` y su alias `v3`
+se conservan para rollback.
 
 ## Evidencia de la incidencia
 
@@ -37,10 +38,20 @@ En la fuente actual de `slidge-whatsapp`, `whatsmeow` declara
 hecha desde otro dispositivo de WhatsApp se registra en el estado multidispositivo de WhatsApp,
 pero nunca llega a `Session.on_wa_receipt()` en Python ni a Slidge.
 
-## Cambio requerido en slidge-whatsapp
+## Cambio aplicado en slidge-whatsapp
 
-Trabajar sobre el mismo checkout usado para construir la imagen activa y conservar los parches
-de menciones, stickers y reenvios. El cambio pertenece a `slidge-whatsapp`, no a Slidge core.
+La construcción parte del mismo checkout que formó la imagen anterior y conserva los parches de
+menciones, stickers y reenvíos. El cambio pertenece a `slidge-whatsapp`, no a Slidge core. Para
+reproducirlo se usa:
+
+```bash
+python tools/patch_slidge_whatsapp_read_sync.py RUTA_A_SLIDGE_WHATSAPP
+```
+
+`tools/Dockerfile.bridge-read-sync.patch` aplica ese script durante la construcción, copia
+`tools/bridge_read_sync_event_test.go`, ejecuta `go test ./...` y sólo después instala la fuente
+en la imagen. La base construida era `88b2f91` y el commit final de la fuente en la VPS es
+`ba2490b`.
 
 ### 1. Convertir `events.MarkChatAsRead` en `EventReceipt`
 
@@ -140,6 +151,40 @@ No llamar `client.MarkRead()` desde este handler. Esa funcion envia una lectura 
 crearia un bucle. Este evento ya describe una accion realizada en otro dispositivo; solo debe
 reflejarse hacia XMPP.
 
+## Configuración requerida de Prosody
+
+Los mensajes privilegiados ya funcionaban para chats individuales, pero XEP-0490 necesita además
+privilegios PubSub. `marco-vps` usa ahora `prosodyim/prosody:0.12`; el módulo de privilegios
+instalado no podía entregar IQ PubSub correctamente sobre la antigua imagen Prosody 0.11.9.
+
+En `slidge_privileges.iq` deben existir:
+
+```lua
+["http://jabber.org/protocol/pubsub"] = "both";
+["http://jabber.org/protocol/pubsub#owner"] = "set";
+```
+
+La configuración conserva el módulo HTTP Upload heredado con esta ruta explícita:
+
+```lua
+http_files_dir = "/var/lib/prosody/http_upload"
+```
+
+El cambio es reproducible e idempotente con:
+
+```bash
+python tools/patch_prosody_read_sync_privileges.py /opt/xmpp/prosody/config/prosody.cfg.lua
+docker run --rm \
+  -v /opt/xmpp/prosody/config:/etc/prosody:ro \
+  -v /opt/xmpp/prosody/data:/var/lib/prosody:ro \
+  -v /opt/xmpp/certs:/certs:ro \
+  --entrypoint prosodyctl prosodyim/prosody:0.12 check config
+```
+
+Antes de producción se validó una copia de configuración y datos en una red Docker aislada, con
+una instancia vacía del puente. El componente autenticó y recibió los privilegios sin reutilizar
+la sesión real de WhatsApp.
+
 ## Pruebas requeridas
 
 ### Unitarias en Go
@@ -164,20 +209,12 @@ bindings de gopy. La construccion completa de la imagen sigue siendo obligatoria
 
 ### Smoke test dentro de la imagen
 
-Confirmar que el `switch` y el conversor estan presentes:
+Confirmar que el `switch`, el conversor y la corrección de adjuntos están presentes:
 
 ```bash
-python - <<'PY'
-from pathlib import Path
-
-root = Path("/build/slidge_whatsapp")
-session_go = (root / "session.go").read_text()
-event_go = (root / "event.go").read_text()
-assert "case *events.MarkChatAsRead:" in session_go
-assert "newMarkChatAsReadEvent" in event_go
-assert "ReceiptRead" in event_go
-print("MarkChatAsRead bridge patch present")
-PY
+docker run --rm --entrypoint python \
+  -v "$PWD/tools/smoke_bridge_read_sync_runtime.py:/tmp/smoke.py:ro" \
+  IMAGEN_CANDIDATA /tmp/smoke.py
 ```
 
 ### Prueba funcional obligatoria
@@ -195,11 +232,10 @@ PY
 
 ## Construccion y despliegue
 
-Aplicar este cambio ademas de los parches que ya forman la imagen completa. Publicar una etiqueta
-nueva, por ejemplo:
+La versión publicada es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-YYYYMMDD
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
 ```
 
 En la VPS:
@@ -207,9 +243,14 @@ En la VPS:
 ```bash
 cd /opt/xmpp
 cp -p compose.yml compose.yml.before-read-sync
-# Cambiar solo la imagen de slidge-whatsapp por la etiqueta nueva.
+# Seleccionar Prosody 0.12 y la imagen publicada del puente.
+python RUTA_REPO/tools/patch_marco_vps_compose_read_sync.py \
+  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714 \
+  compose.yml
 docker compose config -q
+docker compose pull prosody
 docker compose pull slidge-whatsapp
+docker compose up -d --no-deps --force-recreate prosody
 docker compose up -d --no-deps --force-recreate slidge-whatsapp
 docker inspect slidge-whatsapp --format 'running={{.State.Running}} restarts={{.RestartCount}} image={{.Config.Image}}'
 docker logs --since 10m --tail 150 slidge-whatsapp
@@ -227,8 +268,10 @@ docker compose config -q
 docker compose up -d --no-deps --force-recreate slidge-whatsapp
 ```
 
-La imagen `puente-completo-20260713` debe permanecer disponible hasta terminar la prueba
-funcional.
+En `marco-vps` existe además el respaldo completo
+`/opt/xmpp/backups/read-sync-20260714/`, con `compose.yml.before`, la configuración de Prosody y
+un archivo comprimido de sus datos. No ejecutar `docker compose down -v` ni borrar
+`/opt/xmpp/slidge` o `/opt/xmpp/slidge-attachments` durante un rollback.
 
 ## Referencias
 

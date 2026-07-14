@@ -2,15 +2,15 @@
 
 ## Estado actual: modificaciones del puente completadas
 
-Desde el 13 de julio de 2026, las modificaciones pendientes del puente ya están construidas,
-publicadas y activas en `marco-vps`. La imagen vigente es:
+Desde el 14 de julio de 2026, las modificaciones del puente están construidas, publicadas y
+activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713
-sha256:82540ad56a6b4b293252b1dc864689ea39baac37a092a6a3c4597a4153b586b0
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
+sha256:a4cd6fe1e86d7c2c638a996bb9842343cb660a0004ab87a0291f3ad3da0bbb6c
 ```
 
-También está publicada con el alias `v3`. Esta imagen incluye:
+También está publicada con el alias `v4`. Esta imagen incluye:
 
 - Las extensiones anteriores de visualización única y grabación de audio.
 - El parche de Slidge core para menciones nativas XEP-0372.
@@ -18,9 +18,13 @@ También está publicada con el alias `v3`. Esta imagen incluye:
 - La corrección de nombre y MIME de los adjuntos, al activar las variables documentadas abajo.
 - Reenvíos nativos bidireccionales para texto, imagen, audio, video y documentos mediante
   `urn:marco-ml:whatsapp:forwarded:0`.
+- Propagación de `events.MarkChatAsRead` desde WhatsApp oficial hacia XEP-0333 en chats
+  individuales y XEP-0490 en grupos.
+- Compatibilidad con Slidge nuevo al limpiar adjuntos sin depender de `NO_UPLOAD_METHOD`.
 
 El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
-Si trabaja en otra instalación, sólo debe configurar esa etiqueta y recrear el servicio:
+Si trabaja en otra instalación, debe configurar esa etiqueta, aplicar una vez los privilegios de
+Prosody descritos en `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md` y recrear el servicio:
 
 ```bash
 cd /opt/xmpp
@@ -32,16 +36,10 @@ En `marco-vps` estos pasos ya se realizaron. Después de confirmar `Successfully
 y `Login success`, puede concentrarse en modificar y reconstruir `cliente-xmpp`. El código del
 cliente no fue modificado durante este despliegue del puente.
 
-Para las funciones incluidas en esta imagen, el trabajo restante está en `cliente-xmpp`: leer la
-extensión privada para mostrar que un mensaje recibido fue reenviado y adjuntarla cuando el usuario
-elija reenviar. El problema posterior de sincronización de lecturas sí requiere otra imagen y se
-documenta por separado a continuación.
-
-## Pendiente posterior: lecturas desde WhatsApp oficial
-
-La imagen vigente no propaga `events.MarkChatAsRead` de whatsmeow hacia XMPP. El cliente ya esta
-preparado, pero hace falta publicar una imagen nueva del puente siguiendo
-`docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No reutilizar la etiqueta vigente para ese cambio.
+La implementación, el despliegue y la lista de validación de lecturas desde WhatsApp oficial se
+documentan en
+`docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. La etiqueta anterior
+`puente-completo-20260713` se conserva exclusivamente para rollback.
 
 ## Menciones nativas de WhatsApp
 
@@ -65,11 +63,14 @@ cambios anteriores de audio y visualización única. Los parches reproducibles s
 python tools/patch_bridge_forwarding.py \
   RUTA_A_SLIDGE RUTA_A_SLIDGE_WHATSAPP
 python tools/patch_slidge_whatsapp_mentions.py RUTA_A_SLIDGE
+python tools/patch_slidge_whatsapp_read_sync.py RUTA_A_SLIDGE_WHATSAPP
 ```
 
 `tools/Dockerfile.bridge-completo.patch` documenta los pasos añadidos al Dockerfile de
 `slidge-whatsapp`: aplicar los parches antes y después de instalar dependencias y fijar
-`rlottie-python==1.3.8`. El commit de fuente construido en la VPS fue `88b2f91`.
+`rlottie-python==1.3.8`. `tools/Dockerfile.bridge-read-sync.patch` agrega el parche de lecturas y
+ejecuta las pruebas Go durante la construcción. Se partió del checkout exacto `88b2f91`; el commit
+de fuente finalmente construido en la VPS fue `ba2490b`.
 
 En el servicio `slidge-whatsapp`, activa además estas variables sin cambiar el comando ni los
 volúmenes existentes:
@@ -82,9 +83,11 @@ environment:
 
 Antes de publicar, ejecuta dentro de la imagen los smoke tests
 `tools/smoke_bridge_mentions_runtime.py`, `tools/smoke_bridge_stickers_runtime.py` y
-`tools/smoke_bridge_forwarding_runtime.py`. El segundo debe producir un WebP válido; comprobar
-sólo `--help` no demuestra que el motor Lottie esté instalado. La escritura de
-`ContextInfo.IsForwarded` se cubre además con `tools/bridge_forwarding_session_test.go`.
+`tools/smoke_bridge_forwarding_runtime.py`, además de
+`tools/smoke_bridge_read_sync_runtime.py`. El segundo debe producir un WebP válido; comprobar sólo
+`--help` no demuestra que el motor Lottie esté instalado. La escritura de
+`ContextInfo.IsForwarded` se cubre con `tools/bridge_forwarding_session_test.go`; las cinco reglas
+de `MarkChatAsRead` se cubren con `tools/bridge_read_sync_event_test.go` y `go test ./...`.
 
 Esta guía instala la imagen personalizada del bridge que usa `cliente-xmpp`.
 Incluye las extensiones de visualización única y estados de grabación de audio.
@@ -119,7 +122,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714
 ```
 
 No cambies el `command:`, los volúmenes, la red ni las opciones de Prosody.

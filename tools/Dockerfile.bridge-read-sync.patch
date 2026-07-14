@@ -1,0 +1,17 @@
+diff --git a/Dockerfile b/Dockerfile
+index 4ffbb71..9e19f45 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -39,6 +39,12 @@
+ COPY patches/patch_bridge_forwarding.py /tmp/patch_bridge_forwarding.py
+ RUN python /tmp/patch_bridge_forwarding.py /tmp/unused /build \
+     --whatsapp-only --no-backup
++COPY patches/patch_slidge_whatsapp_read_sync.py /tmp/patch_slidge_whatsapp_read_sync.py
++COPY patches/bridge_read_sync_event_test.go /build/slidge_whatsapp/read_sync_event_test.go
++RUN python /tmp/patch_slidge_whatsapp_read_sync.py /build --no-backup && \
++    cd /build/slidge_whatsapp && \
++    go test ./... && \
++    rm read_sync_event_test.go
+ ARG SLIDGE_USE_LOCKFILE=
+ RUN [ -z "$SLIDGE_USE_LOCKFILE" ] && rm uv.lock || true
+ # install dependencies in /venv

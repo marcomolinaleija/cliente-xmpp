@@ -191,9 +191,9 @@ Reglas obligatorias:
 - El cliente esta preparado para lecturas hechas desde otra app oficial de WhatsApp: consume
   `<displayed/>` XEP-0333 dentro de `carbon_sent` en chats individuales y XEP-0490
   (`urn:xmpp:mds:displayed:0`) en grupos. Conserva el marcador hasta conocer el mensaje local,
-  solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. La imagen
-  `puente-completo-20260713` todavia no produce esos eventos porque slidge-whatsapp no maneja
-  `events.MarkChatAsRead`; el cambio pendiente esta en
+  solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. Desde el 14
+  de julio de 2026, la imagen `read-sync-20260714` convierte `events.MarkChatAsRead` y Prosody 0.12
+  concede los privilegios PubSub requeridos. La implementación reproducible está en
   `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No conviertas este flujo en polling de inbox ni
   confundas esos markers propios con el estado de entrega de mensajes salientes.
 
@@ -264,8 +264,8 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 13 de julio de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:puente-completo-20260713` con menciones,
+- Desde el 14 de julio de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:read-sync-20260714` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -273,8 +273,9 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   stickers; no repitas estos parches en el puente. En otra instalación, configura esa etiqueta,
   ejecuta `docker compose pull
   slidge-whatsapp` y recrea únicamente ese servicio con `docker compose up -d --no-deps
-  --force-recreate slidge-whatsapp`. Esta etiqueta no incluye todavia la propagacion de
-  `events.MarkChatAsRead`; para ese cambio sigue la guia especifica de sincronizacion de leidos.
+  --force-recreate slidge-whatsapp`. Esta etiqueta también incluye la propagación de
+  `events.MarkChatAsRead`; los privilegios XEP-0490 requieren `prosodyim/prosody:0.12` y la
+  configuración descrita en la guía específica de sincronización de leídos.
 
 ### Notificaciones y accesibilidad
 

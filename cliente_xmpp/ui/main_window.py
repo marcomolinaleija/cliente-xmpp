@@ -48,7 +48,11 @@ from cliente_xmpp.models.mentions import (
     matching_mention_candidates,
     mention_references_in_text,
 )
-from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name
+from cliente_xmpp.models.names import (
+    display_label_from_jid,
+    is_fallback_chat_name,
+    normalize_chat_name,
+)
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
@@ -3617,12 +3621,11 @@ class MainWindow(wx.Frame):
 
         self.pending_chat_activity = {}
         all_chats = list(chats_by_jid.values())
-        chats = self._sort_chats_by_recency(self._chats_with_activity(all_chats))
+        merged_chats = self._merge_initial_chat_state(all_chats)
+        chats = self._sort_chats_by_recency(self._chats_with_activity(merged_chats))
         self.loaded_chat_summaries = max(len(chats), loaded_count)
         render_started_at = time.perf_counter()
-        self._set_searchable_chats(
-            self._merge_chat_lists(list(self.searchable_chats_by_jid.values()), all_chats)
-        )
+        self._set_searchable_chats(merged_chats)
         self.chat_list.set_chats(chats, preserve_focused_order=False)
         self.chat_list.force_refresh_visible()
         self._debug_perf(
@@ -3710,6 +3713,8 @@ class MainWindow(wx.Frame):
                 chat.name = self._display_name_for_jid(chat.jid)
             else:
                 chat.name = normalize_chat_name(chat.jid, chat.name)
+            if not self._is_fallback_chat_name(chat.name, chat.jid):
+                self.chat_names_by_jid.setdefault(chat.jid, chat.name)
         self._debug_perf(
             "_load_cached_chats.normalize",
             normalize_started_at,
@@ -3756,14 +3761,17 @@ class MainWindow(wx.Frame):
 
         return list(chats_by_jid.values())
 
+    def _merge_initial_chat_state(self, refreshed_chats: list[Chat]) -> list[Chat]:
+        """Merge activity into canonical chats before rebuilding the visible list."""
+        return self._merge_chat_lists(
+            list(self.searchable_chats_by_jid.values()),
+            refreshed_chats,
+        )
+
     @staticmethod
     def _is_fallback_chat_name(name: str, jid: str) -> bool:
         """Return whether *name* is only the technical label derived from a JID."""
-        normalized_name = " ".join(name.split())
-        return not normalized_name or normalized_name in {
-            jid,
-            display_label_from_jid(jid),
-        }
+        return is_fallback_chat_name(jid, name)
 
     @staticmethod
     def _preferred_chat_name(existing: Chat, incoming: Chat) -> str:

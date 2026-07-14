@@ -61,3 +61,12 @@ def normalize_chat_name(jid: str, name: str = "") -> str:
         return name
 
     return display_label_from_jid(jid) or jid
+
+
+def is_fallback_chat_name(jid: str, name: str) -> bool:
+    """Return whether *name* is only the technical label derived from *jid*."""
+    normalized_name = " ".join(name.split())
+    return not normalized_name or normalized_name in {
+        jid,
+        display_label_from_jid(jid),
+    }

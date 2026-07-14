@@ -229,6 +229,10 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   que el usuario tiene registrado, no depender ciegamente del nick tecnico.
 - Una actualizacion de descubrimiento cuyo nombre sea solo el JID tecnico del grupo no puede
   reemplazar un titulo de grupo ya conocido desde roster, cache o una actualizacion anterior.
+- Al terminar la carga inicial, la lista visible y el indice de busqueda deben usar la misma
+  fusion canonica de nombres. SQLite tampoco permite que un nombre tecnico derivado del JID
+  degrade un titulo humano ya persistido; una actualizacion posterior con titulo humano si puede
+  enriquecerlo.
 - La clasificacion de saliente en MUC debe aceptar JID local y nick propio con comparacion
   tolerante a mayusculas y acentos, pero nunca asumir que todo lo que aparece en un grupo es
   entrante.

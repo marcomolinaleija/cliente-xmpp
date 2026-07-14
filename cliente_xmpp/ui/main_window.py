@@ -399,7 +399,7 @@ class MainWindow(wx.Frame):
             sent_message_sound=self.sent_message_sound_enabled,
         )
 
-    def _on_settings_changed(self, _event: wx.CommandEvent) -> None:
+    def _on_settings_changed(self, event: wx.CommandEvent) -> None:
         self.windows_notifications_enabled = self.settings_panel.windows_notifications.GetValue()
         self.windows_notification_previews_enabled = self.settings_panel.show_preview.GetValue()
         self.windows_notification_nvda_announcements_enabled = (
@@ -407,9 +407,13 @@ class MainWindow(wx.Frame):
         )
         self.open_chat_message_sound_enabled = self.settings_panel.open_chat_sound.GetValue()
         self.sent_message_sound_enabled = self.settings_panel.sent_message_sound.GetValue()
+        self.settings_panel.refresh_accessible_states()
         self._save_desktop_notification_settings()
         self._save_notification_sound_settings()
-        self.status_bar.SetStatusText("Configuración guardada")
+        changed_control = event.GetEventObject()
+        announcement = self.settings_panel.checkbox_state_text(changed_control)
+        self.status_bar.SetStatusText(announcement)
+        self.speaker.speak(announcement)
 
     def _on_test_windows_notification(self, _event: wx.CommandEvent) -> None:
         shown = self.windows_notification_service.show_message(

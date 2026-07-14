@@ -49,6 +49,47 @@ class GroupNameTests(unittest.TestCase):
 
         self.assertEqual(merged[0].name, "Cielo lluvioso")
 
+    def test_initial_activity_render_keeps_canonical_group_name(self) -> None:
+        jid = "#120363401567622156@whatsapp.xmpp.rayoscompany.com"
+        known_group = Chat(jid=jid, name="Desarrollo ⌨️", is_group=True)
+        activity_only_group = Chat(
+            jid=jid,
+            name="#120363401567622156",
+            is_group=True,
+            last_message_preview="prodesc.org.mx",
+            last_message_at=datetime(2026, 7, 13, 16, 35),
+        )
+        window = SimpleNamespace(
+            searchable_chats_by_jid={jid: known_group},
+            _merge_chat_lists=MainWindow._merge_chat_lists,
+        )
+
+        merged = MainWindow._merge_initial_chat_state(window, [activity_only_group])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].name, "Desarrollo ⌨️")
+        self.assertEqual(merged[0].last_message_preview, "prodesc.org.mx")
+
+    def test_cached_human_group_name_becomes_canonical(self) -> None:
+        jid = "#120363418240465691@whatsapp.xmpp.rayoscompany.com"
+        cached_group = Chat(jid=jid, name="Cielo lluvioso", is_group=True)
+        window = SimpleNamespace(
+            current_jid="me@example.test",
+            message_store=SimpleNamespace(
+                load_chats=lambda _account: [cached_group],
+                load_latest_messages=lambda _account: [],
+            ),
+            chat_names_by_jid={},
+            _debug_perf=lambda *_args, **_kwargs: None,
+            _jid_may_be_group_chat=MainWindow._jid_may_be_group_chat,
+            _is_fallback_chat_name=MainWindow._is_fallback_chat_name,
+        )
+
+        chats = MainWindow._load_cached_chats(window)
+
+        self.assertEqual(chats[0].name, "Cielo lluvioso")
+        self.assertEqual(window.chat_names_by_jid[jid], "Cielo lluvioso")
+
 
 class ChatListFocusTests(unittest.TestCase):
     def test_restores_returned_chat_selection_before_focus(self) -> None:

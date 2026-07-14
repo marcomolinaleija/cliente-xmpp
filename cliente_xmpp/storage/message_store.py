@@ -14,6 +14,7 @@ from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
+from cliente_xmpp.models.names import is_fallback_chat_name
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 15
@@ -637,7 +638,7 @@ class MessageStore:
         last_message_at = chat.last_message_at
         existing = conn.execute(
             """
-            SELECT last_message_preview, last_message_at, custom_name, is_group,
+            SELECT name, last_message_preview, last_message_at, custom_name, is_group,
                 notifications_muted, notification_settings_known, group_member_count,
                 is_self_group
             FROM chats
@@ -646,6 +647,13 @@ class MessageStore:
             (account_jid, chat.jid),
         ).fetchone()
         if existing:
+            existing_name = str(existing["custom_name"] or existing["name"] or "")
+            if (
+                not chat.custom_name
+                and is_fallback_chat_name(chat.jid, display_name)
+                and not is_fallback_chat_name(chat.jid, existing_name)
+            ):
+                display_name = existing_name
             existing_preview = str(existing["last_message_preview"] or "")
             existing_at = _datetime_from_db(existing["last_message_at"])
             if not _should_replace_summary(last_message_at, existing_at):

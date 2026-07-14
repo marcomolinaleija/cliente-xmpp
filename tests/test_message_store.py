@@ -7,11 +7,48 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cliente_xmpp.models.chat import Message
+from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_technical_group_name_does_not_replace_stored_human_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            group_jid = "#120363401567622156@whatsapp.example.test"
+            store.upsert_chat(
+                account_jid,
+                Chat(jid=group_jid, name="Desarrollo ⌨️", is_group=True),
+            )
+
+            store.upsert_chat(
+                account_jid,
+                Chat(jid=group_jid, name="#120363401567622156", is_group=True),
+            )
+
+            loaded = store.load_chats(account_jid)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].name, "Desarrollo ⌨️")
+
+    def test_new_human_group_name_replaces_stored_human_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            group_jid = "#120363401567622156@whatsapp.example.test"
+            store.upsert_chat(
+                account_jid,
+                Chat(jid=group_jid, name="Desarrollo ⌨️", is_group=True),
+            )
+
+            store.upsert_chat(
+                account_jid,
+                Chat(jid=group_jid, name="Desarrollo accesible", is_group=True),
+            )
+
+            loaded = store.load_chats(account_jid)
+            self.assertEqual(loaded[0].name, "Desarrollo accesible")
+
     def test_retracted_message_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

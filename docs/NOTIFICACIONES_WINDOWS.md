@@ -28,6 +28,11 @@ El boton `Probar notificacion de Windows` permite validar la integracion sin esp
 La apariencia, el sonido y la supresion por No molestar o Asistente de concentracion siguen la
 configuracion del propio Windows.
 
+Cada casilla incluye siempre `activado` o `desactivado` en su etiqueta y nombre accesible. Al
+conmutarla con Espacio, el cliente anuncia el nuevo estado directamente con NVDA y lo refleja en
+la barra de estado. Esta redundancia es deliberada: algunas combinaciones de wxPython y UI
+Automation exponen `wx.CheckBox` como un boton sin comunicar de forma fiable su marca nativa.
+
 ## Reglas de entrega
 
 Una notificacion solo se intenta cuando `MessageReceived.notify` es verdadero y el mensaje se

@@ -9,6 +9,7 @@ import wx
 
 from cliente_xmpp.config.settings import DesktopNotificationSettings, SettingsStore
 from cliente_xmpp.ui.main_window import MainWindow
+from cliente_xmpp.ui.settings_panel import format_setting_state
 
 
 class NotificationSoundSettingsTests(unittest.TestCase):
@@ -104,3 +105,55 @@ class DesktopNotificationSettingsTests(unittest.TestCase):
             store.save_desktop_notification_settings(expected)
 
             self.assertEqual(store.load_desktop_notification_settings(), expected)
+
+
+class AccessibleSettingStateTests(unittest.TestCase):
+    def test_setting_label_always_contains_its_state(self) -> None:
+        self.assertEqual(
+            format_setting_state("Mostrar notificaciones", True),
+            "Mostrar notificaciones: activado",
+        )
+        self.assertEqual(
+            format_setting_state("Mostrar notificaciones", False),
+            "Mostrar notificaciones: desactivado",
+        )
+
+    def test_changed_checkbox_is_announced_and_written_to_the_status_bar(self) -> None:
+        announcements: list[str] = []
+        status_messages: list[str] = []
+        changed_control = object()
+
+        class CheckBox:
+            def __init__(self, value: bool) -> None:
+                self.value = value
+
+            def GetValue(self) -> bool:
+                return self.value
+
+        panel = SimpleNamespace(
+            windows_notifications=CheckBox(True),
+            show_preview=CheckBox(False),
+            announce_with_nvda=CheckBox(False),
+            open_chat_sound=CheckBox(True),
+            sent_message_sound=CheckBox(True),
+            refresh_accessible_states=lambda: None,
+            checkbox_state_text=lambda control: (
+                "Mostrar el contenido del mensaje en la notificación: desactivado"
+                if control is changed_control
+                else "Configuración actualizada"
+            ),
+        )
+        window = SimpleNamespace(
+            settings_panel=panel,
+            _save_desktop_notification_settings=lambda: None,
+            _save_notification_sound_settings=lambda: None,
+            status_bar=SimpleNamespace(SetStatusText=status_messages.append),
+            speaker=SimpleNamespace(speak=announcements.append),
+        )
+        event = SimpleNamespace(GetEventObject=lambda: changed_control)
+
+        MainWindow._on_settings_changed(window, event)
+
+        expected = "Mostrar el contenido del mensaje en la notificación: desactivado"
+        self.assertEqual(status_messages, [expected])
+        self.assertEqual(announcements, [expected])

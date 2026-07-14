@@ -297,6 +297,9 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
 - La opcion de anuncio directo con NVDA es adicional y viene desactivada para evitar duplicados.
   Si el toast falla, conserva NVDA y el sonido como respaldo. La guia de mantenimiento y prueba
   esta en `docs/NOTIFICACIONES_WINDOWS.md`.
+- Las casillas de Configuracion deben conservar `activado` o `desactivado` en su etiqueta y nombre
+  accesible, y anunciar el nuevo estado al conmutarse. No dependas solo del estado nativo de
+  `wx.CheckBox`: UI Automation puede exponerlo como boton sin comunicar la marca a NVDA.
 - No generes tooltips con el cuerpo completo de un mensaje ni autoajustes una lista de cientos
   de filas con `LIST_AUTOSIZE`. NVDA puede bloquearse durante varios segundos con textos de
   miles de caracteres.

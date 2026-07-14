@@ -36,3 +36,23 @@ python -m cliente_xmpp.app.main
 ```
 
 La configuracion local se guarda en `%USERPROFILE%\.cliente-xmpp\settings.json`.
+
+## Configuracion y notificaciones de Windows
+
+Al conectar la cuenta, el boton `Configuracion` de la cabecera abre una pantalla separada. Desde
+ahi se puede:
+
+- Activar o desactivar las notificaciones nativas de Windows.
+- Ocultar el contenido del mensaje por privacidad.
+- Pedir un anuncio directo adicional de NVDA si Windows no lo anuncia como se espera.
+- Configurar los sonidos del chat abierto y de mensajes enviados.
+- Enviar una notificacion de prueba.
+
+Las notificaciones se muestran solo para mensajes nuevos recibidos en vivo. Respetan los chats
+silenciados y no aparecen si el usuario ya esta leyendo ese chat en la ventana activa. Al pulsar
+la notificacion o `Responder`, el cliente abre el chat y enfoca el compositor; la accion `Marcar
+como leido` actualiza el cliente y envia el marcador XMPP habitual.
+
+La implementacion es completamente local al cliente y no requiere cambios en el puente. Los
+detalles para mantenimiento y validacion estan en
+[`docs/NOTIFICACIONES_WINDOWS.md`](docs/NOTIFICACIONES_WINDOWS.md).

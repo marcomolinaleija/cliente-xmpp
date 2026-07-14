@@ -10,6 +10,9 @@ DEFAULT_AUDIO_SPEED = 1.0
 SUPPORTED_AUDIO_SPEEDS = (1.0, 1.5, 2.0)
 DEFAULT_OPEN_CHAT_MESSAGE_SOUND_ENABLED = True
 DEFAULT_SENT_MESSAGE_SOUND_ENABLED = True
+DEFAULT_WINDOWS_NOTIFICATIONS_ENABLED = True
+DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED = True
+DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED = False
 
 
 @dataclass(slots=True)
@@ -20,6 +23,13 @@ class ConnectionSettings:
     use_tls: bool = True
     remember_password: bool = False
     auto_connect: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopNotificationSettings:
+    enabled: bool = DEFAULT_WINDOWS_NOTIFICATIONS_ENABLED
+    show_preview: bool = DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED
+    announce_with_nvda: bool = DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED
 
 
 class SettingsStore:
@@ -93,6 +103,41 @@ class SettingsStore:
             "open_chat_message": bool(open_chat_message_enabled),
             "sent_message": bool(sent_message_enabled),
         }
+        self._save_payload(payload)
+
+    def load_desktop_notification_settings(self) -> DesktopNotificationSettings:
+        data = self._load_payload()
+        notifications = data.get("windows_notifications", {})
+        if not isinstance(notifications, dict):
+            return DesktopNotificationSettings()
+
+        return DesktopNotificationSettings(
+            enabled=bool(
+                notifications.get(
+                    "enabled",
+                    DEFAULT_WINDOWS_NOTIFICATIONS_ENABLED,
+                )
+            ),
+            show_preview=bool(
+                notifications.get(
+                    "show_preview",
+                    DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED,
+                )
+            ),
+            announce_with_nvda=bool(
+                notifications.get(
+                    "announce_with_nvda",
+                    DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED,
+                )
+            ),
+        )
+
+    def save_desktop_notification_settings(
+        self,
+        settings: DesktopNotificationSettings,
+    ) -> None:
+        payload = self._load_payload()
+        payload["windows_notifications"] = asdict(settings)
         self._save_payload(payload)
 
     def _load_payload(self) -> dict[str, object]:

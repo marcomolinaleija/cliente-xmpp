@@ -71,7 +71,7 @@ class MainWindowPerformanceTests(unittest.TestCase):
             outgoing=True,
             media_url="https://upload.example/" + "a" * 64 + ".bin",
             media_kind="file",
-            media_mime="application/octet-stream",
+            media_mime="application/was",
             media_filename="a" * 64 + ".bin",
             media_size=66_944,
             message_id="outgoing-lottie",
@@ -83,6 +83,30 @@ class MainWindowPerformanceTests(unittest.TestCase):
             window._auto_download_media_message(message)
 
         download.assert_called_once_with(message, silent=True)
+
+    def test_cached_application_was_lottie_candidate_is_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cached_path = Path(temp_dir) / ("b" * 64 + ".bin")
+            cached_path.write_bytes(b"cached package")
+            message = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="Archivo",
+                media_url="https://upload.example/" + "b" * 64 + ".bin",
+                media_kind="file",
+                media_mime="application/was",
+                media_filename="b" * 64 + ".bin",
+                media_size=13_799,
+                media_local_path=str(cached_path),
+                message_id="cached-lottie",
+            )
+            window = MainWindow.__new__(MainWindow)
+            window.auto_downloading_media_keys = set()
+
+            with patch.object(window, "_normalize_cached_lottie_sticker") as normalize:
+                window._auto_download_media_message(message)
+
+            normalize.assert_called_once_with(message, cached_path)
 
     def test_empty_roster_contacts_stay_out_of_the_visible_chat_list(self) -> None:
         empty_contact = Chat(jid="empty@example.test", name="Sin mensajes")

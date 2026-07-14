@@ -7,13 +7,49 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from cliente_xmpp.audio.duration import media_duration_seconds
-from cliente_xmpp.audio.opus import convert_to_voice_note
-from cliente_xmpp.audio.process import hidden_subprocess_kwargs, no_window_creation_flags
+from cliente_xmpp.audio.duration import _ffprobe_path, media_duration_seconds
+from cliente_xmpp.audio.opus import convert_to_voice_note, ffmpeg_path
+from cliente_xmpp.audio.process import (
+    bundled_tool_path,
+    hidden_subprocess_kwargs,
+    no_window_creation_flags,
+)
 from cliente_xmpp.audio.recorder import SoundDeviceAudioRecorder
 
 
 class AudioProcessTests(unittest.TestCase):
+    def test_frozen_app_uses_tool_from_its_bin_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / "WhatsApp-CAN.exe"
+            tool = Path(temp_dir) / "bin" / "ffmpeg.exe"
+            tool.parent.mkdir()
+            tool.write_bytes(b"ffmpeg")
+            with (
+                patch("cliente_xmpp.audio.process.sys.frozen", True, create=True),
+                patch("cliente_xmpp.audio.process.sys.executable", str(executable)),
+            ):
+                self.assertEqual(bundled_tool_path("ffmpeg.exe"), str(tool.resolve()))
+
+    def test_audio_tools_prefer_the_frozen_bin_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / "WhatsApp-CAN.exe"
+            bin_dir = Path(temp_dir) / "bin"
+            ffmpeg = bin_dir / "ffmpeg.exe"
+            ffprobe = bin_dir / "ffprobe.exe"
+            bin_dir.mkdir()
+            ffmpeg.write_bytes(b"ffmpeg")
+            ffprobe.write_bytes(b"ffprobe")
+            with (
+                patch("cliente_xmpp.audio.process.sys.frozen", True, create=True),
+                patch("cliente_xmpp.audio.process.sys.executable", str(executable)),
+                patch("cliente_xmpp.audio.opus.shutil.which") as ffmpeg_which,
+                patch("cliente_xmpp.audio.duration.shutil.which") as ffprobe_which,
+            ):
+                self.assertEqual(ffmpeg_path(), str(ffmpeg.resolve()))
+                self.assertEqual(_ffprobe_path(), str(ffprobe.resolve()))
+                ffmpeg_which.assert_not_called()
+                ffprobe_which.assert_not_called()
+
     def test_windows_console_tools_use_create_no_window(self) -> None:
         with (
             patch("cliente_xmpp.audio.process.os.name", "nt"),

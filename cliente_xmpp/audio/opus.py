@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from cliente_xmpp.audio.process import hidden_subprocess_kwargs
+from cliente_xmpp.audio.process import bundled_tool_path, hidden_subprocess_kwargs
 from cliente_xmpp.config.settings import APP_DIR
 
 VOICE_NOTES_DIR = APP_DIR / "recordings"
@@ -72,6 +72,10 @@ def voice_note_path() -> Path:
 
 
 def ffmpeg_path() -> str:
+    bundled_ffmpeg = bundled_tool_path("ffmpeg.exe")
+    if bundled_ffmpeg:
+        return bundled_ffmpeg
+
     system_ffmpeg = shutil.which("ffmpeg")
     if system_ffmpeg:
         return system_ffmpeg

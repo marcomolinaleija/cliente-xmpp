@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 
 def no_window_creation_flags() -> int:
@@ -29,3 +31,12 @@ def hidden_subprocess_kwargs() -> dict[str, object]:
     startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
     options["startupinfo"] = startupinfo
     return options
+
+
+def bundled_tool_path(filename: str) -> str:
+    """Return a bundled executable placed beside the frozen app, when available."""
+    if not getattr(sys, "frozen", False):
+        return ""
+
+    candidate = Path(sys.executable).resolve().parent / "bin" / filename
+    return str(candidate) if candidate.is_file() else ""

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from cliente_xmpp.audio.process import hidden_subprocess_kwargs
+from cliente_xmpp.audio.process import bundled_tool_path, hidden_subprocess_kwargs
 
 
 def media_duration_seconds(path: Path) -> float:
@@ -50,6 +50,10 @@ def media_duration_seconds(path: Path) -> float:
 
 
 def _ffprobe_path() -> str:
+    bundled_ffprobe = bundled_tool_path("ffprobe.exe")
+    if bundled_ffprobe:
+        return bundled_ffprobe
+
     system_ffprobe = shutil.which("ffprobe")
     if system_ffprobe:
         return system_ffprobe

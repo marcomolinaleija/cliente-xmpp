@@ -63,6 +63,27 @@ class ChatListPerformanceTests(unittest.TestCase):
 
 
 class MainWindowPerformanceTests(unittest.TestCase):
+    def test_incoming_audio_is_downloaded_automatically(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            audio_url="https://upload.example.test/voice.m4a",
+            media_url="https://upload.example.test/voice.m4a",
+            media_kind="audio",
+            media_mime="audio/mp4",
+            media_filename="voice.m4a",
+            message_id="incoming-audio",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.auto_downloading_media_keys = set()
+
+        with patch.object(window, "_download_media") as download:
+            window._auto_download_media_message(message)
+
+        download.assert_called_once_with(message, silent=True)
+        self.assertIn((message.chat_jid, message.message_id), window.auto_downloading_media_keys)
+
     def test_outgoing_lottie_candidate_is_downloaded_for_local_inspection(self) -> None:
         message = Message(
             chat_jid="chat@example.test",

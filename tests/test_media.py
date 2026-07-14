@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from cliente_xmpp.integrations import rayoai
-from cliente_xmpp.media.downloads import media_description
+from cliente_xmpp.media import downloads
+from cliente_xmpp.media.downloads import download_media, media_description
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 
@@ -38,6 +40,68 @@ class MediaDescriptionTests(unittest.TestCase):
         )
 
         self.assertEqual(media_description(message), "video, cumpleanos.mp4, 1.0 KB")
+
+
+class _DownloadResponse(io.BytesIO):
+    def __init__(self, content: bytes, content_length: int) -> None:
+        super().__init__(content)
+        self.headers = {
+            "Content-Type": "audio/mp4",
+            "Content-Length": str(content_length),
+        }
+
+    def __enter__(self) -> _DownloadResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+class MediaDownloadTests(unittest.TestCase):
+    @staticmethod
+    def _audio_message() -> Message:
+        return Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            audio_url="https://upload.example.test/voice.m4a",
+            media_url="https://upload.example.test/voice.m4a",
+            media_kind="audio",
+            media_mime="audio/mp4",
+            media_filename="voice.m4a",
+        )
+
+    def test_complete_audio_download_is_published_without_part_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            content = b"audio data"
+            with (
+                patch.object(downloads, "DOWNLOADS_DIR", Path(temp_dir)),
+                patch.object(
+                    downloads,
+                    "urlopen",
+                    return_value=_DownloadResponse(content, len(content)),
+                ),
+            ):
+                result = download_media(self._audio_message(), "me@example.test")
+
+            self.assertEqual(result.path.read_bytes(), content)
+            self.assertFalse(result.path.with_name(f"{result.path.name}.part").exists())
+
+    def test_incomplete_audio_download_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(downloads, "DOWNLOADS_DIR", Path(temp_dir)),
+                patch.object(
+                    downloads,
+                    "urlopen",
+                    return_value=_DownloadResponse(b"short", 100),
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "descarga quedo incompleta"):
+                    download_media(self._audio_message(), "me@example.test")
+
+            remaining_files = [path for path in Path(temp_dir).rglob("*") if path.is_file()]
+            self.assertEqual(remaining_files, [])
 
 
 class RayoAiMediaTests(unittest.TestCase):

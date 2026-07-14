@@ -5,6 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from cliente_xmpp.audio.process import no_window_creation_flags
 from cliente_xmpp.config.settings import APP_DIR
 
 VOICE_NOTES_DIR = APP_DIR / "recordings"
@@ -50,6 +51,7 @@ def convert_to_voice_note(source: Path) -> Path:
             text=True,
             timeout=120,
             check=False,
+            creationflags=no_window_creation_flags(),
         )
     except Exception as exc:
         raise AudioEncodingError(f"No se pudo convertir el audio a OGG/Opus: {exc}") from exc

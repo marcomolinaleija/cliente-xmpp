@@ -147,14 +147,26 @@ def download_media(message: Message, account_jid: str) -> DownloadedMedia:
     temp_path = target_path.with_name(f"{target_path.name}.part")
 
     request = Request(url, headers={"User-Agent": "cliente-xmpp/0.1"})
-    with urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
-        mime = str(response.headers.get("Content-Type") or message.media_mime or "")
-        size = int(response.headers.get("Content-Length") or 0)
-        with temp_path.open("wb") as target:
-            shutil.copyfileobj(response, target, CHUNK_SIZE)
+    try:
+        with urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+            mime = str(response.headers.get("Content-Type") or message.media_mime or "")
+            size = int(response.headers.get("Content-Length") or 0)
+            with temp_path.open("wb") as target:
+                shutil.copyfileobj(response, target, CHUNK_SIZE)
 
-    temp_path.replace(target_path)
-    actual_size = target_path.stat().st_size
+        actual_size = temp_path.stat().st_size
+        if actual_size <= 0:
+            raise OSError("El servidor devolvio un archivo vacio.")
+        if size > 0 and actual_size != size:
+            raise OSError(
+                f"La descarga quedo incompleta: se esperaban {size} bytes y llegaron "
+                f"{actual_size}."
+            )
+        temp_path.replace(target_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
     return DownloadedMedia(
         path=target_path,
         size=size or actual_size,

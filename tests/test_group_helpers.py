@@ -12,7 +12,11 @@ from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_nam
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
-from cliente_xmpp.xmpp.events import GroupParticipantsLoaded, GroupParticipantUpdated
+from cliente_xmpp.xmpp.events import (
+    ChatDisplayedSynced,
+    GroupParticipantsLoaded,
+    GroupParticipantUpdated,
+)
 
 
 class GroupNameTests(unittest.TestCase):
@@ -229,6 +233,117 @@ class IncomingMessageSoundTests(unittest.TestCase):
 
 
 class DisplayedMarkerTests(unittest.TestCase):
+    def test_reads_synced_displayed_marker_from_sent_carbon(self) -> None:
+        emitted: list[object] = []
+        stanza = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <message from="me@example.org/phone" to="contact@example.org">
+                  <displayed xmlns="urn:xmpp:chat-markers:0" id="incoming-id" />
+                </message>
+                """
+            )
+        )
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="me@example.org"),
+            _displayed_marker_id=BridgeXmppClient._displayed_marker_id,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._emit_synced_displayed_from_outgoing_stanza(client, stanza)
+
+        self.assertEqual(
+            emitted,
+            [ChatDisplayedSynced(chat_jid="contact@example.org", message_id="incoming-id")],
+        )
+
+    def test_reads_group_displayed_state_from_xep_0490(self) -> None:
+        message = ET.fromstring(
+            """
+            <message type="headline">
+              <event xmlns="http://jabber.org/protocol/pubsub#event">
+                <items node="urn:xmpp:mds:displayed:0">
+                  <item id="#group@example.org">
+                    <displayed xmlns="urn:xmpp:mds:displayed:0">
+                      <stanza-id xmlns="urn:xmpp:sid:0" id="room-stanza-id"
+                                 by="#group@example.org" />
+                    </displayed>
+                  </item>
+                </items>
+              </event>
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._displayed_states_from_xml(message),
+            [("#group@example.org", "room-stanza-id")],
+        )
+
+    def test_synced_marker_keeps_messages_received_after_it_unread(self) -> None:
+        chat = Chat(jid="contact@example.org", name="Contacto", unread_count=2)
+        first = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="primero",
+            sent_at=datetime.now().astimezone(),
+            message_id="first-id",
+        )
+        outgoing = Message(
+            chat_jid=chat.jid,
+            sender_jid="me",
+            body="respuesta",
+            sent_at=first.sent_at + timedelta(seconds=1),
+            outgoing=True,
+            message_id="outgoing-id",
+        )
+        second = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="segundo",
+            sent_at=first.sent_at + timedelta(seconds=2),
+            message_id="second-id",
+        )
+        window = SimpleNamespace(
+            messages_by_chat={chat.jid: [first, outgoing, second]},
+            _chat_by_jid=lambda _jid: chat,
+            _message_timestamp=MainWindow._message_timestamp,
+        )
+
+        self.assertEqual(
+            MainWindow._displayed_marker_position(window, chat.jid, "first-id")[0],
+            1,
+        )
+        self.assertEqual(
+            MainWindow._displayed_marker_position(window, chat.jid, "outgoing-id")[0],
+            1,
+        )
+        self.assertEqual(
+            MainWindow._displayed_marker_position(window, chat.jid, "second-id")[0],
+            0,
+        )
+        self.assertIsNone(
+            MainWindow._displayed_marker_position(window, chat.jid, "unknown-id")
+        )
+
+    def test_applies_only_the_unread_messages_after_synced_marker(self) -> None:
+        chat = Chat(jid="contact@example.org", name="Contacto", unread_count=3)
+        now = datetime.now().astimezone().timestamp()
+        updates: list[tuple[str, int]] = []
+        window = SimpleNamespace(
+            synced_displayed_marker_ids_by_chat={chat.jid: "first-id"},
+            _chat_by_jid=lambda _jid: chat,
+            _displayed_marker_position=lambda _jid, _marker_id: (1, now, now + 1),
+            _datetime_timestamp=MainWindow._datetime_timestamp,
+            _update_chat_summary=lambda chat_jid, unread_count: updates.append(
+                (chat_jid, unread_count)
+            ),
+        )
+
+        MainWindow._apply_synced_chat_displayed(window, chat.jid)
+
+        self.assertEqual(updates, [(chat.jid, 1)])
+
     def test_bridge_sends_displayed_marker_for_individual_chat(self) -> None:
         calls: list[dict[str, str]] = []
         requested_plugins: list[str] = []

@@ -188,6 +188,14 @@ Reglas obligatorias:
 - `MessageHistoryLoaded` nunca debe llamar directamente a NVDA o al sonido.
 - Si un nuevo productor de eventos no puede distinguir vivo de historico, debe emitir
   `notify=False` y documentar la razon antes de conectarlo a UI.
+- El cliente esta preparado para lecturas hechas desde otra app oficial de WhatsApp: consume
+  `<displayed/>` XEP-0333 dentro de `carbon_sent` en chats individuales y XEP-0490
+  (`urn:xmpp:mds:displayed:0`) en grupos. Conserva el marcador hasta conocer el mensaje local,
+  solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. La imagen
+  `puente-completo-20260713` todavia no produce esos eventos porque slidge-whatsapp no maneja
+  `events.MarkChatAsRead`; el cambio pendiente esta en
+  `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No conviertas este flujo en polling de inbox ni
+  confundas esos markers propios con el estado de entrega de mensajes salientes.
 
 ### Arranque, cache y sincronizacion en segundo plano
 
@@ -265,7 +273,8 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   stickers; no repitas estos parches en el puente. En otra instalación, configura esa etiqueta,
   ejecuta `docker compose pull
   slidge-whatsapp` y recrea únicamente ese servicio con `docker compose up -d --no-deps
-  --force-recreate slidge-whatsapp`.
+  --force-recreate slidge-whatsapp`. Esta etiqueta no incluye todavia la propagacion de
+  `events.MarkChatAsRead`; para ese cambio sigue la guia especifica de sincronizacion de leidos.
 
 ### Notificaciones y accesibilidad
 

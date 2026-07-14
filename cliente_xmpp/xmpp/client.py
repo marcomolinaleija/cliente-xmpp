@@ -35,6 +35,7 @@ from cliente_xmpp.models.names import (
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
+    ChatDisplayedSynced,
     ChatsDiscovered,
     ChatStateUpdated,
     ContactAvatarReceived,
@@ -60,6 +61,7 @@ from cliente_xmpp.xmpp.events import (
 
 EventHandler = Callable[[XmppEvent], None]
 INBOX_NS = "urn:xmpp:inbox:1"
+MDS_DISPLAYED_NS = "urn:xmpp:mds:displayed:0"
 MAM_NS = "urn:xmpp:mam:2"
 FORWARD_NS = "urn:xmpp:forward:0"
 CLIENT_NS = "jabber:client"
@@ -149,6 +151,10 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("receipt_received", self._on_receipt_received)
         self.add_event_handler("marker_received", self._on_marker_received)
         self.add_event_handler("marker_displayed", self._on_marker_displayed)
+        self.add_event_handler(
+            "message_displayed_synchronization_publish",
+            self._on_message_displayed_synchronization,
+        )
         self.add_event_handler("chatstate", self._on_chatstate)
         self.add_event_handler("presence_available", self._on_presence_debug)
         self.add_event_handler("presence_unavailable", self._on_presence_debug)
@@ -167,6 +173,7 @@ class BridgeXmppClient(ClientXMPP):
         asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
         asyncio.create_task(self._discover_group_chats_with_retries(chats))
         asyncio.create_task(self.load_inbox())
+        asyncio.create_task(self._load_displayed_states())
 
     def _on_disconnected(self, _event: object) -> None:
         if self._disconnect_requested:
@@ -336,7 +343,9 @@ class BridgeXmppClient(ClientXMPP):
         self._emit_message_from_stanza(msg["carbon_received"], outgoing=False)
 
     def _on_carbon_sent(self, msg: object) -> None:
-        self._emit_message_from_stanza(msg["carbon_sent"], outgoing=True)
+        stanza = msg["carbon_sent"]
+        self._emit_synced_displayed_from_outgoing_stanza(stanza)
+        self._emit_message_from_stanza(stanza, outgoing=True)
 
     def _on_receipt_received(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "delivered")
@@ -346,6 +355,36 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_marker_displayed(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "read")
+
+    def _on_message_displayed_synchronization(self, msg: object) -> None:
+        self._emit_displayed_states_from_xml(msg.xml)
+
+    async def _load_displayed_states(self) -> None:
+        try:
+            result = await self["xep_0490"].catch_up(timeout=15)
+        except Exception:
+            return
+
+        self._emit_displayed_states_from_xml(result.xml)
+
+    def _emit_synced_displayed_from_outgoing_stanza(self, stanza: object) -> None:
+        marker_id = self._displayed_marker_id(stanza)
+        if not marker_id:
+            return
+
+        try:
+            chat_jid = str(stanza["to"].bare)
+        except Exception:
+            xml = getattr(stanza, "xml", None)
+            chat_jid = xml.attrib.get("to", "").split("/", 1)[0] if xml is not None else ""
+        if not chat_jid or chat_jid == self.boundjid.bare:
+            return
+
+        self._emit(ChatDisplayedSynced(chat_jid=chat_jid, message_id=marker_id))
+
+    def _emit_displayed_states_from_xml(self, xml: ET.Element) -> None:
+        for chat_jid, marker_id in self._displayed_states_from_xml(xml):
+            self._emit(ChatDisplayedSynced(chat_jid=chat_jid, message_id=marker_id))
 
     def send_displayed_marker(self, to_jid: str, message_id: str, is_group: bool = False) -> None:
         if not to_jid or not message_id:
@@ -398,6 +437,48 @@ class BridgeXmppClient(ClientXMPP):
                 return node.attrib.get("id", "")
 
         return ""
+
+    @staticmethod
+    def _displayed_marker_id(msg: object) -> str:
+        try:
+            value = msg["displayed"]
+            if isinstance(value, str) and value:
+                return value
+            marker_id = str(value["id"] or "")
+            if marker_id:
+                return marker_id
+        except Exception:
+            pass
+
+        xml = getattr(msg, "xml", None)
+        if xml is None:
+            return ""
+
+        displayed = xml.find(f".//{{{CHAT_MARKERS_NS}}}displayed")
+        return displayed.attrib.get("id", "") if displayed is not None else ""
+
+    @staticmethod
+    def _displayed_states_from_xml(xml: ET.Element) -> list[tuple[str, str]]:
+        states: list[tuple[str, str]] = []
+        for items in xml.iter():
+            if items.tag.rsplit("}", 1)[-1] != "items":
+                continue
+            if items.attrib.get("node") != MDS_DISPLAYED_NS:
+                continue
+            for item in items:
+                if item.tag.rsplit("}", 1)[-1] != "item":
+                    continue
+                chat_jid = item.attrib.get("id", "").strip().split("/", 1)[0]
+                displayed = item.find(f"{{{MDS_DISPLAYED_NS}}}displayed")
+                stanza_id = (
+                    displayed.find(f"{{{STANZA_ID_NS}}}stanza-id")
+                    if displayed is not None
+                    else None
+                )
+                marker_id = stanza_id.attrib.get("id", "").strip() if stanza_id is not None else ""
+                if chat_jid and marker_id:
+                    states.append((chat_jid, marker_id))
+        return states
 
     def _on_presence_debug(self, presence: object) -> None:
         try:
@@ -4154,6 +4235,7 @@ class XmppService:
                 "xep_0280",
                 "xep_0313",
                 "xep_0333",
+                "xep_0490",
                 "xep_0363",
                 "xep_0402",
                 "xep_0045",

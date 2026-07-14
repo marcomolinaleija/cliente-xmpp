@@ -113,6 +113,12 @@ class MessageDeliveryUpdated:
 
 
 @dataclass(slots=True)
+class ChatDisplayedSynced:
+    chat_jid: str
+    message_id: str
+
+
+@dataclass(slots=True)
 class ContactPresenceUpdated:
     chat_jid: str
     availability: str
@@ -172,6 +178,7 @@ XmppEvent = (
     | MessageReceived
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
+    | ChatDisplayedSynced
     | ContactPresenceUpdated
     | ContactAvatarReceived
     | ContactAvatarUnavailable

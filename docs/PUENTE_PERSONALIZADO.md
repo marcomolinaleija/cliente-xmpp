@@ -32,10 +32,16 @@ En `marco-vps` estos pasos ya se realizaron. Después de confirmar `Successfully
 y `Login success`, puede concentrarse en modificar y reconstruir `cliente-xmpp`. El código del
 cliente no fue modificado durante este despliegue del puente.
 
-El trabajo pendiente del colaborador está exclusivamente en `cliente-xmpp`: leer la extensión
-privada para mostrar que un mensaje recibido fue reenviado y adjuntarla cuando el usuario elija
-reenviar. Después sólo debe hacer pull de esta imagen y reconstruir el cliente; no debe construir
-otra imagen del puente.
+Para las funciones incluidas en esta imagen, el trabajo restante está en `cliente-xmpp`: leer la
+extensión privada para mostrar que un mensaje recibido fue reenviado y adjuntarla cuando el usuario
+elija reenviar. El problema posterior de sincronización de lecturas sí requiere otra imagen y se
+documenta por separado a continuación.
+
+## Pendiente posterior: lecturas desde WhatsApp oficial
+
+La imagen vigente no propaga `events.MarkChatAsRead` de whatsmeow hacia XMPP. El cliente ya esta
+preparado, pero hace falta publicar una imagen nueva del puente siguiendo
+`docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No reutilizar la etiqueta vigente para ese cambio.
 
 ## Menciones nativas de WhatsApp
 

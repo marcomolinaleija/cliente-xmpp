@@ -70,6 +70,7 @@ from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
+    ChatDisplayedSynced,
     ChatsDiscovered,
     ChatStateUpdated,
     ContactAvatarReceived,
@@ -147,6 +148,7 @@ class MainWindow(wx.Frame):
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.displayed_marker_ids_by_chat: dict[str, str] = {}
+        self.synced_displayed_marker_ids_by_chat: dict[str, str] = {}
         self.mark_all_read_queue: deque[Chat] = deque()
         self.mark_all_read_waiting_chat_jid = ""
         self.latest_message_timestamps_by_chat: dict[str, float] = {}
@@ -2784,6 +2786,8 @@ class MainWindow(wx.Frame):
                     delivery_state,
                     detail,
                 )
+            case ChatDisplayedSynced(chat_jid=chat_jid, message_id=message_id):
+                self._handle_synced_chat_displayed(chat_jid, message_id)
             case ContactPresenceUpdated(chat_jid=chat_jid):
                 self.contact_presence_by_chat[chat_jid] = event
                 self._refresh_current_chat_status_title()
@@ -2824,6 +2828,7 @@ class MainWindow(wx.Frame):
                         unread_count=unread_count,
                         is_group=is_group,
                     )
+                    self._apply_synced_chat_displayed(chat_jid)
                     self._refresh_chat_order()
                     if added:
                         self.loaded_chat_summaries += 1
@@ -4088,6 +4093,7 @@ class MainWindow(wx.Frame):
             force_preview=True,
             is_group=message.chat_is_group,
         )
+        self._apply_synced_chat_displayed(message.chat_jid)
 
     @staticmethod
     def _chat_preview_for_message(message: Message) -> str:
@@ -4293,6 +4299,80 @@ class MainWindow(wx.Frame):
             return
 
         self._mark_chat_displayed(chat)
+
+    def _handle_synced_chat_displayed(self, chat_jid: str, marker_id: str) -> None:
+        if not chat_jid or not marker_id:
+            return
+
+        current_marker_id = self.synced_displayed_marker_ids_by_chat.get(chat_jid, "")
+        if current_marker_id:
+            current_position = self._displayed_marker_position(chat_jid, current_marker_id)
+            incoming_position = self._displayed_marker_position(chat_jid, marker_id)
+            if current_position is not None and (
+                incoming_position is None or incoming_position[1] < current_position[1]
+            ):
+                return
+
+        self.synced_displayed_marker_ids_by_chat[chat_jid] = marker_id
+        self._apply_synced_chat_displayed(chat_jid)
+
+    def _apply_synced_chat_displayed(self, chat_jid: str) -> None:
+        marker_id = self.synced_displayed_marker_ids_by_chat.get(chat_jid, "")
+        chat = self._chat_by_jid(chat_jid)
+        position = self._displayed_marker_position(chat_jid, marker_id)
+        if chat is None or position is None:
+            return
+
+        remaining_unread, marker_timestamp, latest_known_timestamp = position
+        chat_timestamp = self._datetime_timestamp(chat.last_message_at)
+        if (
+            chat_timestamp is not None
+            and chat_timestamp > latest_known_timestamp
+            and chat_timestamp > marker_timestamp
+        ):
+            return
+
+        unread_count = min(chat.unread_count, remaining_unread)
+        if unread_count == chat.unread_count:
+            return
+
+        self._update_chat_summary(chat_jid, unread_count=unread_count)
+
+    def _displayed_marker_position(
+        self,
+        chat_jid: str,
+        marker_id: str,
+    ) -> tuple[int, float, float] | None:
+        chat = self._chat_by_jid(chat_jid)
+        is_group = bool(chat and chat.is_group)
+        ordered_messages = sorted(
+            self.messages_by_chat.get(chat_jid, []),
+            key=self._message_timestamp,
+        )
+        if not ordered_messages:
+            return None
+
+        marker_index = next(
+            (
+                index
+                for index in range(len(ordered_messages) - 1, -1, -1)
+                if (
+                    ordered_messages[index].displayed_marker_id
+                    if is_group
+                    else ordered_messages[index].message_id
+                )
+                == marker_id
+            ),
+            None,
+        )
+        if marker_index is None:
+            return None
+
+        return (
+            sum(not message.outgoing for message in ordered_messages[marker_index + 1 :]),
+            self._message_timestamp(ordered_messages[marker_index]),
+            self._message_timestamp(ordered_messages[-1]),
+        )
 
     def _mark_chat_displayed(self, chat: Chat) -> None:
         chat_jid = chat.jid

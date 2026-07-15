@@ -4,17 +4,24 @@ setlocal
 title Limpiador de Proyecto whatsapp_CAN
 
 echo Limpiando artefactos de PyInstaller...
+
 if exist "build" (
     echo  - Eliminando carpeta 'build'...
     rmdir /s /q "build"
 )
+
 if exist "dist" (
     echo  - Eliminando carpeta 'dist'...
     rmdir /s /q "dist"
 )
 
+if exist "release" (
+    echo  - Eliminando carpeta 'release'...
+    rmdir /s /q "release"
+)
+
 echo.
-echo Limpiando cache de Python (__pycache__)... 
+echo Limpiando cache de Python (__pycache__)...
 for /d /r . %%d in (__pycache__) do (
     if exist "%%d" (
         echo  - Eliminando %%d

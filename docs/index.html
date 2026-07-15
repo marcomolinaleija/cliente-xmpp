@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="es-MX">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="WhatsApp CAN es un cliente de escritorio accesible para Windows que conecta con WhatsApp mediante un puente XMPP independiente.">
+    <meta name="theme-color" content="#243b66">
+    <title>WhatsApp CAN | Mensajería accesible en Windows</title>
+    <link rel="stylesheet" href="assets/site.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#contenido">Saltar al contenido principal</a>
+
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="index.html" aria-label="WhatsApp CAN, inicio">
+          <span class="brand-mark" aria-hidden="true">CAN</span>
+          <span>WhatsApp CAN</span>
+        </a>
+        <nav class="site-nav" aria-label="Navegación principal">
+          <ul>
+            <li><a href="#funciones">Funciones</a></li>
+            <li><a href="#acceso">Acceso</a></li>
+            <li><a href="privacidad.html">Privacidad</a></li>
+            <li><a href="terminos.html">Términos</a></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main id="contenido">
+      <section class="hero" aria-labelledby="titulo-principal">
+        <div class="container hero-grid">
+          <div>
+            <span class="eyebrow">Beta con acceso gradual</span>
+            <h1 id="titulo-principal">Tus conversaciones, con una experiencia nativa y accesible.</h1>
+            <p class="lead">
+              Cliente independiente para Windows, diseñado para teclado y lector de pantalla.
+              Conecta tu cuenta de WhatsApp mediante un puente XMPP administrado por el proyecto.
+            </p>
+            <div class="actions">
+              <a class="button" href="https://github.com/marcomolinaleija/cliente-xmpp/releases/latest">Descargar la última versión</a>
+              <a class="button secondary" href="https://github.com/marcomolinaleija/cliente-xmpp">Ver el código fuente</a>
+            </div>
+            <p class="small">
+              Para utilizar el programa necesitas una invitación y una cuenta XMPP habilitada.
+              La descarga por sí sola no concede acceso al servicio.
+            </p>
+          </div>
+
+          <aside class="hero-card" aria-labelledby="disenado-para">
+            <h2 id="disenado-para">Diseñado para usarlo de verdad</h2>
+            <ul>
+              <li>Navegación completa por teclado</li>
+              <li>Interfaz nativa compatible con NVDA</li>
+              <li>Chats individuales, grupos y menciones</li>
+              <li>Audio, imágenes, video, documentos y stickers</li>
+              <li>Caché local para una apertura más rápida</li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+
+      <div class="status-strip" aria-label="Datos principales del proyecto">
+        <div class="container status-grid">
+          <div class="status-item"><strong>Plataforma</strong> Windows de 64 bits</div>
+          <div class="status-item"><strong>Distribución</strong> Versiones verificadas en GitHub</div>
+          <div class="status-item"><strong>Disponibilidad</strong> Invitaciones por etapas</div>
+        </div>
+      </div>
+
+      <section class="section" id="funciones" aria-labelledby="titulo-funciones">
+        <div class="container">
+          <h2 id="titulo-funciones">Lo esencial de WhatsApp, con atención a la accesibilidad</h2>
+          <p class="section-intro">
+            La aplicación utiliza XMPP como transporte, pero presenta una experiencia centrada en
+            conversaciones de WhatsApp y en el uso cotidiano desde Windows.
+          </p>
+          <div class="card-grid">
+            <article class="card">
+              <h3>Conversaciones completas</h3>
+              <p>Lee y envía mensajes, responde, edita, reacciona, reenvía y consulta estados de entrega y lectura.</p>
+            </article>
+            <article class="card">
+              <h3>Grupos y menciones</h3>
+              <p>Participa en grupos, identifica remitentes y utiliza autocompletado accesible para menciones.</p>
+            </article>
+            <article class="card">
+              <h3>Multimedia local</h3>
+              <p>Reproduce notas de voz y video, abre documentos y consulta imágenes o stickers descargados de forma segura.</p>
+            </article>
+            <article class="card">
+              <h3>Notificaciones de Windows</h3>
+              <p>Responde o marca como leído desde notificaciones, con controles para ocultar el contenido del mensaje.</p>
+            </article>
+            <article class="card">
+              <h3>Teclado y lector de pantalla</h3>
+              <p>Foco predecible, etiquetas claras, navegación con flechas, Escape y Enter, y soporte adicional para NVDA.</p>
+            </article>
+            <article class="card">
+              <h3>Historial disponible</h3>
+              <p>Conserva una caché local por cuenta para mostrar conversaciones conocidas mientras se sincroniza el servidor.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section alt" aria-labelledby="titulo-funcionamiento">
+        <div class="container">
+          <h2 id="titulo-funcionamiento">Cómo funciona el acceso</h2>
+          <ol class="steps">
+            <li>
+              <h3>Solicita una invitación</h3>
+              <p>La beta incorpora pocas personas a la vez para poder acompañar cada alta.</p>
+            </li>
+            <li>
+              <h3>Recibe tu cuenta</h3>
+              <p>Cada persona utiliza credenciales XMPP y una sesión del puente separadas.</p>
+            </li>
+            <li>
+              <h3>Vincula WhatsApp</h3>
+              <p>El cliente guía la vinculación y comienza a sincronizar chats después de autorizarla.</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="titulo-privacidad">
+        <div class="container hero-grid">
+          <div>
+            <h2 id="titulo-privacidad">Privacidad explicada por capas</h2>
+            <p>
+              Los ajustes, credenciales protegidas por Windows, mensajes en caché y descargas se
+              guardan localmente. Para prestar el servicio, el puente y el servidor XMPP también
+              procesan información de la cuenta, mensajes, adjuntos y metadatos.
+            </p>
+            <p>
+              No presentamos el puente como cifrado de extremo a extremo entre WhatsApp y este
+              cliente: el contenido debe ser procesado para trasladarlo entre ambos sistemas.
+            </p>
+            <a href="privacidad.html">Leer la política de privacidad completa</a>
+          </div>
+          <div class="card">
+            <h3>Controles disponibles</h3>
+            <ul class="check-list">
+              <li>Ocultar vistas previas en notificaciones</li>
+              <li>Guardar la contraseña en el almacén seguro de Windows</li>
+              <li>Separar la caché local por cuenta XMPP</li>
+              <li>Enviar contenido a RayoAI solo mediante una acción explícita</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section alt" id="acceso" aria-labelledby="titulo-acceso">
+        <div class="container">
+          <div class="callout">
+            <div>
+              <h2 id="titulo-acceso">¿Quieres participar en la beta?</h2>
+              <p>
+                Abre una solicitud breve en GitHub. No publiques tu teléfono, contraseñas,
+                códigos de vinculación ni contenido de mensajes en el issue.
+              </p>
+            </div>
+            <a class="button" href="https://github.com/marcomolinaleija/cliente-xmpp/issues/new?template=solicitud-acceso.yml">Solicitar acceso</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="titulo-importante">
+        <div class="container">
+          <h2 id="titulo-importante">Información importante</h2>
+          <div class="notice">
+            <strong>Proyecto independiente.</strong> WhatsApp CAN no está afiliado, autorizado ni
+            respaldado por WhatsApp LLC o Meta. Utiliza un puente no oficial, por lo que cambios
+            externos pueden interrumpir funciones y existe riesgo de restricciones sobre la cuenta.
+            Revisa los <a href="terminos.html">términos de uso</a> antes de vincularla.
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-grid">
+        <p>
+          WhatsApp CAN es software independiente para Windows. “WhatsApp” es una marca de su
+          respectivo titular y se utiliza únicamente para describir compatibilidad.
+        </p>
+        <nav aria-label="Enlaces legales">
+          <a href="privacidad.html">Privacidad</a>
+          <a href="terminos.html">Términos</a>
+          <a href="https://github.com/marcomolinaleija/cliente-xmpp">GitHub</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

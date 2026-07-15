@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es-MX">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Política de privacidad de WhatsApp CAN.">
+    <meta name="theme-color" content="#243b66">
+    <title>Política de privacidad | WhatsApp CAN</title>
+    <link rel="stylesheet" href="assets/site.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#contenido">Saltar al contenido principal</a>
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="index.html" aria-label="WhatsApp CAN, inicio">
+          <span class="brand-mark" aria-hidden="true">CAN</span>
+          <span>WhatsApp CAN</span>
+        </a>
+        <nav class="site-nav" aria-label="Navegación principal">
+          <ul>
+            <li><a href="index.html">Inicio</a></li>
+            <li><a href="privacidad.html" aria-current="page">Privacidad</a></li>
+            <li><a href="terminos.html">Términos</a></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main class="legal-main" id="contenido">
+      <article class="container legal-document">
+        <span class="badge">Borrador para revisión</span>
+        <h1>Política de privacidad</h1>
+        <p><strong>Última actualización:</strong> 15 de julio de 2026.</p>
+
+        <div class="pending-data" role="note" aria-label="Datos pendientes antes de publicar">
+          <strong>Antes de publicar esta política deben completarse:</strong> nombre legal del
+          responsable, domicilio para efectos de privacidad y correo privado para solicitudes de
+          derechos ARCO. No deben sustituirse por datos ficticios ni por un issue público.
+        </div>
+
+        <h2>1. Responsable y alcance</h2>
+        <p>
+          Esta política describe el tratamiento de datos asociado con WhatsApp CAN, su proceso de
+          invitación, el cliente para Windows y la infraestructura XMPP y de puente utilizada para
+          conectarlo con WhatsApp.
+        </p>
+        <p>
+          <strong>Responsable:</strong> [pendiente de completar].<br>
+          <strong>Domicilio:</strong> [pendiente de completar].<br>
+          <strong>Contacto de privacidad:</strong> [pendiente de completar].
+        </p>
+
+        <h2>2. Información tratada</h2>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Ubicación</th>
+              <th scope="col">Información</th>
+              <th scope="col">Finalidad principal</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td data-label="Ubicación">Equipo del usuario</td>
+              <td data-label="Información">JID, servidor, preferencias, chats, mensajes, contactos, grupos, metadatos, rutas y archivos descargados.</td>
+              <td data-label="Finalidad">Configurar la aplicación, mostrar historial y multimedia, acelerar el arranque y conservar preferencias.</td>
+            </tr>
+            <tr>
+              <td data-label="Ubicación">Almacén de credenciales de Windows</td>
+              <td data-label="Información">Contraseña XMPP, únicamente si la persona activa la opción de recordarla.</td>
+              <td data-label="Finalidad">Permitir el inicio de sesión y la conexión automática solicitada.</td>
+            </tr>
+            <tr>
+              <td data-label="Ubicación">Servidor XMPP y puente</td>
+              <td data-label="Información">Cuenta XMPP, sesión vinculada, identificadores, contactos, grupos, mensajes, adjuntos, marcas de tiempo, estados de entrega y lectura, direcciones IP y registros técnicos.</td>
+              <td data-label="Finalidad">Autenticar, sincronizar, transmitir mensajes, prestar soporte y proteger la infraestructura.</td>
+            </tr>
+            <tr>
+              <td data-label="Ubicación">GitHub Pages y GitHub Releases</td>
+              <td data-label="Información">Solicitudes web, dirección IP y datos técnicos que GitHub trate conforme a sus propias políticas.</td>
+              <td data-label="Finalidad">Publicar el sitio, el código y las descargas oficiales.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>3. Finalidades</h2>
+        <h3>Necesarias para el servicio</h3>
+        <ul>
+          <li>Administrar invitaciones, altas, acceso y soporte.</li>
+          <li>Autenticar la cuenta XMPP y mantener separada su sesión del puente.</li>
+          <li>Sincronizar chats, contactos, grupos, mensajes, archivos y estados.</li>
+          <li>Detectar fallos, abuso, accesos no autorizados y problemas de seguridad.</li>
+          <li>Entregar actualizaciones y avisos necesarios para operar la beta.</li>
+        </ul>
+        <h3>Opcionales</h3>
+        <ul>
+          <li>Mostrar contenido del mensaje en notificaciones de Windows, si está activado.</li>
+          <li>Guardar la contraseña mediante el almacén de credenciales de Windows.</li>
+          <li>Enviar una imagen o sticker a la instalación local de RayoAI cuando la persona selecciona expresamente “Describir con RayoAI”.</li>
+        </ul>
+
+        <h2>4. Cómo circula la información</h2>
+        <p>
+          WhatsApp CAN no es un cliente oficial. La sesión vinculada recibe información desde
+          WhatsApp y el puente la transforma para transmitirla mediante XMPP. Por esa razón, el
+          contenido debe ser procesado por la infraestructura del puente y no debe describirse
+          como cifrado de extremo a extremo entre WhatsApp y el cliente XMPP.
+        </p>
+        <p>
+          WhatsApp y Meta procesan información conforme a sus propios términos y políticas. El
+          alojamiento, GitHub y cualquier proveedor futuro de distribución actúan bajo sus
+          políticas y los acuerdos que correspondan.
+        </p>
+
+        <h2>5. Transferencias y encargados</h2>
+        <p>
+          La información puede ser tratada por proveedores indispensables para alojamiento,
+          distribución, seguridad y comunicación con WhatsApp. Antes de la publicación definitiva
+          se documentarán el proveedor del VPS, su ubicación, cualquier transferencia internacional
+          y los plazos aplicables. No se venderán datos personales.
+        </p>
+
+        <h2>6. Conservación y eliminación</h2>
+        <p>
+          La caché local y las descargas permanecen en el equipo hasta que la persona las elimina o
+          desinstala y borra los datos de la aplicación. Los plazos del servidor, respaldos,
+          adjuntos y registros técnicos deben definirse y publicarse antes de abrir la beta.
+          Al cancelar una cuenta se bloquearán y eliminarán los datos conforme a los plazos legales
+          y técnicos aplicables.
+        </p>
+
+        <h2>7. Seguridad</h2>
+        <p>
+          Se utilizan cuentas separadas, conexiones TLS, credenciales protegidas por Windows cuando
+          se solicita, validación criptográfica de actualizaciones y controles de acceso al
+          servidor. Ningún sistema es infalible; las incidencias relevantes se comunicarán por los
+          medios disponibles y de acuerdo con las obligaciones aplicables.
+        </p>
+
+        <h2>8. Derechos ARCO y revocación</h2>
+        <p>
+          La persona titular puede solicitar acceso, rectificación, cancelación u oposición, así
+          como revocar su consentimiento cuando proceda. La solicitud deberá enviarse al correo de
+          privacidad pendiente de publicar e indicar nombre, medio de respuesta, derecho que desea
+          ejercer y los datos necesarios para localizar su cuenta. La identidad se verificará sin
+          pedir contraseñas ni códigos de vinculación.
+        </p>
+
+        <h2>9. Personas menores de edad</h2>
+        <p>
+          La beta no está dirigida intencionalmente a personas que no alcancen la edad mínima para
+          usar WhatsApp en su jurisdicción. Si se habilita el acceso de menores, se establecerán
+          controles de consentimiento y representación antes de tratar sus datos.
+        </p>
+
+        <h2>10. Cambios a esta política</h2>
+        <p>
+          Los cambios se publicarán en esta página con una nueva fecha de actualización. Cuando una
+          modificación afecte de forma material el tratamiento, se informará a las personas
+          participantes mediante la aplicación o el canal de contacto registrado.
+        </p>
+
+        <h2>11. Contacto</h2>
+        <p>
+          Para soporte general puede utilizarse el repositorio público. No publiques mensajes,
+          teléfonos, credenciales ni solicitudes de privacidad en un issue. El correo privado para
+          estas solicitudes se añadirá antes de publicar la página.
+        </p>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-grid">
+        <p>WhatsApp CAN es un proyecto independiente y no está afiliado con WhatsApp LLC o Meta.</p>
+        <nav aria-label="Enlaces legales">
+          <a href="index.html">Inicio</a>
+          <a href="terminos.html">Términos</a>
+          <a href="https://github.com/marcomolinaleija/cliente-xmpp">GitHub</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

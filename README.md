@@ -44,12 +44,15 @@ entorno Conda `XMPP`, los dos DLL de `cliente_xmpp/lib` y `ffprobe` disponible e
 
 ```powershell
 conda activate XMPP
-python -m pip install -e .
-python -m PyInstaller --clean --noconfirm WhatsApp-CAN.spec
+python -m pip install -e ".[build]"
+.\build_release.ps1
 ```
 
-El ejecutable de la version 1.0.0 se genera en `dist/WhatsApp-CAN-1.0.0.exe`. Es una aplicacion
-de ventana y no abre una consola al iniciar.
+La aplicacion se genera en `dist/WhatsApp-CAN/WhatsApp-CAN.exe`, junto con `update.exe`. Ambos
+son ejecutables de ventana y no abren una consola al iniciar. El ZIP y el SHA-256 listos para
+una release se generan bajo `release/`. El proceso, el formato obligatorio de los assets y la
+limitacion de GitHub para repositorios privados se documentan en
+[`docs/ACTUALIZACIONES.md`](docs/ACTUALIZACIONES.md).
 
 ## Configuracion y notificaciones de Windows
 

@@ -13,6 +13,7 @@ cliente_xmpp/lib/
 # Build artifacts
 build/
 dist/
+release/
 *.egg-info/
 
 # Editor

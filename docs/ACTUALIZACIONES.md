@@ -160,7 +160,9 @@ El script realiza, en este orden:
 8. calcula `release/WhatsApp-CAN-<versión>.zip.sha256`;
 9. vuelve a verificar el hash;
 10. extrae el ZIP con el mismo código seguro del actualizador y comprueba
-    `WhatsApp-CAN.exe`, `update.exe` y `_internal`.
+    `WhatsApp-CAN.exe`, `update.exe` y `_internal`;
+11. compila con Inno Setup el instalador por usuario a partir de la carpeta `onedir`;
+12. genera el SHA-256 del instalador.
 
 `-SkipChecks` solo sirve para iteraciones locales después de una validación completa; no debe
 usarse para el build que se publicará.
@@ -174,7 +176,14 @@ dist/WhatsApp-CAN/WhatsApp-CAN.exe
 dist/WhatsApp-CAN/update.exe
 release/WhatsApp-CAN-1.0.1.zip
 release/WhatsApp-CAN-1.0.1.zip.sha256
+release/WhatsApp-CAN-1.0.1-Setup.exe
+release/WhatsApp-CAN-1.0.1-Setup.exe.sha256
 ```
+
+El instalador usa `%LOCALAPPDATA%\Programs\WhatsApp CAN`, crea un acceso en el menú Inicio y
+ofrece, sin marcarla por defecto, la opción de crear un acceso directo en el escritorio. Esta
+instalación por usuario evita pedir permisos de administrador y permite que el actualizador
+sustituya la carpeta completa de la aplicación.
 
 Puedes repetir la validación manualmente:
 

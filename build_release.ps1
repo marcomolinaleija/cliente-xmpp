@@ -77,6 +77,38 @@ $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvar
 & python tools\validate_release.py $zipPath $checksumPath
 if ($LASTEXITCODE -ne 0) { throw "La validación del paquete final falló." }
 
+$isccCandidates = @(
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+$iscc = $isccCandidates | Select-Object -First 1
+if (-not $iscc) {
+    throw "No se encontro ISCC.exe de Inno Setup 6. Instala Inno Setup antes de compilar."
+}
+
+$installerName = "WhatsApp-CAN-$version-Setup.exe"
+$installerPath = Join-Path $releaseDir $installerName
+$installerChecksumPath = "$installerPath.sha256"
+Remove-Item -LiteralPath $installerPath, $installerChecksumPath -Force -ErrorAction SilentlyContinue
+& $iscc `
+    "/DMyAppVersion=$version" `
+    "/DSourceDir=$distDir" `
+    "/DOutputDir=$releaseDir" `
+    (Join-Path $projectRoot "installer\WhatsApp-CAN.iss")
+if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar el instalador con Inno Setup." }
+if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+    throw "Falta $installerPath."
+}
+$installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText(
+    $installerChecksumPath,
+    "$installerHash  $installerName`n",
+    [Text.UTF8Encoding]::new($false)
+)
+
 Write-Host "Release preparada:"
 Write-Host "  $zipPath"
 Write-Host "  $checksumPath"
+Write-Host "  $installerPath"
+Write-Host "  $installerChecksumPath"

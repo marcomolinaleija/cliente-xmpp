@@ -48,10 +48,11 @@ python -m pip install -e ".[build]"
 .\build_release.ps1
 ```
 
-La aplicacion se genera en `dist/WhatsApp-CAN/WhatsApp-CAN.exe`, junto con `update.exe`. Ambos
-son ejecutables de ventana y no abren una consola al iniciar. El ZIP y el SHA-256 listos para
-una release se generan bajo `release/`. El proceso, el formato obligatorio de los assets y la
-limitacion de GitHub para repositorios privados se documentan en
+La aplicacion se genera como una distribucion `onedir` en
+`dist/WhatsApp-CAN/WhatsApp-CAN.exe`, junto con `update.exe` y `_internal`. Ambos ejecutables
+son de ventana y no abren una consola al iniciar. El ZIP para actualizaciones, el instalador
+de Inno Setup y sus SHA-256 se generan bajo `release/`. El proceso, el formato obligatorio de
+los assets y la limitacion de GitHub para repositorios privados se documentan en
 [`docs/ACTUALIZACIONES.md`](docs/ACTUALIZACIONES.md).
 
 ## Configuracion y notificaciones de Windows

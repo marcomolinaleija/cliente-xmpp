@@ -15,10 +15,10 @@ VSVersionInfo(
         u'040904B0',
         [
           StringStruct(u'CompanyName', u'Marco ML'),
-          StringStruct(u'FileDescription', u'WhatsApp CAN'),
+          StringStruct(u'FileDescription', u'Actualizador de WhatsApp CAN'),
           StringStruct(u'FileVersion', u'1.0.0'),
-          StringStruct(u'InternalName', u'WhatsApp-CAN'),
-          StringStruct(u'OriginalFilename', u'WhatsApp-CAN.exe'),
+          StringStruct(u'InternalName', u'WhatsApp-CAN-Updater'),
+          StringStruct(u'OriginalFilename', u'update.exe'),
           StringStruct(u'ProductName', u'WhatsApp CAN'),
           StringStruct(u'ProductVersion', u'1.0.0')
         ]

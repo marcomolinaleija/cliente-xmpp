@@ -224,6 +224,13 @@ las páginas MAM posteriores trabajan sobre la memoria ya cargada.
 Las métricas impresas por `_debug_perf` están desactivadas normalmente; para una sesión de
 diagnóstico inicia el proceso con `CLIENTE_XMPP_PERF_DEBUG=1`.
 
+La distribución ejecutable comprueba una sola vez por proceso la release estable más reciente,
+dos segundos después de mostrar la ventana y siempre fuera del hilo wx. Solo ofrece paquetes con
+versión superior, ZIP `WhatsApp-CAN-<versión>.zip` y checksum homónimo `.sha256`. El usuario debe
+aceptar explícitamente. La aplicación copia `update.exe` a `%TEMP%`, cierra por su flujo normal y
+el actualizador sustituye la carpeta completa con respaldo y rollback. El código fuente no hace
+consultas automáticas. El contrato de build y release vive en `docs/ACTUALIZACIONES.md`.
+
 La lista principal solo materializa chats con preview, fecha o no leidos. Los contactos del
 roster sin actividad permanecen en `searchable_chats_by_jid` para encontrarlos por nombre o
 telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son grupos.
@@ -394,6 +401,7 @@ python -m compileall cliente_xmpp tests
 python -m ruff check .
 python -m unittest tests.test_group_helpers
 python -m unittest tests.test_whatsapp_message_features
+python -m unittest tests.test_updates
 git diff --check
 ```
 

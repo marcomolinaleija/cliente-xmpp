@@ -10,9 +10,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH)
 DIAGNOSTIC_BUILD = os.environ.get("WHATSAPP_CAN_CONSOLE_BUILD") == "1"
-APP_NAME = (
-    "WhatsApp-CAN-1.0.0-diagnostico" if DIAGNOSTIC_BUILD else "WhatsApp-CAN-1.0.0"
-)
+APP_NAME = "WhatsApp-CAN-diagnostico" if DIAGNOSTIC_BUILD else "WhatsApp-CAN"
 XMPP_PLUGINS = (
     "xep_0030",
     "xep_0045",
@@ -52,6 +50,7 @@ nvda_controller = required_file(
 )
 ffprobe = shutil.which("ffprobe")
 ffmpeg = required_file(Path(imageio_ffmpeg.get_ffmpeg_exe()), "ffmpeg")
+required_file(ROOT / "dist" / "update.exe", "update.exe")
 if not ffprobe:
     raise SystemExit("No se encontró ffprobe en PATH; es obligatorio para el build de Windows.")
 
@@ -67,7 +66,6 @@ datas += [
     (str(path), "cliente_xmpp/assets/audio")
     for path in (ROOT / "cliente_xmpp" / "assets" / "audio").glob("*.mp3")
 ]
-
 binaries = [
     (str(libmpv), "cliente_xmpp/lib"),
     (str(nvda_controller), "cliente_xmpp/lib"),

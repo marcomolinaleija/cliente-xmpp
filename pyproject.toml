@@ -16,6 +16,11 @@ dependencies = [
     "windows-toasts>=1.3.1,<2.0.0; sys_platform == 'win32'",
 ]
 
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.21,<7",
+]
+
 [project.scripts]
 cliente-xmpp = "cliente_xmpp.app.main:main"
 

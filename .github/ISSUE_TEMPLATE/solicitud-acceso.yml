@@ -1,0 +1,49 @@
+name: Solicitud de acceso a la beta
+description: Solicita una invitación sin publicar información privada.
+title: "[Acceso] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por tu interés en WhatsApp CAN. La beta admite pocas personas por etapa.
+
+        **No publiques aquí tu teléfono, contraseña XMPP, códigos de vinculación, QR, mensajes ni archivos personales.** Si hay disponibilidad, el responsable indicará un canal privado para completar el alta.
+  - type: input
+    id: uso
+    attributes:
+      label: ¿Para qué te gustaría probar el cliente?
+      description: Explica brevemente el caso de uso sin incluir información privada.
+      placeholder: Por ejemplo, uso diario con teclado y NVDA en Windows.
+    validations:
+      required: true
+  - type: dropdown
+    id: lector
+    attributes:
+      label: Tecnología de asistencia principal
+      options:
+        - NVDA
+        - JAWS
+        - Narrador de Windows
+        - Solo teclado
+        - Otra o ninguna
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Versión de Windows
+      options:
+        - Windows 11
+        - Windows 10
+        - Otra
+    validations:
+      required: true
+  - type: checkboxes
+    id: condiciones
+    attributes:
+      label: Confirmaciones
+      options:
+        - label: Entiendo que es una beta con cupo y que enviar esta solicitud no garantiza acceso.
+          required: true
+        - label: Confirmo que no incluí datos personales, credenciales ni contenido de mensajes.
+          required: true

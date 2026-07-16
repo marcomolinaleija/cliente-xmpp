@@ -4873,6 +4873,8 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "online":
             return "contacto en línea"
         if presence.availability == "away":
@@ -4890,6 +4892,8 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "online":
             return "en línea"
         if presence.availability == "away":

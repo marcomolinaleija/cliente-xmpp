@@ -117,6 +117,64 @@ class ChatListFocusTests(unittest.TestCase):
         self.assertEqual(calls, [("select", "marco@example.org"), ("focus", "")])
 
 
+class ContactPresenceLabelTests(unittest.TestCase):
+    @staticmethod
+    def _window(availability: str, last_seen: datetime | None) -> SimpleNamespace:
+        chat_jid = "+15550001234@whatsapp.example.org"
+        return SimpleNamespace(
+            chat_jid=chat_jid,
+            chat_state_by_chat={},
+            contact_presence_by_chat={
+                chat_jid: SimpleNamespace(
+                    availability=availability,
+                    status="",
+                    last_seen=last_seen,
+                )
+            },
+            _format_presence_time=lambda _value: "hoy 3:41 p. m.",
+        )
+
+    def test_last_seen_replaces_away_status_when_timestamp_is_available(self) -> None:
+        window = self._window("away", datetime(2026, 7, 16, 15, 41))
+
+        self.assertEqual(
+            MainWindow._contact_connection_status_text(window, window.chat_jid),
+            "últ. vez hoy 3:41 p. m.",
+        )
+        self.assertEqual(
+            MainWindow._conversation_status_text(window, window.chat_jid),
+            "últ. vez hoy 3:41 p. m.",
+        )
+
+    def test_away_status_remains_when_privacy_hides_last_seen(self) -> None:
+        window = self._window("away", None)
+
+        self.assertEqual(
+            MainWindow._contact_connection_status_text(window, window.chat_jid),
+            "ausente",
+        )
+        self.assertEqual(
+            MainWindow._conversation_status_text(window, window.chat_jid),
+            "contacto ausente",
+        )
+
+    def test_last_seen_is_used_when_bridge_marks_presence_available(self) -> None:
+        window = self._window("online", datetime(2026, 7, 16, 15, 41))
+
+        self.assertEqual(
+            MainWindow._contact_connection_status_text(window, window.chat_jid),
+            "últ. vez hoy 3:41 p. m.",
+        )
+
+    def test_online_status_is_used_when_presence_has_no_last_seen(self) -> None:
+        window = self._window("online", None)
+
+        self.assertEqual(
+            MainWindow._contact_connection_status_text(window, window.chat_jid),
+            "en línea",
+        )
+
+
 class ChatSearchRankingTests(unittest.TestCase):
     def test_exact_chat_name_beats_group_name_and_message_preview(self) -> None:
         exact = Chat(

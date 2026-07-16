@@ -832,19 +832,25 @@ class ConversationPanel(wx.Panel):
         sender = "Tú" if message.outgoing else self._sender_label(message)
         timestamp = self._format_message_time(message)
         body = self._format_message_body(message)
-        metadata = f"{sender} {timestamp}"
+        metadata = sender
         if message.starred:
             metadata = f"Destacado. {metadata}"
         if message.edited:
             metadata = f"Editado. {metadata}"
         if message.is_forwarded:
             metadata = f"Reenviado. {metadata}"
-        if message.reactions:
-            metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
 
         reply = self._format_reply_summary(message)
         if reply:
-            return f"{metadata}\n{reply}\n\n{body}"
+            parts = [metadata, body, timestamp]
+            if message.reactions:
+                parts.append(f"Reacciones: {' '.join(message.reactions)}")
+            parts.append(reply)
+            return "\n\n".join(parts)
+
+        metadata = f"{metadata} {timestamp}"
+        if message.reactions:
+            metadata = f"{metadata}\nReacciones: {' '.join(message.reactions)}"
 
         return f"{metadata}\n\n{body}"
 

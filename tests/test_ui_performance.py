@@ -49,6 +49,25 @@ class ConversationPerformanceTests(unittest.TestCase):
         self.assertIn("...", row)
         self.assertIn(body, reader)
 
+    def test_left_arrow_reader_announces_reply_after_sender_body_and_time(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            sender_name="Contacto",
+            body="respuesta nueva",
+            reply_quote="mensaje citado",
+        )
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel.resolve_display_name = lambda _jid: "Contacto"
+        panel._audio_durations_by_url = {}
+        panel._format_message_time = lambda _message: "10:30"
+
+        spoken = panel._format_message_for_reader(message)
+
+        self.assertLess(spoken.index("Contacto"), spoken.index("respuesta nueva"))
+        self.assertLess(spoken.index("respuesta nueva"), spoken.index("10:30"))
+        self.assertLess(spoken.index("10:30"), spoken.index("respondiendo a: mensaje citado"))
+
 
 class ChatListPerformanceTests(unittest.TestCase):
     def test_chat_index_supports_constant_time_lookup(self) -> None:

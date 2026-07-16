@@ -12,7 +12,7 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
-from cliente_xmpp.ui.main_window import MainWindow
+from cliente_xmpp.ui.main_window import APP_WINDOW_TITLE, MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import (
     ChatDisplayedSynced,
@@ -158,12 +158,16 @@ class ContactPresenceLabelTests(unittest.TestCase):
             "contacto ausente",
         )
 
-    def test_last_seen_is_used_when_bridge_marks_presence_available(self) -> None:
+    def test_online_status_replaces_last_seen_when_presence_is_available(self) -> None:
         window = self._window("online", datetime(2026, 7, 16, 15, 41))
 
         self.assertEqual(
             MainWindow._contact_connection_status_text(window, window.chat_jid),
-            "últ. vez hoy 3:41 p. m.",
+            "en línea",
+        )
+        self.assertEqual(
+            MainWindow._conversation_status_text(window, window.chat_jid),
+            "contacto en línea",
         )
 
     def test_online_status_is_used_when_presence_has_no_last_seen(self) -> None:
@@ -173,6 +177,34 @@ class ContactPresenceLabelTests(unittest.TestCase):
             MainWindow._contact_connection_status_text(window, window.chat_jid),
             "en línea",
         )
+
+    def test_live_chat_state_replaces_last_seen(self) -> None:
+        window = self._window("away", datetime(2026, 7, 16, 15, 41))
+        window.chat_state_by_chat[window.chat_jid] = "composing"
+
+        self.assertEqual(
+            MainWindow._conversation_status_text(window, window.chat_jid),
+            "contacto escribiendo",
+        )
+
+    def test_header_uses_live_conversation_status(self) -> None:
+        summaries: list[tuple[str, str]] = []
+        titles: list[str] = []
+        chat = SimpleNamespace(name="Contacto", jid="contact@example.org")
+        window = SimpleNamespace(
+            conversation=SimpleNamespace(
+                current_chat=chat,
+                IsShown=lambda: True,
+                set_contact_summary=lambda name, status: summaries.append((name, status)),
+            ),
+            _conversation_status_text=lambda _jid: "contacto escribiendo",
+            SetTitle=titles.append,
+        )
+
+        MainWindow._refresh_current_chat_status_title(window)
+
+        self.assertEqual(summaries, [("Contacto", "contacto escribiendo")])
+        self.assertEqual(titles, [f"{APP_WINDOW_TITLE} - Contacto"])
 
 
 class ChatSearchRankingTests(unittest.TestCase):

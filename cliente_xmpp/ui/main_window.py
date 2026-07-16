@@ -4856,7 +4856,7 @@ class MainWindow(wx.Frame):
 
         self.conversation.set_contact_summary(
             chat.name,
-            self._contact_connection_status_text(chat.jid),
+            self._conversation_status_text(chat.jid),
         )
         self.SetTitle(f"{APP_WINDOW_TITLE} - {chat.name}")
 
@@ -4873,16 +4873,14 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
-        if presence.last_seen is not None:
-            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "online":
             return "contacto en línea"
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "away":
             return "contacto ausente"
         if presence.availability == "busy":
             return "contacto ocupado"
-        if presence.last_seen is not None:
-            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.status:
             return presence.status
         return ""
@@ -4892,16 +4890,14 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
-        if presence.last_seen is not None:
-            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "online":
             return "en línea"
+        if presence.last_seen is not None:
+            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.availability == "away":
             return "ausente"
         if presence.availability == "busy":
             return "ocupado"
-        if presence.last_seen is not None:
-            return f"últ. vez {self._format_presence_time(presence.last_seen)}"
         if presence.status:
             return presence.status
         return ""

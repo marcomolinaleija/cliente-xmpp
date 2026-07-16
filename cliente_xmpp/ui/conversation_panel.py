@@ -61,6 +61,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index: int | None = None
         self._replying = False
         self._editing = False
+        self._remote_actions_enabled = False
         self._audio_durations_by_url: dict[str, float] = {}
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
@@ -107,12 +108,8 @@ class ConversationPanel(wx.Panel):
         self._editing = False
         self.hide_mention_suggestions()
         self._set_compose_label_for_chat()
-        self.send_button.Enable(True)
-        self.attach_button.Enable(True)
-        self.sticker_button.Enable(True)
         self.set_recording_state(False)
-        self.update_send_button_state()
-        self.load_older_button.Enable(True)
+        self.set_remote_actions_enabled(self._remote_actions_enabled)
 
     def set_contact_summary(self, name: str, status: str = "") -> None:
         label = f"{name} | {status}" if status else name
@@ -205,6 +202,20 @@ class ConversationPanel(wx.Panel):
 
     def focus_composer(self) -> None:
         self.compose.SetFocus()
+
+    @property
+    def remote_actions_enabled(self) -> bool:
+        return self._remote_actions_enabled
+
+    def set_remote_actions_enabled(self, enabled: bool) -> None:
+        self._remote_actions_enabled = enabled
+        recording = self.pause_recording_button.IsShown()
+        self.compose.Enable(enabled and not recording)
+        self.send_button.Enable(enabled)
+        self.attach_button.Enable(enabled and not recording)
+        self.sticker_button.Enable(enabled and not recording)
+        self.load_older_button.Enable(enabled)
+        self.view_once_audio.Enable(enabled)
 
     def focus_default_message_item(self) -> None:
         if self._focus_target_index is None:
@@ -308,12 +319,17 @@ class ConversationPanel(wx.Panel):
             self.send_button.SetLabel("&Grabar audio")
 
     def set_recording_state(self, recording: bool, paused: bool = False) -> None:
-        self.compose.Enable(not recording)
-        self.attach_button.Enable(not recording)
-        self.sticker_button.Enable(not recording)
+        actions_enabled = getattr(self, "_remote_actions_enabled", True)
+        self.compose.Enable(actions_enabled and not recording)
+        send_button = getattr(self, "send_button", None)
+        if send_button is not None:
+            send_button.Enable(actions_enabled)
+        self.attach_button.Enable(actions_enabled and not recording)
+        self.sticker_button.Enable(actions_enabled and not recording)
         self.pause_recording_button.Show(recording)
         self.cancel_recording_button.Show(recording)
         self.view_once_audio.Show(recording)
+        self.view_once_audio.Enable(actions_enabled)
         if not recording:
             self.view_once_audio.SetValue(False)
         self.update_send_button_state(recording, paused)

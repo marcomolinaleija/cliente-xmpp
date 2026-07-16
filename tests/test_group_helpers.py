@@ -20,6 +20,7 @@ from cliente_xmpp.xmpp.events import (
     GroupParticipantUpdated,
     WhatsAppBridgeStatus,
     WhatsAppQrImageDataReceived,
+    XmppConnected,
 )
 
 
@@ -824,6 +825,138 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             )
         )
 
+
+class InitialConnectionFlowTests(unittest.TestCase):
+    def test_session_start_emits_xmpp_connected_before_roster_finishes(self) -> None:
+        async def scenario() -> tuple[list[object], list[str]]:
+            roster_release = asyncio.Event()
+            events: list[object] = []
+            calls: list[str] = []
+
+            async def enable_carbons() -> None:
+                calls.append("carbons")
+
+            async def load_initial_roster(_session_generation: int) -> None:
+                calls.append("roster-started")
+                await roster_release.wait()
+                calls.append("roster-finished")
+
+            client = SimpleNamespace(
+                _session_started_at=None,
+                _last_whatsapp_status_by_component={},
+                _initial_roster_chats=None,
+                _whatsapp_session_ready=True,
+                _initial_remote_sync_started=True,
+                _session_generation=0,
+                _joined_group_chat_jids={"#room@example.org"},
+                _presence_subscription_jids={"contact@example.org"},
+                send_presence=lambda: calls.append("presence"),
+                _emit=events.append,
+                _enable_carbons=enable_carbons,
+                _load_initial_roster=load_initial_roster,
+            )
+
+            await BridgeXmppClient._on_session_start(client, None)
+            await asyncio.sleep(0)
+            self.assertTrue(any(isinstance(event, XmppConnected) for event in events))
+            self.assertIn("roster-started", calls)
+            self.assertNotIn("roster-finished", calls)
+            self.assertFalse(client._whatsapp_session_ready)
+            self.assertFalse(client._initial_remote_sync_started)
+            self.assertFalse(client._joined_group_chat_jids)
+            self.assertFalse(client._presence_subscription_jids)
+
+            roster_release.set()
+            await asyncio.sleep(0)
+            return events, calls
+
+        events, calls = asyncio.run(scenario())
+
+        self.assertTrue(any(isinstance(event, XmppConnected) for event in events))
+        self.assertIn("roster-finished", calls)
+
+    def test_initial_remote_sync_waits_for_roster_and_live_whatsapp_status(self) -> None:
+        async def scenario() -> list[str]:
+            calls: list[str] = []
+
+            async def discover(_chats: list[Chat]) -> None:
+                calls.append("groups")
+
+            async def inbox() -> None:
+                calls.append("inbox")
+
+            async def displayed() -> None:
+                calls.append("displayed")
+
+            client = SimpleNamespace(
+                _whatsapp_session_ready=False,
+                _initial_roster_chats=[Chat(jid="contact@example.org", name="Contacto")],
+                _initial_remote_sync_started=False,
+                _discover_group_chats_with_retries=discover,
+                load_inbox=inbox,
+                _load_displayed_states=displayed,
+            )
+
+            BridgeXmppClient._start_initial_remote_sync_if_ready(client)
+            await asyncio.sleep(0)
+            self.assertFalse(calls)
+
+            client._whatsapp_session_ready = True
+            BridgeXmppClient._start_initial_remote_sync_if_ready(client)
+            BridgeXmppClient._start_initial_remote_sync_if_ready(client)
+            await asyncio.sleep(0)
+            return calls
+
+        self.assertCountEqual(asyncio.run(scenario()), ["groups", "inbox", "displayed"])
+
+    def test_stale_roster_result_is_ignored_after_reconnect(self) -> None:
+        events: list[object] = []
+        client = SimpleNamespace(
+            _session_generation=2,
+            get_roster=lambda: asyncio.sleep(0),
+            _build_roster_chats=lambda: self.fail("A stale roster must not be built"),
+            _emit=events.append,
+            _debug_whatsapp=lambda _message: None,
+        )
+
+        asyncio.run(BridgeXmppClient._load_initial_roster(client, 1))
+
+        self.assertFalse(events)
+
+    def test_disco_timeout_still_checks_linking_commands(self) -> None:
+        class DiscoPlugin:
+            async def get_info(self, **_kwargs: object) -> object:
+                raise TimeoutError("disco timeout")
+
+        command_checks: list[str] = []
+
+        async def check_commands(jid: str) -> None:
+            command_checks.append(jid)
+
+        client = SimpleNamespace(
+            _debug_whatsapp=lambda _message: None,
+            _debug_whatsapp_component_commands=check_commands,
+            __getitem__=lambda _key: DiscoPlugin(),
+        )
+
+        class ClientProxy:
+            _debug_whatsapp = staticmethod(client._debug_whatsapp)
+            _debug_whatsapp_component_commands = staticmethod(check_commands)
+
+            def __getitem__(self, _key: str) -> DiscoPlugin:
+                return DiscoPlugin()
+
+        asyncio.run(
+            BridgeXmppClient._debug_whatsapp_component(
+                ClientProxy(),
+                "whatsapp.example.org",
+            )
+        )
+
+        self.assertEqual(command_checks, ["whatsapp.example.org"])
+
+
+class WhatsAppPairingCodeContinuationTests(unittest.TestCase):
     def test_contact_message_is_not_component_admin_message(self) -> None:
         self.assertFalse(
             BridgeXmppClient._is_whatsapp_component_admin_message(
@@ -888,6 +1021,89 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         )
 
         self.assertEqual(BridgeXmppClient._avatar_data_from_iq(iq), b"avatar-bytes")
+
+
+class PendingWhatsAppUiTests(unittest.TestCase):
+    class Control:
+        def __init__(self, shown: bool = False) -> None:
+            self.enabled = True
+            self.shown = shown
+
+        def Enable(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+        def IsShown(self) -> bool:
+            return self.shown
+
+    def test_conversation_remote_actions_can_be_disabled_while_verifying(self) -> None:
+        panel = SimpleNamespace(
+            _remote_actions_enabled=True,
+            pause_recording_button=self.Control(),
+            compose=self.Control(),
+            send_button=self.Control(),
+            attach_button=self.Control(),
+            sticker_button=self.Control(),
+            load_older_button=self.Control(),
+            view_once_audio=self.Control(),
+        )
+
+        ConversationPanel.set_remote_actions_enabled(panel, False)
+
+        self.assertFalse(panel._remote_actions_enabled)
+        self.assertFalse(panel.compose.enabled)
+        self.assertFalse(panel.send_button.enabled)
+        self.assertFalse(panel.attach_button.enabled)
+        self.assertFalse(panel.sticker_button.enabled)
+        self.assertFalse(panel.load_older_button.enabled)
+
+    def test_chat_cannot_open_before_live_whatsapp_confirmation(self) -> None:
+        placeholders: list[str] = []
+        statuses: list[str] = []
+        window = SimpleNamespace(
+            whatsapp_verified=False,
+            _show_chat_placeholder=placeholders.append,
+            status_bar=SimpleNamespace(SetStatusText=statuses.append),
+        )
+
+        MainWindow._show_selected_chat(window)
+
+        self.assertEqual(
+            placeholders,
+            ["Verificando confirmación de conexión con WhatsApp..."],
+        )
+        self.assertEqual(statuses, placeholders)
+
+    def test_cached_chats_are_applied_only_after_whatsapp_confirmation(self) -> None:
+        calls: list[str] = []
+        window = SimpleNamespace(
+            whatsapp_verified=False,
+            pending_roster_chats=None,
+            _apply_cached_chats_after_whatsapp_verified=lambda: calls.append("cache"),
+            _debug_perf=lambda *_args, **_kwargs: None,
+        )
+
+        MainWindow._apply_pending_roster_if_ready(window)
+        self.assertFalse(calls)
+
+        window.whatsapp_verified = True
+        MainWindow._apply_pending_roster_if_ready(window)
+        self.assertEqual(calls, ["cache"])
+
+    def test_unverified_whatsapp_does_not_send_displayed_marker(self) -> None:
+        sent: list[object] = []
+        window = SimpleNamespace(
+            whatsapp_verified=False,
+            xmpp=SimpleNamespace(
+                mark_chat_displayed=lambda *args, **kwargs: sent.append((args, kwargs))
+            ),
+        )
+
+        MainWindow._mark_chat_displayed(
+            window,
+            Chat(jid="contact@example.org", name="Contacto"),
+        )
+
+        self.assertFalse(sent)
 
 
 class WhatsAppRegistrationTests(unittest.TestCase):
@@ -1485,6 +1701,76 @@ class GroupMessageParsingTests(unittest.TestCase):
             BridgeXmppClient._reply_parts_from_quoted_body("> cita original\n\nrespuesta"),
             ("respuesta", "cita original"),
         )
+
+    def test_reply_quote_is_hydrated_from_referenced_message(self) -> None:
+        sent_at = datetime.now().astimezone()
+        quoted = Message(
+            chat_jid="contact@example.org",
+            sender_jid="me",
+            body="mensaje original",
+            sent_at=sent_at,
+            outgoing=True,
+            message_id="quoted-id",
+        )
+        reply = Message(
+            chat_jid=quoted.chat_jid,
+            sender_jid="contact@example.org",
+            body="respuesta",
+            sent_at=sent_at + timedelta(seconds=1),
+            message_id="reply-id",
+            reply_to_id="quoted-id",
+        )
+
+        hydrated = MainWindow._hydrate_reply_quotes([quoted, reply])
+
+        self.assertEqual(reply.reply_quote, "mensaje original")
+        self.assertEqual(hydrated, [reply])
+
+    def test_reply_quote_is_hydrated_when_older_target_arrives_later(self) -> None:
+        sent_at = datetime.now().astimezone()
+        reply = Message(
+            chat_jid="contact@example.org",
+            sender_jid="contact@example.org",
+            body="respuesta",
+            sent_at=sent_at,
+            message_id="reply-id",
+            reply_to_id="quoted-id",
+        )
+        quoted = Message(
+            chat_jid=reply.chat_jid,
+            sender_jid="me",
+            body="mensaje cargado después",
+            sent_at=sent_at - timedelta(seconds=1),
+            outgoing=True,
+            message_id="quoted-id",
+        )
+
+        self.assertEqual(MainWindow._hydrate_reply_quotes([reply]), [])
+        hydrated = MainWindow._hydrate_reply_quotes([reply, quoted])
+
+        self.assertEqual(reply.reply_quote, "mensaje cargado después")
+        self.assertEqual(hydrated, [reply])
+
+    def test_explicit_reply_quote_is_not_replaced(self) -> None:
+        quoted = Message(
+            chat_jid="contact@example.org",
+            sender_jid="me",
+            body="texto local distinto",
+            message_id="quoted-id",
+        )
+        reply = Message(
+            chat_jid=quoted.chat_jid,
+            sender_jid="contact@example.org",
+            body="respuesta",
+            message_id="reply-id",
+            reply_quote="cita enviada por el bridge",
+            reply_to_id="quoted-id",
+        )
+
+        hydrated = MainWindow._hydrate_reply_quotes([quoted, reply])
+
+        self.assertEqual(reply.reply_quote, "cita enviada por el bridge")
+        self.assertEqual(hydrated, [])
 
     def test_group_self_echo_is_distinguished_from_bot_messages(self) -> None:
         outgoing = Message(

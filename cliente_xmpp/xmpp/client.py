@@ -140,6 +140,10 @@ class BridgeXmppClient(ClientXMPP):
         self._reconnect_scheduled = False
         self._last_whatsapp_status_by_component: dict[str, str] = {}
         self._whatsapp_link_sessions: dict[str, tuple[str, str]] = {}
+        self._initial_roster_chats: list[Chat] | None = None
+        self._whatsapp_session_ready = False
+        self._initial_remote_sync_started = False
+        self._session_generation = 0
         self.force_starttls = settings.use_tls
 
         self.add_event_handler("session_start", self._on_session_start)
@@ -163,20 +167,54 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("changed_status", self._on_presence_debug)
 
     async def _on_session_start(self, _event: object) -> None:
+        self._session_generation += 1
+        session_generation = self._session_generation
         self._session_started_at = datetime.now().astimezone()
+        self._last_whatsapp_status_by_component.clear()
+        self._initial_roster_chats = None
+        self._whatsapp_session_ready = False
+        self._initial_remote_sync_started = False
+        self._joined_group_chat_jids.clear()
+        self._presence_subscription_jids.clear()
         self.send_presence()
-        await self.get_roster()
         self._emit(XmppConnected())
-        await self._enable_carbons()
+        asyncio.create_task(self._enable_carbons())
+        asyncio.create_task(self._load_initial_roster(session_generation))
+
+    async def _load_initial_roster(self, session_generation: int) -> None:
+        try:
+            await self.get_roster()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._debug_whatsapp(f"roster load error: {_format_xmpp_error(exc)}")
+            return
+
+        if session_generation != self._session_generation:
+            return
+
         chats = self._build_roster_chats()
+        self._initial_roster_chats = chats
         self._emit(RosterLoaded(chats))
         asyncio.create_task(self._debug_whatsapp_bridge_state(chats))
-        asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
+        self._start_initial_remote_sync_if_ready()
+
+    def _start_initial_remote_sync_if_ready(self) -> None:
+        if (
+            not self._whatsapp_session_ready
+            or self._initial_roster_chats is None
+            or self._initial_remote_sync_started
+        ):
+            return
+
+        self._initial_remote_sync_started = True
+        chats = list(self._initial_roster_chats)
         asyncio.create_task(self._discover_group_chats_with_retries(chats))
         asyncio.create_task(self.load_inbox())
         asyncio.create_task(self._load_displayed_states())
 
     def _on_disconnected(self, _event: object) -> None:
+        self._whatsapp_session_ready = False
         if self._disconnect_requested:
             self._emit(XmppDisconnected())
             if self.loop and self.loop.is_running():
@@ -731,11 +769,13 @@ class BridgeXmppClient(ClientXMPP):
         if not chats:
             return
 
+        new_group_jids = {chat.jid for chat in chats} - self._group_chat_jids
         self._group_chat_jids.update(chat.jid for chat in chats)
         self._emit(ChatsDiscovered(chats))
         for chat in chats:
             self._join_group_chat(chat.jid)
-        asyncio.create_task(self.load_recent_activity({chat.jid for chat in chats}))
+        if new_group_jids:
+            asyncio.create_task(self.load_recent_activity(new_group_jids))
 
     async def _group_service_candidates(self, roster_chats: list[Chat]) -> set[str]:
         candidates = self._component_domains_from_chats(roster_chats)
@@ -778,25 +818,24 @@ class BridgeXmppClient(ClientXMPP):
             info = await self["xep_0030"].get_info(jid=jid, timeout=10)
         except Exception as exc:
             self._debug_whatsapp(f"component {jid} disco_info error: {_format_xmpp_error(exc)}")
-            return
+        else:
+            identities = [
+                "category="
+                f"{identity.attrib.get('category', '')},type={identity.attrib.get('type', '')},"
+                f"name={self._safe_debug_text(identity.attrib.get('name', ''))}"
+                for identity in info.xml.findall(f".//{{{DISCO_INFO_NS}}}identity")
+            ]
+            features = sorted(
+                feature.attrib.get("var", "")
+                for feature in info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")
+                if feature.attrib.get("var", "")
+            )
+            self._debug_whatsapp(
+                f"component {jid} identities={identities or 'none'} "
+                f"features={features or 'none'}"
+            )
 
-        identities = [
-            "category="
-            f"{identity.attrib.get('category', '')},type={identity.attrib.get('type', '')},"
-            f"name={self._safe_debug_text(identity.attrib.get('name', ''))}"
-            for identity in info.xml.findall(f".//{{{DISCO_INFO_NS}}}identity")
-        ]
-        features = sorted(
-            feature.attrib.get("var", "")
-            for feature in info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")
-            if feature.attrib.get("var", "")
-        )
-        self._debug_whatsapp(
-            f"component {jid} identities={identities or 'none'} "
-            f"features={features or 'none'}"
-        )
-
-        asyncio.create_task(self._debug_whatsapp_component_commands(jid))
+        await self._debug_whatsapp_component_commands(jid)
 
     async def _debug_whatsapp_component_commands(self, jid: str) -> None:
         commands = await self._adhoc_commands(jid)
@@ -999,9 +1038,11 @@ class BridgeXmppClient(ClientXMPP):
     async def _adhoc_commands(self, jid: str) -> list[tuple[str, str]]:
         try:
             commands = await self["xep_0050"].get_commands(jid, timeout=10)
-        except Exception:
+        except Exception as exc:
             if self._is_probable_whatsapp_bridge_jid(jid):
-                self._debug_whatsapp(f"commands {jid}: unavailable")
+                self._debug_whatsapp(
+                    f"commands {jid}: unknown; query error: {_format_xmpp_error(exc)}"
+                )
             return []
 
         discovered: list[tuple[str, str]] = []
@@ -1500,6 +1541,19 @@ class BridgeXmppClient(ClientXMPP):
                 detail=self._safe_debug_text(detail, limit=500),
             )
         )
+        if status in {"connected", "paired"}:
+            self._whatsapp_session_ready = True
+            self._start_initial_remote_sync_if_ready()
+        elif status in {
+            "connection_error",
+            "logged_out",
+            "needs_pairing",
+            "needs_pair_code",
+            "needs_qr",
+            "needs_registration",
+            "needs_relogin",
+        }:
+            self._whatsapp_session_ready = False
 
     def _is_whatsapp_qr_image(
         self,
@@ -2079,11 +2133,13 @@ class BridgeXmppClient(ClientXMPP):
         if not group_jids:
             return
 
+        new_group_jids = group_jids - self._group_chat_jids
         self._group_chat_jids.update(group_jids)
         for group_jid in group_jids:
             self._join_group_chat(group_jid)
-        asyncio.create_task(self._enrich_monitored_group_chats(group_jids))
-        asyncio.create_task(self.load_recent_activity(group_jids))
+        if new_group_jids:
+            asyncio.create_task(self._enrich_monitored_group_chats(new_group_jids))
+            asyncio.create_task(self.load_recent_activity(new_group_jids))
 
     async def _enrich_monitored_group_chats(self, group_jids: set[str]) -> None:
         chats: list[Chat] = []

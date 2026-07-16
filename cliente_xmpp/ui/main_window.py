@@ -347,7 +347,10 @@ class MainWindow(wx.Frame):
         self._save_login_password(login)
         self.current_jid = login.settings.jid
         self.whatsapp_verified = False
+        self.whatsapp_link_status = "unknown"
+        self.whatsapp_link_detail = ""
         self.pending_roster_chats = None
+        self.roster_jids = set()
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
@@ -500,6 +503,7 @@ class MainWindow(wx.Frame):
             message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
             self.connection_header.set_status(message)
             self.status_bar.SetStatusText(message)
+            self._set_whatsapp_remote_actions_enabled(True)
             self._apply_pending_roster_if_ready()
             self.workspace_panel.Layout()
             self._debug_perf(
@@ -529,6 +533,8 @@ class MainWindow(wx.Frame):
             message = "WhatsApp reporto un error de conexion."
         else:
             return
+
+        self._set_whatsapp_remote_actions_enabled(False)
 
         if detail:
             message = f"{message} {detail}"
@@ -974,7 +980,7 @@ class MainWindow(wx.Frame):
         if not self.whatsapp_verified:
             return
         if self.pending_roster_chats is None:
-            self._show_chat_placeholder("Cargando chats...")
+            self._apply_cached_chats_after_whatsapp_verified()
             self._debug_perf("_apply_pending_roster_if_ready.waiting", started_at)
             return
 
@@ -985,7 +991,48 @@ class MainWindow(wx.Frame):
             chats=len(self.pending_roster_chats),
         )
 
+    def _apply_cached_chats_after_whatsapp_verified(self) -> None:
+        cached_chats = self._load_cached_chats()
+        self._set_searchable_chats(cached_chats)
+        visible_chats = self._chats_with_activity(cached_chats)
+        self.loaded_chat_summaries = len(visible_chats)
+        if not visible_chats:
+            self._show_chat_placeholder("WhatsApp conectado. Cargando chats...")
+            self.status_bar.SetStatusText("WhatsApp conectado. Cargando chats...")
+            return
+
+        self.chat_list.set_chats(self._sort_chats_by_recency(visible_chats))
+        if self.chat_list.IsShown():
+            if not self.chat_list.selected_chat():
+                self.chat_list.select_first()
+            self.chat_list.focus()
+        self.status_bar.SetStatusText(
+            f"WhatsApp conectado. {self.loaded_chat_summaries} chats locales disponibles."
+        )
+
+    def _set_whatsapp_remote_actions_enabled(self, enabled: bool) -> None:
+        if not enabled and self.audio_recorder.is_recording:
+            self.audio_recorder.cancel()
+            self.conversation.set_recording_state(False)
+        self.conversation.set_remote_actions_enabled(enabled)
+        self.connection_header.mark_all_read_button.Enable(enabled)
+        current_chat = self.conversation.current_chat
+        if enabled and current_chat is not None:
+            self._refresh_load_older_button(current_chat.jid)
+
+    def _require_whatsapp_connection(self) -> bool:
+        if self.whatsapp_verified:
+            return True
+
+        message = "WhatsApp todavía está sincronizando. Espera la confirmación de conexión."
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+        return False
+
     def _apply_roster_chats(self, chats: list[Chat]) -> None:
+        if not self.whatsapp_verified:
+            return
+
         started_at = time.perf_counter()
         load_started_at = time.perf_counter()
         cached_chats = self._load_cached_chats()
@@ -1641,6 +1688,9 @@ class MainWindow(wx.Frame):
         self._mark_all_chats_read()
 
     def _mark_all_chats_read(self) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chats_by_jid = self._searchable_chats_by_jid()
         unread_chats = [chat for chat in chats_by_jid.values() if chat.unread_count > 0]
         if not unread_chats:
@@ -1709,6 +1759,9 @@ class MainWindow(wx.Frame):
             self._refresh_chat_list_messages()
 
     def _refresh_current_chat(self) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if chat is None:
             return
@@ -1717,6 +1770,9 @@ class MainWindow(wx.Frame):
         self._request_history_page(chat.jid)
 
     def _refresh_chat_list_messages(self) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         self.status_bar.SetStatusText("Actualizando chats...")
         self.xmpp.load_inbox()
         self.xmpp.load_recent_activity(self.roster_jids)
@@ -1728,6 +1784,9 @@ class MainWindow(wx.Frame):
             self.xmpp.preload_histories(chat_jids, limit=HISTORY_PAGE_SIZE)
 
     def _on_primary_send_action(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         if self.audio_recorder.is_recording:
             self._stop_recording_and_send()
             return
@@ -1739,6 +1798,9 @@ class MainWindow(wx.Frame):
         self._start_recording()
 
     def _on_send_message(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         body = self.conversation.consume_composed_message()
         if not chat or not body:
@@ -1804,6 +1866,9 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if not chat:
             return
@@ -1815,6 +1880,9 @@ class MainWindow(wx.Frame):
         self._request_history_page(chat.jid, older=True)
 
     def _on_attach_file(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if not chat:
             return
@@ -1835,6 +1903,9 @@ class MainWindow(wx.Frame):
         self._send_files_to_chat(chat, [Path(path)])
 
     def _on_send_sticker(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if not chat:
             return
@@ -1883,6 +1954,9 @@ class MainWindow(wx.Frame):
         paths: list[Path],
         source_label: str = "archivo",
     ) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         files = [path for path in paths if path.is_file()]
         if not files:
             self._set_clipboard_status("No se pudo adjuntar: no hay archivos válidos")
@@ -1958,6 +2032,9 @@ class MainWindow(wx.Frame):
         return path, ""
 
     def _start_recording(self) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if not chat:
             return
@@ -2347,6 +2424,9 @@ class MainWindow(wx.Frame):
         menu.Destroy()
 
     def _reply_to_message(self, message: Message) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         self.reply_context = message
         self.conversation.insert_reply_quote(message)
 
@@ -2368,6 +2448,9 @@ class MainWindow(wx.Frame):
         )
 
     def _edit_last_message(self) -> bool:
+        if not self.whatsapp_verified:
+            return False
+
         chat = self.conversation.current_chat
         if chat is None or self.conversation.has_composed_text():
             return False
@@ -2380,6 +2463,9 @@ class MainWindow(wx.Frame):
         return True
 
     def _begin_editing(self, message: Message) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         if not self._message_can_be_edited(message):
             self.status_bar.SetStatusText("Ese mensaje ya no se puede editar")
             return
@@ -2397,6 +2483,9 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("Edición cancelada")
 
     def _send_message_correction(self, message: Message, body: str) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         if not self._message_can_be_edited(message):
             self._cancel_editing()
             self.status_bar.SetStatusText("Ese mensaje ya no se puede editar")
@@ -2436,6 +2525,9 @@ class MainWindow(wx.Frame):
         )
 
     def _delete_message(self, message: Message) -> bool:
+        if not self._require_whatsapp_connection():
+            return False
+
         if not self._message_can_be_deleted(message):
             self.status_bar.SetStatusText("Solo se pueden eliminar mensajes propios ya enviados")
             return False
@@ -2484,6 +2576,9 @@ class MainWindow(wx.Frame):
             wx.TheClipboard.Close()
 
     def _forward_message(self, source: Message) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         if source.retracted or not (source.body or source.media_url or source.audio_url):
             self.status_bar.SetStatusText("Ese mensaje no se puede reenviar")
             return
@@ -2856,6 +2951,9 @@ class MainWindow(wx.Frame):
         self.conversation.refresh_message(message)
 
     def _react_to_message(self, message: Message, reaction: str) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
         chat = self.conversation.current_chat
         if not chat:
             return
@@ -2898,12 +2996,22 @@ class MainWindow(wx.Frame):
             case XmppConnected():
                 self.login_panel.set_connecting(False)
                 self.connection_header.set_account(self.current_jid)
-                self.connection_header.set_status("Verificando WhatsApp")
+                self.connection_header.set_status("Verificando conexión con WhatsApp")
                 if not self.workspace_panel.IsShown():
                     self._set_connected_ui(True)
-                self._show_chat_placeholder("Verificando conexion de WhatsApp...")
-                self.status_bar.SetStatusText("Verificando conexion de WhatsApp...")
+                self._set_whatsapp_remote_actions_enabled(self.whatsapp_verified)
+                if self.whatsapp_verified:
+                    self._apply_pending_roster_if_ready()
+                else:
+                    message = "Verificando confirmación de conexión con WhatsApp..."
+                    self._show_chat_placeholder(message)
+                    self.status_bar.SetStatusText(message)
             case XmppDisconnected(reason=reason):
+                self.whatsapp_verified = False
+                self.whatsapp_link_status = "unknown"
+                self.pending_roster_chats = None
+                self._set_whatsapp_remote_actions_enabled(False)
+                self._show_chat_placeholder("Conexión interrumpida. Esperando reconexión...")
                 self.login_panel.set_connecting(False)
                 if reason:
                     self.connection_header.set_status(reason)
@@ -2968,7 +3076,9 @@ class MainWindow(wx.Frame):
                 if self.whatsapp_verified:
                     self._apply_roster_chats(chats)
                 else:
-                    self._show_chat_placeholder("Verificando conexion de WhatsApp...")
+                    message = "Verificando confirmación de conexión con WhatsApp..."
+                    self._show_chat_placeholder(message)
+                    self.status_bar.SetStatusText(message)
             case ChatsDiscovered(chats=chats):
                 if not self.whatsapp_verified:
                     return
@@ -2979,7 +3089,7 @@ class MainWindow(wx.Frame):
             case GroupParticipantsLoaded(participants=participants):
                 self._remember_group_participants(participants)
             case MessageReceived(message=message, notify=notify):
-                message, added_message = self._store_message(message)
+                message, added_message, hydrated_replies = self._store_message(message)
                 if not message.outgoing:
                     self._set_chat_state(message.chat_jid, "")
                 suppress_notification = self.loading_initial_chat_activity or not notify
@@ -3018,6 +3128,9 @@ class MainWindow(wx.Frame):
                         self.conversation.append_message(message)
                     else:
                         self.conversation.refresh_message(message)
+                    for hydrated_reply in hydrated_replies:
+                        if hydrated_reply is not message:
+                            self.conversation.refresh_message(hydrated_reply)
                 self._auto_download_media_message(message)
                 self._select_first_chat_if_needed()
                 if added_message and not suppress_notification:
@@ -3145,7 +3258,7 @@ class MainWindow(wx.Frame):
             self.history_exhausted_chats.add(chat_jid)
 
         self._normalize_audio_metadata_for_messages(messages)
-        self._merge_messages(chat_jid, messages)
+        hydrated_replies = self._merge_messages(chat_jid, messages)
         corrections = {message.replaces_id for message in messages if message.replaces_id}
         corrected_messages = [
             message
@@ -3153,7 +3266,9 @@ class MainWindow(wx.Frame):
             if message.message_id in corrections
         ]
         self._persist_messages(
-            [message for message in messages if not message.replaces_id] + corrected_messages
+            [message for message in messages if not message.replaces_id]
+            + corrected_messages
+            + hydrated_replies
         )
         activity_messages = [message for message in messages if not message.replaces_id]
         activity_messages.extend(corrected_messages)
@@ -3189,7 +3304,7 @@ class MainWindow(wx.Frame):
         else:
             self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
 
-    def _merge_messages(self, chat_jid: str, messages: list[Message]) -> None:
+    def _merge_messages(self, chat_jid: str, messages: list[Message]) -> list[Message]:
         merged = self.messages_by_chat.get(chat_jid, []) + messages
         indexes_by_key: dict[tuple[object, ...], int] = {}
         indexes_by_content: dict[tuple[object, ...], list[int]] = {}
@@ -3226,7 +3341,37 @@ class MainWindow(wx.Frame):
                     known_state,
                 )
 
+        hydrated_replies = MainWindow._hydrate_reply_quotes(unique_messages)
         self.messages_by_chat[chat_jid] = unique_messages
+        return hydrated_replies
+
+    @staticmethod
+    def _hydrate_reply_quotes(messages: list[Message]) -> list[Message]:
+        messages_by_remote_id: dict[str, Message] = {}
+        for message in messages:
+            for remote_id in (message.message_id, message.displayed_marker_id):
+                if remote_id:
+                    messages_by_remote_id.setdefault(remote_id, message)
+
+        hydrated: list[Message] = []
+        for message in messages:
+            if message.reply_quote or not message.reply_to_id:
+                continue
+
+            referenced = messages_by_remote_id.get(message.reply_to_id)
+            if referenced is None or referenced.retracted:
+                continue
+
+            quote = referenced.body.strip()
+            if not quote and has_media(referenced):
+                quote = media_description(referenced).strip()
+            if not quote:
+                continue
+
+            message.reply_quote = quote
+            hydrated.append(message)
+
+        return hydrated
 
     @staticmethod
     def _merge_delivery_state(current: str, incoming: str) -> str:
@@ -3464,6 +3609,9 @@ class MainWindow(wx.Frame):
         target.chat_is_group = target.chat_is_group or incoming.chat_is_group
 
     def _request_full_history(self, chat_jid: str) -> None:
+        if not self.whatsapp_verified:
+            return
+
         if chat_jid in self.history_loading_chats:
             return
 
@@ -3479,6 +3627,9 @@ class MainWindow(wx.Frame):
         older: bool = False,
         background: bool = False,
     ) -> None:
+        if not self.whatsapp_verified:
+            return
+
         if not background and chat_jid in self.history_loading_chats:
             return
 
@@ -3575,7 +3726,9 @@ class MainWindow(wx.Frame):
     def _refresh_load_older_button(self, chat_jid: str) -> None:
         loading = chat_jid in self.history_loading_chats
         exhausted = chat_jid in self.history_exhausted_chats
-        self.conversation.load_older_button.Enable(not loading and not exhausted)
+        self.conversation.load_older_button.Enable(
+            self.whatsapp_verified and not loading and not exhausted
+        )
         if loading:
             self.conversation.load_older_button.SetLabel("Cargando mensajes...")
         elif exhausted:
@@ -3617,7 +3770,7 @@ class MainWindow(wx.Frame):
         self.startup_panel.Show(True)
         self.Layout()
 
-    def _store_message(self, message: Message) -> tuple[Message, bool]:
+    def _store_message(self, message: Message) -> tuple[Message, bool, list[Message]]:
         message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
             message.chat_jid
         )
@@ -3636,7 +3789,7 @@ class MainWindow(wx.Frame):
             ),
             None,
         )
-        self._merge_messages(message.chat_jid, [message])
+        hydrated_replies = self._merge_messages(message.chat_jid, [message])
         stored_message = (
             existing_group_echo
             or self._message_by_id(message.chat_jid, message.replaces_id)
@@ -3645,14 +3798,14 @@ class MainWindow(wx.Frame):
         )
         self._remember_message_sender(stored_message)
         self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
-        self._persist_messages([stored_message])
+        self._persist_messages([stored_message] + hydrated_replies)
         added_message = (
             existing_group_echo is None
             and not message.replaces_id
             and message_key not in existing_keys
             and all(existing is not stored_message for existing in existing_messages)
         )
-        return stored_message, added_message
+        return stored_message, added_message, hydrated_replies
 
     def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
         if not message_id:
@@ -3914,6 +4067,12 @@ class MainWindow(wx.Frame):
         wx.CallAfter(self._apply_windows_notification_mark_read, chat_jid)
 
     def _apply_windows_notification_mark_read(self, chat_jid: str) -> None:
+        if not self.whatsapp_verified:
+            self.status_bar.SetStatusText(
+                "No se marcó como leído porque WhatsApp todavía no confirma la conexión"
+            )
+            return
+
         chat = self._chat_by_jid(chat_jid)
         if chat is None:
             return
@@ -4175,7 +4334,8 @@ class MainWindow(wx.Frame):
         if cached_messages:
             merge_started_at = time.perf_counter()
             self._normalize_audio_metadata_for_messages(cached_messages)
-            self._merge_messages(chat_jid, cached_messages)
+            hydrated_replies = self._merge_messages(chat_jid, cached_messages)
+            self._persist_messages(hydrated_replies)
             self._update_chat_activity_from_messages(chat_jid, cached_messages)
             self._update_chat_preview_from_messages(chat_jid, cached_messages)
             for message in cached_messages:
@@ -4735,6 +4895,9 @@ class MainWindow(wx.Frame):
         )
 
     def _mark_chat_displayed(self, chat: Chat) -> None:
+        if not getattr(self, "whatsapp_verified", True):
+            return
+
         chat_jid = chat.jid
 
         messages = self.messages_by_chat.get(chat_jid, [])
@@ -4759,6 +4922,12 @@ class MainWindow(wx.Frame):
         self.displayed_marker_ids_by_chat[chat_jid] = marker_id
 
     def _show_selected_chat(self) -> None:
+        if not self.whatsapp_verified:
+            message = "Verificando confirmación de conexión con WhatsApp..."
+            self._show_chat_placeholder(message)
+            self.status_bar.SetStatusText(message)
+            return
+
         item = self.chat_list.selected_item()
         chat = item.chat if item is not None else self.chat_list.selected_chat()
         if not chat:
@@ -4775,6 +4944,7 @@ class MainWindow(wx.Frame):
         else:
             self.xmpp.request_contact_presence_subscription(chat.jid)
         self._load_conversation(chat, unread_count=chat.unread_count)
+        self.conversation.set_remote_actions_enabled(True)
         self._update_chat_summary(chat.jid, mark_read=True)
         self.settings_panel.Hide()
         self.chat_list.Hide()

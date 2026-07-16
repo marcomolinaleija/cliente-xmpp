@@ -231,6 +231,15 @@ aceptar explícitamente. La aplicación copia `update.exe` a `%TEMP%`, cierra po
 el actualizador sustituye la carpeta completa con respaldo y rollback. El código fuente no hace
 consultas automáticas. El contrato de build y release vive en `docs/ACTUALIZACIONES.md`.
 
+La vinculación de WhatsApp expone únicamente el flujo por QR; el código por teléfono permanece
+como compatibilidad interna del protocolo, pero no se ofrece en la interfaz. La solicitud abre un
+único diálogo maximizado, centrado y con cuenta regresiva de 60 segundos. Cerrar ese diálogo no
+pierde un QR aún vigente: puede volver a mostrarse desde el panel. Al reintentar, primero se cancela
+cualquier sesión XEP-0050 conocida; si el bridge responde `already logging in` sin entregar ID de
+sesión, se conserva una sola solicitud hasta que llegue el QR o expire, porque `wa_logout` no está
+disponible durante ese estado parcial. Los mensajes administrativos del componente deben
+inspeccionarse en busca del QR antes de descartarlos como estados internos.
+
 La lista principal solo materializa chats con preview, fecha o no leidos. Los contactos del
 roster sin actividad permanecen en `searchable_chats_by_jid` para encontrarlos por nombre o
 telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son grupos.

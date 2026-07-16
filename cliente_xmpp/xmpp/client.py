@@ -229,12 +229,16 @@ class BridgeXmppClient(ClientXMPP):
 
         self._emit_chat_state_from_message(bare_jid, message_type, msg)
 
+        is_whatsapp_admin_message = False
         if message_type in ("chat", "normal"):
             self._debug_whatsapp_admin_message(bare_jid, body)
-            if self._is_whatsapp_component_admin_message(bare_jid, body):
-                return
+            is_whatsapp_admin_message = self._is_whatsapp_component_admin_message(
+                bare_jid,
+                body,
+            )
 
-        self._emit_inbox_entry(msg)
+        if not is_whatsapp_admin_message:
+            self._emit_inbox_entry(msg)
         group_chats = self._group_chats_from_bookmark_event_stanza(msg)
         if group_chats:
             self._monitor_discovered_group_chats(group_chats)
@@ -288,6 +292,8 @@ class BridgeXmppClient(ClientXMPP):
             )
         elif self._is_whatsapp_qr_candidate_message(bare_jid, body, msg.xml, media_url, media_kind):
             self._debug_whatsapp_qr_candidate(bare_jid, body, msg.xml, media_url, media_kind)
+        if is_whatsapp_admin_message:
+            return
         if not body and not media_url:
             return
 
@@ -1041,7 +1047,10 @@ class BridgeXmppClient(ClientXMPP):
             self._emit_whatsapp_status(
                 component_jid,
                 "needs_qr",
-                "Se solicito un nuevo QR de vinculacion.",
+                (
+                    "El servidor todavia no confirma la solicitud. "
+                    "Espera a que aparezca el QR o a que termine el tiempo disponible."
+                ),
             )
             return
         except Exception as exc:
@@ -1052,7 +1061,7 @@ class BridgeXmppClient(ClientXMPP):
                     "needs_qr",
                     (
                         "Ya hay una vinculacion por QR en curso. "
-                        "Si no ves el QR, usa codigo por telefono."
+                        "Espera a que aparezca o a que expire antes de generar otra."
                     ),
                 )
                 return
@@ -1072,7 +1081,7 @@ class BridgeXmppClient(ClientXMPP):
                     "needs_pairing",
                     (
                         "Slidge rechazo el comando de vinculacion aunque no hay confirmacion "
-                        "de conexion. Usa codigo por telefono o espera unos segundos y reintenta."
+                        "de conexion. Espera a que finalice la solicitud anterior y reintenta."
                     ),
                 )
                 return

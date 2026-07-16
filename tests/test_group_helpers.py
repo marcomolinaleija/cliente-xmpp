@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
+from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
@@ -16,6 +17,8 @@ from cliente_xmpp.xmpp.events import (
     ChatDisplayedSynced,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
+    WhatsAppBridgeStatus,
+    WhatsAppQrImageDataReceived,
 )
 
 
@@ -540,6 +543,50 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             ),
             (b"\x89PNG\r\n\x1a\n", "image/png", "qr-whatsapp.png"),
         )
+
+    def test_admin_status_message_still_emits_embedded_qr(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message from="whatsapp.example.org" type="chat">
+              <body>Scan the following QR code</body>
+              <data xmlns="urn:xmpp:bob" type="image/png">iVBORw0KGgo=</data>
+            </message>
+            """
+        )
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.xml = xml
+
+            def __getitem__(self, key: str) -> object:
+                return {
+                    "type": "chat",
+                    "body": "Scan the following QR code",
+                    "from": SimpleNamespace(bare="whatsapp.example.org"),
+                }[key]
+
+        emitted: list[object] = []
+        client = BridgeXmppClient(
+            ConnectionSettings(jid="tester@example.org"),
+            "password",
+            emitted.append,
+        )
+        client._emit_chat_state_from_message = lambda *_args: None
+        client._emit_inbox_entry = lambda *_args: self.fail(
+            "An admin QR must not be added to the inbox"
+        )
+        client._group_chats_from_bookmark_event_stanza = lambda *_args: []
+        client._group_chat_from_invite_stanza = lambda *_args: None
+        client._message_retraction_from_stanza = lambda *_args, **_kwargs: None
+
+        client._on_message(FakeMessage())
+
+        self.assertTrue(any(isinstance(event, WhatsAppBridgeStatus) for event in emitted))
+        self.assertTrue(
+            any(isinstance(event, WhatsAppQrImageDataReceived) for event in emitted)
+        )
+        if not client.loop.is_closed():
+            client.loop.close()
 
     def test_detects_slidge_qr_image_url_after_relogin(self) -> None:
         message = ET.fromstring(

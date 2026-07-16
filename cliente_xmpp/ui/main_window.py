@@ -63,7 +63,6 @@ from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
-    WhatsAppLinkDialog,
     WhatsAppLinkPanel,
     WhatsAppPairingCodeDialog,
     WhatsAppQrDialog,
@@ -109,6 +108,7 @@ CONTACT_AVATARS_DIR = APP_DIR / "avatars"
 SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
+WHATSAPP_QR_TIMEOUT_SECONDS = 60
 MESSAGE_EDIT_WINDOW = timedelta(minutes=15)
 APP_WINDOW_TITLE = "whatsapp-CAN"
 PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
@@ -196,12 +196,12 @@ class MainWindow(wx.Frame):
         self.whatsapp_link_detail = ""
         self.whatsapp_verified = False
         self.pending_roster_chats: list[Chat] | None = None
-        self.whatsapp_link_prompt_open = False
-        self.whatsapp_link_prompted_key = ""
         self.whatsapp_link_session: tuple[str, str, str] | None = None
-        self.last_whatsapp_phone = ""
         self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
         self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = 0.0
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_restart_after_cancel = False
         self.whatsapp_qr_downloads_in_progress: set[str] = set()
         self.contact_info_dialog: ContactInfoDialog | None = None
         self.audio_recorder = MciAudioRecorder()
@@ -295,7 +295,6 @@ class MainWindow(wx.Frame):
         )
         self.connection_header.settings_button.Bind(wx.EVT_BUTTON, self._on_open_settings)
         self.whatsapp_link_panel.open_button.Bind(wx.EVT_BUTTON, self._on_open_whatsapp_link)
-        self.whatsapp_link_panel.show_qr_button.Bind(wx.EVT_BUTTON, self._on_show_whatsapp_qr)
         self.whatsapp_link_panel.cancel_button.Bind(
             wx.EVT_BUTTON,
             self._on_cancel_whatsapp_link,
@@ -493,6 +492,9 @@ class MainWindow(wx.Frame):
             started_at = time.perf_counter()
             self.whatsapp_verified = True
             self.whatsapp_link_session = None
+            self.whatsapp_qr_request_in_flight = False
+            self.whatsapp_qr_restart_after_cancel = False
+            self.whatsapp_qr_deadline = 0.0
             self.whatsapp_link_panel.clear()
             self._close_whatsapp_qr_dialog()
             message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
@@ -508,43 +510,56 @@ class MainWindow(wx.Frame):
             )
             return
 
-        if status in {"needs_pairing", "needs_relogin", "needs_qr", "needs_pair_code"}:
+        if status == "needs_qr":
             self.whatsapp_verified = False
-            message = "WhatsApp necesita volver a vincularse."
-            action_label = "Volver a vincular"
-        elif status == "logged_out":
+            self.whatsapp_qr_request_in_flight = True
+            if self.whatsapp_qr_deadline <= time.monotonic():
+                self.whatsapp_qr_deadline = (
+                    time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
+                )
+            message = "WhatsApp esta preparando el QR."
+        elif status in {"needs_pairing", "needs_relogin", "needs_pair_code", "logged_out"}:
             self.whatsapp_verified = False
-            message = "WhatsApp se desvinculo de este cliente."
-            action_label = "Volver a vincular"
+            message = "WhatsApp todavia no esta vinculado."
         elif status == "needs_registration":
             self.whatsapp_verified = False
             message = "WhatsApp necesita registrarse en el bridge."
-            action_label = "Configurar WhatsApp"
         elif status == "connection_error":
             self.whatsapp_verified = False
             message = "WhatsApp reporto un error de conexion."
-            action_label = "Revisar vinculacion"
         else:
             return
 
         if detail:
             message = f"{message} {detail}"
+        if status == "needs_qr" and self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_pending(
+                self.whatsapp_qr_deadline,
+                can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+            )
+        qr_finished = status in {"needs_pairing", "needs_relogin", "logged_out"} and (
+            self.whatsapp_qr_request_in_flight or self.whatsapp_qr_deadline > 0
+        )
+        if qr_finished:
+            self._mark_whatsapp_qr_expired(message)
         if not self.workspace_panel.IsShown():
             self.login_panel.set_connecting(False)
             self.connection_header.set_account(self.current_jid)
             self._set_connected_ui(True)
         self.whatsapp_link_panel.set_status(
             message,
-            action_label=action_label,
+            action_label=(
+                "Generar nuevo QR"
+                if qr_finished
+                else self._whatsapp_link_action_label()
+            ),
             can_cancel=self._has_cancelable_whatsapp_link(component_jid),
-            can_show_qr=self._has_whatsapp_qr_to_show(),
         )
         self._show_chat_placeholder("WhatsApp requiere vinculacion.")
         self.connection_header.set_status("WhatsApp requiere vinculacion")
         self.status_bar.SetStatusText(message)
         self.workspace_panel.Layout()
         wx.CallAfter(self.speaker.speak, message)
-        self._maybe_auto_open_whatsapp_link(status)
 
     def _handle_whatsapp_pairing_code(self, component_jid: str, code: str) -> None:
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
@@ -564,12 +579,21 @@ class MainWindow(wx.Frame):
     ) -> None:
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
         self.whatsapp_link_session = (component_jid, command_node, session_id)
+        self.whatsapp_qr_request_in_flight = True
         self.whatsapp_link_panel.set_status(
-            "Hay una vinculacion de WhatsApp en curso.",
-            action_label="Revisar vinculacion",
+            "Generando el QR de vinculacion de WhatsApp.",
+            action_label="Ver estado",
             can_cancel=True,
-            can_show_qr=self._has_whatsapp_qr_to_show(),
         )
+        if self.whatsapp_qr_dialog is not None:
+            if self.whatsapp_qr_deadline <= time.monotonic():
+                self.whatsapp_qr_deadline = (
+                    time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
+                )
+            self.whatsapp_qr_dialog.set_pending(
+                self.whatsapp_qr_deadline,
+                can_cancel=True,
+            )
         self.workspace_panel.Layout()
 
     def _handle_whatsapp_link_session_ended(
@@ -582,21 +606,48 @@ class MainWindow(wx.Frame):
     ) -> None:
         if self.whatsapp_link_session == (component_jid, command_node, session_id):
             self.whatsapp_link_session = None
+        if self.whatsapp_qr_restart_after_cancel:
+            self.whatsapp_qr_restart_after_cancel = False
+            self.whatsapp_qr_request_in_flight = False
+            self.whatsapp_qr_path = ""
+            self.whatsapp_qr_deadline = 0.0
+            wx.CallAfter(self._begin_whatsapp_qr_request)
+            return
+
+        self.whatsapp_qr_request_in_flight = False
         if canceled:
             self._close_whatsapp_qr_dialog()
             self.status_bar.SetStatusText(detail or "Vinculacion cancelada")
             wx.CallAfter(self.speaker.speak, "Vinculacion cancelada")
+        elif detail and self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_error(
+                f"La vinculacion no pudo continuar: {detail}",
+                can_cancel=False,
+            )
         if self.whatsapp_link_panel.IsShown():
             self.whatsapp_link_panel.set_status(
-                detail or "WhatsApp necesita volver a vincularse.",
-                action_label="Volver a vincular",
+                detail or "WhatsApp todavia no esta vinculado.",
+                action_label="Generar nuevo QR" if not canceled else "Generar QR",
                 can_cancel=False,
-                can_show_qr=self._has_whatsapp_qr_to_show(),
             )
             self.workspace_panel.Layout()
 
-    def _has_whatsapp_qr_to_show(self) -> bool:
-        return bool(self.whatsapp_qr_dialog is not None or self.whatsapp_qr_path)
+    def _whatsapp_link_action_label(self) -> str:
+        if self.whatsapp_qr_path:
+            return (
+                "Mostrar QR"
+                if self.whatsapp_qr_deadline > time.monotonic()
+                else "Generar nuevo QR"
+            )
+        if self.whatsapp_qr_request_in_flight or self.whatsapp_link_session is not None:
+            return (
+                "Ver estado"
+                if self.whatsapp_qr_deadline > time.monotonic()
+                else "Generar nuevo QR"
+            )
+        if self.whatsapp_qr_dialog is not None:
+            return "Ver estado"
+        return "Generar QR"
 
     def _refresh_whatsapp_link_panel_actions(self) -> None:
         if not self.whatsapp_link_panel.IsShown():
@@ -604,10 +655,13 @@ class MainWindow(wx.Frame):
 
         self.whatsapp_link_panel.set_status(
             self.whatsapp_link_panel.message.GetLabel(),
-            action_label=self.whatsapp_link_panel.open_button.GetLabel(),
+            action_label=self._whatsapp_link_action_label(),
             can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
-            can_show_qr=self._has_whatsapp_qr_to_show(),
         )
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_can_cancel(
+                self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+            )
         self.workspace_panel.Layout()
 
     def _has_cancelable_whatsapp_link(self, component_jid: str = "") -> bool:
@@ -618,6 +672,7 @@ class MainWindow(wx.Frame):
         return self.whatsapp_link_session[0] == component_jid
 
     def _on_cancel_whatsapp_link(self, _event: wx.CommandEvent) -> None:
+        self.whatsapp_qr_restart_after_cancel = False
         component_jid = (
             self.whatsapp_link_session[0]
             if self.whatsapp_link_session is not None
@@ -630,16 +685,41 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("Cancelando vinculacion...")
         self.xmpp.cancel_whatsapp_linking(component_jid)
 
-    def _on_show_whatsapp_qr(self, _event: wx.CommandEvent) -> None:
+    def _show_whatsapp_qr_status(self) -> None:
         if self.whatsapp_qr_dialog is not None:
             self._focus_whatsapp_qr_dialog()
             return
 
+        dialog = self._create_whatsapp_qr_dialog()
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
         if self.whatsapp_qr_path:
-            self._show_whatsapp_qr(Path(self.whatsapp_qr_path))
-            return
-
-        self.status_bar.SetStatusText("Todavia no hay QR para mostrar")
+            if self.whatsapp_qr_deadline > time.monotonic():
+                dialog.set_image(
+                    self.whatsapp_qr_path,
+                    self.whatsapp_qr_deadline,
+                    can_cancel=can_cancel,
+                )
+            else:
+                dialog.set_expired(
+                    "El QR expiro. Genera uno nuevo para volver a intentarlo.",
+                    can_cancel=can_cancel,
+                )
+        elif self.whatsapp_qr_request_in_flight:
+            if self.whatsapp_qr_deadline > time.monotonic():
+                dialog.set_pending(self.whatsapp_qr_deadline, can_cancel=can_cancel)
+            else:
+                self.whatsapp_qr_request_in_flight = False
+                dialog.set_expired(
+                    "La solicitud de QR expiro. Genera una nueva para continuar.",
+                    can_cancel=can_cancel,
+                )
+        else:
+            dialog.set_expired(
+                "No hay un QR vigente. Genera uno nuevo para continuar.",
+                can_cancel=can_cancel,
+            )
+        dialog.Show()
+        self._focus_whatsapp_qr_dialog()
 
     def _handle_whatsapp_qr_image(
         self,
@@ -728,23 +808,37 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("El QR recibido no es una imagen válida")
             return
 
-        self.status_bar.SetStatusText("QR de vinculacion listo")
-        wx.CallAfter(self.speaker.speak, "QR de vinculacion listo")
-        if self.whatsapp_qr_dialog is not None:
-            self.whatsapp_qr_path = path_text
-            self.whatsapp_qr_dialog.set_image(path_text)
-            self._refresh_whatsapp_link_panel_actions()
-            self._focus_whatsapp_qr_dialog()
+        if self.whatsapp_qr_deadline <= 0:
+            self.whatsapp_qr_deadline = time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
+        if self.whatsapp_qr_deadline <= time.monotonic():
+            self._mark_whatsapp_qr_expired(
+                "El QR llego despues de expirar. Genera uno nuevo para continuar."
+            )
             return
 
+        self.status_bar.SetStatusText("QR de vinculacion listo")
+        wx.CallAfter(self.speaker.speak, "QR de vinculacion listo")
         self.whatsapp_qr_path = path_text
-        dialog = WhatsAppQrDialog(self, path_text)
-        self.whatsapp_qr_dialog = dialog
-        dialog.Bind(wx.EVT_CLOSE, self._on_whatsapp_qr_dialog_close)
-        dialog.cancel_link_button.Bind(wx.EVT_BUTTON, self._on_cancel_whatsapp_link)
-        dialog.Show()
+        dialog = self.whatsapp_qr_dialog or self._create_whatsapp_qr_dialog()
+        if not dialog.set_image(
+            path_text,
+            self.whatsapp_qr_deadline,
+            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
+        ):
+            self.status_bar.SetStatusText("El QR recibido no es una imagen valida")
+            return
+        if not dialog.IsShown():
+            dialog.Show()
         self._refresh_whatsapp_link_panel_actions()
         self._focus_whatsapp_qr_dialog()
+
+    def _create_whatsapp_qr_dialog(self) -> WhatsAppQrDialog:
+        dialog = WhatsAppQrDialog(self, on_expired=self._on_whatsapp_qr_expired)
+        self.whatsapp_qr_dialog = dialog
+        dialog.Bind(wx.EVT_CLOSE, self._on_whatsapp_qr_dialog_close)
+        dialog.retry_button.Bind(wx.EVT_BUTTON, self._on_retry_whatsapp_qr)
+        dialog.cancel_link_button.Bind(wx.EVT_BUTTON, self._on_cancel_whatsapp_link)
+        return dialog
 
     def _focus_whatsapp_qr_dialog(self) -> None:
         dialog = self.whatsapp_qr_dialog
@@ -753,14 +847,17 @@ class MainWindow(wx.Frame):
 
         if dialog.IsIconized():
             dialog.Iconize(False)
+        if not dialog.IsMaximized():
+            dialog.Maximize(True)
         dialog.Raise()
         dialog.RequestUserAttention()
-        dialog.SetFocus()
+        dialog.close_button.SetFocus()
 
     def _close_whatsapp_qr_dialog(self) -> None:
         dialog = self.whatsapp_qr_dialog
         self.whatsapp_qr_dialog = None
         self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = 0.0
         self.whatsapp_qr_downloads_in_progress.clear()
         if dialog is not None:
             dialog.Destroy()
@@ -769,7 +866,6 @@ class MainWindow(wx.Frame):
     def _on_whatsapp_qr_dialog_close(self, event: wx.CloseEvent) -> None:
         dialog = self.whatsapp_qr_dialog
         self.whatsapp_qr_dialog = None
-        self.whatsapp_qr_path = ""
         if dialog is not None:
             dialog.Destroy()
         self._refresh_whatsapp_link_panel_actions()
@@ -783,68 +879,87 @@ class MainWindow(wx.Frame):
             )
             return
 
-        self.whatsapp_link_prompt_open = True
-        status_text = self._whatsapp_link_dialog_status_text()
-        dialog = WhatsAppLinkDialog(
-            self,
-            self.whatsapp_component_jid,
-            status_text,
-            last_phone=self.last_whatsapp_phone,
-            can_cancel=self._has_cancelable_whatsapp_link(self.whatsapp_component_jid),
+        if (
+            self.whatsapp_qr_dialog is not None
+            or self.whatsapp_qr_path
+            or self.whatsapp_qr_request_in_flight
+        ):
+            self._show_whatsapp_qr_status()
+            return
+
+        self._begin_whatsapp_qr_request()
+
+    def _begin_whatsapp_qr_request(self) -> None:
+        if not self.whatsapp_component_jid:
+            return
+
+        if self.whatsapp_link_session is not None:
+            self.whatsapp_qr_restart_after_cancel = True
+            self.status_bar.SetStatusText("Preparando una nueva vinculacion...")
+            if self.whatsapp_qr_dialog is not None:
+                self.whatsapp_qr_dialog.set_pending(
+                    time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS,
+                    can_cancel=True,
+                )
+            self.xmpp.cancel_whatsapp_linking(self.whatsapp_link_session[0])
+            return
+
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
+        self.whatsapp_qr_request_in_flight = True
+        dialog = self.whatsapp_qr_dialog or self._create_whatsapp_qr_dialog()
+        dialog.set_pending(self.whatsapp_qr_deadline, can_cancel=False)
+        if not dialog.IsShown():
+            dialog.Show()
+        self.whatsapp_link_panel.set_status(
+            "Solicitando un QR a WhatsApp.",
+            action_label="Ver estado",
+            can_cancel=False,
         )
-        try:
-            result = dialog.ShowModal()
-            action = dialog.action
-        finally:
-            dialog.Destroy()
-            self.whatsapp_link_prompt_open = False
+        self.workspace_panel.Layout()
+        self.status_bar.SetStatusText("Solicitando QR de vinculacion...")
+        wx.CallAfter(self.speaker.speak, "Solicitando QR de vinculacion")
+        self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
+        self._focus_whatsapp_qr_dialog()
 
-        if action is None:
-            return
+    def _on_retry_whatsapp_qr(self, _event: wx.CommandEvent) -> None:
+        self._begin_whatsapp_qr_request()
 
-        if action.mode == "cancel":
-            self._on_cancel_whatsapp_link(wx.CommandEvent())
-            return
+    def _on_whatsapp_qr_expired(self) -> None:
+        message = "El QR expiro. Genera uno nuevo para volver a intentarlo."
+        self._mark_whatsapp_qr_expired(message)
+        wx.CallAfter(self.speaker.speak, message)
 
-        if result == wx.ID_OK and action.mode == "code":
-            self.last_whatsapp_phone = action.phone
-            self.status_bar.SetStatusText("Solicitando codigo de vinculacion...")
-            self.xmpp.request_whatsapp_pair_code(self.whatsapp_component_jid, action.phone)
-            return
+    def _mark_whatsapp_qr_expired(self, message: str) -> None:
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = 0.0
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_expired(message, can_cancel=can_cancel)
+        if self.whatsapp_link_panel.IsShown():
+            self.whatsapp_link_panel.set_status(
+                message,
+                action_label="Generar nuevo QR",
+                can_cancel=can_cancel,
+            )
+            self.workspace_panel.Layout()
+        self.status_bar.SetStatusText(message)
 
-        if result == wx.ID_APPLY and action.mode == "qr":
-            self.status_bar.SetStatusText("Solicitando QR de vinculacion...")
-            self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
-
-    def _maybe_auto_open_whatsapp_link(self, status: str) -> None:
-        if status not in {"logged_out", "needs_pairing", "needs_relogin"}:
-            return
-        if self.whatsapp_link_prompt_open or not self.whatsapp_component_jid:
-            return
-
-        prompt_key = f"{self.whatsapp_component_jid}:{status}"
-        if self.whatsapp_link_prompted_key == prompt_key:
-            return
-
-        self.whatsapp_link_prompted_key = prompt_key
-        wx.CallAfter(self._on_open_whatsapp_link, wx.CommandEvent())
-
-    def _whatsapp_link_dialog_status_text(self) -> str:
-        if self.whatsapp_link_status == "connected":
-            return "WhatsApp ya esta conectado."
-        if self.whatsapp_link_status == "paired":
-            return "WhatsApp ya se vinculo. Espera la sincronizacion."
-        if self.whatsapp_link_status == "logged_out":
-            return "WhatsApp cerro la sesion de este cliente. Puedes volver a vincularlo."
-        if self.whatsapp_link_status == "connection_error":
-            return "WhatsApp reporto un error de conexion. Puedes intentar vincular de nuevo."
-        if self.whatsapp_link_status in {"needs_pairing", "needs_relogin"}:
-            return "WhatsApp necesita una nueva vinculacion."
-        if self.whatsapp_link_status == "needs_qr":
-            return "Hay una vinculacion por QR en curso."
-        if self.whatsapp_link_status == "needs_pair_code":
-            return "Hay una vinculacion por codigo en curso."
-        return "Vincula WhatsApp con codigo o QR."
+    def _mark_whatsapp_qr_error(self, message: str) -> None:
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = 0.0
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_error(message, can_cancel=can_cancel)
+        if self.whatsapp_link_panel.IsShown():
+            self.whatsapp_link_panel.set_status(
+                message,
+                action_label="Generar nuevo QR",
+                can_cancel=can_cancel,
+            )
+            self.workspace_panel.Layout()
 
     def _apply_pending_roster_if_ready(self) -> None:
         started_at = time.perf_counter()
@@ -2792,6 +2907,8 @@ class MainWindow(wx.Frame):
                 self.login_panel.set_connecting(False)
                 if self.startup_panel.IsShown():
                     self._set_connected_ui(False)
+                if self.whatsapp_qr_request_in_flight and "vincul" in message.casefold():
+                    self._mark_whatsapp_qr_error(message)
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
             case WhatsAppBridgeStatus(status=status, component_jid=component_jid, detail=detail):

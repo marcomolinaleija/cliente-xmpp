@@ -647,6 +647,8 @@ class MainWindow(wx.Frame):
             )
         if self.whatsapp_qr_dialog is not None:
             return "Ver estado"
+        if self.whatsapp_link_status == "needs_registration":
+            return "Registrar y generar QR"
         return "Generar QR"
 
     def _refresh_whatsapp_link_panel_actions(self) -> None:
@@ -919,8 +921,14 @@ class MainWindow(wx.Frame):
         self.workspace_panel.Layout()
         self.status_bar.SetStatusText("Solicitando QR de vinculacion...")
         wx.CallAfter(self.speaker.speak, "Solicitando QR de vinculacion")
-        self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
+        self._request_whatsapp_link_command()
         self._focus_whatsapp_qr_dialog()
+
+    def _request_whatsapp_link_command(self) -> None:
+        if self.whatsapp_link_status == "needs_registration":
+            self.xmpp.request_whatsapp_registration(self.whatsapp_component_jid)
+            return
+        self.xmpp.request_whatsapp_relogin(self.whatsapp_component_jid)
 
     def _on_retry_whatsapp_qr(self, _event: wx.CommandEvent) -> None:
         self._begin_whatsapp_qr_request()

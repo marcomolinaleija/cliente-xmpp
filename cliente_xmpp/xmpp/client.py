@@ -99,6 +99,7 @@ AVATAR_METADATA_NS = "urn:xmpp:avatar:metadata"
 AVATAR_DATA_NS = "urn:xmpp:avatar:data"
 SLIDGE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/groups"
 SLIDGE_REINVITE_GROUPS_COMMAND = "https://slidge.im/command/core/groups/re-invite"
+SLIDGE_REGISTER_COMMAND = "jabber:iq:register"
 SLIDGE_RELOGIN_COMMAND = "https://slidge.im/command/core/re-login"
 SLIDGE_PAIR_PHONE_COMMAND = "wa_pair_phone"
 WHATSAPP_DEBUG_PREFIX = "[cliente-xmpp][whatsapp]"
@@ -1097,6 +1098,69 @@ class BridgeXmppClient(ClientXMPP):
             command_text or "Se solicito un nuevo QR de vinculacion.",
         )
 
+    async def request_whatsapp_registration(self, component_jid: str) -> None:
+        session_id = ""
+        try:
+            command = await self["xep_0050"].send_command(
+                component_jid,
+                SLIDGE_REGISTER_COMMAND,
+                timeout=15,
+            )
+            for _step in range(4):
+                command_status = str(command["command"]["status"] or "")
+                session_id = str(command["command"]["sessionid"] or session_id)
+                form = command.xml.find(f".//{{{DATA_FORMS_NS}}}x")
+                if command_status != "executing" or form is None:
+                    break
+
+                command = await self["xep_0050"].send_command(
+                    component_jid,
+                    SLIDGE_REGISTER_COMMAND,
+                    action="next",
+                    payload=self._form_reply_with_defaults(form),
+                    sessionid=session_id or None,
+                    timeout=15,
+                )
+
+            command_status = str(command["command"]["status"] or "")
+            command_text = self._command_result_text(command.xml)
+            if command_status == "canceled":
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_registration",
+                    command_text or "Slidge cancelo el registro de WhatsApp.",
+                )
+                return
+            if command_status == "executing":
+                raise RuntimeError(
+                    "Slidge solicito datos de registro que el cliente no puede completar."
+                )
+        except IqTimeout:
+            self._emit_whatsapp_status(
+                component_jid,
+                "needs_qr",
+                (
+                    "Slidge esta terminando el registro. "
+                    "Espera a que aparezca el QR o a que termine el tiempo disponible."
+                ),
+            )
+            return
+        except Exception as exc:
+            error_text = _format_xmpp_error(exc)
+            if self._means_already_registered(error_text):
+                await self.request_whatsapp_relogin(component_jid)
+                return
+            self._emit(
+                XmppError(f"No se pudo registrar la cuenta en WhatsApp: {error_text}")
+            )
+            return
+
+        self._emit_whatsapp_status(
+            component_jid,
+            "needs_qr",
+            command_text or "Registro completado. Esperando el QR de WhatsApp.",
+        )
+
     def _remember_whatsapp_link_session(
         self,
         component_jid: str,
@@ -1296,13 +1360,33 @@ class BridgeXmppClient(ClientXMPP):
         self._emit_whatsapp_status(component_jid, "needs_pair_code", text)
 
     @staticmethod
-    def _form_reply_with_values(form_xml: ET.Element, values: dict[str, str]) -> object:
+    def _form_reply_with_values(
+        form_xml: ET.Element,
+        values: dict[str, str | list[str]],
+    ) -> object:
         from slixmpp.plugins.xep_0004.stanza import Form
 
         form = Form(xml=ET.fromstring(ET.tostring(form_xml, encoding="unicode")))
         form.reply()
         form["values"] = values
         return form
+
+    @classmethod
+    def _form_reply_with_defaults(cls, form_xml: ET.Element) -> object:
+        values: dict[str, str | list[str]] = {}
+        for field in form_xml.findall(f"{{{DATA_FORMS_NS}}}field"):
+            variable = field.attrib.get("var", "").strip()
+            if not variable:
+                continue
+            defaults = [
+                value.text or ""
+                for value in field.findall(f"{{{DATA_FORMS_NS}}}value")
+            ]
+            if field.attrib.get("type", "").endswith("-multi"):
+                values[variable] = defaults
+            else:
+                values[variable] = defaults[0] if defaults else ""
+        return cls._form_reply_with_values(form_xml, values)
 
     @staticmethod
     def _command_result_text(xml: ET.Element) -> str:
@@ -1332,6 +1416,15 @@ class BridgeXmppClient(ClientXMPP):
             or "already logged" in normalized
             or "already connected" in normalized
             or "refusing to pair for connected session" in normalized
+        )
+
+    @staticmethod
+    def _means_already_registered(error_text: str) -> bool:
+        normalized = error_text.casefold()
+        return (
+            "only available for non-users" in normalized
+            or "already registered" in normalized
+            or "unregister first" in normalized
         )
 
     @staticmethod
@@ -4065,6 +4158,19 @@ class XmppService:
         def request() -> None:
             if self._client:
                 self._loop.create_task(self._client.request_whatsapp_relogin(component_jid))
+
+        self._loop.call_soon_threadsafe(request)
+
+    def request_whatsapp_registration(self, component_jid: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+
+        def request() -> None:
+            if self._client:
+                self._loop.create_task(
+                    self._client.request_whatsapp_registration(component_jid)
+                )
 
         self._loop.call_soon_threadsafe(request)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import unittest
 from datetime import datetime, timedelta
@@ -496,6 +497,30 @@ class DisplayedMarkerTests(unittest.TestCase):
 
 
 class WhatsAppPairingCodeTests(unittest.TestCase):
+    def test_new_account_uses_register_and_known_account_uses_relogin(self) -> None:
+        calls: list[tuple[str, str]] = []
+        xmpp = SimpleNamespace(
+            request_whatsapp_registration=lambda jid: calls.append(("register", jid)),
+            request_whatsapp_relogin=lambda jid: calls.append(("relogin", jid)),
+        )
+        window = SimpleNamespace(
+            whatsapp_component_jid="whatsapp.example.org",
+            whatsapp_link_status="needs_registration",
+            xmpp=xmpp,
+        )
+
+        MainWindow._request_whatsapp_link_command(window)
+        window.whatsapp_link_status = "needs_relogin"
+        MainWindow._request_whatsapp_link_command(window)
+
+        self.assertEqual(
+            calls,
+            [
+                ("register", "whatsapp.example.org"),
+                ("relogin", "whatsapp.example.org"),
+            ],
+        )
+
     def test_extracts_code_after_label_instead_of_whatsapp_word(self) -> None:
         text = (
             "Please open the official WhatsApp client and input the following "
@@ -503,6 +528,7 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         )
 
         self.assertEqual(BridgeXmppClient._pairing_code_from_text(text), "1A2B-3C4D")
+
 
     def test_extracts_qr_from_bob_image_data(self) -> None:
         message = ET.fromstring(
@@ -772,6 +798,104 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         )
 
         self.assertEqual(BridgeXmppClient._avatar_data_from_iq(iq), b"avatar-bytes")
+
+
+class WhatsAppRegistrationTests(unittest.TestCase):
+    class CommandResult:
+        def __init__(self, status: str, session_id: str, form: str = "") -> None:
+            self.xml = ET.fromstring(
+                "<iq><command xmlns='http://jabber.org/protocol/commands'>"
+                f"{form}</command></iq>"
+            )
+            self.command = {"status": status, "sessionid": session_id}
+
+        def __getitem__(self, key: str) -> object:
+            if key != "command":
+                raise KeyError(key)
+            return self.command
+
+    class CommandPlugin:
+        def __init__(self, results: list[object]) -> None:
+            self.results = results
+            self.calls: list[dict[str, object]] = []
+
+        async def send_command(self, jid: str, node: str, **kwargs: object) -> object:
+            self.calls.append({"jid": jid, "node": node, **kwargs})
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    class Client:
+        request_whatsapp_registration = BridgeXmppClient.request_whatsapp_registration
+        _form_reply_with_defaults = staticmethod(
+            BridgeXmppClient._form_reply_with_defaults
+        )
+        _command_result_text = staticmethod(BridgeXmppClient._command_result_text)
+        _means_already_registered = staticmethod(
+            BridgeXmppClient._means_already_registered
+        )
+
+        def __init__(self, plugin: object) -> None:
+            self.plugin = plugin
+            self.statuses: list[tuple[str, str, str]] = []
+            self.events: list[object] = []
+            self.relogin_requests: list[str] = []
+
+        def __getitem__(self, key: str) -> object:
+            if key != "xep_0050":
+                raise KeyError(key)
+            return self.plugin
+
+        def _emit_whatsapp_status(self, jid: str, status: str, detail: str = "") -> None:
+            self.statuses.append((jid, status, detail))
+
+        def _emit(self, event: object) -> None:
+            self.events.append(event)
+
+        async def request_whatsapp_relogin(self, jid: str) -> None:
+            self.relogin_requests.append(jid)
+
+    def test_registration_submits_all_slidge_forms_with_defaults(self) -> None:
+        initial_form = "<x xmlns='jabber:x:data' type='form'/>"
+        preferences_form = """
+            <x xmlns='jabber:x:data' type='form'>
+              <field var='sync_presence' type='boolean'><value>true</value></field>
+              <field var='reaction_fallback' type='boolean'><value>false</value></field>
+            </x>
+        """
+        plugin = self.CommandPlugin(
+            [
+                self.CommandResult("executing", "register-1", initial_form),
+                self.CommandResult("executing", "register-1", preferences_form),
+                self.CommandResult("completed", "register-1"),
+            ]
+        )
+        client = self.Client(plugin)
+
+        asyncio.run(client.request_whatsapp_registration("whatsapp.example.org"))
+
+        actions = [call.get("action", "execute") for call in plugin.calls]
+        self.assertEqual(actions, ["execute", "next", "next"])
+        self.assertEqual(plugin.calls[1]["sessionid"], "register-1")
+        submitted_preferences = plugin.calls[2]["payload"]
+        self.assertEqual(
+            submitted_preferences["values"],
+            {"sync_presence": "true", "reaction_fallback": "false"},
+        )
+        self.assertEqual(client.statuses[-1][1], "needs_qr")
+        self.assertFalse(client.events)
+
+    def test_registration_race_falls_back_to_relogin(self) -> None:
+        plugin = self.CommandPlugin(
+            [RuntimeError("This is only available for non-users. Unregister first.")]
+        )
+        client = self.Client(plugin)
+
+        asyncio.run(client.request_whatsapp_registration("whatsapp.example.org"))
+
+        self.assertEqual(client.relogin_requests, ["whatsapp.example.org"])
+        self.assertFalse(client.events)
 
 
 class ContactStateTests(unittest.TestCase):

@@ -232,7 +232,11 @@ el actualizador sustituye la carpeta completa con respaldo y rollback. El códig
 consultas automáticas. El contrato de build y release vive en `docs/ACTUALIZACIONES.md`.
 
 La vinculación de WhatsApp expone únicamente el flujo por QR; el código por teléfono permanece
-como compatibilidad interna del protocolo, pero no se ofrece en la interfaz. La solicitud abre un
+como compatibilidad interna del protocolo, pero no se ofrece en la interfaz. Antes de solicitarlo,
+el cliente distingue el estado anunciado por los comandos de Slidge: una cuenta XMPP nueva con
+`needs_registration` ejecuta `jabber:iq:register` y completa sus formularios XEP-0050 con los
+valores predeterminados; una cuenta ya registrada pero desconectada usa `re-login`. No envíes
+`re-login` directamente a un usuario que todavía no existe en el gateway. La solicitud abre un
 único diálogo maximizado, centrado y con cuenta regresiva de 60 segundos. Cerrar ese diálogo no
 pierde un QR aún vigente: puede volver a mostrarse desde el panel. Al reintentar, primero se cancela
 cualquier sesión XEP-0050 conocida; si el bridge responde `already logging in` sin entregar ID de

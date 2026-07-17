@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-import imageio_ffmpeg
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
@@ -48,19 +46,14 @@ nvda_controller = required_file(
     ROOT / "cliente_xmpp" / "lib" / "nvdaControllerClient64.dll",
     "el controlador de NVDA",
 )
-ffprobe = shutil.which("ffprobe")
-ffmpeg = required_file(Path(imageio_ffmpeg.get_ffmpeg_exe()), "ffmpeg")
 required_file(ROOT / "dist" / "update.exe", "update.exe")
-if not ffprobe:
-    raise SystemExit("No se encontró ffprobe en PATH; es obligatorio para el build de Windows.")
 
 hiddenimports = collect_submodules("keyring.backends")
 hiddenimports += collect_submodules("windows_toasts")
 for plugin in XMPP_PLUGINS:
     hiddenimports += collect_submodules(f"slixmpp.plugins.{plugin}")
 
-datas = collect_data_files("imageio_ffmpeg")
-datas += collect_data_files("rlottie_python")
+datas = collect_data_files("rlottie_python")
 datas += collect_data_files("_sounddevice_data")
 datas += [
     (str(path), "cliente_xmpp/assets/audio")
@@ -69,8 +62,6 @@ datas += [
 binaries = [
     (str(libmpv), "cliente_xmpp/lib"),
     (str(nvda_controller), "cliente_xmpp/lib"),
-    (str(ffmpeg), "bin"),
-    (str(ffprobe), "bin"),
 ]
 
 a = Analysis(

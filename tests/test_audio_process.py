@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from cliente_xmpp.audio.duration import _ffprobe_path, media_duration_seconds
+from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.opus import (
     convert_to_voice_note,
     delete_temporary_voice_note,
@@ -73,20 +73,15 @@ class AudioProcessTests(unittest.TestCase):
             executable = Path(temp_dir) / "WhatsApp-CAN.exe"
             bin_dir = Path(temp_dir) / "bin"
             ffmpeg = bin_dir / "ffmpeg.exe"
-            ffprobe = bin_dir / "ffprobe.exe"
             bin_dir.mkdir()
             ffmpeg.write_bytes(b"ffmpeg")
-            ffprobe.write_bytes(b"ffprobe")
             with (
                 patch("cliente_xmpp.audio.process.sys.frozen", True, create=True),
                 patch("cliente_xmpp.audio.process.sys.executable", str(executable)),
                 patch("cliente_xmpp.audio.opus.shutil.which") as ffmpeg_which,
-                patch("cliente_xmpp.audio.duration.shutil.which") as ffprobe_which,
             ):
                 self.assertEqual(ffmpeg_path(), str(ffmpeg.resolve()))
-                self.assertEqual(_ffprobe_path(), str(ffprobe.resolve()))
                 ffmpeg_which.assert_not_called()
-                ffprobe_which.assert_not_called()
 
     def test_windows_console_tools_use_create_no_window(self) -> None:
         with (
@@ -116,12 +111,12 @@ class AudioProcessTests(unittest.TestCase):
         self.assertEqual(startupinfo.dwFlags, 0x00000001)
         self.assertEqual(startupinfo.wShowWindow, 0)
 
-    def test_audio_duration_probe_receives_hidden_window_flag(self) -> None:
+    def test_audio_duration_uses_ffmpeg_and_receives_hidden_window_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "voice.m4a"
             source.write_bytes(b"audio")
             with (
-                patch("cliente_xmpp.audio.duration._ffprobe_path", return_value="ffprobe.exe"),
+                patch("cliente_xmpp.audio.duration.ffmpeg_path", return_value="ffmpeg.exe"),
                 patch(
                     "cliente_xmpp.audio.duration.hidden_subprocess_kwargs",
                     return_value={"creationflags": 0x08000000, "startupinfo": "hidden"},
@@ -129,14 +124,16 @@ class AudioProcessTests(unittest.TestCase):
                 patch(
                     "cliente_xmpp.audio.duration.subprocess.run",
                     return_value=SimpleNamespace(
-                        returncode=0,
-                        stdout='{"format": {"duration": "2.5"}}',
+                        returncode=1,
+                        stdout="",
+                        stderr="Duration: 00:00:02.50, start: 0.000000, bitrate: 64 kb/s",
                     ),
                 ) as run,
             ):
                 duration = media_duration_seconds(source)
 
         self.assertEqual(duration, 2.5)
+        self.assertEqual(run.call_args.args[0], ["ffmpeg.exe", "-hide_banner", "-i", str(source)])
         self.assertEqual(run.call_args.kwargs["creationflags"], 0x08000000)
         self.assertEqual(run.call_args.kwargs["startupinfo"], "hidden")
 

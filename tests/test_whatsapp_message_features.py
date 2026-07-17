@@ -21,6 +21,7 @@ from cliente_xmpp.models.chat import Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.xmpp.client import (
     OOB_NS,
+    REPLY_NS,
     STICKER_NS,
     WHATSAPP_FORWARDED_NS,
     BridgeXmppClient,
@@ -369,6 +370,29 @@ class _FakeClient:
 
 
 class ForwardSendContractTests(unittest.TestCase):
+    def test_reply_sends_xep_0461_target_with_remote_id(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+
+        service.send_reply(
+            "contact@example.test",
+            "respuesta",
+            "contact@example.test",
+            "whatsapp-message-id",
+            message_id="cliente-xmpp-reply-1",
+        )
+
+        assert fake_client.message is not None
+        reply = fake_client.message.xml.find(f"{{{REPLY_NS}}}reply")
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertEqual(reply.attrib["to"], "contact@example.test")
+        self.assertEqual(reply.attrib["id"], "whatsapp-message-id")
+        self.assertTrue(fake_client.message.sent)
+
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:
         emitted: list[object] = []
         service = XmppService(emitted.append)

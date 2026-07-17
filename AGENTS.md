@@ -462,6 +462,10 @@ Un `Message` representa el contenido normalizado que entiende la UI. Puede conte
 
 Para respuestas/citas, separa el texto real del mensaje y la cita. La UI debe renderizarlo de
 forma consistente, por ejemplo: `usuario, mensaje, respondiendo a: cita`.
+Al preparar una respuesta, la etiqueta visible y `MainWindow.reply_context` deben representar
+el mismo mensaje. Captura su ID y JID antes de vaciar el compositor; si el mensaje solo tiene un
+ID optimista `cliente-xmpp-*`, conserva el borrador y pide esperar al eco remoto en vez de enviar
+el texto como un mensaje normal o una respuesta con un ID que WhatsApp no reconoce.
 
 Para editar mensajes de WhatsApp usa XEP-0308 (`urn:xmpp:message-correct:0`): reenvia el
 cuerpo completo con un ID nuevo y `<replace id="id-original"/>`. Solo se ofrece para mensajes

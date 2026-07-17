@@ -1802,6 +1802,27 @@ class MainWindow(wx.Frame):
             return
 
         chat = self.conversation.current_chat
+        reply_context = self.reply_context
+        if self.conversation.has_reply_context() and reply_context is None:
+            self.status_bar.SetStatusText(
+                "No se pudo conservar el mensaje que ibas a responder; vuelve a seleccionarlo"
+            )
+            self.conversation.clear_reply_quote()
+            self.conversation.focus_composer()
+            return
+        if reply_context is not None:
+            reply_error = self._reply_target_error(reply_context, chat)
+            if reply_error:
+                self.status_bar.SetStatusText(reply_error)
+                self.conversation.focus_composer()
+                return
+
+        reply_to_id = reply_context.message_id if reply_context else ""
+        reply_to_jid = (
+            self.current_jid if reply_context and reply_context.outgoing
+            else reply_context.sender_jid if reply_context else ""
+        )
+        reply_quote = reply_context.body if reply_context else ""
         body = self.conversation.consume_composed_message()
         if not chat or not body:
             return
@@ -1821,33 +1842,26 @@ class MainWindow(wx.Frame):
             outgoing=True,
             chat_is_group=chat.is_group,
             message_id=message_id,
-            reply_quote=self.reply_context.body if self.reply_context else "",
-            reply_to_jid=(
-                self.current_jid if self.reply_context and self.reply_context.outgoing
-                else self.reply_context.sender_jid if self.reply_context else ""
-            ),
-            reply_to_id=self.reply_context.message_id if self.reply_context else "",
+            reply_quote=reply_quote,
+            reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id,
             delivery_state="pending",
         )
         self._add_pending_outgoing_message(message)
         self._mark_current_chat_displayed(chat.jid)
         self.status_bar.SetStatusText("Enviando mensaje...")
-        if self.reply_context:
-            reply_to_jid = (
-                self.current_jid if self.reply_context.outgoing else self.reply_context.sender_jid
-            )
+        if reply_context:
             self.xmpp.send_reply(
                 chat.jid,
                 body,
                 reply_to_jid,
-                self.reply_context.message_id,
+                reply_to_id,
                 fallback_end=0,
                 is_group=chat.is_group,
                 message_id=message_id,
                 mentions=mentions,
             )
-            self.reply_context = None
-            self.conversation.clear_reply_quote()
+            self._cancel_reply()
         else:
             self.xmpp.send_message(
                 chat.jid,
@@ -2427,8 +2441,29 @@ class MainWindow(wx.Frame):
         if not self._require_whatsapp_connection():
             return
 
+        reply_error = self._reply_target_error(message, self.conversation.current_chat)
+        if reply_error:
+            self.status_bar.SetStatusText(reply_error)
+            return
+
+        if self.edit_context is not None:
+            self.edit_context = None
+            self.conversation.clear_editing()
         self.reply_context = message
         self.conversation.insert_reply_quote(message)
+        self.status_bar.SetStatusText("Respuesta preparada")
+
+    @staticmethod
+    def _reply_target_error(message: Message, chat: Chat | None) -> str:
+        if chat is None or message.chat_jid != chat.jid:
+            return "El mensaje que intentas responder ya no pertenece al chat abierto"
+        if message.retracted:
+            return "No se puede responder a un mensaje eliminado"
+        if not message.message_id:
+            return "No se puede responder porque el mensaje no tiene un identificador remoto"
+        if MainWindow._message_has_local_pending_id(message):
+            return "Ese mensaje todavía se está enviando; espera a que se confirme para responder"
+        return ""
 
     def _cancel_reply(self) -> None:
         self.reply_context = None

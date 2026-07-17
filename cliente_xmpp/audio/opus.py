@@ -71,6 +71,31 @@ def voice_note_path() -> Path:
     return VOICE_NOTES_DIR / f"ptt-{datetime.now():%Y%m%d-%H%M%S-%f}.ogg"
 
 
+def delete_temporary_voice_note(path: str | Path) -> bool:
+    """Delete only app-owned temporary voice notes from the recordings directory."""
+    candidate = Path(path)
+    try:
+        resolved_candidate = candidate.resolve()
+        recordings_dir = VOICE_NOTES_DIR.resolve()
+    except OSError:
+        return False
+
+    if resolved_candidate.parent != recordings_dir:
+        return False
+    if (
+        not resolved_candidate.name.startswith("ptt-")
+        or resolved_candidate.suffix.lower() != ".ogg"
+    ):
+        return False
+
+    try:
+        existed = resolved_candidate.exists()
+        resolved_candidate.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return existed
+
+
 def ffmpeg_path() -> str:
     bundled_ffmpeg = bundled_tool_path("ffmpeg.exe")
     if bundled_ffmpeg:

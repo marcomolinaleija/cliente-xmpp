@@ -374,6 +374,9 @@ telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son gr
   su propio ejecutor único para conservar orden sin exponer la interfaz al timeout de SQLite.
 - El audio enviado desde el cliente se normaliza a OGG/Opus; no reutilices esa regla para
   interpretar automaticamente los audios entrantes.
+- Una nota de voz temporal `ptt-*.ogg` se elimina al cancelar o cuando su envio termina en
+  error. Ante un fallo DNS de `aiohttp`, la subida reintenta con el resolvedor normal de Windows
+  antes de informar el error; nunca apliques esa limpieza a adjuntos elegidos por el usuario.
 
 ### Deduplicacion y persistencia
 

@@ -8,7 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from cliente_xmpp.audio.duration import _ffprobe_path, media_duration_seconds
-from cliente_xmpp.audio.opus import convert_to_voice_note, ffmpeg_path
+from cliente_xmpp.audio.opus import (
+    convert_to_voice_note,
+    delete_temporary_voice_note,
+    ffmpeg_path,
+)
 from cliente_xmpp.audio.process import (
     bundled_tool_path,
     hidden_subprocess_kwargs,
@@ -18,6 +22,40 @@ from cliente_xmpp.audio.recorder import SoundDeviceAudioRecorder
 
 
 class AudioProcessTests(unittest.TestCase):
+    def test_temporary_voice_note_cleanup_never_deletes_user_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recordings = Path(temp_dir) / "recordings"
+            recordings.mkdir()
+            temporary_note = recordings / "ptt-20260717-100000-000001.ogg"
+            unrelated_recording = recordings / "personal.ogg"
+            outside_note = Path(temp_dir) / "ptt-20260717-100000-000002.ogg"
+            for path in (temporary_note, unrelated_recording, outside_note):
+                path.write_bytes(b"audio")
+
+            with patch("cliente_xmpp.audio.opus.VOICE_NOTES_DIR", recordings):
+                self.assertTrue(delete_temporary_voice_note(temporary_note))
+                self.assertFalse(delete_temporary_voice_note(unrelated_recording))
+                self.assertFalse(delete_temporary_voice_note(outside_note))
+
+            self.assertFalse(temporary_note.exists())
+            self.assertTrue(unrelated_recording.exists())
+            self.assertTrue(outside_note.exists())
+
+    def test_cancel_removes_partial_recording_even_if_encoder_wait_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recording = Path(temp_dir) / "ptt-partial.ogg"
+            recording.write_bytes(b"partial")
+            encoder = Mock()
+            encoder.wait.side_effect = OSError("encoder unavailable")
+            recorder = SoundDeviceAudioRecorder()
+            recorder._encoder = encoder
+            recorder._output_path = recording
+
+            recorder.cancel()
+
+            self.assertFalse(recording.exists())
+            encoder.kill.assert_called_once_with()
+
     def test_frozen_app_uses_tool_from_its_bin_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             executable = Path(temp_dir) / "WhatsApp-CAN.exe"

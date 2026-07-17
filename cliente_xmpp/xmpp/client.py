@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
+from aiohttp.client_exceptions import ClientConnectorError
 from slixmpp import ClientXMPP
 from slixmpp.exceptions import IqError, IqTimeout
 
@@ -22,6 +23,7 @@ from cliente_xmpp.audio.opus import (
     VOICE_NOTE_MIME,
     VOICE_NOTE_UPLOAD_MIME,
     convert_to_voice_note,
+    delete_temporary_voice_note,
 )
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
@@ -57,6 +59,10 @@ from cliente_xmpp.xmpp.events import (
     XmppDisconnected,
     XmppError,
     XmppEvent,
+)
+from cliente_xmpp.xmpp.http_upload import (
+    is_dns_resolution_error,
+    upload_file_with_system_resolver,
 )
 
 EventHandler = Callable[[XmppEvent], None]
@@ -3586,12 +3592,16 @@ class BridgeXmppClient(ClientXMPP):
 
         size = file_path.stat().st_size
         duration = media_duration_seconds(file_path) if media_kind == "audio" else 0.0
-        get_url = await self._upload_file(
-            file_path,
-            size=size,
-            content_type=upload_mime,
-            timeout=60,
-        )
+        try:
+            get_url = await self._upload_file(
+                file_path,
+                size=size,
+                content_type=upload_mime,
+                timeout=60,
+            )
+        except Exception:
+            delete_temporary_voice_note(file_path)
+            raise
 
         message_type = "groupchat" if is_group else "chat"
         message = self.make_message(mto=to_jid, mbody=get_url, mtype=message_type)
@@ -3653,19 +3663,61 @@ class BridgeXmppClient(ClientXMPP):
             upload.upload_service = self._preferred_upload_service()
 
         try:
-            return await upload.upload_file(
+            return await self._upload_file_with_default_resolver(
+                upload,
                 file_path,
                 size=size,
                 content_type=content_type,
                 timeout=timeout,
             )
-        except (IqError, IqTimeout):
-            return await upload.upload_file(
-                file_path,
-                size=size,
-                content_type=content_type,
-                timeout=timeout,
-            )
+        except ClientConnectorError as exc:
+            if not is_dns_resolution_error(exc):
+                raise
+
+        await asyncio.sleep(0.5)
+        for attempt in range(2):
+            try:
+                return await upload_file_with_system_resolver(
+                    upload,
+                    file_path,
+                    size=size,
+                    content_type=content_type,
+                    timeout=timeout,
+                )
+            except (IqError, IqTimeout):
+                if attempt > 0:
+                    raise
+            except ClientConnectorError as exc:
+                if attempt > 0 or not is_dns_resolution_error(exc):
+                    raise
+            await asyncio.sleep(1.0)
+
+        raise RuntimeError("No se pudo completar la subida del archivo.")
+
+    @staticmethod
+    async def _upload_file_with_default_resolver(
+        upload: object,
+        file_path: Path,
+        *,
+        size: int,
+        content_type: str,
+        timeout: int,
+    ) -> str:
+        for attempt in range(2):
+            try:
+                with file_path.open("rb") as input_file:
+                    return await upload.upload_file(
+                        file_path,
+                        size=size,
+                        content_type=content_type,
+                        input_file=input_file,
+                        timeout=timeout,
+                    )
+            except (IqError, IqTimeout):
+                if attempt > 0:
+                    raise
+
+        raise RuntimeError("No se pudo solicitar un espacio para subir el archivo.")
 
     def _preferred_upload_service(self) -> str:
         domain = str(self.boundjid.bare).split("@", 1)[-1] or self.settings.jid.split("@", 1)[-1]
@@ -4072,6 +4124,7 @@ class XmppService:
                     as_sticker=as_sticker,
                 )
             except Exception as exc:
+                delete_temporary_voice_note(path)
                 self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
                 return
 

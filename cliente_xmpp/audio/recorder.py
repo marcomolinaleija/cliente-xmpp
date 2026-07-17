@@ -101,10 +101,14 @@ class SoundDeviceAudioRecorder:
         return path
 
     def cancel(self) -> None:
-        self._stop_stream()
-        if self._encoder is not None or self._output_path is not None:
-            self._finish_encoder(cancel=True)
-        self._chunks = queue.SimpleQueue()
+        try:
+            self._stop_stream()
+        finally:
+            try:
+                if self._encoder is not None or self._output_path is not None:
+                    self._finish_encoder(cancel=True)
+            finally:
+                self._chunks = queue.SimpleQueue()
 
     def _stop_stream(self) -> None:
         stream = self._stream
@@ -186,9 +190,18 @@ class SoundDeviceAudioRecorder:
             try:
                 encoder.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                encoder.kill()
-            if output_path is not None and output_path.exists():
-                output_path.unlink(missing_ok=True)
+                try:
+                    encoder.kill()
+                except OSError:
+                    pass
+            except OSError:
+                pass
+            finally:
+                if output_path is not None:
+                    try:
+                        output_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         if output_path is None:
             raise AudioRecordingError("No se pudo preparar el archivo de audio.")

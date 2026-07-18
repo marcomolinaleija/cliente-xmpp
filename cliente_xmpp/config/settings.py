@@ -13,6 +13,7 @@ DEFAULT_SENT_MESSAGE_SOUND_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATIONS_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED = False
+DEFAULT_NEW_CHAT_COUNTRY = "MX"
 
 
 @dataclass(slots=True)
@@ -71,6 +72,25 @@ class SettingsStore:
             audio = {}
         audio["speed"] = speed
         payload["audio"] = audio
+        self._save_payload(payload)
+
+    def load_new_chat_country(self) -> str:
+        data = self._load_payload()
+        new_chat = data.get("new_chat", {})
+        if not isinstance(new_chat, dict):
+            return DEFAULT_NEW_CHAT_COUNTRY
+
+        country = str(new_chat.get("country", DEFAULT_NEW_CHAT_COUNTRY)).strip().upper()
+        if len(country) != 2 or not country.isascii() or not country.isalpha():
+            return DEFAULT_NEW_CHAT_COUNTRY
+        return country
+
+    def save_new_chat_country(self, country: str) -> None:
+        country = country.strip().upper()
+        if len(country) != 2 or not country.isascii() or not country.isalpha():
+            country = DEFAULT_NEW_CHAT_COUNTRY
+        payload = self._load_payload()
+        payload["new_chat"] = {"country": country}
         self._save_payload(payload)
 
     def load_notification_sound_settings(self) -> tuple[bool, bool]:

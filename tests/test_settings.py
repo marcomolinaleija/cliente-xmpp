@@ -30,6 +30,22 @@ class NotificationSoundSettingsTests(unittest.TestCase):
             self.assertEqual(store.load_notification_sound_settings(), (False, True))
 
 
+class NewChatSettingsTests(unittest.TestCase):
+    def test_country_defaults_to_mexico(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            self.assertEqual(store.load_new_chat_country(), "MX")
+
+    def test_country_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            store.save_new_chat_country("gb")
+
+            self.assertEqual(store.load_new_chat_country(), "GB")
+
+
 class NotificationSoundShortcutTests(unittest.TestCase):
     @staticmethod
     def _event(*, shift: bool = False, control: bool = False, alt: bool = False):

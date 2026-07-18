@@ -58,6 +58,7 @@ from cliente_xmpp.models.names import (
     is_fallback_chat_name,
     normalize_chat_name,
 )
+from cliente_xmpp.models.phone_numbers import whatsapp_contact_jid
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -65,6 +66,7 @@ from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
+from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
@@ -309,6 +311,7 @@ class MainWindow(wx.Frame):
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
         self.chat_list.search_ctrl.Bind(wx.EVT_TEXT, self._on_search_text_changed)
         self.chat_list.search_ctrl.Bind(wx.EVT_KEY_DOWN, self._on_search_key_down)
+        self.chat_list.new_chat_button.Bind(wx.EVT_BUTTON, self._on_new_chat)
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
@@ -1020,6 +1023,7 @@ class MainWindow(wx.Frame):
             self.audio_recorder.cancel()
             self.conversation.set_recording_state(False)
         self.conversation.set_remote_actions_enabled(enabled)
+        self.chat_list.set_new_chat_enabled(enabled)
         self.connection_header.mark_all_read_button.Enable(enabled)
         current_chat = self.conversation.current_chat
         if enabled and current_chat is not None:
@@ -1137,6 +1141,49 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    def _on_new_chat(self, _event: wx.CommandEvent) -> None:
+        if not self._require_whatsapp_connection():
+            return
+        if not self.whatsapp_component_jid:
+            message = "Todavía no se conoce el componente de WhatsApp. Espera la sincronización."
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
+
+        dialog = NewChatDialog(
+            self,
+            default_region=self.settings_store.load_new_chat_country(),
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK or dialog.normalized_phone is None:
+                return
+            normalized_phone = dialog.normalized_phone
+            selected_region = dialog.selected_region
+        finally:
+            dialog.Destroy()
+
+        self.settings_store.save_new_chat_country(selected_region)
+        try:
+            chat_jid = whatsapp_contact_jid(
+                normalized_phone.e164,
+                self.whatsapp_component_jid,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
+
+        existing_chat = self._chat_by_jid(chat_jid)
+        if existing_chat is not None:
+            self._open_chat(existing_chat)
+            return
+
+        self._open_chat(
+            Chat(jid=chat_jid, name=normalized_phone.international),
+            request_remote_context=False,
+        )
 
     def _rename_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()
@@ -1608,6 +1655,10 @@ class MainWindow(wx.Frame):
 
         if self._is_find_shortcut(event):
             self._focus_chat_search()
+            return
+
+        if self._is_new_chat_shortcut(event):
+            self._on_new_chat(wx.CommandEvent())
             return
 
         if self._is_mark_all_chats_read_shortcut(event):
@@ -2259,6 +2310,15 @@ class MainWindow(wx.Frame):
         key_code = event.GetKeyCode()
         unicode_key = event.GetUnicodeKey()
         return key_code in (ord("F"), ord("f")) or unicode_key in (ord("F"), ord("f"))
+
+    @staticmethod
+    def _is_new_chat_shortcut(event: wx.KeyEvent) -> bool:
+        if not event.ControlDown() or event.AltDown() or event.ShiftDown():
+            return False
+
+        key_code = event.GetKeyCode()
+        unicode_key = event.GetUnicodeKey()
+        return key_code in (ord("N"), ord("n")) or unicode_key in (ord("N"), ord("n"))
 
     @staticmethod
     def _is_mark_all_chats_read_shortcut(event: wx.KeyEvent) -> bool:
@@ -4000,6 +4060,15 @@ class MainWindow(wx.Frame):
 
     def _ensure_chat_for_message(self, message: Message) -> None:
         existing_chat = self._chat_by_jid(message.chat_jid)
+        if (
+            existing_chat is None
+            and self.conversation.current_chat is not None
+            and self.conversation.current_chat.jid == message.chat_jid
+        ):
+            existing_chat = self.conversation.current_chat
+            self._upsert_searchable_chat(existing_chat)
+            if not existing_chat.is_group:
+                self.chat_names_by_jid.setdefault(message.chat_jid, existing_chat.name)
         if existing_chat is not None:
             if not self.chat_list.has_chat(message.chat_jid):
                 self.chat_list.upsert_chat(existing_chat)
@@ -4982,17 +5051,31 @@ class MainWindow(wx.Frame):
             return
 
         target_message = item.message if item is not None else None
+        self._open_chat(chat, target_message=target_message)
+
+    def _open_chat(
+        self,
+        chat: Chat,
+        *,
+        target_message: Message | None = None,
+        request_remote_context: bool = True,
+    ) -> None:
         if target_message is not None:
             self._merge_messages(chat.jid, [target_message])
             self._update_chat_activity(chat.jid, self._message_timestamp(target_message))
 
-        if chat.is_group:
-            self.xmpp.join_group_chat(chat.jid)
-        else:
-            self.xmpp.request_contact_presence_subscription(chat.jid)
+        if request_remote_context:
+            if chat.is_group:
+                self.xmpp.join_group_chat(chat.jid)
+            else:
+                self.xmpp.request_contact_presence_subscription(chat.jid)
         self._load_conversation(chat, unread_count=chat.unread_count)
+        if not request_remote_context:
+            self.conversation.load_older_button.Disable()
+            self.conversation.load_older_button.SetLabel("No hay mensajes anteriores")
         self.conversation.set_remote_actions_enabled(True)
-        self._update_chat_summary(chat.jid, mark_read=True)
+        if request_remote_context:
+            self._update_chat_summary(chat.jid, mark_read=True)
         self.settings_panel.Hide()
         self.chat_list.Hide()
         self.conversation.Show()
@@ -5006,7 +5089,7 @@ class MainWindow(wx.Frame):
             self.conversation.focus_composer()
         self.status_bar.SetStatusText(f"Chat abierto: {chat.name}")
         self._refresh_current_chat_status_title()
-        needs_history = (
+        needs_history = request_remote_context and (
             chat.jid not in self.history_loaded_chats
             or self._chat_history_needs_reload(chat.jid)
         )

@@ -33,11 +33,16 @@ class ChatListPanel(wx.Panel):
         self.search_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
         self.search_ctrl.SetToolTip("Buscar contactos, telefonos y mensajes.")
         self.search_ctrl.SetMinSize((260, -1))
+        self.new_chat_button = wx.Button(self, label="&Nuevo chat")
+        self.new_chat_button.SetToolTip(
+            "Abre una conversación con un número de WhatsApp. Atajo: Control+N."
+        )
         self.list_box = wx.ListBox(self)
 
         search_box = wx.BoxSizer(wx.VERTICAL)
         search_box.Add(self.search_label, 0, wx.BOTTOM, 4)
         search_box.Add(self.search_ctrl, 0, wx.EXPAND)
+        search_box.Add(self.new_chat_button, 0, wx.TOP | wx.EXPAND, 10)
 
         box = wx.BoxSizer(wx.HORIZONTAL)
         box.Add(self.list_box, 1, wx.EXPAND)
@@ -298,6 +303,9 @@ class ChatListPanel(wx.Panel):
     def focus_search(self) -> None:
         self.search_ctrl.SetFocus()
         self.search_ctrl.SelectAll()
+
+    def set_new_chat_enabled(self, enabled: bool) -> None:
+        self.new_chat_button.Enable(enabled)
 
     def has_chat(self, jid: str) -> bool:
         return jid in self._chat_indexes_by_jid

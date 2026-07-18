@@ -12,6 +12,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.media.downloads import media_description
+from cliente_xmpp.media.links import copyable_message_text, is_link_preview
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_bridge_sticker,
@@ -31,6 +32,41 @@ from cliente_xmpp.xmpp.events import MessageDeliveryUpdated
 
 
 class MessageFeatureParsingTests(unittest.TestCase):
+    def test_generic_binary_link_preview_keeps_its_destination(self) -> None:
+        destination = "https://example.test/redirect"
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="Un enlace reenviado",
+            media_url=destination,
+            media_kind="file",
+            media_mime="application/octet-stream",
+            media_filename="Un enlace reenviado",
+            is_forwarded=True,
+        )
+
+        self.assertTrue(is_link_preview(message))
+        self.assertEqual(copyable_message_text(message), destination)
+        self.assertEqual(
+            media_description(message),
+            f"enlace, Un enlace reenviado, {destination}",
+        )
+
+    def test_generic_binary_attachment_stays_a_file(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="Archivo",
+            media_url="https://upload.example/reporte.bin",
+            media_kind="file",
+            media_mime="application/octet-stream",
+            media_filename="reporte.bin",
+            media_size=1024,
+        )
+
+        self.assertFalse(is_link_preview(message))
+        self.assertEqual(copyable_message_text(message), "Archivo")
+
     def test_recognizes_bridge_sticker_and_forwarded_markers(self) -> None:
         xml = ET.fromstring(
             """

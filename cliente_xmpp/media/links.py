@@ -41,6 +41,21 @@ def is_link_preview(message: Message) -> bool:
     return _is_link_preview_media(message)
 
 
+def copyable_message_text(message: Message) -> str:
+    """Return the useful clipboard value for a message.
+
+    Link previews keep their visible title in ``body`` and the destination in
+    ``media_url``.  Copying the title makes the message look copied while
+    losing the only value the user can actually open elsewhere.
+    """
+    if _is_link_preview_media(message):
+        links = message_links(message)
+        if links:
+            return links[0].url
+
+    return message.body
+
+
 def link_description(message: Message) -> str:
     links = message_links(message)
     if not links:
@@ -89,9 +104,12 @@ def _is_link_preview_media(message: Message) -> bool:
         return False
 
     mime = message.media_mime.split(";", 1)[0].strip().lower()
-    if mime and mime not in {"text/html", "application/xhtml+xml"}:
+    if mime in {"text/html", "application/xhtml+xml"}:
+        return True
+
+    if mime not in {"", "application/octet-stream", "binary/octet-stream"}:
         return False
-    if not mime and _looks_like_downloadable_file(message):
+    if message.media_size > 0 or _looks_like_downloadable_file(message):
         return False
 
     return True

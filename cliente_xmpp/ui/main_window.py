@@ -34,7 +34,12 @@ from cliente_xmpp.media.downloads import (
     local_media_path,
     media_description,
 )
-from cliente_xmpp.media.links import MessageLink, is_link_preview, message_links
+from cliente_xmpp.media.links import (
+    MessageLink,
+    copyable_message_text,
+    is_link_preview,
+    message_links,
+)
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_lottie_sticker_attachment,
@@ -2356,7 +2361,10 @@ class MainWindow(wx.Frame):
 
         menu = wx.Menu()
         reply_item = menu.Append(wx.ID_ANY, "Responder")
-        copy_item = menu.Append(wx.ID_ANY, "Copiar texto")
+        copy_item = menu.Append(
+            wx.ID_ANY,
+            "Copiar enlace" if is_link_preview(message) else "Copiar texto",
+        )
         forward_item = menu.Append(wx.ID_ANY, "Reenviar...")
         forward_item.Enable(
             not message.retracted and bool(message.body or message.media_url or message.audio_url)
@@ -2606,9 +2614,13 @@ class MainWindow(wx.Frame):
             return
 
         try:
-            wx.TheClipboard.SetData(wx.TextDataObject(message.body))
+            wx.TheClipboard.SetData(wx.TextDataObject(copyable_message_text(message)))
         finally:
             wx.TheClipboard.Close()
+
+        self.status_bar.SetStatusText(
+            "Enlace copiado" if is_link_preview(message) else "Texto copiado"
+        )
 
     def _forward_message(self, source: Message) -> None:
         if not self._require_whatsapp_connection():

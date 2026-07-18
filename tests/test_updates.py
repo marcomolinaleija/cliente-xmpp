@@ -5,11 +5,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import update
 from cliente_xmpp.updates import (
     UpdateCheckError,
+    UpdateInfo,
+    _offer_update,
     comparable_version,
     is_newer_version,
     release_from_payload,
@@ -45,6 +47,26 @@ def release_payload(version: str = "1.1.0") -> dict[str, object]:
 
 
 class UpdateCheckTests(unittest.TestCase):
+    def test_declining_update_keeps_the_app_open_and_does_not_launch_updater(self) -> None:
+        parent = MagicMock()
+        parent.IsBeingDeleted.return_value = False
+        update_info = UpdateInfo(
+            version="1.1.0",
+            tag="v1.1.0",
+            notes="",
+            download_url="https://example.test/WhatsApp-CAN-1.1.0.zip",
+            checksum_url="https://example.test/WhatsApp-CAN-1.1.0.zip.sha256",
+            release_url="https://example.test/releases/v1.1.0",
+        )
+        with (
+            patch("cliente_xmpp.updates._show_update_dialog", return_value=False),
+            patch("cliente_xmpp.updates._launch_updater") as launch_updater,
+        ):
+            _offer_update(parent, update_info)
+
+        launch_updater.assert_not_called()
+        parent.Close.assert_not_called()
+
     def test_version_comparison_accepts_v_and_stable_suffix(self) -> None:
         self.assertEqual(comparable_version("v1.2.3-stable"), (1, 2, 3, 0))
         self.assertTrue(is_newer_version("1.2.4", "1.2.3"))

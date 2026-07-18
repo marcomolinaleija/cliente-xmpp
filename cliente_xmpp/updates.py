@@ -217,11 +217,13 @@ def _show_update_dialog(parent: wx.Window, update: UpdateInfo) -> bool:
     yes_button = dialog.FindWindow(wx.ID_YES)
     if yes_button is not None:
         yes_button.SetLabel("Sí, actualizar")
-        yes_button.SetDefault()
-        yes_button.SetFocus()
+        yes_button.Bind(wx.EVT_BUTTON, lambda _event: dialog.EndModal(wx.ID_YES))
     no_button = dialog.FindWindow(wx.ID_NO)
     if no_button is not None:
         no_button.SetLabel("Ahora no")
+        no_button.SetDefault()
+        no_button.SetFocus()
+        no_button.Bind(wx.EVT_BUTTON, lambda _event: dialog.EndModal(wx.ID_NO))
     try:
         return dialog.ShowModal() == wx.ID_YES
     finally:

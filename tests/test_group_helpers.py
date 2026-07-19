@@ -159,16 +159,16 @@ class ContactPresenceLabelTests(unittest.TestCase):
             "contacto ausente",
         )
 
-    def test_online_status_replaces_last_seen_when_presence_is_available(self) -> None:
+    def test_last_seen_replaces_stale_available_presence(self) -> None:
         window = self._window("online", datetime(2026, 7, 16, 15, 41))
 
         self.assertEqual(
             MainWindow._contact_connection_status_text(window, window.chat_jid),
-            "en línea",
+            "últ. vez hoy 3:41 p. m.",
         )
         self.assertEqual(
             MainWindow._conversation_status_text(window, window.chat_jid),
-            "contacto en línea",
+            "últ. vez hoy 3:41 p. m.",
         )
 
     def test_online_status_is_used_when_presence_has_no_last_seen(self) -> None:
@@ -206,6 +206,31 @@ class ContactPresenceLabelTests(unittest.TestCase):
 
         self.assertEqual(summaries, [("Contacto", "contacto escribiendo")])
         self.assertEqual(titles, [f"{APP_WINDOW_TITLE} - Contacto"])
+
+    def test_conversation_reload_reapplies_saved_presence_status(self) -> None:
+        summaries: list[tuple[str, str]] = []
+        chat = Chat(jid="contact@example.org", name="Contacto")
+        conversation = SimpleNamespace(
+            current_chat=chat,
+            IsShown=lambda: True,
+            set_contact_summary=lambda name, status: summaries.append((name, status)),
+            set_messages=lambda _messages, unread_count=0: None,
+        )
+        window = SimpleNamespace(
+            conversation=conversation,
+            messages_by_chat={chat.jid: []},
+            _load_cached_messages_for_chat=lambda _jid: None,
+            _load_cached_group_participants=lambda _chat: None,
+            _refresh_conversation_avatar=lambda _chat: None,
+            _sync_recording_ui=lambda: None,
+            _refresh_load_older_button=lambda _jid: None,
+            _conversation_status_text=lambda _jid: "últ. vez hoy 3:41 p. m.",
+            _debug_perf=lambda *_args, **_kwargs: None,
+        )
+
+        MainWindow._load_conversation(window, chat)
+
+        self.assertEqual(summaries, [("Contacto", "últ. vez hoy 3:41 p. m.")])
 
 
 class ChatSearchRankingTests(unittest.TestCase):

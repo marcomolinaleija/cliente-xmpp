@@ -136,11 +136,15 @@ class PatchSlidgeReadSyncTests(unittest.TestCase):
                 "prosody_image": "prosodyim/prosody:0.12",
                 "bridge_image": "ghcr.io/example/bridge:read-sync",
                 "backup": False,
+                "automatic_roster_sync": True,
             }
             self.assertTrue(patch_compose(path, **args))
             updated = path.read_text(encoding="utf-8")
             self.assertIn("image: prosodyim/prosody:0.12", updated)
             self.assertIn("image: ghcr.io/example/bridge:read-sync", updated)
+            self.assertIn(
+                'SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER: "true"', updated
+            )
             self.assertFalse(patch_compose(path, **args))
 
 

@@ -1,0 +1,9 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714
+FROM ${BASE_IMAGE}
+
+USER root
+COPY patch_slidge_whatsapp_presence_cache.py /tmp/patch_slidge_whatsapp_presence_cache.py
+RUN python -B /tmp/patch_slidge_whatsapp_presence_cache.py \
+        /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_presence_cache.py
+USER slidge

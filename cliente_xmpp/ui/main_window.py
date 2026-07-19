@@ -4598,7 +4598,6 @@ class MainWindow(wx.Frame):
         )
         if preserving_visible_chat:
             self.conversation.current_chat = chat
-            self.conversation.set_contact_summary(chat.name, "")
         else:
             self.conversation.set_chat(chat)
         self._refresh_conversation_avatar(chat)
@@ -4615,6 +4614,10 @@ class MainWindow(wx.Frame):
         )
         self._sync_recording_ui()
         self._refresh_load_older_button(chat.jid)
+        self.conversation.set_contact_summary(
+            chat.name,
+            self._conversation_status_text(chat.jid),
+        )
         self._debug_perf(
             "_load_conversation.total",
             started_at,
@@ -5179,10 +5182,10 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
-        if presence.availability == "online":
-            return "contacto en línea"
         if presence.last_seen is not None:
             return f"últ. vez {self._format_presence_time(presence.last_seen)}"
+        if presence.availability == "online":
+            return "contacto en línea"
         if presence.availability == "away":
             return "contacto ausente"
         if presence.availability == "busy":
@@ -5196,10 +5199,10 @@ class MainWindow(wx.Frame):
         if presence is None:
             return ""
 
-        if presence.availability == "online":
-            return "en línea"
         if presence.last_seen is not None:
             return f"últ. vez {self._format_presence_time(presence.last_seen)}"
+        if presence.availability == "online":
+            return "en línea"
         if presence.availability == "away":
             return "ausente"
         if presence.availability == "busy":

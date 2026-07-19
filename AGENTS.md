@@ -191,8 +191,8 @@ Reglas obligatorias:
 - El cliente esta preparado para lecturas hechas desde otra app oficial de WhatsApp: consume
   `<displayed/>` XEP-0333 dentro de `carbon_sent` en chats individuales y XEP-0490
   (`urn:xmpp:mds:displayed:0`) en grupos. Conserva el marcador hasta conocer el mensaje local,
-  solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. Desde el 14
-  de julio de 2026, la imagen `audio-fix-20260714` convierte `events.MarkChatAsRead` y Prosody 0.12
+  solo reduce los no leidos hasta ese punto y deja intactos los mensajes posteriores. Desde el 18
+  de julio de 2026, la imagen `v8` conserva la conversión de `events.MarkChatAsRead` y Prosody 0.12
   concede los privilegios PubSub requeridos. La implementación reproducible está en
   `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`. No conviertas este flujo en polling de inbox ni
   confundas esos markers propios con el estado de entrega de mensajes salientes.
@@ -248,6 +248,14 @@ La lista principal solo materializa chats con preview, fecha o no leidos. Los co
 roster sin actividad permanecen en `searchable_chats_by_jid` para encontrarlos por nombre o
 telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son grupos.
 
+El roster de WhatsApp se sincroniza automáticamente por cada cuenta mediante XEP-0356. La imagen
+`v8` ejecuta `SyncContacts` después de que `contacts.ready` termina y la VPS configura
+`SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER=true`; no vuelvas a editar los archivos internos de roster de
+Prosody ni a ejecutar `/opt/xmpp/sync-slidge-roster.py`. Cuando WhatsApp conserva simultáneamente
+un móvil mexicano como `+521` y `+52`, el puente expone únicamente la variante moderna `+52` y
+mantiene `+521` como alias interno. Sólo se fusionan cuando ambas variantes existen para la misma
+cuenta; no elimines el `1` de forma general.
+
 El diálogo de nuevo chat acepta números internacionales de todos los países y conserva la
 compatibilidad específica de WhatsApp con números móviles mexicanos legados `+521` seguidos de
 10 dígitos. Para una entrada mexicana moderna `+52`, antes de crear un chat temporal consulta
@@ -290,8 +298,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 14 de julio de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:audio-fix-20260714` con menciones,
+- Desde el 18 de julio de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -302,6 +310,21 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   --force-recreate slidge-whatsapp`. Esta etiqueta también incluye la propagación de
   `events.MarkChatAsRead`; los privilegios XEP-0490 requieren `prosodyim/prosody:0.12` y la
   configuración descrita en la guía específica de sincronización de leídos.
+- La imagen `v6` conserva la última presencia cacheada durante `Contact.update_info()`. Slidge
+  debe usar `send_last_presence(force=True, no_cache_online=True)` en vez de un `online()`
+  sintético que borre `last_seen`; el parche y su smoke test están en
+  `tools/patch_slidge_whatsapp_presence_cache.py` y `tools/smoke_bridge_presence_runtime.py`.
+  `v7` conserva además el `last_seen` conocido cuando WhatsApp envía después una presencia sin
+  timestamp; ese parche vive en `tools/patch_slidge_whatsapp_presence_last_seen.py` y se valida con
+  `tools/smoke_bridge_presence_last_seen_runtime.py`. Si una presencia disponible contiene
+  `last_seen`, la UI muestra esa hora antes que `en línea`, porque puede ser una presencia
+  cacheada; `en línea` se reserva para eventos sin `last_seen`.
+- `v8` añade sincronización automática del roster y normalización condicional de duplicados
+  mexicanos. El parche reproducible y su smoke test viven en
+  `tools/patch_slidge_whatsapp_roster_sync.py` y
+  `tools/smoke_bridge_roster_sync_runtime.py`. La migración
+  `tools/migrate_slidge_mexico_aliases.py` debe ejecutarse con el contenedor detenido, primero sin
+  `--apply`, y sólo después de respaldar `slidge.sqlite`; conserva las referencias de mensajes.
 - En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
   `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
   ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría

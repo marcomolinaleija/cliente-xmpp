@@ -1,0 +1,10 @@
+FROM ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v7
+
+USER root
+
+COPY patch_slidge_whatsapp_roster_sync.py /tmp/patch_slidge_whatsapp_roster_sync.py
+RUN python -B /tmp/patch_slidge_whatsapp_roster_sync.py \
+        /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_roster_sync.py
+
+USER slidge

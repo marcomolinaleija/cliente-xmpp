@@ -5,14 +5,53 @@ from datetime import date, datetime
 
 
 @dataclass(frozen=True, slots=True)
-class DailyMessageStatistics:
-    day: date
+class DailyChatMessageStatistics:
+    chat_jid: str
+    name: str
+    is_group: bool
     sent: int
     received: int
+    stickers: int
+    audio_messages: int
+    image_messages: int
+    video_messages: int
+    file_messages: int
 
     @property
     def total(self) -> int:
         return self.sent + self.received
+
+
+@dataclass(frozen=True, slots=True)
+class DailyMessageStatistics:
+    day: date
+    sent: int
+    received: int
+    chats: tuple[DailyChatMessageStatistics, ...] = ()
+
+    @property
+    def total(self) -> int:
+        return self.sent + self.received
+
+    @property
+    def stickers(self) -> int:
+        return sum(chat.stickers for chat in self.chats)
+
+    @property
+    def audio_messages(self) -> int:
+        return sum(chat.audio_messages for chat in self.chats)
+
+    @property
+    def image_messages(self) -> int:
+        return sum(chat.image_messages for chat in self.chats)
+
+    @property
+    def video_messages(self) -> int:
+        return sum(chat.video_messages for chat in self.chats)
+
+    @property
+    def file_messages(self) -> int:
+        return sum(chat.file_messages for chat in self.chats)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from cliente_xmpp.models.statistics import ChatMessageStatistics
+from cliente_xmpp.models.statistics import (
+    ChatMessageStatistics,
+    DailyChatMessageStatistics,
+    DailyMessageStatistics,
+)
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 
 
@@ -41,10 +45,54 @@ class StatisticsDialogFormattingTests(unittest.TestCase):
         self.assertIn("Peso positivo: 9.0", detail)
         self.assertIn("Peso negativo: 3.0", detail)
         self.assertIn("Medidor de balance: +50", detail)
+        self.assertIn("Tiempo típico de respuesta del contacto: 5 minutos", detail)
         self.assertIn("ironía o sarcasmo", detail)
         self.assertEqual(StatisticsDialog._format_emotional_load(chat), "Positiva, +6.0")
+
+    def test_day_detail_includes_extremes_counts_and_media_by_chat(self) -> None:
+        day = DailyMessageStatistics(
+            day=date(2026, 7, 19),
+            sent=7,
+            received=5,
+            chats=(
+                DailyChatMessageStatistics(
+                    chat_jid="friend@example.test",
+                    name="Amistad",
+                    is_group=False,
+                    sent=5,
+                    received=1,
+                    stickers=1,
+                    audio_messages=2,
+                    image_messages=0,
+                    video_messages=0,
+                    file_messages=0,
+                ),
+                DailyChatMessageStatistics(
+                    chat_jid="#group@example.test",
+                    name="Grupo de prueba",
+                    is_group=True,
+                    sent=2,
+                    received=4,
+                    stickers=0,
+                    audio_messages=0,
+                    image_messages=1,
+                    video_messages=1,
+                    file_messages=1,
+                ),
+            ),
+        )
+
+        detail = StatisticsDialog._format_day_detail(day)
+
+        self.assertIn("Mensajes totales: 12", detail)
+        self.assertIn("Más mensajes enviados a: Amistad, 5", detail)
+        self.assertIn("Más mensajes recibidos de: Grupo de prueba, 4", detail)
+        self.assertIn("Audios: 2", detail)
+        self.assertIn("Imágenes: 1", detail)
+        self.assertIn("Archivos: 1", detail)
+        self.assertIn("Stickers: 1", detail)
+        self.assertIn("5 enviados, 1 recibidos, 6 total", detail)
 
 
 if __name__ == "__main__":
     unittest.main()
-

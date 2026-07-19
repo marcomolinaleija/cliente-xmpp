@@ -4,7 +4,11 @@ from collections.abc import Callable
 
 import wx
 
-from cliente_xmpp.models.statistics import ChatMessageStatistics, MessageStatistics
+from cliente_xmpp.models.statistics import (
+    ChatMessageStatistics,
+    DailyMessageStatistics,
+    MessageStatistics,
+)
 from cliente_xmpp.ui.theme import apply_theme
 
 StatisticsLoadedCallback = Callable[[MessageStatistics | None, str], None]
@@ -35,6 +39,7 @@ class StatisticsDialog(wx.Dialog):
         self._active = True
         self._request_id = 0
         self._statistics: MessageStatistics | None = None
+        self._visible_days: tuple[DailyMessageStatistics, ...] = ()
         self._visible_chats: tuple[ChatMessageStatistics, ...] = ()
 
         period_label = wx.StaticText(self, label="Período:")
@@ -74,6 +79,7 @@ class StatisticsDialog(wx.Dialog):
         self.Bind(wx.EVT_BUTTON, self._on_refresh, self.refresh_button)
         self.Bind(wx.EVT_CHOICE, self._on_period_changed, self.period_choice)
         self.Bind(wx.EVT_CHOICE, self._on_chat_sort_changed, self.chat_sort_choice)
+        self.daily.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_day_selected)
         self.chats.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_chat_selected)
         self.Bind(wx.EVT_BUTTON, self._on_close_button, close_button)
         self.Bind(wx.EVT_CLOSE, self._on_close)
@@ -125,9 +131,24 @@ class StatisticsDialog(wx.Dialog):
             (("Fecha", 180), ("Enviados", 140), ("Recibidos", 140), ("Total", 140))
         ):
             daily.InsertColumn(index, label, width=width)
+
+        self.daily_detail = wx.TextCtrl(
+            page,
+            value="Selecciona un día para ver el detalle.",
+            style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        self.daily_detail.SetName("Detalle del día seleccionado")
+        detail_box = wx.StaticBoxSizer(
+            wx.VERTICAL,
+            page,
+            "Estadísticas del día seleccionado",
+        )
+        detail_box.Add(self.daily_detail, 1, wx.ALL | wx.EXPAND, 8)
+
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(message, 0, wx.ALL | wx.EXPAND, 10)
         box.Add(daily, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+        box.Add(detail_box, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
         page.SetSizer(box)
         self.notebook.AddPage(page, "Por día")
         return daily
@@ -242,6 +263,7 @@ class StatisticsDialog(wx.Dialog):
     def _render(self, statistics: MessageStatistics) -> None:
         self.summary.Freeze()
         self.daily.Freeze()
+        self.daily_detail.Freeze()
         self.chats.Freeze()
         self.chat_detail.Freeze()
         self.unanswered.Freeze()
@@ -250,7 +272,8 @@ class StatisticsDialog(wx.Dialog):
             self.summary.SetInsertionPoint(0)
 
             self.daily.DeleteAllItems()
-            for item in reversed(statistics.daily):
+            self._visible_days = tuple(reversed(statistics.daily))
+            for item in self._visible_days:
                 index = self.daily.InsertItem(
                     self.daily.GetItemCount(),
                     item.day.strftime("%d/%m/%Y"),
@@ -258,6 +281,13 @@ class StatisticsDialog(wx.Dialog):
                 self.daily.SetItem(index, 1, str(item.sent))
                 self.daily.SetItem(index, 2, str(item.received))
                 self.daily.SetItem(index, 3, str(item.total))
+            if self._visible_days:
+                self.daily.Select(0)
+                self.daily.Focus(0)
+                self._show_day_detail(self._visible_days[0])
+            else:
+                self.daily_detail.ChangeValue("No hay días disponibles para este período.")
+                self.daily_detail.SetInsertionPoint(0)
 
             self._statistics = statistics
             self._render_chat_rows()
@@ -281,6 +311,7 @@ class StatisticsDialog(wx.Dialog):
         finally:
             self.summary.Thaw()
             self.daily.Thaw()
+            self.daily_detail.Thaw()
             self.chats.Thaw()
             self.chat_detail.Thaw()
             self.unanswered.Thaw()
@@ -376,7 +407,8 @@ class StatisticsDialog(wx.Dialog):
                     f"{cls._format_duration(chat.median_my_response_seconds)}"
                 ),
                 (
-                    "Tiempo típico de respuesta del chat: "
+                    "Tiempo típico de respuesta "
+                    f"{'del grupo' if chat.is_group else 'del contacto'}: "
                     f"{cls._format_duration(chat.median_their_response_seconds)}"
                 ),
                 "",
@@ -405,6 +437,58 @@ class StatisticsDialog(wx.Dialog):
         if chat.is_group:
             lines.append(
                 "En grupos, las rachas y respuestas combinan mensajes de varios participantes."
+            )
+        return "\n".join(lines)
+
+    def _show_day_detail(self, day: DailyMessageStatistics) -> None:
+        self.daily_detail.ChangeValue(self._format_day_detail(day))
+        self.daily_detail.SetInsertionPoint(0)
+
+    @staticmethod
+    def _format_day_detail(day: DailyMessageStatistics) -> str:
+        date_label = day.day.strftime("%d/%m/%Y")
+        if day.total == 0 or not day.chats:
+            return f"Fecha: {date_label}\n\nNo hubo mensajes guardados durante este día."
+
+        most_active = max(day.chats, key=lambda chat: chat.total)
+        least_active = min(day.chats, key=lambda chat: chat.total)
+        most_sent = max(day.chats, key=lambda chat: chat.sent)
+        most_received = max(day.chats, key=lambda chat: chat.received)
+        lines = [
+            f"Fecha: {date_label}",
+            "",
+            f"Mensajes totales: {day.total}",
+            f"Enviados por ti: {day.sent}",
+            f"Recibidos: {day.received}",
+            f"Conversaciones activas: {len(day.chats)}",
+            "",
+            "Destacados",
+            f"Más actividad: {most_active.name}, {most_active.total} mensajes",
+            f"Menos actividad: {least_active.name}, {least_active.total} mensajes",
+            f"Más mensajes enviados a: {most_sent.name}, {most_sent.sent}",
+            f"Más mensajes recibidos de: {most_received.name}, {most_received.received}",
+            "",
+            "Contenido multimedia",
+            f"Audios: {day.audio_messages}",
+            f"Imágenes: {day.image_messages}",
+            f"Videos: {day.video_messages}",
+            f"Archivos: {day.file_messages}",
+            f"Stickers: {day.stickers}",
+            "",
+            "Desglose por conversación",
+        ]
+        for chat in day.chats:
+            lines.extend(
+                (
+                    "",
+                    f"{chat.name} ({'grupo' if chat.is_group else 'contacto'}):",
+                    f"  {chat.sent} enviados, {chat.received} recibidos, {chat.total} total",
+                    (
+                        f"  Multimedia: {chat.audio_messages} audios, "
+                        f"{chat.image_messages} imágenes, {chat.video_messages} videos, "
+                        f"{chat.file_messages} archivos y {chat.stickers} stickers"
+                    ),
+                )
             )
         return "\n".join(lines)
 
@@ -621,6 +705,11 @@ class StatisticsDialog(wx.Dialog):
         index = event.GetIndex()
         if 0 <= index < len(self._visible_chats):
             self._show_chat_detail(self._visible_chats[index])
+
+    def _on_day_selected(self, event: wx.ListEvent) -> None:
+        index = event.GetIndex()
+        if 0 <= index < len(self._visible_days):
+            self._show_day_detail(self._visible_days[index])
 
     def _on_close_button(self, _event: wx.CommandEvent) -> None:
         self.deactivate()

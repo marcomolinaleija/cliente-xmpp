@@ -65,6 +65,20 @@ class MessageStatisticsTests(unittest.TestCase):
             self.assertEqual(statistics.file_messages, 1)
             self.assertEqual(statistics.stickers, 1)
 
+            by_day = {item.day.day: item for item in statistics.daily}
+            july_17 = by_day[17]
+            self.assertEqual((july_17.sent, july_17.received), (2, 3))
+            self.assertEqual(len(july_17.chats), 1)
+            self.assertEqual(july_17.chats[0].name, "Amistad")
+            self.assertEqual(july_17.audio_messages, 1)
+            self.assertEqual(july_17.stickers, 1)
+
+            july_18 = by_day[18]
+            self.assertEqual((july_18.sent, july_18.received), (3, 1))
+            self.assertEqual(july_18.chats[0].name, "Grupo de prueba")
+            self.assertEqual(july_18.image_messages, 1)
+            self.assertEqual(july_18.file_messages, 1)
+
             friendship = statistics.chats[0]
             self.assertEqual(friendship.name, "Amistad")
             self.assertEqual(friendship.sent, 2)

@@ -232,6 +232,10 @@ del menú. Los períodos de 7, 30 y 90 días usan la fecha local e incluyen los 
 la opción de historial completo comienza en el primer mensaje cacheado. Las rachas sin respuesta
 se calculan por conversación, no por participante individual dentro de un grupo, y la UI debe
 mantener explícita esa distinción.
+La pestaña diaria conserva un agregado por conversación para cada fecha: enviados, recibidos y
+tipos de multimedia. Seleccionar una fecha sólo presenta esos datos ya calculados; no debe lanzar
+otra consulta SQLite desde el hilo wx. El tiempo típico de respuesta por conversación distingue
+explícitamente al contacto individual del resultado combinado de un grupo.
 Los mensajes enviados por el JID raíz del componente del gateway no representan una conversación
 con un contacto y se excluyen del agregado. Identifica ese JID estructuralmente: no tiene parte
 local y coincide con el dominio que aloja chats hijos del roster. No filtres avisos de llamada por

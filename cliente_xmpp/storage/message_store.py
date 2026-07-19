@@ -22,6 +22,7 @@ from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.sentiment import sentiment_weights
 from cliente_xmpp.models.statistics import (
     ChatMessageStatistics,
+    DailyChatMessageStatistics,
     DailyMessageStatistics,
     MessageStatistics,
 )
@@ -30,6 +31,51 @@ DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 15
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+
+
+@dataclass(slots=True)
+class _DailyChatStatisticsAccumulator:
+    chat_jid: str
+    name: str
+    is_group: bool
+    sent: int = 0
+    received: int = 0
+    stickers: int = 0
+    audio_messages: int = 0
+    image_messages: int = 0
+    video_messages: int = 0
+    file_messages: int = 0
+
+    def add(self, *, outgoing: bool, media_kind: str, is_sticker: bool) -> None:
+        if outgoing:
+            self.sent += 1
+        else:
+            self.received += 1
+
+        if is_sticker:
+            self.stickers += 1
+        elif media_kind == "audio":
+            self.audio_messages += 1
+        elif media_kind == "image":
+            self.image_messages += 1
+        elif media_kind == "video":
+            self.video_messages += 1
+        elif media_kind == "file":
+            self.file_messages += 1
+
+    def build(self) -> DailyChatMessageStatistics:
+        return DailyChatMessageStatistics(
+            chat_jid=self.chat_jid,
+            name=self.name,
+            is_group=self.is_group,
+            sent=self.sent,
+            received=self.received,
+            stickers=self.stickers,
+            audio_messages=self.audio_messages,
+            image_messages=self.image_messages,
+            video_messages=self.video_messages,
+            file_messages=self.file_messages,
+        )
 
 
 @dataclass(slots=True)
@@ -117,6 +163,17 @@ class _ChatStatisticsAccumulator:
             )
             self.pending_outgoing_at = None
         self.pending_incoming_at = sent_at
+
+
+def _build_daily_chats(
+    accumulators: dict[str, _DailyChatStatisticsAccumulator],
+) -> tuple[DailyChatMessageStatistics, ...]:
+    return tuple(
+        sorted(
+            (accumulator.build() for accumulator in accumulators.values()),
+            key=lambda chat: (-chat.total, chat.name.casefold(), chat.chat_jid),
+        )
+    )
 
 
 class MessageStore:
@@ -312,6 +369,10 @@ class MessageStore:
             rows = conn.execute(query, parameters).fetchall()
 
         daily_counts: defaultdict[date, list[int]] = defaultdict(lambda: [0, 0])
+        daily_chat_accumulators: defaultdict[
+            date,
+            dict[str, _DailyChatStatisticsAccumulator],
+        ] = defaultdict(dict)
         hour_counts: Counter[int] = Counter()
         chat_accumulators: dict[str, _ChatStatisticsAccumulator] = {}
         total_sent = 0
@@ -386,6 +447,20 @@ class MessageStore:
                 negative_weight=message_sentiment.negative,
                 sentiment_indicators=message_sentiment.indicators,
             )
+            day_accumulators = daily_chat_accumulators[local_sent_at.date()]
+            daily_accumulator = day_accumulators.get(chat_jid)
+            if daily_accumulator is None:
+                daily_accumulator = _DailyChatStatisticsAccumulator(
+                    chat_jid=chat_jid,
+                    name=accumulator.name,
+                    is_group=accumulator.is_group,
+                )
+                day_accumulators[chat_jid] = daily_accumulator
+            daily_accumulator.add(
+                outgoing=outgoing,
+                media_kind=media_kind,
+                is_sticker=is_sticker,
+            )
 
             if first_message_at is None or sent_at < first_message_at:
                 first_message_at = sent_at
@@ -398,6 +473,9 @@ class MessageStore:
                     day=from_date + timedelta(days=offset),
                     sent=daily_counts[from_date + timedelta(days=offset)][0],
                     received=daily_counts[from_date + timedelta(days=offset)][1],
+                    chats=_build_daily_chats(
+                        daily_chat_accumulators[from_date + timedelta(days=offset)]
+                    ),
                 )
                 for offset in range(period_days or 0)
             )
@@ -409,6 +487,7 @@ class MessageStore:
                     day=day,
                     sent=daily_counts[day][0],
                     received=daily_counts[day][1],
+                    chats=_build_daily_chats(daily_chat_accumulators[day]),
                 )
                 for day in active_dates
             )

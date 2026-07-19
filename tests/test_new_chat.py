@@ -10,6 +10,7 @@ from cliente_xmpp.models.phone_numbers import (
     country_dialing_options,
     normalize_phone_number,
     whatsapp_contact_jid,
+    whatsapp_contact_jid_candidates,
 )
 from cliente_xmpp.ui.main_window import MainWindow
 
@@ -30,6 +31,19 @@ class PhoneNumberTests(unittest.TestCase):
 
         self.assertEqual(normalized.e164, "+524491234567")
         self.assertIn("52", normalized.international)
+
+    def test_legacy_mexican_whatsapp_number_is_preserved(self) -> None:
+        normalized = normalize_phone_number("+521 449 386 0911", "MX")
+
+        self.assertEqual(normalized.e164, "+5214493860911")
+        self.assertEqual(normalized.international, "+52 1 449 386 0911")
+
+    def test_legacy_mexican_whatsapp_number_accepts_international_prefix(self) -> None:
+        with_double_zero = normalize_phone_number("00521 449 386 0911", "GB")
+        without_plus = normalize_phone_number("5214493860911", "MX")
+
+        self.assertEqual(with_double_zero.e164, "+5214493860911")
+        self.assertEqual(without_plus.e164, "+5214493860911")
 
     def test_selected_country_removes_national_trunk_prefix(self) -> None:
         normalized = normalize_phone_number("020 7946 0018", "GB")
@@ -60,6 +74,39 @@ class PhoneNumberTests(unittest.TestCase):
         self.assertEqual(
             whatsapp_contact_jid("+524491234567", "whatsapp.example.org"),
             "+524491234567@whatsapp.example.org",
+        )
+
+    def test_mexican_whatsapp_jid_candidates_include_known_legacy_alias(self) -> None:
+        self.assertEqual(
+            whatsapp_contact_jid_candidates(
+                "+524493860911",
+                "whatsapp.example.org",
+            ),
+            (
+                "+524493860911@whatsapp.example.org",
+                "+5214493860911@whatsapp.example.org",
+            ),
+        )
+
+    def test_legacy_mexican_jid_candidates_include_modern_alias(self) -> None:
+        self.assertEqual(
+            whatsapp_contact_jid_candidates(
+                "+5214493860911",
+                "whatsapp.example.org",
+            ),
+            (
+                "+5214493860911@whatsapp.example.org",
+                "+524493860911@whatsapp.example.org",
+            ),
+        )
+
+    def test_other_country_has_only_one_whatsapp_jid_candidate(self) -> None:
+        self.assertEqual(
+            whatsapp_contact_jid_candidates(
+                "+442079460018",
+                "whatsapp.example.org",
+            ),
+            ("+442079460018@whatsapp.example.org",),
         )
 
 

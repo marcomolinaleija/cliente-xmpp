@@ -248,6 +248,12 @@ La lista principal solo materializa chats con preview, fecha o no leidos. Los co
 roster sin actividad permanecen en `searchable_chats_by_jid` para encontrarlos por nombre o
 telefono, pero no crean miles de filas vacias ni dejan de monitorearse si son grupos.
 
+El diálogo de nuevo chat acepta números internacionales de todos los países y conserva la
+compatibilidad específica de WhatsApp con números móviles mexicanos legados `+521` seguidos de
+10 dígitos. Para una entrada mexicana moderna `+52`, antes de crear un chat temporal consulta
+también el alias `+521` ya conocido en roster o cache; no agregues el `1` automáticamente a un
+número nuevo ni cambies la normalización moderna de `phonenumbers` para otros países.
+
 ### Grupos, identidad y ecos propios
 
 - Los grupos del bridge suelen tener JID con `#` y usan el room archive MAM. No trates un JID

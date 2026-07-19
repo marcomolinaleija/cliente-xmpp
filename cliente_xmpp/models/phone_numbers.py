@@ -10,6 +10,8 @@ from phonenumbers import geocoder
 
 DEFAULT_PHONE_REGION = "MX"
 _ALLOWED_PHONE_INPUT = re.compile(r"^[+0-9\s().-]+$")
+_LEGACY_MEXICO_WHATSAPP_NUMBER = re.compile(r"^\+521\d{10}$")
+_MODERN_MEXICO_NUMBER = re.compile(r"^\+52\d{10}$")
 _MISSING_SPANISH_REGION_NAMES = {
     "AC": "Isla de la Ascension",
     "BL": "San Bartolome",
@@ -89,6 +91,18 @@ def normalize_phone_number(
         parse_value = compact_value
         parse_region = None
 
+    legacy_mexico_number = _legacy_mexico_whatsapp_number(
+        compact_value,
+        region_code,
+    )
+    if legacy_mexico_number is not None:
+        return NormalizedPhoneNumber(
+            e164=legacy_mexico_number,
+            international=_format_legacy_mexico_whatsapp_number(
+                legacy_mexico_number
+            ),
+        )
+
     try:
         parsed = phonenumbers.parse(parse_value, parse_region)
     except phonenumbers.NumberParseException as exc:
@@ -121,6 +135,20 @@ def whatsapp_contact_jid(phone_number: str, component_jid: str) -> str:
     return f"{phone_number}@{component_jid}"
 
 
+def whatsapp_contact_jid_candidates(
+    phone_number: str,
+    component_jid: str,
+) -> tuple[str, ...]:
+    primary = whatsapp_contact_jid(phone_number, component_jid)
+    equivalent_number = _equivalent_mexico_whatsapp_number(phone_number)
+    if equivalent_number is None:
+        return (primary,)
+    return (
+        primary,
+        whatsapp_contact_jid(equivalent_number, component_jid),
+    )
+
+
 def _country_name_es(region_code: str) -> str:
     example = phonenumbers.example_number(region_code)
     name = geocoder.country_name_for_number(example, "es") if example is not None else ""
@@ -129,6 +157,38 @@ def _country_name_es(region_code: str) -> str:
 
 def _compact_phone_input(value: str) -> str:
     return "".join(character for character in value if character.isdigit() or character == "+")
+
+
+def _legacy_mexico_whatsapp_number(
+    compact_value: str,
+    region_code: str,
+) -> str | None:
+    candidate = compact_value
+    if candidate.startswith("00"):
+        candidate = f"+{candidate[2:]}"
+    elif not candidate.startswith("+") and region_code == "MX":
+        candidate = f"+{candidate}"
+    if _LEGACY_MEXICO_WHATSAPP_NUMBER.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def _format_legacy_mexico_whatsapp_number(phone_number: str) -> str:
+    modern_number = f"+52{phone_number.removeprefix('+521')}"
+    parsed = phonenumbers.parse(modern_number, None)
+    modern_display = phonenumbers.format_number(
+        parsed,
+        phonenumbers.PhoneNumberFormat.INTERNATIONAL,
+    )
+    return modern_display.replace("+52 ", "+52 1 ", 1)
+
+
+def _equivalent_mexico_whatsapp_number(phone_number: str) -> str | None:
+    if _LEGACY_MEXICO_WHATSAPP_NUMBER.fullmatch(phone_number):
+        return f"+52{phone_number.removeprefix('+521')}"
+    if _MODERN_MEXICO_NUMBER.fullmatch(phone_number):
+        return f"+521{phone_number.removeprefix('+52')}"
+    return None
 
 
 def _search_key(value: str) -> str:

@@ -58,7 +58,9 @@ from cliente_xmpp.models.names import (
     is_fallback_chat_name,
     normalize_chat_name,
 )
-from cliente_xmpp.models.phone_numbers import whatsapp_contact_jid
+from cliente_xmpp.models.phone_numbers import (
+    whatsapp_contact_jid_candidates,
+)
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -1165,7 +1167,7 @@ class MainWindow(wx.Frame):
 
         self.settings_store.save_new_chat_country(selected_region)
         try:
-            chat_jid = whatsapp_contact_jid(
+            chat_jid_candidates = whatsapp_contact_jid_candidates(
                 normalized_phone.e164,
                 self.whatsapp_component_jid,
             )
@@ -1175,13 +1177,17 @@ class MainWindow(wx.Frame):
             self.speaker.speak(message)
             return
 
-        existing_chat = self._chat_by_jid(chat_jid)
-        if existing_chat is not None:
-            self._open_chat(existing_chat)
-            return
+        for chat_jid in chat_jid_candidates:
+            existing_chat = self._chat_by_jid(chat_jid)
+            if existing_chat is not None:
+                self._open_chat(existing_chat)
+                return
 
         self._open_chat(
-            Chat(jid=chat_jid, name=normalized_phone.international),
+            Chat(
+                jid=chat_jid_candidates[0],
+                name=normalized_phone.international,
+            ),
             request_remote_context=False,
         )
 

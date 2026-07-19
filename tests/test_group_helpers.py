@@ -233,6 +233,32 @@ class ContactPresenceLabelTests(unittest.TestCase):
         self.assertEqual(summaries, [("Contacto", "últ. vez hoy 3:41 p. m.")])
 
 
+class PresenceTimeFormattingTests(unittest.TestCase):
+    def test_today_keeps_compact_time(self) -> None:
+        now = datetime(2026, 7, 19, 20, 0)
+
+        self.assertEqual(
+            MainWindow._format_presence_time(datetime(2026, 7, 19, 15, 41), now=now),
+            "hoy 3:41 p. m.",
+        )
+
+    def test_yesterday_uses_relative_label(self) -> None:
+        now = datetime(2026, 7, 19, 20, 0)
+
+        self.assertEqual(
+            MainWindow._format_presence_time(datetime(2026, 7, 18, 17, 14), now=now),
+            "ayer a las 5:14 p. m.",
+        )
+
+    def test_older_date_includes_day_month_and_year(self) -> None:
+        now = datetime(2026, 7, 19, 20, 0)
+
+        self.assertEqual(
+            MainWindow._format_presence_time(datetime(2026, 6, 7, 17, 14), now=now),
+            "07/06/2026, 5:14 p. m.",
+        )
+
+
 class ChatSearchRankingTests(unittest.TestCase):
     def test_exact_chat_name_beats_group_name_and_message_preview(self) -> None:
         exact = Chat(

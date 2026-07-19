@@ -318,7 +318,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   timestamp; ese parche vive en `tools/patch_slidge_whatsapp_presence_last_seen.py` y se valida con
   `tools/smoke_bridge_presence_last_seen_runtime.py`. Si una presencia disponible contiene
   `last_seen`, la UI muestra esa hora antes que `en línea`, porque puede ser una presencia
-  cacheada; `en línea` se reserva para eventos sin `last_seen`.
+  cacheada; `en línea` se reserva para eventos sin `last_seen`. El texto usa `hoy` para el día
+  actual, `ayer a las` para el anterior y `dd/mm/aaaa, hora` para fechas más antiguas.
 - `v8` añade sincronización automática del roster y normalización condicional de duplicados
   mexicanos. El parche reproducible y su smoke test viven en
   `tools/patch_slidge_whatsapp_roster_sync.py` y

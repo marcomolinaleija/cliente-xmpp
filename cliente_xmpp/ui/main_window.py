@@ -5360,18 +5360,28 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("No se pudo enviar a RayoAI. Verifica que esté abierto.")
 
     @staticmethod
-    def _format_presence_time(value: datetime) -> str:
+    def _format_presence_time(value: datetime, *, now: datetime | None = None) -> str:
         if value.tzinfo is not None:
             value = value.astimezone()
+
+        if now is None:
+            now = datetime.now(value.tzinfo) if value.tzinfo else datetime.now()
+        elif value.tzinfo is not None and now.tzinfo is not None:
+            now = now.astimezone(value.tzinfo)
 
         hour = value.hour
         minute = value.minute
         suffix = "a. m." if hour < 12 else "p. m."
         hour_12 = hour % 12 or 12
-        today = datetime.now(value.tzinfo).date() if value.tzinfo else datetime.now().date()
+        today = now.date()
         if value.date() == today:
             return f"hoy {hour_12}:{minute:02d} {suffix}"
-        return f"{value.day:02d}/{value.month:02d} {hour_12}:{minute:02d} {suffix}"
+        if value.date() == today - timedelta(days=1):
+            return f"ayer a las {hour_12}:{minute:02d} {suffix}"
+        return (
+            f"{value.day:02d}/{value.month:02d}/{value.year:04d}, "
+            f"{hour_12}:{minute:02d} {suffix}"
+        )
 
     def _upsert_discovered_chats(self, chats: list[Chat]) -> None:
         if not chats:

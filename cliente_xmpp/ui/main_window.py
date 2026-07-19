@@ -61,6 +61,7 @@ from cliente_xmpp.models.names import (
 from cliente_xmpp.models.phone_numbers import (
     whatsapp_contact_jid_candidates,
 )
+from cliente_xmpp.models.statistics import MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -70,6 +71,7 @@ from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
+from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkPanel,
@@ -247,6 +249,17 @@ class MainWindow(wx.Frame):
         self._schedule_auto_connect()
 
     def _layout(self) -> None:
+        menu_bar = wx.MenuBar()
+        view_menu = wx.Menu()
+        self.statistics_menu_item = view_menu.Append(
+            wx.ID_ANY,
+            "&Estadísticas...\tCtrl+Shift+E",
+            "Muestra estadísticas calculadas con el historial local",
+        )
+        self.statistics_menu_item.Enable(False)
+        menu_bar.Append(view_menu, "&Ver")
+        self.SetMenuBar(menu_bar)
+
         self.startup_panel = wx.Panel(self)
         startup_box = wx.BoxSizer(wx.VERTICAL)
         self.startup_message = wx.TextCtrl(
@@ -323,6 +336,7 @@ class MainWindow(wx.Frame):
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
+        self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
         self.settings_panel.test_notification_button.Bind(
             wx.EVT_BUTTON,
             self._on_test_windows_notification,
@@ -1713,6 +1727,49 @@ class MainWindow(wx.Frame):
 
     def _on_close_settings(self, _event: wx.CommandEvent) -> None:
         self._close_settings()
+
+    def _on_open_statistics(self, _event: wx.CommandEvent) -> None:
+        if not self.current_jid:
+            self.status_bar.SetStatusText("Conecta una cuenta para consultar sus estadísticas")
+            return
+
+        dialog = StatisticsDialog(self, self._load_statistics_async)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+    def _load_statistics_async(
+        self,
+        period_days: int | None,
+        callback: Callable[[MessageStatistics | None, str], None],
+    ) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            wx.CallAfter(callback, None, "No hay una cuenta activa.")
+            return
+
+        def worker() -> None:
+            try:
+                statistics = self.message_store.load_statistics(account_jid, period_days)
+            except Exception:
+                wx.CallAfter(
+                    callback,
+                    None,
+                    "No se pudieron calcular las estadísticas del historial local.",
+                )
+                return
+            wx.CallAfter(callback, statistics, "")
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            wx.CallAfter(callback, None, "La aplicación se está cerrando.")
 
     def _show_settings(self) -> None:
         self.settings_return_to_conversation = bool(
@@ -3873,6 +3930,7 @@ class MainWindow(wx.Frame):
         self.startup_panel.Show(False)
         self.login_panel.Show(not connected)
         self.workspace_panel.Show(connected)
+        self.statistics_menu_item.Enable(connected and bool(self.current_jid))
         self.chat_list.Enable(connected)
         self.conversation.Enable(connected)
         self.Layout()

@@ -2,15 +2,15 @@
 
 ## Estado actual: modificaciones del puente completadas
 
-Desde el 18 de julio de 2026, las modificaciones del puente están construidas, publicadas y
+Desde el 19 de julio de 2026, las modificaciones del puente están construidas, publicadas y
 activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8
-sha256:64811c17a2b12c90d0f0c4fb0e7654d5663031a7d351342c089945b4d9100fe3
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10
+sha256:3fc9221ce5da3bf9dffd807e72b52b09ef1f4c84fce2fff077dfe70702c56b73
 ```
 
-También está publicada como `roster-sync-20260718`. Esta imagen incluye:
+También está publicada como `message-presence-20260719`. Esta imagen incluye:
 
 - Las extensiones anteriores de visualización única y grabación de audio.
 - El parche de Slidge core para menciones nativas XEP-0372.
@@ -29,6 +29,9 @@ También está publicada como `roster-sync-20260718`. Esta imagen incluye:
 - Sincronización automática del roster XMPP después de conectar cada cuenta.
 - Fusión condicional de contactos mexicanos duplicados `+521`/`+52`, conservando `+52` como JID
   visible únicamente cuando ambas variantes existen.
+- Uso exclusivo de eventos reales de presencia para actualizar `last_seen`; los recibos de
+  lectura, estados de escritura y mensajes enviados desde WhatsApp oficial conservan su función
+  sin fabricar una última conexión con la hora actual.
 
 El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
 Si trabaja en otra instalación, debe configurar esa etiqueta y seguir la guía independiente
@@ -83,6 +86,8 @@ python tools/patch_slidge_whatsapp_read_sync.py RUTA_A_SLIDGE_WHATSAPP
 python tools/patch_slidge_whatsapp_presence_cache.py RUTA_A_SLIDGE_WHATSAPP
 python tools/patch_slidge_whatsapp_presence_last_seen.py RUTA_A_SLIDGE_WHATSAPP
 python tools/patch_slidge_whatsapp_roster_sync.py RUTA_A_SITE_PACKAGES
+python tools/patch_slidge_whatsapp_presence_sources.py RUTA_A_SITE_PACKAGES
+python tools/patch_slidge_whatsapp_message_presence.py RUTA_A_SITE_PACKAGES
 ```
 
 `tools/Dockerfile.bridge-completo.patch` documenta los pasos añadidos al Dockerfile de
@@ -104,6 +109,19 @@ La etiqueta `v8` parte de `v7` y añade el parche de roster mediante
 cada sesión. `SyncContacts` publica y retira entradas mediante XEP-0356; no se deben reescribir los
 archivos `roster/*.dat` de Prosody.
 
+La etiqueta `v9` parte de `v8` y aplica
+`tools/patch_slidge_whatsapp_presence_sources.py` mediante
+`tools/Dockerfile.bridge-presence-sources-v9`. El parche elimina únicamente las dos llamadas que
+usaban `datetime.now()` como `last_seen` al recibir un estado de escritura o un recibo de lectura.
+Los métodos `composing`, `paused` y `displayed` permanecen intactos.
+
+La etiqueta `v10` parte de `v9` y aplica
+`tools/patch_slidge_whatsapp_message_presence.py` mediante
+`tools/Dockerfile.bridge-message-presence-v10`. Elimina la tercera llamada sintética, ejecutada en
+`on_wa_message()` al recibir un mensaje enviado desde otra sesión de WhatsApp. La única ruta
+autorizada para actualizar la última conexión queda así en `Contact.update_presence()`, con el
+timestamp recibido de WhatsApp.
+
 En el servicio `slidge-whatsapp`, activa además estas variables sin cambiar el comando ni los
 volúmenes existentes:
 
@@ -120,7 +138,9 @@ Antes de publicar, ejecuta dentro de la imagen los smoke tests
 `tools/smoke_bridge_attachment_persistence_runtime.py` y
 `tools/smoke_bridge_presence_runtime.py` y
 `tools/smoke_bridge_presence_last_seen_runtime.py` y
-`tools/smoke_bridge_roster_sync_runtime.py`. La prueba de stickers debe producir un
+`tools/smoke_bridge_roster_sync_runtime.py` y
+`tools/smoke_bridge_presence_sources_runtime.py` y
+`tools/smoke_bridge_message_presence_runtime.py`. La prueba de stickers debe producir un
 WebP válido; comprobar sólo `--help` no demuestra que el motor Lottie esté instalado. La prueba de
 persistencia ejecuta el flujo posterior a `send_files` con `NO_UPLOAD_PATH` activo y falla si el
 archivo servido desaparece. La escritura de
@@ -160,7 +180,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10
 ```
 
 El servicio debe incluir:
@@ -177,12 +197,12 @@ Para instalaciones que ya tengan duplicados mexicanos, detén sólo `slidge-what
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10 \
   /tmp/migrate.py /var/lib/slidge/slidge.sqlite
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10 \
   /tmp/migrate.py --apply /var/lib/slidge/slidge.sqlite
 ```
 

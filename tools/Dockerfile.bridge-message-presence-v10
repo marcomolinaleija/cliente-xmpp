@@ -1,0 +1,10 @@
+FROM ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v9
+
+USER root
+
+COPY patch_slidge_whatsapp_message_presence.py /tmp/patch_slidge_whatsapp_message_presence.py
+RUN python -B /tmp/patch_slidge_whatsapp_message_presence.py \
+        /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_message_presence.py
+
+USER slidge

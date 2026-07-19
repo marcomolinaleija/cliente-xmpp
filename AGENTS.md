@@ -68,6 +68,7 @@ Archivos clave:
 - `cliente_xmpp/ui/main_window.py`: orquestacion entre UI, XMPP, cache local y estado.
 - `cliente_xmpp/ui/conversation_panel.py`: renderizado y acciones de la conversacion.
 - `cliente_xmpp/ui/chat_list_panel.py`: lista de chats y previews.
+- `cliente_xmpp/ui/statistics_dialog.py`: estadísticas accesibles del historial local.
 - `cliente_xmpp/xmpp/client.py`: cliente XMPP, recepcion/envio, MAM y multimedia.
 - `cliente_xmpp/xmpp/events.py`: eventos tipados que cruzan del hilo XMPP a wx.
 - `cliente_xmpp/models/chat.py`: modelos `Chat` y `Message`.
@@ -224,6 +225,24 @@ las páginas MAM posteriores trabajan sobre la memoria ya cargada.
 Las métricas impresas por `_debug_perf` están desactivadas normalmente; para una sesión de
 diagnóstico inicia el proceso con `CLIENTE_XMPP_PERF_DEBUG=1`.
 
+Las estadísticas se abren desde `Ver > Estadísticas` y se calculan exclusivamente con los
+mensajes que ya existen en SQLite para la cuenta activa. `MessageStore.load_statistics` ejecuta
+el agregado fuera del hilo wx mediante el ejecutor de storage; no muevas esa lectura al handler
+del menú. Los períodos de 7, 30 y 90 días usan la fecha local e incluyen los días sin actividad;
+la opción de historial completo comienza en el primer mensaje cacheado. Las rachas sin respuesta
+se calculan por conversación, no por participante individual dentro de un grupo, y la UI debe
+mantener explícita esa distinción.
+Los mensajes enviados por el JID raíz del componente del gateway no representan una conversación
+con un contacto y se excluyen del agregado. Identifica ese JID estructuralmente: no tiene parte
+local y coincide con el dominio que aloja chats hijos del roster. No filtres avisos de llamada por
+nombre, número, alias local ni texto libre; Slidge los envía con `send_gateway_message` desde el
+componente aunque el cuerpo incluya el JID del contacto que llamó.
+La carga emocional de estadísticas se calcula también de forma local mediante un léxico
+ponderado de palabras, negaciones, intensificadores y emojis. Es una aproximación, no un análisis
+de intención: la UI debe conservar el aviso sobre contexto, ironía y sarcasmo. Compara peso
+positivo y negativo por separado y expresa el balance normalizado entre -100 y +100; nunca envía
+el cuerpo de los mensajes a un servicio remoto.
+
 La distribución ejecutable comprueba una sola vez por proceso la release estable más reciente,
 dos segundos después de mostrar la ventana y siempre fuera del hilo wx. Solo ofrece paquetes con
 versión superior, ZIP `WhatsApp-CAN-<versión>.zip` y checksum homónimo `.sha256`. El usuario debe
@@ -298,8 +317,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 18 de julio de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v8` con menciones,
+- Desde el 19 de julio de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -326,6 +345,16 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/smoke_bridge_roster_sync_runtime.py`. La migración
   `tools/migrate_slidge_mexico_aliases.py` debe ejecutarse con el contenedor detenido, primero sin
   `--apply`, y sólo después de respaldar `slidge.sqlite`; conserva las referencias de mensajes.
+- `v9` impide que los recibos de lectura y los estados de escritura/grabación usen
+  `datetime.now()` como última conexión del contacto. Esas señales deben conservar `displayed`,
+  `composing` y `paused`. El parche y su smoke test viven en
+  `tools/patch_slidge_whatsapp_presence_sources.py` y
+  `tools/smoke_bridge_presence_sources_runtime.py`.
+- `v10` elimina además el `actor.online(last_seen=datetime.now())` que `on_wa_message()` ejecutaba
+  al recibir un mensaje enviado desde WhatsApp oficial. Sólo `Contact.update_presence()` puede
+  actualizar `last_seen`, usando el timestamp de una presencia real de WhatsApp. El parche y su
+  smoke test viven en `tools/patch_slidge_whatsapp_message_presence.py` y
+  `tools/smoke_bridge_message_presence_runtime.py`.
 - En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
   `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
   ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría

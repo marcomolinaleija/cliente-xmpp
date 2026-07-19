@@ -4,10 +4,14 @@ import hashlib
 import json
 import sqlite3
 import unicodedata
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as datetime_time
 from pathlib import Path
+from statistics import median
 
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
@@ -15,11 +19,104 @@ from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import is_fallback_chat_name
+from cliente_xmpp.models.sentiment import sentiment_weights
+from cliente_xmpp.models.statistics import (
+    ChatMessageStatistics,
+    DailyMessageStatistics,
+    MessageStatistics,
+)
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 15
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+
+
+@dataclass(slots=True)
+class _ChatStatisticsAccumulator:
+    chat_jid: str
+    name: str
+    is_group: bool
+    sent: int = 0
+    received: int = 0
+    current_received_streak: int = 0
+    maximum_received_streak: int = 0
+    current_sent_streak: int = 0
+    pending_incoming_at: datetime | None = None
+    pending_outgoing_at: datetime | None = None
+    my_response_delays: list[float] = field(default_factory=list)
+    their_response_delays: list[float] = field(default_factory=list)
+    active_dates: set[date] = field(default_factory=set)
+    hour_counts: Counter[int] = field(default_factory=Counter)
+    first_message_at: datetime | None = None
+    last_message_at: datetime | None = None
+    stickers: int = 0
+    audio_messages: int = 0
+    image_messages: int = 0
+    video_messages: int = 0
+    file_messages: int = 0
+    positive_weight: float = 0.0
+    negative_weight: float = 0.0
+    sentiment_messages: int = 0
+
+    def add(
+        self,
+        *,
+        outgoing: bool,
+        sent_at: datetime,
+        local_sent_at: datetime,
+        media_kind: str,
+        is_sticker: bool,
+        positive_weight: float,
+        negative_weight: float,
+        sentiment_indicators: int,
+    ) -> None:
+        self.active_dates.add(local_sent_at.date())
+        self.hour_counts[local_sent_at.hour] += 1
+        if self.first_message_at is None or sent_at < self.first_message_at:
+            self.first_message_at = sent_at
+        if self.last_message_at is None or sent_at > self.last_message_at:
+            self.last_message_at = sent_at
+        if is_sticker:
+            self.stickers += 1
+        elif media_kind == "audio":
+            self.audio_messages += 1
+        elif media_kind == "image":
+            self.image_messages += 1
+        elif media_kind == "video":
+            self.video_messages += 1
+        elif media_kind == "file":
+            self.file_messages += 1
+        self.positive_weight += positive_weight
+        self.negative_weight += negative_weight
+        if sentiment_indicators > 0:
+            self.sentiment_messages += 1
+
+        if outgoing:
+            self.sent += 1
+            self.current_sent_streak += 1
+            self.current_received_streak = 0
+            if self.pending_incoming_at is not None:
+                self.my_response_delays.append(
+                    max(0.0, (sent_at - self.pending_incoming_at).total_seconds())
+                )
+                self.pending_incoming_at = None
+            self.pending_outgoing_at = sent_at
+            return
+
+        self.received += 1
+        self.current_received_streak += 1
+        self.current_sent_streak = 0
+        self.maximum_received_streak = max(
+            self.maximum_received_streak,
+            self.current_received_streak,
+        )
+        if self.pending_outgoing_at is not None:
+            self.their_response_delays.append(
+                max(0.0, (sent_at - self.pending_outgoing_at).total_seconds())
+            )
+            self.pending_outgoing_at = None
+        self.pending_incoming_at = sent_at
 
 
 class MessageStore:
@@ -155,6 +252,281 @@ class MessageStore:
                     break
 
         return list(reversed(matches))
+
+    def load_statistics(
+        self,
+        account_jid: str,
+        period_days: int | None = 30,
+        *,
+        now: datetime | None = None,
+    ) -> MessageStatistics:
+        if period_days is not None and period_days < 1:
+            raise ValueError("period_days must be positive or None")
+
+        reference_now = now or datetime.now().astimezone()
+        if reference_now.tzinfo is None:
+            reference_now = reference_now.astimezone()
+        to_date = reference_now.date()
+        from_date = (
+            to_date - timedelta(days=period_days - 1)
+            if period_days is not None
+            else None
+        )
+        start_local = (
+            datetime.combine(from_date, datetime_time.min, tzinfo=reference_now.tzinfo)
+            if from_date is not None
+            else None
+        )
+
+        query = """
+            SELECT
+                messages.chat_jid,
+                messages.sent_at,
+                messages.outgoing,
+                messages.body,
+                messages.media_kind,
+                messages.is_sticker,
+                COALESCE(
+                    NULLIF(chats.custom_name, ''),
+                    NULLIF(chats.name, ''),
+                    messages.chat_jid
+                ) AS chat_name,
+                CASE
+                    WHEN COALESCE(chats.is_group, 0) = 1 OR messages.chat_is_group = 1 THEN 1
+                    ELSE 0
+                END AS is_group
+            FROM messages
+            LEFT JOIN chats
+                ON chats.account_jid = messages.account_jid
+                AND chats.jid = messages.chat_jid
+            WHERE messages.account_jid = ?
+        """
+        parameters: list[object] = [account_jid]
+        if start_local is not None:
+            query += " AND messages.sent_at >= ?"
+            parameters.append(_datetime_to_db(start_local))
+        query += " ORDER BY messages.sent_at, messages.rowid"
+
+        with self._connect() as conn:
+            gateway_component_jids = self._load_gateway_component_jids(conn, account_jid)
+            rows = conn.execute(query, parameters).fetchall()
+
+        daily_counts: defaultdict[date, list[int]] = defaultdict(lambda: [0, 0])
+        hour_counts: Counter[int] = Counter()
+        chat_accumulators: dict[str, _ChatStatisticsAccumulator] = {}
+        total_sent = 0
+        total_received = 0
+        stickers = 0
+        audio_messages = 0
+        image_messages = 0
+        video_messages = 0
+        file_messages = 0
+        positive_weight = 0.0
+        negative_weight = 0.0
+        sentiment_messages = 0
+        first_message_at: datetime | None = None
+        last_message_at: datetime | None = None
+
+        for row in rows:
+            sent_at = _datetime_from_db(row["sent_at"])
+            if sent_at is None:
+                continue
+            local_sent_at = sent_at.astimezone(reference_now.tzinfo)
+            if start_local is not None and local_sent_at < start_local:
+                continue
+            if local_sent_at > reference_now:
+                continue
+
+            outgoing = bool(row["outgoing"])
+            chat_jid = str(row["chat_jid"])
+            if chat_jid in gateway_component_jids:
+                continue
+            day_counts = daily_counts[local_sent_at.date()]
+            day_counts[0 if outgoing else 1] += 1
+            hour_counts[local_sent_at.hour] += 1
+            if outgoing:
+                total_sent += 1
+            else:
+                total_received += 1
+
+            is_sticker = bool(row["is_sticker"])
+            media_kind = str(row["media_kind"] or "").casefold()
+            if is_sticker:
+                stickers += 1
+            elif media_kind == "audio":
+                audio_messages += 1
+            elif media_kind == "image":
+                image_messages += 1
+            elif media_kind == "video":
+                video_messages += 1
+            elif media_kind == "file":
+                file_messages += 1
+
+            message_sentiment = sentiment_weights(str(row["body"] or ""))
+            positive_weight += message_sentiment.positive
+            negative_weight += message_sentiment.negative
+            if message_sentiment.indicators > 0:
+                sentiment_messages += 1
+
+            accumulator = chat_accumulators.get(chat_jid)
+            if accumulator is None:
+                accumulator = _ChatStatisticsAccumulator(
+                    chat_jid=chat_jid,
+                    name=str(row["chat_name"] or chat_jid),
+                    is_group=bool(row["is_group"]),
+                )
+                chat_accumulators[chat_jid] = accumulator
+            accumulator.add(
+                outgoing=outgoing,
+                sent_at=sent_at,
+                local_sent_at=local_sent_at,
+                media_kind=media_kind,
+                is_sticker=is_sticker,
+                positive_weight=message_sentiment.positive,
+                negative_weight=message_sentiment.negative,
+                sentiment_indicators=message_sentiment.indicators,
+            )
+
+            if first_message_at is None or sent_at < first_message_at:
+                first_message_at = sent_at
+            if last_message_at is None or sent_at > last_message_at:
+                last_message_at = sent_at
+
+        if from_date is not None:
+            daily = tuple(
+                DailyMessageStatistics(
+                    day=from_date + timedelta(days=offset),
+                    sent=daily_counts[from_date + timedelta(days=offset)][0],
+                    received=daily_counts[from_date + timedelta(days=offset)][1],
+                )
+                for offset in range(period_days or 0)
+            )
+            calendar_days = period_days or 0
+        else:
+            active_dates = sorted(daily_counts)
+            daily = tuple(
+                DailyMessageStatistics(
+                    day=day,
+                    sent=daily_counts[day][0],
+                    received=daily_counts[day][1],
+                )
+                for day in active_dates
+            )
+            from_date = active_dates[0] if active_dates else None
+            calendar_days = (
+                (to_date - from_date).days + 1
+                if from_date is not None
+                else 0
+            )
+
+        chats = tuple(
+            sorted(
+                (
+                    ChatMessageStatistics(
+                        chat_jid=accumulator.chat_jid,
+                        name=accumulator.name,
+                        is_group=accumulator.is_group,
+                        sent=accumulator.sent,
+                        received=accumulator.received,
+                        current_received_streak=accumulator.current_received_streak,
+                        maximum_received_streak=accumulator.maximum_received_streak,
+                        current_sent_streak=accumulator.current_sent_streak,
+                        median_my_response_seconds=_median_or_none(
+                            accumulator.my_response_delays
+                        ),
+                        median_their_response_seconds=_median_or_none(
+                            accumulator.their_response_delays
+                        ),
+                        active_days=len(accumulator.active_dates),
+                        first_message_at=accumulator.first_message_at or reference_now,
+                        last_message_at=accumulator.last_message_at or reference_now,
+                        busiest_hour=(
+                            max(
+                                sorted(accumulator.hour_counts),
+                                key=lambda hour: accumulator.hour_counts[hour],
+                            )
+                            if accumulator.hour_counts
+                            else None
+                        ),
+                        stickers=accumulator.stickers,
+                        audio_messages=accumulator.audio_messages,
+                        image_messages=accumulator.image_messages,
+                        video_messages=accumulator.video_messages,
+                        file_messages=accumulator.file_messages,
+                        positive_weight=accumulator.positive_weight,
+                        negative_weight=accumulator.negative_weight,
+                        sentiment_messages=accumulator.sentiment_messages,
+                    )
+                    for accumulator in chat_accumulators.values()
+                ),
+                key=lambda chat: (-chat.total, chat.name.casefold(), chat.chat_jid),
+            )
+        )
+        my_response_delays = [
+            delay
+            for accumulator in chat_accumulators.values()
+            if not accumulator.is_group
+            for delay in accumulator.my_response_delays
+        ]
+        their_response_delays = [
+            delay
+            for accumulator in chat_accumulators.values()
+            if not accumulator.is_group
+            for delay in accumulator.their_response_delays
+        ]
+        busiest_hour = (
+            max(sorted(hour_counts), key=lambda hour: hour_counts[hour])
+            if hour_counts
+            else None
+        )
+
+        return MessageStatistics(
+            period_days=period_days,
+            from_date=from_date,
+            to_date=to_date,
+            first_message_at=first_message_at,
+            last_message_at=last_message_at,
+            total_sent=total_sent,
+            total_received=total_received,
+            active_days=sum(1 for counts in daily_counts.values() if sum(counts) > 0),
+            calendar_days=calendar_days,
+            stickers=stickers,
+            audio_messages=audio_messages,
+            image_messages=image_messages,
+            video_messages=video_messages,
+            file_messages=file_messages,
+            busiest_hour=busiest_hour,
+            median_my_response_seconds=_median_or_none(my_response_delays),
+            median_their_response_seconds=_median_or_none(their_response_delays),
+            positive_weight=positive_weight,
+            negative_weight=negative_weight,
+            sentiment_messages=sentiment_messages,
+            daily=daily,
+            chats=chats,
+        )
+
+    @staticmethod
+    def _load_gateway_component_jids(
+        conn: sqlite3.Connection,
+        account_jid: str,
+    ) -> set[str]:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT component.jid
+            FROM chats AS component
+            WHERE component.account_jid = ?
+                AND instr(component.jid, '@') = 0
+                AND EXISTS (
+                    SELECT 1
+                    FROM chats AS child
+                    WHERE child.account_jid = component.account_jid
+                        AND instr(child.jid, '@') > 0
+                        AND substr(child.jid, instr(child.jid, '@') + 1) = component.jid
+                )
+            """,
+            (account_jid,),
+        ).fetchall()
+        return {str(row["jid"]) for row in rows}
 
     def upsert_chat(self, account_jid: str, chat: Chat) -> None:
         with self._connect() as conn:
@@ -385,6 +757,9 @@ class MessageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_messages_chat_sent
                 ON messages (account_jid, chat_jid, sent_at);
+
+                CREATE INDEX IF NOT EXISTS idx_messages_account_sent
+                ON messages (account_jid, sent_at);
 
                 CREATE TABLE IF NOT EXISTS group_participants (
                     account_jid TEXT NOT NULL,
@@ -1310,6 +1685,10 @@ def _datetime_timestamp(value: datetime | None) -> float | None:
         return value.timestamp()
     except (OSError, ValueError):
         return None
+
+
+def _median_or_none(values: list[float]) -> float | None:
+    return float(median(values)) if values else None
 
 
 def _should_replace_summary(new_at: datetime | None, current_at: datetime | None) -> bool:

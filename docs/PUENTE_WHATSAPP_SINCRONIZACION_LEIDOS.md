@@ -170,6 +170,11 @@ base, borrando volúmenes ni cambiando el cliente de escritorio.
 
 ## Configuración requerida de Prosody
 
+La instalación completa en servidores distintos de `marco-vps`, incluido ejabberd, respaldos,
+validación, despliegue y rollback, se documenta en
+`docs/PUENTE_WHATSAPP_OTROS_SERVIDORES.md`. Esta sección conserva el detalle específico de la
+incidencia original de XEP-0490.
+
 Los mensajes privilegiados ya funcionaban para chats individuales, pero XEP-0490 necesita además
 privilegios PubSub. `marco-vps` usa ahora `prosodyim/prosody:0.12`; el módulo de privilegios
 instalado no podía entregar IQ PubSub correctamente sobre la antigua imagen Prosody 0.11.9.

@@ -31,8 +31,9 @@ También está publicada como `roster-sync-20260718`. Esta imagen incluye:
   visible únicamente cuando ambas variantes existen.
 
 El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
-Si trabaja en otra instalación, debe configurar esa etiqueta, aplicar una vez los privilegios de
-Prosody descritos en `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md` y recrear el servicio:
+Si trabaja en otra instalación, debe configurar esa etiqueta y seguir la guía independiente
+`docs/PUENTE_WHATSAPP_OTROS_SERVIDORES.md` para conceder los privilegios y validar el despliegue
+antes de recrear el servicio:
 
 ```bash
 cd /opt/xmpp

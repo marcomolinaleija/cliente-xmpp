@@ -462,6 +462,30 @@ credenciales ni contenido sensible a commits, logs o issues. Para comparar un du
 registra como minimo `chat_jid`, `message_id`, `sender_jid`, `outgoing`, `chat_is_group`,
 `sent_at`, `body` truncado y rutas multimedia.
 
+### Privacidad antes de commit y push
+
+Antes de crear cualquier commit o hacer push, revisa el diff que se publicara y los archivos
+nuevos. Si aparece un numero telefonico, nombre de contacto, JID personal, identificador real de
+grupo o cualquier otro dato que pueda pertenecer a una persona, **detente y pregunta al usuario
+de forma explicita antes de continuar**. No asumas que es ficticio ni que puede publicarse solo
+porque el usuario lo proporciono durante la conversacion para reproducir una incidencia.
+
+Reglas obligatorias:
+
+- Indica que dato o categoria detectaste y en que archivo aparece, sin repetir innecesariamente
+  el valor completo en mensajes, logs o comentarios.
+- Pregunta si debe anonimizarse o si el usuario autoriza expresamente incluirlo en el commit y en
+  el remoto. Una instruccion general anterior como "commitea y pushea" no sustituye esta
+  confirmacion cuando el dato sensible se descubre despues.
+- Para pruebas, ejemplos y documentacion, usa nombres claramente ficticios, dominios
+  `example.org` y numeros de ejemplo o reservados que mantengan la semantica necesaria.
+- No copies valores reales desde SQLite, registros, capturas, stanzas XMPP o la VPS hacia
+  fixtures del repositorio.
+- Si el dato se detecta despues del commit pero antes del push, no hagas push: anonimiza o pide
+  confirmacion y corrige el commit.
+- Si ya fue publicado, informa el alcance y no reescribas historial ni hagas `force push` sin una
+  autorizacion explicita y un plan coordinado con los colaboradores.
+
 ## Historial y sincronizacion
 
 El historial se carga con paginas pequenas. Mantener esto es importante para que la app no se

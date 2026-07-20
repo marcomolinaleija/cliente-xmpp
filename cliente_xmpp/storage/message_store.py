@@ -377,6 +377,7 @@ class MessageStore:
         *,
         now: datetime | None = None,
         chat_jid: str | None = None,
+        chat_is_group: bool | None = None,
     ) -> MessageStatistics:
         if period_days is not None and period_days < 1:
             raise ValueError("period_days must be positive or None")
@@ -423,6 +424,14 @@ class MessageStore:
         if chat_jid is not None:
             query += " AND messages.chat_jid = ?"
             parameters.append(chat_jid)
+        if chat_is_group is not None:
+            query += """
+                AND CASE
+                    WHEN COALESCE(chats.is_group, 0) = 1 OR messages.chat_is_group = 1 THEN 1
+                    ELSE 0
+                END = ?
+            """
+            parameters.append(int(chat_is_group))
         if start_local is not None:
             query += " AND messages.sent_at >= ?"
             parameters.append(_datetime_to_db(start_local))

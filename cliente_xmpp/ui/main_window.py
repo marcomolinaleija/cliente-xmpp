@@ -1745,6 +1745,7 @@ class MainWindow(wx.Frame):
     def _load_statistics_async(
         self,
         period_days: int | None,
+        chat_is_group: bool | None,
         callback: Callable[[MessageStatistics | None, str], None],
     ) -> None:
         account_jid = self.current_jid
@@ -1754,7 +1755,11 @@ class MainWindow(wx.Frame):
 
         def worker() -> None:
             try:
-                statistics = self.message_store.load_statistics(account_jid, period_days)
+                statistics = self.message_store.load_statistics(
+                    account_jid,
+                    period_days,
+                    chat_is_group=chat_is_group,
+                )
             except Exception:
                 wx.CallAfter(
                     callback,

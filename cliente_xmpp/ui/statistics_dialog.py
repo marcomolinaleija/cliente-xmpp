@@ -12,7 +12,7 @@ from cliente_xmpp.models.statistics import (
 from cliente_xmpp.ui.theme import apply_theme
 
 StatisticsLoadedCallback = Callable[[MessageStatistics | None, str], None]
-StatisticsLoader = Callable[[int | None, StatisticsLoadedCallback], None]
+StatisticsLoader = Callable[[int | None, bool | None, StatisticsLoadedCallback], None]
 
 PERIODS: tuple[tuple[str, int | None], ...] = (
     ("Últimos 7 días", 7),
@@ -24,6 +24,11 @@ CHAT_SORTS = (
     "Mayor actividad",
     "Lenguaje más positivo",
     "Lenguaje más negativo",
+)
+CHAT_FILTERS: tuple[tuple[str, bool | None], ...] = (
+    ("Todos los chats", None),
+    ("Chats individuales", False),
+    ("Grupos", True),
 )
 
 
@@ -46,6 +51,13 @@ class StatisticsDialog(wx.Dialog):
         self.period_choice = wx.Choice(self, choices=[label for label, _days in PERIODS])
         self.period_choice.SetSelection(1)
         self.period_choice.SetName("Período de las estadísticas")
+        chat_filter_label = wx.StaticText(self, label="Chats:")
+        self.chat_filter_choice = wx.Choice(
+            self,
+            choices=[label for label, _is_group in CHAT_FILTERS],
+        )
+        self.chat_filter_choice.SetSelection(0)
+        self.chat_filter_choice.SetName("Filtro de tipo de conversación")
         self.refresh_button = wx.Button(self, label="&Actualizar")
 
         self.status = wx.StaticText(
@@ -66,6 +78,8 @@ class StatisticsDialog(wx.Dialog):
         filters = wx.BoxSizer(wx.HORIZONTAL)
         filters.Add(period_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         filters.Add(self.period_choice, 0, wx.RIGHT, 8)
+        filters.Add(chat_filter_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        filters.Add(self.chat_filter_choice, 0, wx.RIGHT, 8)
         filters.Add(self.refresh_button, 0)
 
         box = wx.BoxSizer(wx.VERTICAL)
@@ -78,6 +92,7 @@ class StatisticsDialog(wx.Dialog):
 
         self.Bind(wx.EVT_BUTTON, self._on_refresh, self.refresh_button)
         self.Bind(wx.EVT_CHOICE, self._on_period_changed, self.period_choice)
+        self.Bind(wx.EVT_CHOICE, self._on_chat_filter_changed, self.chat_filter_choice)
         self.Bind(wx.EVT_CHOICE, self._on_chat_sort_changed, self.chat_sort_choice)
         self.daily.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_day_selected)
         self.chats.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_chat_selected)
@@ -97,8 +112,8 @@ class StatisticsDialog(wx.Dialog):
         self._request_id += 1
         request_id = self._request_id
         period_days = PERIODS[self.period_choice.GetSelection()][1]
+        chat_is_group = CHAT_FILTERS[self.chat_filter_choice.GetSelection()][1]
         self.refresh_button.Enable(False)
-        self.period_choice.Enable(False)
         self.status.SetLabel("Calculando estadísticas...")
         self.summary.ChangeValue("Calculando estadísticas. Espera por favor...")
         self.summary.SetInsertionPoint(0)
@@ -106,7 +121,7 @@ class StatisticsDialog(wx.Dialog):
         def loaded(statistics: MessageStatistics | None, error: str) -> None:
             self._finish_load(request_id, statistics, error)
 
-        self._loader(period_days, loaded)
+        self._loader(period_days, chat_is_group, loaded)
 
     def _create_summary_page(self) -> wx.TextCtrl:
         page = wx.Panel(self.notebook)
@@ -251,7 +266,6 @@ class StatisticsDialog(wx.Dialog):
         if not self._active or request_id != self._request_id:
             return
         self.refresh_button.Enable(True)
-        self.period_choice.Enable(True)
         if error or statistics is None:
             detail = error or "No se pudieron calcular las estadísticas."
             self.status.SetLabel(detail)
@@ -317,8 +331,10 @@ class StatisticsDialog(wx.Dialog):
             self.chat_detail.Thaw()
             self.unanswered.Thaw()
 
+        chat_filter_label = CHAT_FILTERS[self.chat_filter_choice.GetSelection()][0]
         self.status.SetLabel(
-            f"{statistics.total} mensajes en {len(statistics.chats)} conversaciones."
+            f"{statistics.total} mensajes en {len(statistics.chats)} conversaciones. "
+            f"Filtro: {chat_filter_label}."
         )
 
     def _render_chat_rows(self, selected_jid: str = "") -> None:
@@ -768,6 +784,9 @@ class StatisticsDialog(wx.Dialog):
         self.refresh()
 
     def _on_period_changed(self, _event: wx.CommandEvent) -> None:
+        self.refresh()
+
+    def _on_chat_filter_changed(self, _event: wx.CommandEvent) -> None:
         self.refresh()
 
     def _on_chat_sort_changed(self, _event: wx.CommandEvent) -> None:

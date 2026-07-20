@@ -84,7 +84,6 @@ class ChatStatisticsDialog(wx.Dialog):
         request_id = self._request_id
         period_days = PERIODS[self.period_choice.GetSelection()][1]
         self.refresh_button.Enable(False)
-        self.period_choice.Enable(False)
         self.status.SetLabel("Calculando estadísticas locales del chat...")
         self.summary.ChangeValue("Calculando estadísticas. Espera por favor...")
 
@@ -181,7 +180,6 @@ class ChatStatisticsDialog(wx.Dialog):
         if not self._active or request_id != self._request_id:
             return
         self.refresh_button.Enable(True)
-        self.period_choice.Enable(True)
         if error or statistics is None:
             detail = error or "No se pudieron calcular las estadísticas del chat."
             self.status.SetLabel(detail)

@@ -106,6 +106,30 @@ class MessageStatisticsTests(unittest.TestCase):
             self.assertEqual(statistics.negative_weight, 3.0)
             self.assertEqual(statistics.sentiment_messages, 2)
 
+            individual_statistics = store.load_statistics(
+                account_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+                chat_is_group=False,
+            )
+            self.assertEqual(individual_statistics.total, 8)
+            self.assertEqual(
+                [chat.name for chat in individual_statistics.chats],
+                ["Amistad"],
+            )
+
+            group_statistics = store.load_statistics(
+                account_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+                chat_is_group=True,
+            )
+            self.assertEqual(group_statistics.total, 4)
+            self.assertEqual(
+                [chat.name for chat in group_statistics.chats],
+                ["Grupo de prueba"],
+            )
+
     def test_all_history_starts_on_first_local_message_day(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

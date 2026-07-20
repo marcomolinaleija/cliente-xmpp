@@ -128,7 +128,7 @@ superior a la instalada.
 
 ## Paso 3: escribir notas de la release
 
-Crea `release-notes.txt` en la raíz con cambios visibles para el usuario. Por ejemplo:
+Crea `release_notes.txt` en la raíz con cambios visibles para el usuario. Por ejemplo:
 
 ```text
 WhatsApp CAN 1.0.1
@@ -195,7 +195,39 @@ python tools\validate_release.py `
 
 ## Paso 6: publicar una release estable
 
-Confirma primero que el repositorio o feed elegido sea público. Después publica ambos assets:
+Confirma primero que el repositorio o feed elegido sea público. El publicador recomendado es
+`publish_release.bat`; usa la sesión ya iniciada de GitHub CLI y no guarda tokens ni contraseñas.
+
+Flujo interactivo:
+
+```bat
+publish_release.bat
+```
+
+Flujo con argumentos, conservando la confirmación final:
+
+```bat
+publish_release.bat 1.0.5 zip
+publish_release.bat 1.0.5 installer
+```
+
+El modo `zip` publica `WhatsApp-CAN-<versión>.zip` y su `.sha256`. El modo `installer` añade el
+instalador `Setup.exe` y su propio `.sha256`. Se puede agregar `--yes` como tercer argumento para
+automatización; esto omite únicamente la confirmación y nunca las validaciones.
+
+Antes de crear nada, el script:
+
+1. comprueba que las tres declaraciones de versión coincidan;
+2. exige el ZIP y su firma dentro de `release/`; si faltan, pide ejecutar `build_release.ps1`;
+3. valida el ZIP con `tools/validate_release.py` y también verifica la firma del instalador cuando
+   se incluye;
+4. comprueba que `release_notes.txt` exista y no esté vacío;
+5. exige un árbol Git limpio y que la rama local coincida exactamente con su rama remota;
+6. rechaza un tag o una release que ya existan;
+7. muestra las notas y pide confirmación;
+8. crea y sube el tag `v<versión>`, publica la release estable y verifica sus assets.
+
+Si se necesita realizar el proceso manualmente, el equivalente mínimo es:
 
 ```powershell
 $version = "1.0.1"
@@ -206,7 +238,7 @@ gh release create $tag `
   "release\WhatsApp-CAN-$version.zip.sha256" `
   --repo marcomolinaleija/cliente-xmpp `
   --title "WhatsApp CAN $version" `
-  --notes-file release-notes.txt `
+  --notes-file release_notes.txt `
   --latest
 ```
 

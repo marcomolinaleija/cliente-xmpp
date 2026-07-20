@@ -1,0 +1,25 @@
+WhatsApp CAN 1.0.5
+
+Novedades
+
+- Se añadieron estadísticas locales mucho más completas. Ahora puedes consultar actividad por día y por conversación, tiempos habituales de respuesta, horas pico, intervalos entre mensajes, participación por persona y frases recurrentes.
+- En la información de cada contacto o grupo hay una sección propia de estadísticas. Todo se calcula con el historial guardado en el dispositivo y el contenido de los mensajes no se envía a servicios externos.
+- La tendencia del lenguaje ahora se explica con palabras claras. Indica si predominan expresiones asociadas con bienestar, agradecimiento o aprobación, o expresiones relacionadas con preocupación, enojo o problemas; no califica a la persona ni a la relación.
+
+Audio y archivos
+
+- Al eliminar un mensaje con audio, imagen o archivo, también se elimina su copia local. Un audio eliminado deja de reproducirse inmediatamente y no vuelve a aparecer como reproducible al recargar el historial.
+- Con un audio enfocado, Alt+flecha izquierda y Alt+flecha derecha permiten retroceder o avanzar cinco por ciento. La aplicación anuncia la posición alcanzada.
+
+Contactos y presencia
+
+- Ahora puedes iniciar chats introduciendo números internacionales aunque todavía no aparezcan en la lista de contactos.
+- Se mejoró la compatibilidad con números móviles mexicanos guardados en formatos actuales o antiguos, evitando contactos duplicados y conservando las conversaciones existentes.
+- La lista de contactos se mantiene sincronizada con WhatsApp y la última conexión se presenta con fechas y horas más naturales.
+- Se corrigieron estados de presencia que podían mostrar una última conexión incorrecta después de escribir, leer o enviar mensajes desde WhatsApp.
+
+Correcciones
+
+- Rechazar una actualización ya no cierra la aplicación ni inicia el actualizador.
+- Se mejoró la apertura y copia de enlaces incluidos en los mensajes.
+- Los diálogos de información y estadísticas ahora también se cierran con Escape.

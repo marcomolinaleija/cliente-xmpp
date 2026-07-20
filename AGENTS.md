@@ -261,6 +261,11 @@ versión superior, ZIP `WhatsApp-CAN-<versión>.zip` y checksum homónimo `.sha2
 aceptar explícitamente. La aplicación copia `update.exe` a `%TEMP%`, cierra por su flujo normal y
 el actualizador sustituye la carpeta completa con respaldo y rollback. El código fuente no hace
 consultas automáticas. El contrato de build y release vive en `docs/ACTUALIZACIONES.md`.
+La publicación estable se separa en dos pasos: `build_release.ps1` genera y valida los artefactos,
+y `publish_release.bat` crea el tag `v<versión>` y la release usando `release_notes.txt`. El BAT no
+guarda credenciales: reutiliza la sesión de `gh`, exige el árbol limpio y sincronizado con origin,
+rechaza tags/releases existentes y permite publicar sólo ZIP más SHA-256 o añadir instalador más
+su SHA-256. No elimines esas barreras para automatizar una release.
 
 La vinculación de WhatsApp expone únicamente el flujo por QR; el código por teléfono permanece
 como compatibilidad interna del protocolo, pero no se ofrece en la interfaz. Antes de solicitarlo,

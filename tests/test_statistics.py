@@ -278,6 +278,57 @@ class MessageStatisticsTests(unittest.TestCase):
             }
             self.assertEqual(phrases["buenos días equipo"], 4)
 
+    def test_local_chat_statistics_exclude_zapia_transcriptions_from_phrases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "friend@example.test"
+            marker = "Transcrito gratis por zapia.com/app"
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Planeamos viaje pronto",
+                        sent_at=datetime(2026, 7, 19, 8, tzinfo=UTC),
+                        message_id="normal-1",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Planeamos viaje mañana",
+                        sent_at=datetime(2026, 7, 19, 9, tzinfo=UTC),
+                        message_id="normal-2",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body=f"{marker} llamada sobre el trabajo",
+                        sent_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+                        message_id="zapia-1",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body=f"{marker} llamada sobre la familia",
+                        sent_at=datetime(2026, 7, 19, 11, tzinfo=UTC),
+                        message_id="zapia-2",
+                    ),
+                ],
+            )
+
+            statistics = store.load_chat_statistics(
+                account_jid,
+                chat_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+            )
+
+            phrases = {phrase.phrase for phrase in statistics.recurrent_phrases}
+            self.assertIn("planeamos viaje", phrases)
+            self.assertFalse(any("zapia" in phrase for phrase in phrases))
+
     @staticmethod
     def _message(
         chat_jid: str,

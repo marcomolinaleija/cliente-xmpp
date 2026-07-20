@@ -42,6 +42,7 @@ PHRASE_STOPWORDS = {
     "o", "para", "pero", "por", "que", "se", "si", "sin", "su", "te", "tu", "un",
     "una", "y", "ya", "yo",
 }
+ZAPIA_TRANSCRIPTION_MARKER = "transcrito gratis por zapia.com/app"
 
 
 @dataclass(slots=True)
@@ -747,7 +748,11 @@ class MessageStore:
             )
             hourly_activity[local_sent_at.hour] += 1
             message_times.append(sent_at)
-            if body and not str(row["media_kind"] or ""):
+            if (
+                body
+                and not str(row["media_kind"] or "")
+                and not _is_zapia_transcription(body)
+            ):
                 phrase_bodies.append(body)
 
         intervals = [
@@ -2020,6 +2025,10 @@ def _recurrent_phrases(
         if len(selected) >= limit:
             break
     return tuple(selected)
+
+
+def _is_zapia_transcription(body: str) -> bool:
+    return ZAPIA_TRANSCRIPTION_MARKER in body.casefold()
 
 
 def _median_or_none(values: list[float]) -> float | None:

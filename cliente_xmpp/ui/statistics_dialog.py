@@ -22,8 +22,8 @@ PERIODS: tuple[tuple[str, int | None], ...] = (
 )
 CHAT_SORTS = (
     "Mayor actividad",
-    "Mayor carga positiva",
-    "Mayor carga negativa",
+    "Lenguaje más positivo",
+    "Lenguaje más negativo",
 )
 
 
@@ -82,6 +82,7 @@ class StatisticsDialog(wx.Dialog):
         self.daily.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_day_selected)
         self.chats.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_chat_selected)
         self.Bind(wx.EVT_BUTTON, self._on_close_button, close_button)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         self.Bind(wx.EVT_CLOSE, self._on_close)
         apply_theme(self)
         wx.CallAfter(self.refresh)
@@ -158,8 +159,8 @@ class StatisticsDialog(wx.Dialog):
         message = wx.StaticText(
             page,
             label=(
-                "Selecciona una conversación para consultar sus estadísticas. La carga "
-                "emocional es una estimación local basada en palabras y emojis."
+                "Selecciona una conversación para consultar sus estadísticas. La tendencia "
+                "del lenguaje es una estimación local basada en palabras y emojis."
             ),
         )
         sort_label = wx.StaticText(page, label="Ordenar por:")
@@ -175,7 +176,7 @@ class StatisticsDialog(wx.Dialog):
                 ("Recibidos", 85),
                 ("Total", 75),
                 ("Parte enviada", 115),
-                ("Carga emocional", 160),
+                ("Tendencia del lenguaje", 180),
             )
         ):
             chats.InsertColumn(index, label, width=width)
@@ -419,18 +420,16 @@ class StatisticsDialog(wx.Dialog):
                 f"Archivos: {chat.file_messages}",
                 f"Stickers: {chat.stickers}",
                 "",
-                "Medidor emocional aproximado",
-                f"Peso positivo: {chat.positive_weight:.1f}",
-                f"Peso negativo: {chat.negative_weight:.1f}",
-                f"Carga neta: {chat.emotional_net:+.1f}",
+                "Tendencia aproximada del lenguaje",
                 (
-                    f"Medidor de balance: {chat.emotional_balance:+.0f} de -100 "
-                    "(negativo) a +100 (positivo)"
+                    "Tendencia: "
+                    f"{cls._emotional_interpretation(chat.positive_weight, chat.negative_weight)}"
                 ),
-                f"Mensajes con indicadores detectados: {chat.sentiment_messages}",
+                cls._emotional_meaning(chat.positive_weight, chat.negative_weight),
+                cls._emotional_evidence(chat.sentiment_messages, chat.total),
                 (
-                    "Esta medición se procesa localmente y sólo detecta palabras y emojis; "
-                    "puede equivocarse con contexto, ironía o sarcasmo."
+                    "Se basa en palabras, emojis, negaciones e intensificadores. No comprende "
+                    "por completo el contexto, la ironía ni el sarcasmo."
                 ),
             )
         )
@@ -494,13 +493,77 @@ class StatisticsDialog(wx.Dialog):
 
     @staticmethod
     def _format_emotional_load(chat: ChatMessageStatistics) -> str:
-        if chat.positive_weight + chat.negative_weight == 0:
-            return "Sin datos"
-        if abs(chat.emotional_net) < 0.05:
-            return "Equilibrada, 0.0"
-        if chat.emotional_net > 0:
-            return f"Positiva, {chat.emotional_net:+.1f}"
-        return f"Negativa, {chat.emotional_net:+.1f}"
+        return StatisticsDialog._emotional_interpretation(
+            chat.positive_weight,
+            chat.negative_weight,
+        )
+
+    @staticmethod
+    def _emotional_interpretation(positive: float, negative: float) -> str:
+        total = positive + negative
+        if total <= 0:
+            return "Sin señales emocionales claras"
+        balance = ((positive - negative) / total) * 100
+        magnitude = abs(balance)
+        if magnitude < 15:
+            return "Equilibrada"
+        direction = "positiva" if balance > 0 else "negativa"
+        if magnitude < 40:
+            return f"Ligeramente {direction}"
+        if magnitude < 70:
+            return f"Mayormente {direction}"
+        return f"Marcadamente {direction}"
+
+    @staticmethod
+    def _emotional_evidence(sentiment_messages: int, total_messages: int) -> str:
+        if sentiment_messages <= 0:
+            return "Evidencia: no se detectaron expresiones emocionales claras."
+        if sentiment_messages <= 2:
+            level = "muy limitada"
+        elif sentiment_messages <= 7:
+            level = "limitada"
+        else:
+            level = "más consistente"
+        return (
+            f"Evidencia {level}: se detectaron señales en {sentiment_messages} de "
+            f"{total_messages} mensajes."
+        )
+
+    @classmethod
+    def _emotional_meaning(cls, positive: float, negative: float) -> str:
+        interpretation = cls._emotional_interpretation(positive, negative)
+        if positive + negative <= 0:
+            return (
+                "Qué significa: no se detectaron suficientes expresiones para reconocer "
+                "un predominio positivo o negativo."
+            )
+        if interpretation == "Equilibrada":
+            return (
+                "Qué significa: las expresiones asociadas con bienestar o aprobación y las "
+                "asociadas con malestar o preocupación aparecen sin un predominio claro."
+            )
+
+        direction = "positiva" if positive > negative else "negativa"
+        if interpretation.startswith("Ligeramente"):
+            strength = "hay una pequeña mayoría"
+        elif interpretation.startswith("Mayormente"):
+            strength = "hay una mayoría clara"
+        else:
+            strength = "hay un predominio muy fuerte"
+        if direction == "positiva":
+            examples = (
+                "de expresiones asociadas con alegría, afecto, agradecimiento, aprobación "
+                "o tranquilidad"
+            )
+        else:
+            examples = (
+                "de expresiones asociadas con tristeza, enojo, preocupación, rechazo, dolor "
+                "o problemas"
+            )
+        return (
+            f"Qué significa: {strength} {examples}. Esto describe el lenguaje detectado; "
+            "no califica a la persona ni a la relación."
+        )
 
     @staticmethod
     def _format_datetime(value: object) -> str:
@@ -549,9 +612,22 @@ class StatisticsDialog(wx.Dialog):
             if balanced_candidates
             else None
         )
-        most_positive = max(statistics.chats, key=lambda chat: chat.positive_weight)
-        most_negative = max(statistics.chats, key=lambda chat: chat.negative_weight)
-        overall_emotional_balance = cls._emotional_balance(
+        emotional_candidates = [
+            chat
+            for chat in statistics.chats
+            if chat.positive_weight + chat.negative_weight > 0
+        ]
+        most_positive = (
+            max(emotional_candidates, key=lambda chat: chat.emotional_balance)
+            if emotional_candidates
+            else None
+        )
+        most_negative = (
+            min(emotional_candidates, key=lambda chat: chat.emotional_balance)
+            if emotional_candidates
+            else None
+        )
+        overall_emotional_reading = cls._emotional_interpretation(
             statistics.positive_weight,
             statistics.negative_weight,
         )
@@ -602,15 +678,15 @@ class StatisticsDialog(wx.Dialog):
                 f"Hora con más actividad: {statistics.busiest_hour:02d}:00 a "
                 f"{statistics.busiest_hour:02d}:59"
             )
-        if most_positive.positive_weight > 0:
+        if most_positive is not None and most_positive.emotional_balance > 0:
             lines.append(
-                f"Mayor carga positiva: {most_positive.name}, "
-                f"peso {most_positive.positive_weight:.1f}"
+                f"Tendencia más positiva: {most_positive.name}, "
+                f"{cls._format_emotional_load(most_positive).casefold()}"
             )
-        if most_negative.negative_weight > 0:
+        if most_negative is not None and most_negative.emotional_balance < 0:
             lines.append(
-                f"Mayor carga negativa: {most_negative.name}, "
-                f"peso {most_negative.negative_weight:.1f}"
+                f"Tendencia más negativa: {most_negative.name}, "
+                f"{cls._format_emotional_load(most_negative).casefold()}"
             )
 
         lines.extend(
@@ -633,13 +709,17 @@ class StatisticsDialog(wx.Dialog):
                 f"Archivos: {statistics.file_messages}",
                 f"Stickers: {statistics.stickers}",
                 "",
-                "Medidor emocional aproximado",
-                f"Peso positivo: {statistics.positive_weight:.1f}",
-                f"Peso negativo: {statistics.negative_weight:.1f}",
-                (
-                    f"Balance general: {overall_emotional_balance:+.0f} de -100 a +100"
+                "Tendencia aproximada del lenguaje",
+                f"Tendencia general: {overall_emotional_reading}",
+                cls._emotional_meaning(
+                    statistics.positive_weight,
+                    statistics.negative_weight,
                 ),
-                f"Mensajes con indicadores detectados: {statistics.sentiment_messages}",
+                cls._emotional_evidence(statistics.sentiment_messages, statistics.total),
+                (
+                    "Se basa en palabras, emojis, negaciones e intensificadores. No comprende "
+                    "por completo el contexto, la ironía ni el sarcasmo."
+                ),
                 "",
                 (
                     "Nota: se usa el historial guardado localmente. Los grupos se muestran como "
@@ -714,6 +794,13 @@ class StatisticsDialog(wx.Dialog):
     def _on_close_button(self, _event: wx.CommandEvent) -> None:
         self.deactivate()
         self.EndModal(wx.ID_CLOSE)
+
+    def _on_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.deactivate()
+            self.EndModal(wx.ID_CANCEL)
+            return
+        event.Skip()
 
     def _on_close(self, event: wx.CloseEvent) -> None:
         self.deactivate()

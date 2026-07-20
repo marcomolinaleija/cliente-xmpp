@@ -182,6 +182,78 @@ class MessageStatisticsTests(unittest.TestCase):
             self.assertEqual(len(statistics.chats), 1)
             self.assertEqual(statistics.chats[0].chat_jid, contact_jid)
 
+    def test_local_chat_statistics_include_people_intervals_peaks_and_phrases(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "#group@example.test"
+            store.upsert_chat(
+                account_jid,
+                Chat(jid=chat_jid, name="Grupo de prueba", is_group=True),
+            )
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=account_jid,
+                        body="Buenos días equipo",
+                        sent_at=datetime(2026, 7, 19, 8, tzinfo=UTC),
+                        outgoing=True,
+                        message_id="message-1",
+                        chat_is_group=True,
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid="ana@example.test",
+                        sender_name="Ana",
+                        body="Buenos días equipo",
+                        sent_at=datetime(2026, 7, 19, 9, tzinfo=UTC),
+                        message_id="message-2",
+                        chat_is_group=True,
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid="ana@example.test",
+                        sender_name="Ana",
+                        body="Buenos días equipo, excelente trabajo",
+                        sent_at=datetime(2026, 7, 19, 9, 30, tzinfo=UTC),
+                        message_id="message-3",
+                        chat_is_group=True,
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid="bob@example.test",
+                        sender_name="Bob",
+                        body="Buenos días equipo",
+                        sent_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+                        message_id="message-4",
+                        chat_is_group=True,
+                    ),
+                ],
+            )
+
+            statistics = store.load_chat_statistics(
+                account_jid,
+                chat_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+            )
+
+            self.assertIsNotNone(statistics.overview)
+            self.assertEqual(statistics.overview.total, 4)  # type: ignore[union-attr]
+            self.assertEqual(
+                [(person.name, person.messages) for person in statistics.participants],
+                [("Ana", 2), ("Bob", 1), ("Tú", 1)],
+            )
+            self.assertEqual(statistics.median_message_interval_seconds, 1800)
+            self.assertIn((9, 2), statistics.hourly_activity)
+            phrases = {
+                phrase.phrase: phrase.occurrences
+                for phrase in statistics.recurrent_phrases
+            }
+            self.assertEqual(phrases["buenos días equipo"], 4)
+
     @staticmethod
     def _message(
         chat_jid: str,

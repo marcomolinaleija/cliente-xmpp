@@ -69,6 +69,52 @@ class MessageStoreTests(unittest.TestCase):
             self.assertTrue(loaded[0].retracted)
             self.assertEqual(loaded[0].body, "")
 
+    def test_retraction_clears_persisted_media_location_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            original = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="voz",
+                sent_at=datetime(2026, 7, 10, 12, 0),
+                audio_url="https://upload.example.test/voice.ogg",
+                media_url="https://upload.example.test/voice.ogg",
+                media_kind="audio",
+                media_mime="audio/ogg",
+                media_filename="voice.ogg",
+                media_size=123,
+                media_duration_seconds=5,
+                media_local_path=str(Path(temp_dir) / "voice.ogg"),
+                message_id="wa-id-media",
+            )
+            store.upsert_messages("me@example.test", [original])
+
+            retraction = Message(
+                chat_jid=original.chat_jid,
+                sender_jid=original.sender_jid,
+                body="",
+                sent_at=original.sent_at,
+                message_id=original.message_id,
+                retracted=True,
+            )
+            store.upsert_messages("me@example.test", [retraction])
+
+            loaded = store.load_recent_messages("me@example.test", original.chat_jid)[0]
+            self.assertTrue(loaded.retracted)
+            self.assertEqual(loaded.audio_url, "")
+            self.assertEqual(loaded.media_url, "")
+            self.assertEqual(loaded.media_kind, "")
+            self.assertEqual(loaded.media_local_path, "")
+
+            store.upsert_messages("me@example.test", [original])
+            loaded_again = store.load_recent_messages(
+                "me@example.test",
+                original.chat_jid,
+            )[0]
+            self.assertTrue(loaded_again.retracted)
+            self.assertEqual(loaded_again.media_url, "")
+            self.assertEqual(loaded_again.media_local_path, "")
+
     def test_existing_database_gets_retracted_column(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "messages.sqlite3"

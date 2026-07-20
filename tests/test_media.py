@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media import downloads
-from cliente_xmpp.media.downloads import download_media, media_description
+from cliente_xmpp.media.downloads import (
+    delete_local_media_file,
+    download_media,
+    media_description,
+)
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 
@@ -40,6 +44,38 @@ class MediaDescriptionTests(unittest.TestCase):
         )
 
         self.assertEqual(media_description(message), "video, cumpleanos.mp4, 1.0 KB")
+
+    def test_space_does_not_replay_a_retracted_audio_with_a_stale_path(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            audio_url="https://upload.example.test/voice.ogg",
+            media_kind="audio",
+            media_local_path="stale-voice.ogg",
+            retracted=True,
+        )
+        panel = SimpleNamespace(
+            messages=SimpleNamespace(GetFirstSelected=lambda: 0),
+            _message_rows=[message],
+            _message_at_row=lambda _index: message,
+        )
+
+        self.assertFalse(ConversationPanel.play_selected_audio(panel))
+
+    def test_percent_seek_ignores_a_focused_text_message(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="hola",
+        )
+        panel = SimpleNamespace(
+            messages=SimpleNamespace(GetFirstSelected=lambda: 0),
+            _message_rows=[message],
+            _message_at_row=lambda _index: message,
+        )
+
+        self.assertIsNone(ConversationPanel.seek_selected_audio_percent(panel, 5))
 
 
 class _DownloadResponse(io.BytesIO):
@@ -102,6 +138,20 @@ class MediaDownloadTests(unittest.TestCase):
 
             remaining_files = [path for path in Path(temp_dir).rglob("*") if path.is_file()]
             self.assertEqual(remaining_files, [])
+
+    def test_retracted_media_file_is_deleted_and_model_path_is_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "voice.ogg"
+            path.write_bytes(b"audio")
+            message = self._audio_message()
+            message.media_local_path = str(path)
+
+            deleted_path, error = delete_local_media_file(message)
+
+            self.assertEqual(deleted_path, path)
+            self.assertIsNone(error)
+            self.assertFalse(path.exists())
+            self.assertEqual(message.media_local_path, "")
 
 
 class RayoAiMediaTests(unittest.TestCase):

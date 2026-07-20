@@ -123,3 +123,46 @@ class MessageStatistics:
     @property
     def total(self) -> int:
         return self.total_sent + self.total_received
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantChatStatistics:
+    participant_id: str
+    name: str
+    messages: int
+    first_message_at: datetime
+    last_message_at: datetime
+    busiest_hour: int | None
+    median_interval_seconds: float | None
+    positive_weight: float
+    negative_weight: float
+    sentiment_messages: int
+
+    @property
+    def emotional_balance(self) -> float:
+        total_weight = self.positive_weight + self.negative_weight
+        if total_weight == 0:
+            return 0.0
+        return ((self.positive_weight - self.negative_weight) / total_weight) * 100
+
+
+@dataclass(frozen=True, slots=True)
+class RecurrentPhraseStatistics:
+    phrase: str
+    occurrences: int
+
+
+@dataclass(frozen=True, slots=True)
+class LocalChatStatistics:
+    period_days: int | None
+    from_date: date | None
+    to_date: date
+    chat_jid: str
+    name: str
+    is_group: bool
+    overview: ChatMessageStatistics | None
+    median_message_interval_seconds: float | None
+    longest_message_interval_seconds: float | None
+    hourly_activity: tuple[tuple[int, int], ...]
+    participants: tuple[ParticipantChatStatistics, ...]
+    recurrent_phrases: tuple[RecurrentPhraseStatistics, ...]

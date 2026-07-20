@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from cliente_xmpp.audio.player import MpvAudioPlayer
 
@@ -65,3 +66,22 @@ class MpvVideoInputTests(unittest.TestCase):
         self.assertIsNone(player._handle)
         self.assertEqual(player._current_url, "")
         self.assertEqual(dll.destroyed_handles, [123])
+
+    def test_audio_seek_moves_five_percent_and_reports_target(self) -> None:
+        dll = _FakeMpvDll()
+        player = MpvAudioPlayer()
+        player._dll = dll  # type: ignore[assignment]
+        player._handle = 1  # type: ignore[assignment]
+        player._current_url = "voice.ogg"
+
+        with (
+            patch.object(player, "_playback_finished", return_value=False),
+            patch.object(player, "_get_double_property", return_value=5.0),
+        ):
+            percent = player.seek_percent("voice.ogg", 5)
+
+        self.assertEqual(percent, 10)
+        self.assertEqual(
+            dll.commands[-1],
+            [b"seek", b"10", b"absolute-percent", b"exact"],
+        )

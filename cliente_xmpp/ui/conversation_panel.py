@@ -438,7 +438,11 @@ class ConversationPanel(wx.Panel):
             return False
 
         message = self._message_at_row(index)
-        if message is None:
+        if (
+            message is None
+            or message.retracted
+            or not (message.audio_url or message.media_kind == "audio")
+        ):
             return False
 
         audio_source = self._audio_source(message)
@@ -474,6 +478,20 @@ class ConversationPanel(wx.Panel):
         if self.selected_message() is message:
             self.play_selected_audio()
 
+    def discard_message_media(self, message: Message, local_path: str = "") -> None:
+        """Stop players that may still have a soon-to-be-deleted file open."""
+        if self._pending_audio_message is message:
+            self._pending_audio_message = None
+
+        source = local_path or self._audio_source(message)
+        if source and source == self._current_audio_source:
+            self._audio_autoplay_timer.Stop()
+            self._current_audio_row_index = None
+            self._current_audio_source = ""
+            self._audio_player.close()
+        if message.media_kind == "video":
+            self._video_player.close()
+
     def play_selected_video(self) -> bool:
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
@@ -502,7 +520,11 @@ class ConversationPanel(wx.Panel):
             return None
 
         message = self._message_at_row(index)
-        if message is None:
+        if (
+            message is None
+            or message.retracted
+            or not (message.audio_url or message.media_kind == "audio")
+        ):
             return None
 
         audio_source = self._audio_source(message)
@@ -520,6 +542,35 @@ class ConversationPanel(wx.Panel):
             self.on_audio_speed_changed(speed)
         self._schedule_audio_duration_update(index, audio_source)
         return speed
+
+    def seek_selected_audio_percent(self, delta_percent: int) -> int | None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._message_rows):
+            return None
+
+        message = self._message_at_row(index)
+        if (
+            message is None
+            or message.retracted
+            or not (message.audio_url or message.media_kind == "audio")
+        ):
+            return None
+
+        audio_source = self._audio_source(message)
+        if not audio_source:
+            return None
+
+        try:
+            percent = self._audio_player.seek_percent(audio_source, delta_percent)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Audio")
+            return None
+
+        self._current_audio_row_index = index
+        self._current_audio_source = audio_source
+        self._audio_autoplay_timer.Start(500)
+        self._speaker.speak(f"{percent} por ciento")
+        return percent
 
     def _on_audio_autoplay_timer(self, _event: wx.TimerEvent) -> None:
         index = self._current_audio_row_index
@@ -573,7 +624,7 @@ class ConversationPanel(wx.Panel):
             message = self._message_at_row(index)
             if message is None:
                 continue
-            if message.audio_url:
+            if not message.retracted and message.audio_url:
                 return index, message
             return None, None
 
@@ -581,6 +632,8 @@ class ConversationPanel(wx.Panel):
 
     @staticmethod
     def _audio_source(message: Message) -> str:
+        if message.retracted or not (message.audio_url or message.media_kind == "audio"):
+            return ""
         path = local_media_path(message)
         if path is not None:
             return str(path)

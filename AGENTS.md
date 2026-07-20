@@ -246,6 +246,14 @@ ponderado de palabras, negaciones, intensificadores y emojis. Es una aproximaci�
 de intención: la UI debe conservar el aviso sobre contexto, ironía y sarcasmo. Compara peso
 positivo y negativo por separado y expresa el balance normalizado entre -100 y +100; nunca envía
 el cuerpo de los mensajes a un servicio remoto.
+La interfaz traduce ese balance interno a tendencias humanas y explica qué significa cada una en
+el lenguaje detectado; no expone pesos crudos ni presenta la tendencia como una calificación de la
+persona o de la relación. Debe conservar literalmente este alcance: se basa en palabras, emojis,
+negaciones e intensificadores y no comprende por completo el contexto, la ironía ni el sarcasmo.
+Desde Información del contacto o grupo se puede abrir un diálogo de estadísticas locales del chat
+con participación por persona, horas pico, intervalos, respuestas y frases recurrentes. Esa
+consulta también se ejecuta en el ejecutor de storage y nunca desde el hilo wx. Los diálogos de
+información y estadísticas deben cerrarse con Escape además de su botón visible.
 
 La distribución ejecutable comprueba una sola vez por proceso la release estable más reciente,
 dos segundos después de mostrar la ventana y siempre fuera del hilo wx. Solo ofrece paquetes con
@@ -421,6 +429,11 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
   solicita/espera la descarga y reproduce al terminar; no hagas fallback a streaming HTTP,
   porque provoca cortes y ruido.
+- Al retraer un mensaje con multimedia, detén cualquier reproductor que tenga abierto ese archivo,
+  elimina la ruta local exacta y limpia URL y metadata tanto en memoria como en SQLite. Una
+  retracción es monotónica: un MAM posterior no puede restaurar el archivo ni volver a habilitar
+  Espacio. En la lista de mensajes, Alt+flecha izquierda/derecha mueve únicamente un audio
+  enfocado cinco puntos porcentuales y anuncia la posición resultante.
 - La reproduccion de video usa una ventana nativa de libmpv. Al crear el reproductor de video
   deben habilitarse `input-default-bindings=yes` e `input-vo-keyboard=yes` antes de inicializar
   libmpv y enlazar explicitamente Space, Up/Down, Left/Right y Alt+F4 para controlar pausa,

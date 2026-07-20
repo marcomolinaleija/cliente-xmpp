@@ -84,6 +84,24 @@ class MpvAudioPlayer:
         self.set_speed(next_speed)
         return next_speed
 
+    def seek_percent(self, url: str, delta_percent: int) -> int:
+        if not url:
+            raise MpvPlaybackError("No hay URL de audio para avanzar o retroceder.")
+        if delta_percent == 0:
+            raise ValueError("delta_percent must not be zero")
+
+        handle = self._ensure_handle()
+        if url != self._current_url or self._playback_finished(handle):
+            self._load_url(handle, url)
+
+        current_percent = self._get_double_property(handle, "percent-pos") or 0.0
+        target_percent = max(0, min(100, round(current_percent + delta_percent)))
+        self._command(
+            handle,
+            ["seek", str(target_percent), "absolute-percent", "exact"],
+        )
+        return target_percent
+
     def set_speed(self, speed: float) -> None:
         self._speed = self._nearest_speed(speed)
         if self._handle:

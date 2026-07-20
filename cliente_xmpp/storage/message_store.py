@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import unicodedata
 from collections import Counter, defaultdict
@@ -24,13 +25,23 @@ from cliente_xmpp.models.statistics import (
     ChatMessageStatistics,
     DailyChatMessageStatistics,
     DailyMessageStatistics,
+    LocalChatStatistics,
     MessageStatistics,
+    ParticipantChatStatistics,
+    RecurrentPhraseStatistics,
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
 SCHEMA_VERSION = 15
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
+PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
+PHRASE_STOPWORDS = {
+    "a", "al", "algo", "como", "con", "de", "del", "el", "ella", "en", "es",
+    "esa", "ese", "esta", "este", "la", "las", "lo", "los", "me", "mi", "no",
+    "o", "para", "pero", "por", "que", "se", "si", "sin", "su", "te", "tu", "un",
+    "una", "y", "ya", "yo",
+}
 
 
 @dataclass(slots=True)
@@ -163,6 +174,55 @@ class _ChatStatisticsAccumulator:
             )
             self.pending_outgoing_at = None
         self.pending_incoming_at = sent_at
+
+
+@dataclass(slots=True)
+class _ParticipantStatisticsAccumulator:
+    participant_id: str
+    name: str
+    sent_times: list[datetime] = field(default_factory=list)
+    hour_counts: Counter[int] = field(default_factory=Counter)
+    positive_weight: float = 0.0
+    negative_weight: float = 0.0
+    sentiment_messages: int = 0
+
+    def add(
+        self,
+        *,
+        sent_at: datetime,
+        local_sent_at: datetime,
+        positive_weight: float,
+        negative_weight: float,
+        sentiment_indicators: int,
+    ) -> None:
+        self.sent_times.append(sent_at)
+        self.hour_counts[local_sent_at.hour] += 1
+        self.positive_weight += positive_weight
+        self.negative_weight += negative_weight
+        if sentiment_indicators > 0:
+            self.sentiment_messages += 1
+
+    def build(self) -> ParticipantChatStatistics:
+        intervals = [
+            max(0.0, (current - previous).total_seconds())
+            for previous, current in zip(self.sent_times, self.sent_times[1:], strict=False)
+        ]
+        return ParticipantChatStatistics(
+            participant_id=self.participant_id,
+            name=self.name,
+            messages=len(self.sent_times),
+            first_message_at=self.sent_times[0],
+            last_message_at=self.sent_times[-1],
+            busiest_hour=(
+                max(sorted(self.hour_counts), key=lambda hour: self.hour_counts[hour])
+                if self.hour_counts
+                else None
+            ),
+            median_interval_seconds=_median_or_none(intervals),
+            positive_weight=self.positive_weight,
+            negative_weight=self.negative_weight,
+            sentiment_messages=self.sentiment_messages,
+        )
 
 
 def _build_daily_chats(
@@ -316,6 +376,7 @@ class MessageStore:
         period_days: int | None = 30,
         *,
         now: datetime | None = None,
+        chat_jid: str | None = None,
     ) -> MessageStatistics:
         if period_days is not None and period_days < 1:
             raise ValueError("period_days must be positive or None")
@@ -359,6 +420,9 @@ class MessageStore:
             WHERE messages.account_jid = ?
         """
         parameters: list[object] = [account_jid]
+        if chat_jid is not None:
+            query += " AND messages.chat_jid = ?"
+            parameters.append(chat_jid)
         if start_local is not None:
             query += " AND messages.sent_at >= ?"
             parameters.append(_datetime_to_db(start_local))
@@ -582,6 +646,124 @@ class MessageStore:
             sentiment_messages=sentiment_messages,
             daily=daily,
             chats=chats,
+        )
+
+    def load_chat_statistics(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        period_days: int | None = 30,
+        *,
+        now: datetime | None = None,
+    ) -> LocalChatStatistics:
+        statistics = self.load_statistics(
+            account_jid,
+            period_days,
+            now=now,
+            chat_jid=chat_jid,
+        )
+        overview = statistics.chats[0] if statistics.chats else None
+        reference_now = now or datetime.now().astimezone()
+        if reference_now.tzinfo is None:
+            reference_now = reference_now.astimezone()
+        start_local = (
+            datetime.combine(
+                statistics.from_date,
+                datetime_time.min,
+                tzinfo=reference_now.tzinfo,
+            )
+            if statistics.from_date is not None and period_days is not None
+            else None
+        )
+
+        query = """
+            SELECT sent_at, outgoing, sender_jid, sender_name, body, media_kind, retracted
+            FROM messages
+            WHERE account_jid = ? AND chat_jid = ?
+        """
+        parameters: list[object] = [account_jid, chat_jid]
+        if start_local is not None:
+            query += " AND sent_at >= ?"
+            parameters.append(_datetime_to_db(start_local))
+        query += " ORDER BY sent_at, rowid"
+        with self._connect() as conn:
+            rows = conn.execute(query, parameters).fetchall()
+
+        participant_accumulators: dict[str, _ParticipantStatisticsAccumulator] = {}
+        hourly_activity: Counter[int] = Counter()
+        message_times: list[datetime] = []
+        phrase_bodies: list[str] = []
+        chat_name = overview.name if overview is not None else chat_jid
+        is_group = bool(overview and overview.is_group)
+
+        for row in rows:
+            sent_at = _datetime_from_db(row["sent_at"])
+            if sent_at is None:
+                continue
+            local_sent_at = sent_at.astimezone(reference_now.tzinfo)
+            if start_local is not None and local_sent_at < start_local:
+                continue
+            if local_sent_at > reference_now:
+                continue
+
+            outgoing = bool(row["outgoing"])
+            sender_jid = str(row["sender_jid"] or "")
+            sender_name = str(row["sender_name"] or "")
+            if outgoing:
+                participant_id = "__me__"
+                participant_name = "Tú"
+            elif is_group:
+                participant_id = sender_jid or sender_name or "__unknown__"
+                participant_name = sender_name or sender_jid or "Participante sin nombre"
+            else:
+                participant_id = chat_jid
+                participant_name = chat_name
+
+            retracted = bool(row["retracted"])
+            body = "" if retracted else str(row["body"] or "")
+            message_sentiment = sentiment_weights(body)
+            accumulator = participant_accumulators.get(participant_id)
+            if accumulator is None:
+                accumulator = _ParticipantStatisticsAccumulator(
+                    participant_id=participant_id,
+                    name=participant_name,
+                )
+                participant_accumulators[participant_id] = accumulator
+            accumulator.add(
+                sent_at=sent_at,
+                local_sent_at=local_sent_at,
+                positive_weight=message_sentiment.positive,
+                negative_weight=message_sentiment.negative,
+                sentiment_indicators=message_sentiment.indicators,
+            )
+            hourly_activity[local_sent_at.hour] += 1
+            message_times.append(sent_at)
+            if body and not str(row["media_kind"] or ""):
+                phrase_bodies.append(body)
+
+        intervals = [
+            max(0.0, (current - previous).total_seconds())
+            for previous, current in zip(message_times, message_times[1:], strict=False)
+        ]
+        participants = tuple(
+            sorted(
+                (accumulator.build() for accumulator in participant_accumulators.values()),
+                key=lambda participant: (-participant.messages, participant.name.casefold()),
+            )
+        )
+        return LocalChatStatistics(
+            period_days=period_days,
+            from_date=statistics.from_date,
+            to_date=statistics.to_date,
+            chat_jid=chat_jid,
+            name=chat_name,
+            is_group=is_group,
+            overview=overview,
+            median_message_interval_seconds=_median_or_none(intervals),
+            longest_message_interval_seconds=max(intervals) if intervals else None,
+            hourly_activity=tuple(sorted(hourly_activity.items())),
+            participants=participants,
+            recurrent_phrases=_recurrent_phrases(phrase_bodies),
         )
 
     @staticmethod
@@ -1226,23 +1408,47 @@ class MessageStore:
                 END,
                 sent_at = excluded.sent_at,
                 outgoing = excluded.outgoing,
-                audio_url = COALESCE(NULLIF(excluded.audio_url, ''), messages.audio_url),
-                media_url = COALESCE(NULLIF(excluded.media_url, ''), messages.media_url),
-                media_kind = COALESCE(NULLIF(excluded.media_kind, ''), messages.media_kind),
-                media_mime = COALESCE(NULLIF(excluded.media_mime, ''), messages.media_mime),
-                media_filename = COALESCE(
-                    NULLIF(excluded.media_filename, ''),
-                    messages.media_filename
-                ),
-                media_size = COALESCE(NULLIF(excluded.media_size, 0), messages.media_size),
-                media_duration_seconds = COALESCE(
-                    NULLIF(excluded.media_duration_seconds, 0),
-                    messages.media_duration_seconds
-                ),
-                media_local_path = COALESCE(
-                    NULLIF(excluded.media_local_path, ''),
-                    messages.media_local_path
-                ),
+                audio_url = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.audio_url, ''), messages.audio_url)
+                END,
+                media_url = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.media_url, ''), messages.media_url)
+                END,
+                media_kind = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.media_kind, ''), messages.media_kind)
+                END,
+                media_mime = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.media_mime, ''), messages.media_mime)
+                END,
+                media_filename = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(
+                        NULLIF(excluded.media_filename, ''),
+                        messages.media_filename
+                    )
+                END,
+                media_size = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN 0
+                    ELSE COALESCE(NULLIF(excluded.media_size, 0), messages.media_size)
+                END,
+                media_duration_seconds = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN 0
+                    ELSE COALESCE(
+                        NULLIF(excluded.media_duration_seconds, 0),
+                        messages.media_duration_seconds
+                    )
+                END,
+                media_local_path = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(
+                        NULLIF(excluded.media_local_path, ''),
+                        messages.media_local_path
+                    )
+                END,
                 is_sticker = CASE
                     WHEN excluded.is_sticker = 1 OR messages.is_sticker = 1 THEN 1
                     ELSE 0
@@ -1764,6 +1970,47 @@ def _datetime_timestamp(value: datetime | None) -> float | None:
         return value.timestamp()
     except (OSError, ValueError):
         return None
+
+
+def _recurrent_phrases(
+    bodies: list[str],
+    *,
+    limit: int = 10,
+) -> tuple[RecurrentPhraseStatistics, ...]:
+    counts: Counter[str] = Counter()
+    for body in bodies:
+        words = [match.group(0).casefold() for match in PHRASE_WORD_PATTERN.finditer(body)]
+        phrases_in_message: set[str] = set()
+        for size in range(2, min(5, len(words)) + 1):
+            for start in range(len(words) - size + 1):
+                candidate_words = words[start : start + size]
+                meaningful = [
+                    word
+                    for word in candidate_words
+                    if word not in PHRASE_STOPWORDS and len(word) > 2
+                ]
+                if len(meaningful) < 2:
+                    continue
+                candidate = " ".join(candidate_words)
+                if len(candidate) >= 8:
+                    phrases_in_message.add(candidate)
+        counts.update(phrases_in_message)
+
+    ranked = sorted(
+        ((phrase, count) for phrase, count in counts.items() if count >= 2),
+        key=lambda item: (-item[1], -len(item[0].split()), item[0]),
+    )
+    selected: list[RecurrentPhraseStatistics] = []
+    for phrase, count in ranked:
+        if any(
+            existing.occurrences == count and f" {phrase} " in f" {existing.phrase} "
+            for existing in selected
+        ):
+            continue
+        selected.append(RecurrentPhraseStatistics(phrase=phrase, occurrences=count))
+        if len(selected) >= limit:
+            break
+    return tuple(selected)
 
 
 def _median_or_none(values: list[float]) -> float | None:

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
+
+import wx
 
 from cliente_xmpp.models.statistics import (
     ChatMessageStatistics,
@@ -42,12 +45,43 @@ class StatisticsDialogFormattingTests(unittest.TestCase):
 
         self.assertIn("Mensajes totales: 20", detail)
         self.assertIn("Mensajes pendientes de tu respuesta: 3", detail)
-        self.assertIn("Peso positivo: 9.0", detail)
-        self.assertIn("Peso negativo: 3.0", detail)
-        self.assertIn("Medidor de balance: +50", detail)
+        self.assertIn("Tendencia: Mayormente positiva", detail)
+        self.assertIn("hay una mayoría clara", detail)
+        self.assertIn("alegría, afecto, agradecimiento", detail)
+        self.assertIn("no califica a la persona ni a la relación", detail)
+        self.assertIn("Evidencia limitada", detail)
+        self.assertNotIn("Peso positivo", detail)
+        self.assertNotIn("de -100", detail)
         self.assertIn("Tiempo típico de respuesta del contacto: 5 minutos", detail)
-        self.assertIn("ironía o sarcasmo", detail)
-        self.assertEqual(StatisticsDialog._format_emotional_load(chat), "Positiva, +6.0")
+        self.assertIn(
+            "Se basa en palabras, emojis, negaciones e intensificadores.",
+            detail,
+        )
+        self.assertIn("No comprende por completo el contexto, la ironía ni el sarcasmo", detail)
+        self.assertEqual(
+            StatisticsDialog._format_emotional_load(chat),
+            "Mayormente positiva",
+        )
+
+    def test_emotional_meaning_explains_negative_and_balanced_language(self) -> None:
+        negative = StatisticsDialog._emotional_meaning(2.0, 8.0)
+        balanced = StatisticsDialog._emotional_meaning(5.0, 5.0)
+
+        self.assertIn("mayoría clara", negative)
+        self.assertIn("tristeza, enojo, preocupación", negative)
+        self.assertIn("sin un predominio claro", balanced)
+
+    def test_escape_deactivates_and_closes_statistics_dialog(self) -> None:
+        calls: list[object] = []
+        dialog = SimpleNamespace(
+            deactivate=lambda: calls.append("deactivate"),
+            EndModal=lambda result: calls.append(result),
+        )
+        event = SimpleNamespace(GetKeyCode=lambda: wx.WXK_ESCAPE, Skip=lambda: calls.append("skip"))
+
+        StatisticsDialog._on_key_down(dialog, event)
+
+        self.assertEqual(calls, ["deactivate", wx.ID_CANCEL])
 
     def test_day_detail_includes_extremes_counts_and_media_by_chat(self) -> None:
         day = DailyMessageStatistics(

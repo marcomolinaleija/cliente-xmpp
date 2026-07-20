@@ -29,6 +29,7 @@ from cliente_xmpp.config.settings import APP_DIR, DesktopNotificationSettings, S
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
+    delete_local_media_file,
     download_media,
     has_media,
     local_media_path,
@@ -61,10 +62,11 @@ from cliente_xmpp.models.names import (
 from cliente_xmpp.models.phone_numbers import (
     whatsapp_contact_jid_candidates,
 )
-from cliente_xmpp.models.statistics import MessageStatistics
+from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
+from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
@@ -1771,6 +1773,59 @@ class MainWindow(wx.Frame):
         except RuntimeError:
             wx.CallAfter(callback, None, "La aplicación se está cerrando.")
 
+    def _open_chat_statistics(self, chat: Chat) -> None:
+        parent = self.contact_info_dialog or self
+        dialog = ChatStatisticsDialog(
+            parent,
+            chat.name,
+            lambda period_days, callback: self._load_chat_statistics_async(
+                chat.jid,
+                period_days,
+                callback,
+            ),
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+    def _load_chat_statistics_async(
+        self,
+        chat_jid: str,
+        period_days: int | None,
+        callback: Callable[[LocalChatStatistics | None, str], None],
+    ) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            wx.CallAfter(callback, None, "No hay una cuenta activa.")
+            return
+
+        def worker() -> None:
+            try:
+                statistics = self.message_store.load_chat_statistics(
+                    account_jid,
+                    chat_jid,
+                    period_days,
+                )
+            except Exception:
+                wx.CallAfter(
+                    callback,
+                    None,
+                    "No se pudieron calcular las estadísticas locales del chat.",
+                )
+                return
+            wx.CallAfter(callback, statistics, "")
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            wx.CallAfter(callback, None, "La aplicación se está cerrando.")
+
     def _show_settings(self) -> None:
         self.settings_return_to_conversation = bool(
             self.conversation.IsShown() and self.conversation.current_chat
@@ -2430,7 +2485,20 @@ class MainWindow(wx.Frame):
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
         if (
+            event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+            and event.GetKeyCode() in (wx.WXK_LEFT, wx.WXK_RIGHT)
+        ):
+            delta = -5 if event.GetKeyCode() == wx.WXK_LEFT else 5
+            percent = self.conversation.seek_selected_audio_percent(delta)
+            if percent is not None:
+                self.status_bar.SetStatusText(f"Posición del audio: {percent} %")
+                return
+
+        if (
             event.GetKeyCode() == wx.WXK_LEFT
+            and not event.AltDown()
             and self.conversation.speak_selected_text_message()
         ):
             return
@@ -2715,6 +2783,31 @@ class MainWindow(wx.Frame):
             message.message_id,
             is_group=message.chat_is_group,
         )
+        deleted_path, deletion_error = self._discard_retracted_message_media(message)
+        self._persist_messages([message])
+        self.conversation.refresh_message(message)
+        self._update_chat_from_message(message)
+        self._refresh_chat_order(message.chat_jid)
+        if deletion_error:
+            self.status_bar.SetStatusText(
+                "Mensaje eliminado; Windows no permitió borrar su archivo local"
+            )
+        elif deleted_path is not None:
+            self.status_bar.SetStatusText("Mensaje y archivo local eliminados")
+        else:
+            self.status_bar.SetStatusText("Mensaje eliminado")
+        return True
+
+    def _discard_retracted_message_media(
+        self,
+        message: Message,
+    ) -> tuple[Path | None, OSError | None]:
+        local_path = message.media_local_path
+        conversation = getattr(self, "conversation", None)
+        if conversation is not None:
+            conversation.discard_message_media(message, local_path)
+
+        deleted_path, deletion_error = delete_local_media_file(message)
         message.retracted = True
         message.body = ""
         message.audio_url = ""
@@ -2725,12 +2818,7 @@ class MainWindow(wx.Frame):
         message.media_size = 0
         message.media_duration_seconds = 0
         message.reply_quote = ""
-        self._persist_messages([message])
-        self.conversation.refresh_message(message)
-        self._update_chat_from_message(message)
-        self._refresh_chat_order(message.chat_jid)
-        self.status_bar.SetStatusText("Mensaje eliminado")
-        return True
+        return deleted_path, deletion_error
 
     def _copy_message_text(self, message: Message) -> None:
         if not wx.TheClipboard.Open():
@@ -3475,6 +3563,17 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
 
     def _merge_messages(self, chat_jid: str, messages: list[Message]) -> list[Message]:
+        message_by_id = getattr(self, "_message_by_id", None)
+        discard_media = getattr(self, "_discard_retracted_message_media", None)
+        if callable(message_by_id) and callable(discard_media):
+            for incoming in messages:
+                if not incoming.retracted:
+                    continue
+                target = message_by_id(chat_jid, incoming.message_id)
+                if target is not None and target is not incoming:
+                    discard_media(target)
+                discard_media(incoming)
+
         merged = self.messages_by_chat.get(chat_jid, []) + messages
         indexes_by_key: dict[tuple[object, ...], int] = {}
         indexes_by_content: dict[tuple[object, ...], list[int]] = {}
@@ -3732,6 +3831,7 @@ class MainWindow(wx.Frame):
             target.media_filename = ""
             target.media_size = 0
             target.media_duration_seconds = 0
+            target.media_local_path = ""
             target.reply_quote = ""
             return
         if target.retracted:
@@ -5281,6 +5381,7 @@ class MainWindow(wx.Frame):
             status=self._contact_connection_status_text(chat.jid),
             avatar_path=avatar_path,
             on_describe_photo=self._send_contact_photo_to_rayoai,
+            on_open_statistics=lambda: self._open_chat_statistics(chat),
         )
         self.contact_info_dialog = dialog
         if avatar_path is None:
@@ -5538,6 +5639,7 @@ class ContactInfoDialog(wx.Dialog):
         status: str,
         avatar_path: Path | None = None,
         on_describe_photo: Callable[[Path], None] | None = None,
+        on_open_statistics: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent, title=f"Información de {chat.name}", size=(620, 420))
         self._chat = chat
@@ -5545,6 +5647,7 @@ class ContactInfoDialog(wx.Dialog):
         self._avatar_path = avatar_path
         self._avatar_status = ""
         self._on_describe_photo = on_describe_photo
+        self._on_open_statistics = on_open_statistics
 
         body = self._format_contact_info(chat, status, avatar_path, self._avatar_status)
         self._text = wx.TextCtrl(
@@ -5556,10 +5659,13 @@ class ContactInfoDialog(wx.Dialog):
 
         self._describe_button = wx.Button(self, label="Describir foto con RayoAI")
         self._describe_button.Enable(avatar_path is not None and on_describe_photo is not None)
+        self._statistics_button = wx.Button(self, label="Estadísticas locales del chat")
+        self._statistics_button.Enable(on_open_statistics is not None)
         close_button = wx.Button(self, wx.ID_OK, "Cerrar")
 
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self._describe_button, 0, wx.RIGHT, 8)
+        buttons.Add(self._statistics_button, 0, wx.RIGHT, 8)
         buttons.Add(close_button, 0)
 
         box = wx.BoxSizer(wx.VERTICAL)
@@ -5568,7 +5674,9 @@ class ContactInfoDialog(wx.Dialog):
         self.SetSizer(box)
         apply_theme(self)
         self.Bind(wx.EVT_BUTTON, self._on_describe_photo_clicked, self._describe_button)
+        self.Bind(wx.EVT_BUTTON, self._on_open_statistics_clicked, self._statistics_button)
         self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_OK), close_button)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         wx.CallAfter(self._text.SetFocus)
 
     @property
@@ -5640,6 +5748,16 @@ class ContactInfoDialog(wx.Dialog):
             return
 
         self._on_describe_photo(self._avatar_path)
+
+    def _on_open_statistics_clicked(self, _event: wx.CommandEvent) -> None:
+        if self._on_open_statistics is not None:
+            self._on_open_statistics()
+
+    def _on_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.EndModal(wx.ID_CANCEL)
+            return
+        event.Skip()
 
     @staticmethod
     def _phone_from_jid(jid: str) -> str:

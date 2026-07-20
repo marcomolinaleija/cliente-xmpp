@@ -134,6 +134,25 @@ def local_media_path(message: Message) -> Path | None:
     return None
 
 
+def delete_local_media_file(message: Message) -> tuple[Path | None, OSError | None]:
+    """Delete the exact local file associated with a retracted message.
+
+    The model path is cleared even when the file has already disappeared or Windows
+    refuses the deletion.  That prevents a deleted message from remaining playable.
+    """
+    raw_path = message.media_local_path
+    message.media_local_path = ""
+    if not raw_path:
+        return None, None
+
+    path = Path(raw_path)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        return path, exc
+    return path, None
+
+
 def download_media(message: Message, account_jid: str) -> DownloadedMedia:
     url = media_url(message)
     if not url:

@@ -1,18 +1,177 @@
-WhatsApp CAN 1.0.6
+WhatsApp CAN 1.1.0
 
-Novedades
+Novedad principal: gestor de almacenamiento
 
-- En la lista de mensajes, cuando una respuesta cita un mensaje disponible, aparece el botón Ir a mensaje citado. También puedes usar Flecha derecha para llegar al botón y volver directamente al mensaje original.
-- Desde Información del contacto o grupo ahora puedes abrir Mensajes destacados. Elige uno y regresarás a la conversación con ese mensaje enfocado.
-- La nueva opción Ver archivos... reúne en un mismo lugar los archivos y enlaces guardados en el chat. Incluye pestañas para todos los elementos, archivos, enlaces, fotos, videos, audios y stickers.
-- Desde la lista de archivos puedes abrirlos, copiarlos o eliminar únicamente su copia local. Si lo necesitas después, el mensaje conserva la opción de volver a descargarlo.
+WhatsApp CAN ahora incluye un gestor completo para consultar y liberar el espacio ocupado por
+los datos locales de la aplicación. Puedes abrirlo desde Ver > Gestor de almacenamiento, tanto
+si tienes una cuenta conectada como si la aplicación está desconectada.
 
-Estadísticas locales
+El gestor analiza la carpeta de datos de WhatsApp CAN y cuenta el tamaño real de los archivos
+que existen en el disco. No se limita al tamaño que anuncia WhatsApp para cada adjunto y no suma
+dos veces un mismo archivo. El análisis se realiza en segundo plano para evitar que una carpeta
+con varios gigabytes de contenido bloquee la interfaz.
 
-- Las estadísticas generales permiten filtrar todos los chats, sólo los chats individuales o sólo los grupos.
-- El selector de período de las estadísticas de un chat conserva el foco al cambiar entre 7, 30 o 90 días y el historial completo.
-- Las transcripciones automáticas de Zapia ya no aparecen entre las frases recurrentes, para que el resumen refleje mejor la conversación.
+Antes de borrar algo
+
+- Las limpiezas normales eliminan copias locales, no mensajes de WhatsApp. El texto del mensaje,
+  su fecha y la dirección remota del adjunto permanecen guardados.
+- Un archivo asociado a un mensaje podrá descargarse otra vez únicamente si continúa disponible
+  en el servidor. Si se trata de un archivo antiguo que ya no está disponible de forma remota,
+  considera conservar su copia local.
+- La columna Recuperable indica el espacio que el gestor puede borrar en ese momento. Puede ser
+  menor que el espacio total porque la base de datos, la configuración y algunos archivos
+  recientes están protegidos.
+- Las grabaciones, imágenes pegadas y descargas incompletas creadas durante los últimos diez
+  minutos se muestran en el cálculo, pero no se ofrecen para borrar. Esta protección evita
+  interrumpir por accidente una grabación o una subida que todavía esté trabajando.
+- Si Windows mantiene un archivo ocupado o no permite eliminarlo, el gestor lo conserva, informa
+  que la limpieza quedó incompleta y permite volver a intentarlo. Nunca continúa silenciosamente
+  como si el archivo se hubiera borrado.
+
+Cómo marcar varios elementos
+
+Las pestañas Por chats y Por elementos utilizan casillas independientes de la fila enfocada:
+
+1. Usa las flechas para recorrer la lista.
+2. Pulsa Espacio para marcar o desmarcar la fila enfocada. Las marcas anteriores permanecen.
+3. Con el ratón, un clic en cualquier parte de una fila alterna su casilla.
+4. Pulsa Ctrl+A para marcar de una vez todas las filas que tengan contenido eliminable. Si ya
+   están todas marcadas, Ctrl+A las desmarca.
+5. Revisa las casillas y el espacio indicado antes de pulsar el botón de eliminación.
+
+Pestaña Resumen
+
+Esta es la vista recomendada para comenzar. Muestra:
+
+- el espacio total ocupado por los datos locales de WhatsApp CAN;
+- el número de archivos contabilizados;
+- cuánto espacio puede administrarse desde el diálogo en ese momento;
+- un desglose por base de datos, configuración, multimedia, archivos temporales y otras cachés;
+- una explicación de qué contiene cada categoría y por qué existe.
+
+El total corresponde a los datos de uso guardados por WhatsApp CAN. No representa el tamaño de
+los archivos con los que se instaló el programa.
+
+Pestaña Por chats
+
+Agrupa las descargas por conversación y coloca primero los chats que ocupan más espacio. Para
+cada conversación muestra la cuenta, si se trata de un contacto o grupo, el espacio ocupado, el
+número de archivos, cuántos ya no tienen una referencia local en la base y cuántos mensajes del
+chat están guardados localmente.
+
+Después de marcar uno o varios chats, Eliminar archivos marcados... borra las copias locales de
+todos ellos en una sola operación. No borra el chat, sus mensajes, sus destacados ni sus datos
+remotos. Las rutas eliminadas también se limpian de la base y de la memoria de la aplicación para
+que no queden botones intentando abrir archivos que ya no existen.
+
+Esta opción es útil cuando unas pocas conversaciones concentran la mayoría de fotos, videos o
+audios y quieres conservar las descargas de los demás chats.
+
+Pestaña Por elementos
+
+Permite limpiar por tipo de contenido, sin importar a qué conversación pertenece. La lista puede
+mostrar las siguientes categorías:
+
+- Base de datos local: contiene mensajes, conversaciones, participantes, búsquedas y estados.
+  Se muestra para explicar su tamaño, pero no se elimina con una limpieza normal.
+- Configuración: contiene preferencias de conexión, accesibilidad, sonidos y notificaciones. Se
+  muestra en el resumen y queda protegida durante las limpiezas normales.
+- Audios descargados: notas de voz y otros audios todavía vinculados con mensajes.
+- Imágenes descargadas: fotografías e imágenes todavía vinculadas con mensajes.
+- Videos descargados: videos y notas de video todavía vinculados con mensajes.
+- Stickers descargados: stickers estáticos y previsualizaciones locales de stickers animados.
+- Otros archivos descargados: documentos y adjuntos que no pertenecen a las categorías
+  anteriores.
+- Descargas sin referencia: archivos que siguen físicamente en Descargas, pero cuya ruta ya no
+  está asociada a un mensaje de la base local. Suelen ser copias repetidas, archivos de mensajes
+  que ya no están en la caché o restos de descargas anteriores. Eliminarlos no borra mensajes,
+  pero debes tratarlos como archivos locales: si alguno fuera tu única copia y ya no existiera
+  remotamente, no podría recuperarse.
+- Grabaciones temporales: notas de voz preparadas para enviar que quedaron en la carpeta local.
+  Las creadas recientemente permanecen protegidas.
+- Archivos del portapapeles: imágenes temporales generadas al pegar una imagen en el compositor.
+- Fotos de perfil: avatares almacenados localmente. Se pueden descargar otra vez cuando vuelvas
+  a abrir la información del contacto o grupo.
+- Descargas incompletas: archivos .part que quedaron tras una descarga interrumpida. Los recientes
+  se protegen porque una descarga activa también usa esta extensión.
+- Otras cachés: códigos QR locales antiguos y archivos regenerables usados por integraciones.
+  Los archivos recientes de estas integraciones permanecen protegidos.
+- Otros datos: archivos no reconocidos dentro de la carpeta de la aplicación. Se contabilizan,
+  pero no se borran individualmente para no asumir que son prescindibles.
+
+Marca las categorías deseadas y pulsa Eliminar elementos marcados.... Antes de comenzar se
+mostrará cuántos archivos se intentarán borrar y cuánto espacio se espera liberar.
+
+Pestaña Mantenimiento
+
+Ejecutar limpieza recomendada...
+
+Elimina únicamente descargas incompletas antiguas y descargas sin referencia. Es el primer paso
+recomendado cuando quieres recuperar espacio sin retirar la multimedia que todavía aparece como
+descargada dentro de tus mensajes. Siempre muestra una confirmación antes de comenzar.
+
+Eliminar todas las descargas...
+
+Elimina en conjunto audios, imágenes, videos, stickers, documentos, descargas sin referencia y
+descargas incompletas antiguas. Conserva la base, los mensajes y la configuración. Después de esta
+operación, los adjuntos vinculados se mostrarán como no descargados y podrás obtenerlos otra vez
+desde su mensaje mientras sigan disponibles remotamente.
+
+Vaciar cachés auxiliares...
+
+Elimina grabaciones temporales antiguas, imágenes preparadas desde el portapapeles, fotos de
+perfil, códigos QR vencidos y otros archivos regenerables. No elimina las descargas normales de
+los mensajes. Las grabaciones y archivos recientes permanecen protegidos.
+
+Optimizar base de datos
+
+Pide a SQLite que reorganice la base y devuelva al sistema las páginas que ya estén libres. No
+elimina mensajes, chats, participantes ni preferencias. Si la base ya está compacta puede liberar
+cero bytes; esto es normal y no indica un error.
+
+Borrar todos los datos...
+
+Esta es una opción extrema para restablecer por completo los datos locales de WhatsApp CAN. Borra
+la base de mensajes, todas las descargas, grabaciones, imágenes pegadas, avatares, cachés,
+configuración y credenciales conocidas por la aplicación. Después cierra WhatsApp CAN.
+
+El borrado total no desinstala el programa, no elimina tu cuenta XMPP, no borra mensajes de
+WhatsApp y no desvincula por sí mismo la sesión que vive en el bridge. Sin embargo, al volver a
+abrir la aplicación tendrás que configurar de nuevo la conexión y el historial local comenzará
+vacío.
+
+Para reducir el riesgo de accidentes se solicitan dos confirmaciones:
+
+1. una advertencia inicial que debes aceptar explícitamente;
+2. una segunda confirmación en la que debes escribir exactamente BORRAR TODO.
+
+Si cancelas cualquiera de las dos, no se elimina nada. Si algún archivo está bloqueado y el
+restablecimiento no puede completarse, la aplicación informa del resultado y no presenta la
+operación como terminada.
+
+Mejoras en las conversaciones
+
+- El historial distingue visualmente mensajes enviados, mensajes recibidos, separadores de fecha
+  y el marcador de no leídos, manteniendo el contraste del tema de WhatsApp CAN.
+- La cabecera de la conversación presenta Volver, la información del contacto o grupo y Cargar
+  mensajes anteriores en un orden más claro y sin repetir el avatar.
+- La lista de mensajes aprovecha mejor el ancho de la ventana y ajusta automáticamente su única
+  columna al cambiar el tamaño.
+- El historial tiene un nombre accesible y recuerda que Enter abre la lectura completa del
+  mensaje.
+
+Mejoras en la lista de chats y las respuestas
+
+- La búsqueda, el botón Nuevo chat y la lista de conversaciones ahora tienen una distribución
+  más clara, dejando más espacio disponible para los chats.
+- Se añadieron nombres y ayudas accesibles para identificar la búsqueda y la lista de chats con
+  mayor precisión mediante lector de pantalla.
+- Ahora puedes preparar una respuesta a un mensaje propio que ya fue confirmado como enviado. La
+  aplicación sigue impidiendo responder a un mensaje local que todavía está pendiente, porque aún
+  no dispone de un identificador remoto estable.
 
 Privacidad
 
-- Estas funciones trabajan con el historial guardado en tu dispositivo. El contenido de los mensajes no se envía a servicios externos para generar las listas o estadísticas.
+El análisis de almacenamiento se realiza completamente en el dispositivo. No lee el contenido de
+los mensajes para calcular tamaños y no envía nombres, archivos, rutas ni estadísticas a un
+servicio externo.

@@ -64,6 +64,7 @@ from cliente_xmpp.models.phone_numbers import (
 )
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
+from cliente_xmpp.storage.manager import StorageCleanupResult, StorageManager, StorageSnapshot
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.chat_message_dialogs import ChatFilesDialog, StarredMessagesDialog
@@ -75,6 +76,7 @@ from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
+from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkPanel,
@@ -162,6 +164,8 @@ class MainWindow(wx.Frame):
             desktop_notifications.announce_with_nvda
         )
         self.message_store = MessageStore()
+        self.storage_manager = StorageManager(self.message_store)
+        self._storage_reset_in_progress = False
         self.storage_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="cliente-xmpp-storage",
@@ -260,6 +264,11 @@ class MainWindow(wx.Frame):
             "Muestra estadísticas calculadas con el historial local",
         )
         self.statistics_menu_item.Enable(False)
+        self.storage_manager_menu_item = view_menu.Append(
+            wx.ID_ANY,
+            "Gestor de &almacenamiento...\tCtrl+Shift+A",
+            "Muestra y permite administrar el espacio ocupado por los datos locales",
+        )
         menu_bar.Append(view_menu, "&Ver")
         self.SetMenuBar(menu_bar)
 
@@ -341,6 +350,7 @@ class MainWindow(wx.Frame):
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
+        self.Bind(wx.EVT_MENU, self._on_open_storage_manager, self.storage_manager_menu_item)
         self.settings_panel.test_notification_button.Bind(
             wx.EVT_BUTTON,
             self._on_test_windows_notification,
@@ -1744,6 +1754,160 @@ class MainWindow(wx.Frame):
             dialog.deactivate()
             dialog.Destroy()
 
+    def _on_open_storage_manager(self, _event: wx.CommandEvent) -> None:
+        dialog = StorageManagerDialog(
+            self,
+            self._load_storage_snapshot_async,
+            self._delete_storage_files_async,
+            self._optimize_storage_database_async,
+            self._delete_all_storage_async,
+        )
+        result = wx.ID_CANCEL
+        try:
+            result = dialog.ShowModal()
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+        if result == wx.ID_DELETE:
+            self.status_bar.SetStatusText("Datos locales eliminados. Cerrando la aplicación...")
+            wx.CallAfter(self.Close)
+
+    def _load_storage_snapshot_async(
+        self,
+        callback: Callable[[StorageSnapshot | None, str], None],
+    ) -> None:
+        def worker() -> None:
+            try:
+                snapshot = self.storage_manager.build_snapshot()
+            except Exception:
+                wx.CallAfter(callback, None, "No se pudo calcular el almacenamiento local.")
+                return
+            wx.CallAfter(callback, snapshot, "")
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _delete_storage_files_async(
+        self,
+        paths: tuple[str, ...],
+        callback: Callable[[StorageCleanupResult | None, str], None],
+    ) -> None:
+        self.conversation.close_audio()
+
+        def worker() -> None:
+            try:
+                result = self.storage_manager.delete_files(paths)
+            except Exception:
+                wx.CallAfter(callback, None, "No se pudo completar la limpieza local.")
+                return
+            wx.CallAfter(self._finish_storage_cleanup, result, callback)
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _finish_storage_cleanup(
+        self,
+        result: StorageCleanupResult,
+        callback: Callable[[StorageCleanupResult | None, str], None],
+    ) -> None:
+        changed_current_chat = False
+        current_chat = self.conversation.current_chat
+        for chat_jid, messages in self.messages_by_chat.items():
+            for message in messages:
+                if not message.media_local_path:
+                    continue
+                old_path = message.media_local_path
+                if Path(old_path).is_file():
+                    continue
+                self.conversation.discard_message_media(message, old_path)
+                message.media_local_path = ""
+                if current_chat is not None and current_chat.jid == chat_jid:
+                    changed_current_chat = True
+        if changed_current_chat and current_chat is not None:
+            self.conversation.set_messages(self.messages_by_chat.get(current_chat.jid, []))
+
+        previous_avatars = dict(self.contact_avatar_paths_by_chat)
+        self.contact_avatar_paths_by_chat = {
+            chat_jid: path
+            for chat_jid, path in previous_avatars.items()
+            if path.is_file()
+        }
+        if (
+            current_chat is not None
+            and current_chat.jid in previous_avatars
+            and current_chat.jid not in self.contact_avatar_paths_by_chat
+        ):
+            self.conversation.set_contact_avatar(None)
+        callback(result, "")
+
+    def _optimize_storage_database_async(
+        self,
+        callback: Callable[[int | None, str], None],
+    ) -> None:
+        def worker() -> None:
+            try:
+                reclaimed = self.storage_manager.compact_database()
+            except Exception:
+                wx.CallAfter(callback, None, "No se pudo optimizar la base de datos local.")
+                return
+            wx.CallAfter(callback, reclaimed, "")
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _delete_all_storage_async(
+        self,
+        callback: Callable[[StorageCleanupResult | None, str], None],
+    ) -> None:
+        self._storage_reset_in_progress = True
+        self.windows_notification_service.close_all()
+        self.conversation.close_audio()
+        self.audio_recorder.cancel()
+        self.xmpp.disconnect()
+        credential_jids = {
+            jid for jid in (self.current_jid, self.connection_settings.jid) if jid
+        }
+
+        def worker() -> None:
+            try:
+                result = self.storage_manager.delete_all_data()
+                if not result.failures:
+                    for jid in credential_jids:
+                        self.credential_store.delete_password(jid)
+            except Exception:
+                wx.CallAfter(
+                    self._finish_total_storage_deletion,
+                    None,
+                    "No se pudieron borrar todos los datos locales.",
+                    callback,
+                )
+                return
+            wx.CallAfter(self._finish_total_storage_deletion, result, "", callback)
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _finish_total_storage_deletion(
+        self,
+        result: StorageCleanupResult | None,
+        error: str,
+        callback: Callable[[StorageCleanupResult | None, str], None],
+    ) -> None:
+        if error or result is None or result.failures:
+            self._storage_reset_in_progress = False
+        callback(result, error)
+
+    def _submit_storage_manager_worker(
+        self,
+        worker: Callable[[], None],
+        callback: Callable[..., None],
+    ) -> None:
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            self._storage_reset_in_progress = False
+            wx.CallAfter(callback, None, "La aplicación se está cerrando.")
+
     def _load_statistics_async(
         self,
         period_days: int | None,
@@ -3048,6 +3212,8 @@ class MainWindow(wx.Frame):
         send_to_rayoai: bool = False,
         silent: bool = False,
     ) -> None:
+        if getattr(self, "_storage_reset_in_progress", False):
+            return
         if not self.current_jid:
             if not silent:
                 self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
@@ -3144,6 +3310,8 @@ class MainWindow(wx.Frame):
             self._auto_download_media_message(message)
 
     def _auto_download_media_message(self, message: Message) -> None:
+        if getattr(self, "_storage_reset_in_progress", False):
+            return
         may_be_lottie_sticker = self._message_may_be_lottie_sticker(message)
         if not (message.media_kind == "audio" or message.is_sticker or may_be_lottie_sticker):
             return
@@ -3336,6 +3504,8 @@ class MainWindow(wx.Frame):
         wx.PostEvent(self, WxXmppEvent(event))
 
     def _handle_xmpp_event(self, event: XmppEvent) -> None:
+        if getattr(self, "_storage_reset_in_progress", False):
+            return
         match event:
             case XmppConnected():
                 self.login_panel.set_connecting(False)
@@ -4755,6 +4925,8 @@ class MainWindow(wx.Frame):
         operation: Callable[..., object],
         *args: object,
     ) -> None:
+        if getattr(self, "_storage_reset_in_progress", False):
+            return
         executor = getattr(self, "storage_executor", None)
         if executor is None:
             self._run_storage_write(operation, *args)

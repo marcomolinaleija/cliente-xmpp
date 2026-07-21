@@ -225,6 +225,24 @@ las páginas MAM posteriores trabajan sobre la memoria ya cargada.
 Las métricas impresas por `_debug_perf` están desactivadas normalmente; para una sesión de
 diagnóstico inicia el proceso con `CLIENTE_XMPP_PERF_DEBUG=1`.
 
+El gestor de almacenamiento se abre desde `Ver > Gestor de almacenamiento` incluso sin una
+cuenta conectada. `storage/manager.py` recorre físicamente `%USERPROFILE%\.cliente-xmpp` y cruza
+las descargas con referencias ligeras de `MessageStore`; el cálculo y cualquier borrado se
+ejecutan en el único ejecutor de storage, nunca en el hilo wx. El resumen no suma tamaños
+declarados por el bridge: cuenta una sola vez cada archivo real, separa descargas vinculadas,
+huérfanas, grabaciones, portapapeles, avatares, base y configuración. Las vistas por chat y por
+elemento sólo borran copias dentro de carpetas administradas por la aplicación, conservan el
+mensaje remoto y limpian `media_local_path` en SQLite y memoria. Grabaciones, imágenes pegadas y
+archivos `.part`, QR e integraciones locales de menos de diez minutos se muestran pero se protegen
+por si siguen en uso.
+Las listas por chat y por elemento usan casillas persistentes, no selección múltiple implícita:
+Espacio conmuta la fila enfocada, Ctrl+A marca todas las filas eliminables y un clic en cualquier
+parte de la fila conmuta su casilla sin desmarcar las anteriores.
+La limpieza total valida que el destino sea exactamente la carpeta `.cliente-xmpp`, detiene
+reproductores, grabación y XMPP, bloquea nuevas escrituras, pide confirmación dos veces —la segunda
+escribiendo `BORRAR TODO`—, elimina también configuración y credenciales conocidas y cierra la
+aplicación. No amplíes las raíces borrables ni sigas enlaces simbólicos.
+
 Las estadísticas se abren desde `Ver > Estadísticas` y se calculan exclusivamente con los
 mensajes que ya existen en SQLite para la cuenta activa. `MessageStore.load_statistics` ejecuta
 el agregado fuera del hilo wx mediante el ejecutor de storage; no muevas esa lectura al handler

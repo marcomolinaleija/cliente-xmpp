@@ -45,6 +45,24 @@ PHRASE_STOPWORDS = {
 ZAPIA_TRANSCRIPTION_MARKER = "transcrito gratis por zapia.com/app"
 
 
+@dataclass(frozen=True, slots=True)
+class StorageChatRecord:
+    account_jid: str
+    chat_jid: str
+    name: str
+    is_group: bool
+    message_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class StorageMediaRecord:
+    account_jid: str
+    chat_jid: str
+    local_path: str
+    media_kind: str
+    is_sticker: bool
+
+
 @dataclass(slots=True)
 class _DailyChatStatisticsAccumulator:
     chat_jid: str
@@ -328,6 +346,59 @@ class MessageStore:
             ).fetchall()
 
         return [_message_from_row(row) for row in rows]
+
+    def load_storage_chat_records(self) -> list[StorageChatRecord]:
+        """Return lightweight chat metadata used by the storage manager."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    chats.account_jid,
+                    chats.jid AS chat_jid,
+                    COALESCE(NULLIF(chats.custom_name, ''), chats.name, chats.jid) AS name,
+                    chats.is_group,
+                    COUNT(messages.message_key) AS message_count
+                FROM chats
+                LEFT JOIN messages
+                    ON messages.account_jid = chats.account_jid
+                    AND messages.chat_jid = chats.jid
+                GROUP BY chats.account_jid, chats.jid
+                ORDER BY name COLLATE NOCASE, chats.jid
+                """
+            ).fetchall()
+
+        return [
+            StorageChatRecord(
+                account_jid=str(row["account_jid"]),
+                chat_jid=str(row["chat_jid"]),
+                name=str(row["name"] or row["chat_jid"]),
+                is_group=bool(row["is_group"]),
+                message_count=int(row["message_count"] or 0),
+            )
+            for row in rows
+        ]
+
+    def load_storage_media_records(self) -> list[StorageMediaRecord]:
+        """Return local media references without hydrating complete messages."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT account_jid, chat_jid, media_local_path, media_kind, is_sticker
+                FROM messages
+                WHERE media_local_path != ''
+                """
+            ).fetchall()
+
+        return [
+            StorageMediaRecord(
+                account_jid=str(row["account_jid"]),
+                chat_jid=str(row["chat_jid"]),
+                local_path=str(row["media_local_path"]),
+                media_kind=str(row["media_kind"] or ""),
+                is_sticker=bool(row["is_sticker"]),
+            )
+            for row in rows
+        ]
 
     def load_latest_messages(self, account_jid: str) -> list[Message]:
         with self._connect() as conn:
@@ -997,6 +1068,33 @@ class MessageStore:
                 ),
             )
             self._upsert_message_chat_summary(conn, account_jid, message)
+
+    def clear_missing_media_local_paths(self) -> int:
+        """Clear database references whose local file no longer exists."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT rowid AS db_rowid, media_local_path
+                FROM messages
+                WHERE media_local_path != ''
+                """
+            ).fetchall()
+            missing_rowids = [
+                int(row["db_rowid"])
+                for row in rows
+                if not Path(str(row["media_local_path"])).is_file()
+            ]
+            conn.executemany(
+                "UPDATE messages SET media_local_path = '' WHERE rowid = ?",
+                ((rowid,) for rowid in missing_rowids),
+            )
+        return len(missing_rowids)
+
+    def compact_database(self) -> None:
+        """Reclaim unused SQLite pages without changing the schema."""
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("VACUUM")
 
     def update_message_starred(self, account_jid: str, message: Message) -> None:
         with self._connect() as conn:

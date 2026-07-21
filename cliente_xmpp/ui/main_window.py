@@ -66,6 +66,7 @@ from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistic
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
+from cliente_xmpp.ui.chat_message_dialogs import ChatFilesDialog, StarredMessagesDialog
 from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
@@ -290,6 +291,7 @@ class MainWindow(wx.Frame):
             initial_audio_speed=self.settings_store.load_audio_speed(),
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
+            on_go_to_quoted_message=self._go_to_quoted_message,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
@@ -1795,6 +1797,59 @@ class MainWindow(wx.Frame):
             dialog.deactivate()
             dialog.Destroy()
 
+    def _load_starred_messages_async(
+        self,
+        chat_jid: str,
+        callback: Callable[[list[Message], str], None],
+    ) -> None:
+        self._load_chat_message_collection_async(
+            chat_jid,
+            self.message_store.load_starred_messages,
+            callback,
+            "No se pudieron cargar los mensajes destacados locales.",
+        )
+
+    def _load_media_messages_async(
+        self,
+        chat_jid: str,
+        callback: Callable[[list[Message], str], None],
+    ) -> None:
+        self._load_chat_message_collection_async(
+            chat_jid,
+            self.message_store.load_media_messages,
+            callback,
+            "No se pudieron cargar los archivos y enlaces locales.",
+        )
+
+    def _load_chat_message_collection_async(
+        self,
+        chat_jid: str,
+        loader: Callable[[str, str], list[Message]],
+        callback: Callable[[list[Message], str], None],
+        error_message: str,
+    ) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            wx.CallAfter(callback, [], "No hay una cuenta activa.")
+            return
+
+        def worker() -> None:
+            try:
+                messages = loader(account_jid, chat_jid)
+            except Exception:
+                wx.CallAfter(callback, [], error_message)
+                return
+            wx.CallAfter(callback, messages, "")
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            wx.CallAfter(callback, [], "La aplicación se está cerrando.")
+
     def _load_chat_statistics_async(
         self,
         chat_jid: str,
@@ -2489,6 +2544,15 @@ class MainWindow(wx.Frame):
         )
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        if (
+            event.GetKeyCode() == wx.WXK_RIGHT
+            and not event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+            and self.conversation.focus_quoted_message_button()
+        ):
+            return
+
         if (
             event.AltDown()
             and not event.ControlDown()
@@ -3212,6 +3276,21 @@ class MainWindow(wx.Frame):
     def _toggle_starred_message(self, message: Message) -> None:
         message.starred = not message.starred
         self.conversation.refresh_message(message)
+        if self.current_jid:
+            self._queue_storage_write(
+                self.message_store.update_message_starred,
+                self.current_jid,
+                replace(message),
+            )
+
+    def _go_to_quoted_message(self, message: Message) -> None:
+        target = self.conversation.find_message_by_id(message.reply_to_id)
+        if target is None:
+            self.status_bar.SetStatusText("El mensaje citado ya no está disponible en este chat")
+            return
+
+        self.conversation.focus_message(target)
+        self.status_bar.SetStatusText("Mensaje citado")
 
     def _react_to_message(self, message: Message, reaction: str) -> None:
         if not self._require_whatsapp_connection():
@@ -5387,6 +5466,8 @@ class MainWindow(wx.Frame):
             avatar_path=avatar_path,
             on_describe_photo=self._send_contact_photo_to_rayoai,
             on_open_statistics=lambda: self._open_chat_statistics(chat),
+            on_open_starred=lambda: self._open_starred_messages(chat),
+            on_open_files=lambda: self._open_chat_files(chat),
         )
         self.contact_info_dialog = dialog
         if avatar_path is None:
@@ -5397,6 +5478,100 @@ class MainWindow(wx.Frame):
             if self.contact_info_dialog is dialog:
                 self.contact_info_dialog = None
             dialog.Destroy()
+
+    def _open_starred_messages(self, chat: Chat) -> None:
+        parent = self.contact_info_dialog or self
+        dialog = StarredMessagesDialog(
+            parent,
+            chat.name,
+            lambda callback: self._load_starred_messages_async(chat.jid, callback),
+        )
+        selected_message: Message | None = None
+        try:
+            if dialog.ShowModal() == wx.ID_OK:
+                selected_message = dialog.selected_message
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+        if selected_message is None:
+            return
+        if self.contact_info_dialog is not None:
+            self.contact_info_dialog.EndModal(wx.ID_CANCEL)
+        wx.CallAfter(self._focus_message_from_browser, chat.jid, selected_message)
+
+    def _open_chat_files(self, chat: Chat) -> None:
+        parent = self.contact_info_dialog or self
+        dialog = ChatFilesDialog(
+            parent,
+            chat.name,
+            lambda callback: self._load_media_messages_async(chat.jid, callback),
+            on_open=self._open_browser_item,
+            on_copy=self._copy_browser_item,
+            on_delete=self._delete_browser_item,
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+    def _focus_message_from_browser(self, chat_jid: str, message: Message) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or chat.jid != chat_jid:
+            self.status_bar.SetStatusText("Abre el chat para ir al mensaje destacado")
+            return
+
+        self._merge_messages(chat_jid, [message])
+        target = self._message_by_id(chat_jid, message.message_id) or message
+        self.conversation.set_messages(self.messages_by_chat.get(chat_jid, []))
+        self.conversation.focus_message(target)
+        self.status_bar.SetStatusText("Mensaje destacado")
+
+    def _open_browser_item(self, message: Message) -> None:
+        message = self._browser_message_in_memory(message)
+        if has_media(message) and not is_link_preview(message):
+            self._open_or_download_media(message)
+            return
+        self._open_message_link(message)
+
+    def _copy_browser_item(self, message: Message) -> None:
+        message = self._browser_message_in_memory(message)
+        if local_media_path(message) is not None:
+            self._copy_media_file(message)
+            return
+        self._copy_message_text(message)
+
+    def _delete_browser_item(self, message: Message) -> None:
+        message = self._browser_message_in_memory(message)
+        path = local_media_path(message)
+        if path is None:
+            self.status_bar.SetStatusText("No hay archivo local para eliminar")
+            return
+        result = wx.MessageBox(
+            f"¿Eliminar el archivo local {path.name}? El mensaje seguirá disponible para "
+            "descargarlo otra vez.",
+            "Eliminar archivo local",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
+        deleted_path, error = delete_local_media_file(message)
+        if error is not None:
+            self.status_bar.SetStatusText("Windows no permitió eliminar el archivo local")
+            return
+        self._persist_message_media_path(message)
+        self.conversation.discard_message_media(message, str(deleted_path or ""))
+        self.conversation.refresh_message(message)
+        self.status_bar.SetStatusText("Archivo local eliminado")
+
+    def _browser_message_in_memory(self, message: Message) -> Message:
+        if message.message_id:
+            current = self._message_by_id(message.chat_jid, message.message_id)
+            if current is not None:
+                return current
+        return message
 
     def _contact_avatar_path(self, chat: Chat) -> Path | None:
         path = self.contact_avatar_paths_by_chat.get(chat.jid)
@@ -5645,14 +5820,18 @@ class ContactInfoDialog(wx.Dialog):
         avatar_path: Path | None = None,
         on_describe_photo: Callable[[Path], None] | None = None,
         on_open_statistics: Callable[[], None] | None = None,
+        on_open_starred: Callable[[], None] | None = None,
+        on_open_files: Callable[[], None] | None = None,
     ) -> None:
-        super().__init__(parent, title=f"Información de {chat.name}", size=(620, 420))
+        super().__init__(parent, title=f"Información de {chat.name}", size=(860, 420))
         self._chat = chat
         self._status = status
         self._avatar_path = avatar_path
         self._avatar_status = ""
         self._on_describe_photo = on_describe_photo
         self._on_open_statistics = on_open_statistics
+        self._on_open_starred = on_open_starred
+        self._on_open_files = on_open_files
 
         body = self._format_contact_info(chat, status, avatar_path, self._avatar_status)
         self._text = wx.TextCtrl(
@@ -5666,11 +5845,17 @@ class ContactInfoDialog(wx.Dialog):
         self._describe_button.Enable(avatar_path is not None and on_describe_photo is not None)
         self._statistics_button = wx.Button(self, label="Estadísticas locales del chat")
         self._statistics_button.Enable(on_open_statistics is not None)
+        self._starred_button = wx.Button(self, label="Ver mensajes destacados")
+        self._starred_button.Enable(on_open_starred is not None)
+        self._files_button = wx.Button(self, label="Ver archivos...")
+        self._files_button.Enable(on_open_files is not None)
         close_button = wx.Button(self, wx.ID_OK, "Cerrar")
 
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self._describe_button, 0, wx.RIGHT, 8)
         buttons.Add(self._statistics_button, 0, wx.RIGHT, 8)
+        buttons.Add(self._starred_button, 0, wx.RIGHT, 8)
+        buttons.Add(self._files_button, 0, wx.RIGHT, 8)
         buttons.Add(close_button, 0)
 
         box = wx.BoxSizer(wx.VERTICAL)
@@ -5680,6 +5865,8 @@ class ContactInfoDialog(wx.Dialog):
         apply_theme(self)
         self.Bind(wx.EVT_BUTTON, self._on_describe_photo_clicked, self._describe_button)
         self.Bind(wx.EVT_BUTTON, self._on_open_statistics_clicked, self._statistics_button)
+        self.Bind(wx.EVT_BUTTON, self._on_open_starred_clicked, self._starred_button)
+        self.Bind(wx.EVT_BUTTON, self._on_open_files_clicked, self._files_button)
         self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_OK), close_button)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         wx.CallAfter(self._text.SetFocus)
@@ -5757,6 +5944,14 @@ class ContactInfoDialog(wx.Dialog):
     def _on_open_statistics_clicked(self, _event: wx.CommandEvent) -> None:
         if self._on_open_statistics is not None:
             self._on_open_statistics()
+
+    def _on_open_starred_clicked(self, _event: wx.CommandEvent) -> None:
+        if self._on_open_starred is not None:
+            self._on_open_starred()
+
+    def _on_open_files_clicked(self, _event: wx.CommandEvent) -> None:
+        if self._on_open_files is not None:
+            self._on_open_files()
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         if event.GetKeyCode() == wx.WXK_ESCAPE:

@@ -12,6 +12,65 @@ from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_loads_starred_and_media_messages_for_one_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "chat@example.test"
+            other_chat_jid = "other@example.test"
+            starred = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="Mensaje destacado",
+                sent_at=datetime(2026, 7, 19, 8, tzinfo=UTC),
+                message_id="starred-message",
+                starred=True,
+            )
+            attachment = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="Foto",
+                sent_at=datetime(2026, 7, 19, 9, tzinfo=UTC),
+                media_url="https://upload.example.test/photo.jpg",
+                media_kind="image",
+                message_id="media-message",
+            )
+            link = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="https://example.test/article",
+                sent_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+                message_id="link-message",
+            )
+            other_chat = Message(
+                chat_jid=other_chat_jid,
+                sender_jid=other_chat_jid,
+                body="Otro destacado",
+                sent_at=datetime(2026, 7, 19, 11, tzinfo=UTC),
+                message_id="other-starred",
+                starred=True,
+            )
+            store.upsert_messages(account_jid, [starred, attachment, link, other_chat])
+
+            self.assertEqual(
+                [
+                    message.message_id
+                    for message in store.load_starred_messages(account_jid, chat_jid)
+                ],
+                ["starred-message"],
+            )
+            self.assertEqual(
+                [
+                    message.message_id
+                    for message in store.load_media_messages(account_jid, chat_jid)
+                ],
+                ["media-message", "link-message"],
+            )
+
+            starred.starred = False
+            store.update_message_starred(account_jid, starred)
+            self.assertEqual(store.load_starred_messages(account_jid, chat_jid), [])
+
     def test_technical_group_name_does_not_replace_stored_human_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

@@ -295,6 +295,40 @@ class MessageStore:
 
         return [_message_from_row(row) for row in reversed(rows)]
 
+    def load_starred_messages(self, account_jid: str, chat_jid: str) -> list[Message]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ? AND starred = 1
+                ORDER BY julianday(sent_at), rowid
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+
+        return [_message_from_row(row) for row in rows]
+
+    def load_media_messages(self, account_jid: str, chat_jid: str) -> list[Message]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                    AND (
+                        media_url != ''
+                        OR audio_url != ''
+                        OR body LIKE '%http://%'
+                        OR body LIKE '%https://%'
+                    )
+                ORDER BY julianday(sent_at), rowid
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+
+        return [_message_from_row(row) for row in rows]
+
     def load_latest_messages(self, account_jid: str) -> list[Message]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -963,6 +997,25 @@ class MessageStore:
                 ),
             )
             self._upsert_message_chat_summary(conn, account_jid, message)
+
+    def update_message_starred(self, account_jid: str, message: Message) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE messages
+                SET starred = ?
+                WHERE account_jid = ? AND chat_jid = ?
+                    AND (message_key = ? OR (? != '' AND message_id = ?))
+                """,
+                (
+                    int(message.starred),
+                    account_jid,
+                    message.chat_jid,
+                    _message_key(message),
+                    message.message_id,
+                    message.message_id,
+                ),
+            )
 
     def upsert_messages(self, account_jid: str, messages: list[Message]) -> None:
         if not messages:

@@ -31,22 +31,30 @@ class ChatListPanel(wx.Panel):
 
         self.search_label = wx.StaticText(self, label="Buscar:")
         self.search_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
+        self.search_ctrl.SetName("Buscar chats y mensajes")
         self.search_ctrl.SetToolTip("Buscar contactos, telefonos y mensajes.")
-        self.search_ctrl.SetMinSize((260, -1))
+        self.search_ctrl.SetMinSize((280, -1))
         self.new_chat_button = wx.Button(self, label="&Nuevo chat")
         self.new_chat_button.SetToolTip(
             "Abre una conversación con un número de WhatsApp. Atajo: Control+N."
         )
         self.list_box = wx.ListBox(self)
+        self.list_box.SetName("Lista de chats")
+        self.list_box.SetToolTip(
+            "Chats con actividad. Pulsa Enter para abrir el chat seleccionado."
+        )
+        self.chat_list_label = wx.StaticText(self, label="Chats")
 
-        search_box = wx.BoxSizer(wx.VERTICAL)
-        search_box.Add(self.search_label, 0, wx.BOTTOM, 4)
-        search_box.Add(self.search_ctrl, 0, wx.EXPAND)
-        search_box.Add(self.new_chat_button, 0, wx.TOP | wx.EXPAND, 10)
+        toolbar = wx.BoxSizer(wx.HORIZONTAL)
+        toolbar.Add(self.chat_list_label, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 18)
+        toolbar.AddStretchSpacer(1)
+        toolbar.Add(self.search_label, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 8)
+        toolbar.Add(self.search_ctrl, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 10)
+        toolbar.Add(self.new_chat_button, 0, wx.ALIGN_CENTER_VERTICAL)
 
-        box = wx.BoxSizer(wx.HORIZONTAL)
-        box.Add(self.list_box, 1, wx.EXPAND)
-        box.Add(search_box, 0, wx.ALL | wx.EXPAND, 10)
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(toolbar, 0, wx.ALL | wx.EXPAND, 12)
+        box.Add(self.list_box, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
         self.SetSizer(box)
 
     @property

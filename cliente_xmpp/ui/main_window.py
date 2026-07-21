@@ -2729,7 +2729,9 @@ class MainWindow(wx.Frame):
             return "No se puede responder a un mensaje eliminado"
         if not message.message_id:
             return "No se puede responder porque el mensaje no tiene un identificador remoto"
-        if MainWindow._message_has_local_pending_id(message):
+        if message.delivery_state == "pending" and MainWindow._message_has_local_pending_id(
+            message
+        ):
             return "Ese mensaje todavía se está enviando; espera a que se confirme para responder"
         return ""
 

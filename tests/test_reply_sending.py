@@ -92,6 +92,32 @@ class ReplySendingTests(unittest.TestCase):
         status = window.status_bar.SetStatusText.call_args.args[0]
         self.assertIn("todavía se está enviando", status)
 
+    def test_confirmed_own_message_can_be_selected_as_reply_target(self) -> None:
+        chat = Chat(jid="contact@example.test", name="Contacto")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid="me",
+            body="mensaje propio confirmado",
+            outgoing=True,
+            message_id="cliente-xmpp-confirmed-id",
+            delivery_state="sent",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.reply_context = None
+        window.edit_context = None
+        window.conversation = SimpleNamespace(
+            current_chat=chat,
+            insert_reply_quote=Mock(),
+        )
+        window.status_bar = self._status_bar()
+        window._require_whatsapp_connection = lambda: True
+
+        MainWindow._reply_to_message(window, target)
+
+        self.assertIs(window.reply_context, target)
+        window.conversation.insert_reply_quote.assert_called_once_with(target)
+        window.status_bar.SetStatusText.assert_called_once_with("Respuesta preparada")
+
     def test_visible_reply_without_target_does_not_send_plain_message(self) -> None:
         chat = Chat(jid="contact@example.test", name="Contacto")
         window = MainWindow.__new__(MainWindow)

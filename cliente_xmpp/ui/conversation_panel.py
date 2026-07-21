@@ -17,7 +17,14 @@ from cliente_xmpp.media.downloads import (
 from cliente_xmpp.media.links import is_link_preview
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.names import display_label_from_jid
-from cliente_xmpp.ui.theme import DARKER_BLUE, NAVY_BLUE, YELLOW, apply_theme
+from cliente_xmpp.ui.theme import (
+    INCOMING_MESSAGE_BLUE,
+    OUTGOING_MESSAGE_BLUE,
+    SECTION_BLUE,
+    UNREAD_BLUE,
+    YELLOW,
+    apply_theme,
+)
 
 DATE_SEPARATOR_PREFIX = "date:"
 UNREAD_MARKER_ROW = "unread"
@@ -67,6 +74,7 @@ class ConversationPanel(wx.Panel):
         self._audio_durations_by_url: dict[str, float] = {}
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
+        self._message_column_resize_pending = False
         self._audio_player = MpvAudioPlayer(speed=initial_audio_speed)
         self._video_player = MpvAudioPlayer(video=True)
         self._speaker = NvdaSpeaker()
@@ -78,10 +86,19 @@ class ConversationPanel(wx.Panel):
 
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
+        # El botón ya presenta el avatar junto al nombre. Mantener una segunda
+        # imagen aquí duplicaba el retrato y no aportaba ninguna acción.
         self.contact_avatar = wx.StaticBitmap(self, bitmap=wx.Bitmap())
         self.contact_avatar.Hide()
         self.contact_info_button = wx.Button(self, label="Información del contacto")
-        self.messages = wx.ListCtrl(self, style=wx.LC_REPORT | wx.BORDER_NONE)
+        self.messages = wx.ListCtrl(
+            self,
+            style=wx.LC_REPORT | wx.LC_NO_HEADER | wx.BORDER_NONE,
+        )
+        self.messages.SetName("Historial de mensajes")
+        self.messages.SetToolTip(
+            "Historial de mensajes. Pulsa Enter para leer el mensaje completo."
+        )
         self.go_to_quoted_button = wx.Button(self, label="Ir a mensaje citado")
         self.go_to_quoted_button.SetName("Ir a mensaje citado")
         self.go_to_quoted_button.Hide()
@@ -139,7 +156,7 @@ class ConversationPanel(wx.Panel):
         self.contact_info_button.SetBitmap(bitmap)
         self.contact_info_button.SetBitmapPosition(wx.LEFT)
         self.contact_avatar.SetBitmap(bitmap)
-        self.contact_avatar.Show(bitmap.IsOk())
+        self.contact_avatar.Hide()
         self.Layout()
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
@@ -678,23 +695,23 @@ class ConversationPanel(wx.Panel):
 
     def _layout(self) -> None:
         header = wx.BoxSizer(wx.HORIZONTAL)
-        header.AddStretchSpacer(1)
-        header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
-        header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
-        header.Add(self.contact_avatar, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
-        header.Add(self.contact_info_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 12)
+        header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
+        header.Add(self.contact_info_button, 1, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 8)
+        header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(header, 0, wx.EXPAND)
+        self.messages_label = wx.StaticText(self, label="Mensajes")
+        box.Add(self.messages_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
         message_area = wx.BoxSizer(wx.HORIZONTAL)
-        message_area.Add(self.messages, 1, wx.LEFT | wx.EXPAND, 12)
+        message_area.Add(self.messages, 1, wx.ALL | wx.EXPAND, 12)
         message_area.Add(
             self.go_to_quoted_button,
             0,
-            wx.LEFT | wx.RIGHT | wx.ALIGN_TOP,
-            8,
+            wx.TOP | wx.RIGHT | wx.ALIGN_TOP,
+            12,
         )
-        box.Add(message_area, 1, wx.RIGHT | wx.EXPAND, 12)
+        box.Add(message_area, 1, wx.EXPAND)
         self.messages.InsertColumn(0, "Mensajes", width=820)
         self.messages.AssignImageList(self._thumbnail_images, wx.IMAGE_LIST_SMALL)
 
@@ -742,7 +759,27 @@ class ConversationPanel(wx.Panel):
         apply_theme(self)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
         self.messages.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_message_selected)
+        self.messages.Bind(wx.EVT_SIZE, self._on_messages_size)
         self.go_to_quoted_button.Bind(wx.EVT_BUTTON, self._on_go_to_quoted_message)
+        wx.CallAfter(self._fit_message_column)
+
+    def _on_messages_size(self, event: wx.SizeEvent) -> None:
+        if not self._message_column_resize_pending:
+            self._message_column_resize_pending = True
+            wx.CallAfter(self._fit_message_column)
+        event.Skip()
+
+    def _fit_message_column(self) -> None:
+        self._message_column_resize_pending = False
+        if self.messages.GetColumnCount() == 0:
+            return
+
+        client_width = self.messages.GetClientSize().width
+        if client_width <= 0:
+            return
+
+        scrollbar_width = wx.SystemSettings.GetMetric(wx.SYS_VSCROLL_X)
+        self.messages.SetColumnWidth(0, max(1, client_width - scrollbar_width - 4))
 
     def _on_messages_focus(self, event: wx.FocusEvent) -> None:
         if self.messages.GetFirstSelected() == wx.NOT_FOUND:
@@ -860,7 +897,7 @@ class ConversationPanel(wx.Panel):
         self._message_rows.append(f"{DATE_SEPARATOR_PREFIX}{message_date.isoformat()}")
         self.messages.InsertItem(index, self._format_date_separator(message_date), -1)
         self.messages.SetItemTextColour(index, YELLOW)
-        self.messages.SetItemBackgroundColour(index, NAVY_BLUE)
+        self.messages.SetItemBackgroundColour(index, SECTION_BLUE)
 
     def _last_message_date(self) -> date | None:
         for message in reversed(self._messages):
@@ -1124,7 +1161,14 @@ class ConversationPanel(wx.Panel):
 
     def _style_message_item(self, index: int) -> None:
         self.messages.SetItemTextColour(index, YELLOW)
-        self.messages.SetItemBackgroundColour(index, DARKER_BLUE if index % 2 else NAVY_BLUE)
+        row = self._message_at_row(index)
+        if row is not None:
+            background = OUTGOING_MESSAGE_BLUE if row.outgoing else INCOMING_MESSAGE_BLUE
+        elif index < len(self._message_rows) and self._message_rows[index] == UNREAD_MARKER_ROW:
+            background = UNREAD_BLUE
+        else:
+            background = SECTION_BLUE
+        self.messages.SetItemBackgroundColour(index, background)
 
     @staticmethod
     def _format_duration(duration_seconds: float) -> str:

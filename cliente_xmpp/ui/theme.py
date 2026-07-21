@@ -6,6 +6,12 @@ NAVY_BLUE = wx.Colour(4, 24, 66)
 DARKER_BLUE = wx.Colour(2, 15, 42)
 YELLOW = wx.Colour(255, 231, 92)
 SELECTION_BLUE = wx.Colour(9, 48, 118)
+# El contraste amarillo/azul se conserva; estos tonos solo dan una jerarquía
+# visual estable al historial, sin depender del color de selección del sistema.
+INCOMING_MESSAGE_BLUE = wx.Colour(3, 19, 52)
+OUTGOING_MESSAGE_BLUE = wx.Colour(8, 42, 96)
+SECTION_BLUE = wx.Colour(6, 32, 78)
+UNREAD_BLUE = wx.Colour(12, 57, 117)
 
 
 def apply_theme(window: wx.Window) -> None:

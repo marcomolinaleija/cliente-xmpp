@@ -1,24 +1,18 @@
-WhatsApp CAN 1.0.5
+WhatsApp CAN 1.0.6
 
 Novedades
 
-- Se añadieron estadísticas locales mucho más completas. Ahora puedes consultar actividad por día y por conversación, tiempos habituales de respuesta, horas pico, intervalos entre mensajes, participación por persona y frases recurrentes. para abrirla pulsa alt para entrar al menú, o el atajo de teclas control shift E.
-- En la información de cada contacto o grupo hay una sección propia de estadísticas. Todo se calcula con el historial guardado en el dispositivo y el contenido de los mensajes no se envía a servicios externos.
-- La tendencia del lenguaje ahora se explica con palabras claras. Indica si predominan expresiones asociadas con bienestar, agradecimiento o aprobación, o expresiones relacionadas con preocupación, enojo o problemas; no califica a la persona ni a la relación.
+- En la lista de mensajes, cuando una respuesta cita un mensaje disponible, aparece el botón Ir a mensaje citado. También puedes usar Flecha derecha para llegar al botón y volver directamente al mensaje original.
+- Desde Información del contacto o grupo ahora puedes abrir Mensajes destacados. Elige uno y regresarás a la conversación con ese mensaje enfocado.
+- La nueva opción Ver archivos... reúne en un mismo lugar los archivos y enlaces guardados en el chat. Incluye pestañas para todos los elementos, archivos, enlaces, fotos, videos, audios y stickers.
+- Desde la lista de archivos puedes abrirlos, copiarlos o eliminar únicamente su copia local. Si lo necesitas después, el mensaje conserva la opción de volver a descargarlo.
 
-Audio y archivos
+Estadísticas locales
 
-- Al eliminar un mensaje con audio, imagen o archivo, también se elimina su copia local. Un audio eliminado deja de reproducirse inmediatamente y no vuelve a aparecer como reproducible al recargar el historial.
-- Con un audio enfocado, Alt+flecha izquierda y Alt+flecha derecha permiten retroceder o avanzar cinco por ciento. La aplicación anuncia la posición alcanzada.
+- Las estadísticas generales permiten filtrar todos los chats, sólo los chats individuales o sólo los grupos.
+- El selector de período de las estadísticas de un chat conserva el foco al cambiar entre 7, 30 o 90 días y el historial completo.
+- Las transcripciones automáticas de Zapia ya no aparecen entre las frases recurrentes, para que el resumen refleje mejor la conversación.
 
-Contactos y presencia
+Privacidad
 
-- Ahora puedes iniciar chats introduciendo números internacionales aunque todavía no aparezcan en la lista de contactos.
-- Se mejoró la compatibilidad con números móviles mexicanos guardados en formatos actuales o antiguos, evitando contactos duplicados y conservando las conversaciones existentes.
-- La lista de contactos se mantiene sincronizada con WhatsApp y la última conexión se presenta con fechas y horas más naturales.
-- Se corrigieron estados de presencia que podían mostrar una última conexión incorrecta después de escribir, leer o enviar mensajes desde WhatsApp.
-- Ahora puedes ver tus contactos como lo tienes registrado en whatsapp oficial. Esto no aplica para los chats cuyo nombre esté personalizado en la base de datos (f2).
-Correcciones
-- Rechazar una actualización ya no cierra la aplicación ni inicia el actualizador.
-- Se mejoró la apertura y copia de enlaces incluidos en los mensajes.
-- Los diálogos de información y estadísticas ahora también se cierran con Escape.
+- Estas funciones trabajan con el historial guardado en tu dispositivo. El contenido de los mensajes no se envía a servicios externos para generar las listas o estadísticas.

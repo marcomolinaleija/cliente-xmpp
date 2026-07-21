@@ -1,6 +1,6 @@
 [project]
 name = "cliente-xmpp"
-version = "1.0.5"
+version = "1.0.6"
 description = "Cliente Windows en Python/wx para usar un bridge XMPP de WhatsApp."
 readme = "README.md"
 requires-python = ">=3.12"

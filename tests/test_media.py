@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,6 +11,8 @@ from unittest.mock import patch
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media import downloads
 from cliente_xmpp.media.downloads import (
+    album_photo_count,
+    album_photo_messages,
     delete_local_media_file,
     download_media,
     media_description,
@@ -19,6 +22,70 @@ from cliente_xmpp.ui.conversation_panel import ConversationPanel
 
 
 class MediaDescriptionTests(unittest.TestCase):
+    def test_hides_bridge_id_for_image(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://example.test/165892937462819.jpg",
+            media_kind="image",
+            media_filename="165892937462819.jpg",
+            media_size=2048,
+        )
+
+        self.assertEqual(media_description(message), "foto, 2.0 KB")
+
+    def test_collects_all_photos_announced_by_album_marker(self) -> None:
+        sent_at = datetime(2026, 7, 22, 18, 1)
+        album = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="Album: 3 photos",
+            sent_at=sent_at,
+            message_id="album-1",
+        )
+        photos = [
+            Message(
+                chat_jid=album.chat_jid,
+                sender_jid=album.sender_jid,
+                body="Foto",
+                sent_at=sent_at + timedelta(seconds=3 + index),
+                media_url=f"https://example.test/photo-{index}.jpg",
+                media_kind="image",
+            )
+            for index in range(3)
+        ]
+
+        self.assertEqual(album_photo_count(album), 3)
+        self.assertEqual(album_photo_messages([album, *photos], album), photos)
+
+    def test_rejects_incomplete_or_interleaved_album(self) -> None:
+        sent_at = datetime(2026, 7, 22, 18, 1)
+        album = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="Álbum: 2 fotos",
+            sent_at=sent_at,
+        )
+        photo = Message(
+            chat_jid=album.chat_jid,
+            sender_jid=album.sender_jid,
+            body="Foto",
+            sent_at=sent_at + timedelta(seconds=3),
+            media_url="https://example.test/photo.jpg",
+            media_kind="image",
+        )
+        interleaved = Message(
+            chat_jid=album.chat_jid,
+            sender_jid=album.sender_jid,
+            body="Otro mensaje",
+            sent_at=sent_at + timedelta(seconds=4),
+        )
+
+        self.assertEqual(album_photo_count(album), 2)
+        self.assertEqual(album_photo_messages([album, photo], album), [])
+        self.assertEqual(album_photo_messages([album, photo, interleaved], album), [])
+
     def test_hides_bridge_hash_for_video_note(self) -> None:
         message = Message(
             chat_jid="contact@example.test",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import threading
 import time
 import unicodedata
@@ -29,11 +30,14 @@ from cliente_xmpp.config.settings import APP_DIR, DesktopNotificationSettings, S
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
+    album_photo_count,
+    album_photo_messages,
     delete_local_media_file,
     download_media,
     has_media,
     local_media_path,
     media_description,
+    unique_path,
 )
 from cliente_xmpp.media.links import (
     MessageLink,
@@ -2797,6 +2801,19 @@ class MainWindow(wx.Frame):
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
         describe_item: wx.MenuItem | None = None
+        save_album_item: wx.MenuItem | None = None
+        album_count = album_photo_count(message)
+        album_photos: list[Message] = []
+        if album_count:
+            album_photos = album_photo_messages(
+                self.messages_by_chat.get(message.chat_jid, []),
+                message,
+            )
+            save_album_item = menu.Append(
+                wx.ID_ANY,
+                f"Guardar álbum ({album_count} fotos)...",
+            )
+            save_album_item.Enable(len(album_photos) == album_count)
         links = message_links(message)
         if links:
             link_item = menu.Append(wx.ID_ANY, "Abrir enlace")
@@ -2853,6 +2870,12 @@ class MainWindow(wx.Frame):
                 lambda _event: self._describe_media_with_rayoai(message),
                 describe_item,
             )
+        if save_album_item:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._save_photo_album(message),
+                save_album_item,
+            )
         self.Bind(wx.EVT_MENU, lambda _event: self._toggle_starred_message(message), star_item)
         for item, reaction in reaction_items:
             self.Bind(
@@ -2868,6 +2891,93 @@ class MainWindow(wx.Frame):
 
         self.PopupMenu(menu)
         menu.Destroy()
+
+    def _save_photo_album(self, album: Message) -> None:
+        expected_count = album_photo_count(album)
+        photos = album_photo_messages(
+            self.messages_by_chat.get(album.chat_jid, []),
+            album,
+        )
+        if not expected_count or len(photos) != expected_count:
+            self.status_bar.SetStatusText(
+                "No están cargadas todas las fotos de este álbum"
+            )
+            return
+        if getattr(self, "_storage_reset_in_progress", False):
+            return
+        if not self.current_jid:
+            self.status_bar.SetStatusText("No hay una cuenta conectada para guardar el álbum")
+            return
+
+        dialog = wx.DirDialog(
+            self,
+            "Elige la carpeta donde guardar las fotos del álbum",
+            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST | wx.DD_NEW_DIR_BUTTON,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            destination = Path(dialog.GetPath())
+        finally:
+            dialog.Destroy()
+
+        account_jid = self.current_jid
+        self.status_bar.SetStatusText(f"Guardando álbum de {expected_count} fotos...")
+
+        def worker() -> None:
+            downloaded_photos: list[tuple[Message, DownloadedMedia]] = []
+            saved_paths: list[Path] = []
+            failed_count = 0
+            for index, photo in enumerate(photos, start=1):
+                try:
+                    source = local_media_path(photo)
+                    if source is None:
+                        downloaded = download_media(photo, account_jid)
+                        source = downloaded.path
+                        downloaded_photos.append((photo, downloaded))
+
+                    suffix = source.suffix or Path(photo.media_filename).suffix or ".jpg"
+                    target = unique_path(destination / f"Foto {index:02d}{suffix.lower()}")
+                    shutil.copy2(source, target)
+                    saved_paths.append(target)
+                except Exception:
+                    failed_count += 1
+
+            wx.CallAfter(
+                self._finish_photo_album_save,
+                downloaded_photos,
+                saved_paths,
+                expected_count,
+                failed_count,
+                destination,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_photo_album_save(
+        self,
+        downloaded_photos: list[tuple[Message, DownloadedMedia]],
+        saved_paths: list[Path],
+        expected_count: int,
+        failed_count: int,
+        destination: Path,
+    ) -> None:
+        for message, downloaded in downloaded_photos:
+            message.media_local_path = str(downloaded.path)
+            message.media_size = downloaded.size
+            message.media_mime = downloaded.mime or message.media_mime
+            message.media_filename = downloaded.filename or message.media_filename
+            self._persist_message_media_path(message)
+            self.conversation.refresh_message(message)
+
+        if failed_count:
+            self.status_bar.SetStatusText(
+                f"Se guardaron {len(saved_paths)} de {expected_count} fotos en {destination}"
+            )
+            return
+        self.status_bar.SetStatusText(
+            f"Álbum guardado: {expected_count} fotos en {destination}"
+        )
 
     def _reply_to_message(self, message: Message) -> None:
         if not self._require_whatsapp_connection():

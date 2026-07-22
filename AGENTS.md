@@ -447,6 +447,9 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   Un `.bin` normal nunca debe clasificarse como sticker solo por su extensión.
 - Toda fila sin miniatura debe usar explícitamente el índice de imagen `-1` en `wx.ListCtrl`.
   Dejar el índice implícito puede reutilizar la primera miniatura en mensajes de texto.
+- Slidge anuncia un álbum con un mensaje `Album: N photos` seguido por `N` imágenes del mismo
+  remitente. La acción `Guardar álbum` agrupa sólo esas imágenes consecutivas dentro de una
+  ventana corta, permite elegir una carpeta y les asigna nombres legibles sin exponer hashes.
 - Las descargas escriben a `.part` y solo hacen `replace` al terminar. Persiste
   `media_local_path` despues de una escritura valida y conserva esa ruta en upserts posteriores.
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,

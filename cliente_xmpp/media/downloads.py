@@ -15,6 +15,11 @@ from cliente_xmpp.models.chat import Message
 DOWNLOADS_DIR = APP_DIR / "downloads"
 CHUNK_SIZE = 1024 * 256
 DEFAULT_TIMEOUT_SECONDS = 30
+ALBUM_PHOTO_WINDOW_SECONDS = 30
+ALBUM_PHOTO_PATTERN = re.compile(
+    r"^\s*[aá]lbum:\s*(\d+)\s+(?:photos|fotos)\s*$",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +32,60 @@ class DownloadedMedia:
 
 def has_media(message: Message) -> bool:
     return bool(message.media_url or message.audio_url)
+
+
+def album_photo_count(message: Message) -> int:
+    match = ALBUM_PHOTO_PATTERN.fullmatch(message.body)
+    if match is None:
+        return 0
+    return int(match.group(1))
+
+
+def album_photo_messages(messages: list[Message], album: Message) -> list[Message]:
+    """Return the consecutive photos announced by a Slidge album marker."""
+    expected_count = album_photo_count(album)
+    if expected_count <= 0:
+        return []
+
+    album_index = next(
+        (
+            index
+            for index, candidate in enumerate(messages)
+            if candidate is album
+            or (
+                album.message_id
+                and candidate.message_id == album.message_id
+                and candidate.chat_jid == album.chat_jid
+            )
+        ),
+        -1,
+    )
+    if album_index < 0:
+        return []
+
+    photos: list[Message] = []
+    for candidate in messages[album_index + 1 :]:
+        elapsed = (candidate.sent_at - album.sent_at).total_seconds()
+        if elapsed < 0:
+            continue
+        if elapsed > ALBUM_PHOTO_WINDOW_SECONDS:
+            break
+        if (
+            candidate.chat_jid != album.chat_jid
+            or candidate.outgoing != album.outgoing
+            or candidate.sender_jid.casefold() != album.sender_jid.casefold()
+            or candidate.media_kind != "image"
+            or candidate.is_sticker
+            or candidate.retracted
+            or not candidate.media_url
+        ):
+            break
+
+        photos.append(candidate)
+        if len(photos) == expected_count:
+            return photos
+
+    return []
 
 
 def media_url(message: Message) -> str:
@@ -90,9 +149,15 @@ def media_description(message: Message) -> str:
     if message.media_kind == "video" and is_opaque_media_filename(media_filename(message)):
         return f"Nota de video, {media_size_label(message.media_size)}"
 
+    # WhatsApp/Slidge suele asignar a las fotos nombres tecnicos (hashes o IDs)
+    # que no aportan nada al usuario. El nombre remoto se conserva en Message
+    # para descargar, reenviar y deduplicar, pero no forma parte de la etiqueta
+    # visible ni accesible de una imagen.
+    if message.media_kind == "image":
+        return f"foto, {media_size_label(message.media_size)}"
+
     kind = {
         "audio": "audio",
-        "image": "foto",
         "video": "video",
         "file": "archivo",
     }.get(message.media_kind, "archivo")

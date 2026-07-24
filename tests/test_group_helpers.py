@@ -900,6 +900,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _initial_remote_sync_started=True,
                 _session_generation=0,
                 _joined_group_chat_jids={"#room@example.org"},
+                _group_rejoin_scheduled={"#room@example.org"},
                 _presence_subscription_jids={"contact@example.org"},
                 send_presence=lambda: calls.append("presence"),
                 _emit=events.append,
@@ -915,6 +916,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
             self.assertFalse(client._whatsapp_session_ready)
             self.assertFalse(client._initial_remote_sync_started)
             self.assertFalse(client._joined_group_chat_jids)
+            self.assertFalse(client._group_rejoin_scheduled)
             self.assertFalse(client._presence_subscription_jids)
 
             roster_release.set()
@@ -1494,6 +1496,100 @@ class GroupArchiveTests(unittest.TestCase):
 
 
 class GroupMessageParsingTests(unittest.TestCase):
+    def test_self_unavailable_presence_rejoins_monitored_group(self) -> None:
+        scheduled = []
+        group_jid = "#room@whatsapp.example.org"
+        client = SimpleNamespace(
+            _joined_group_chat_jids={group_jid},
+            _group_rejoin_scheduled=set(),
+            _muc_status_codes=BridgeXmppClient._muc_status_codes,
+            _schedule_group_rejoin=scheduled.append,
+        )
+        presence = ET.fromstring(
+            """
+            <presence xmlns="jabber:client"
+                      from="#room@whatsapp.example.org/angel"
+                      type="unavailable">
+              <x xmlns="http://jabber.org/protocol/muc#user">
+                <status code="110" />
+              </x>
+            </presence>
+            """
+        )
+
+        BridgeXmppClient._handle_group_membership_presence(
+            client,
+            group_jid,
+            "unavailable",
+            presence,
+        )
+
+        self.assertNotIn(group_jid, client._joined_group_chat_jids)
+        self.assertEqual(scheduled, [group_jid])
+
+    def test_other_occupant_unavailable_does_not_change_group_membership(self) -> None:
+        scheduled = []
+        group_jid = "#room@whatsapp.example.org"
+        client = SimpleNamespace(
+            _joined_group_chat_jids={group_jid},
+            _group_rejoin_scheduled=set(),
+            _muc_status_codes=BridgeXmppClient._muc_status_codes,
+            _schedule_group_rejoin=scheduled.append,
+        )
+        presence = ET.fromstring(
+            """
+            <presence xmlns="jabber:client"
+                      from="#room@whatsapp.example.org/other"
+                      type="unavailable">
+              <x xmlns="http://jabber.org/protocol/muc#user">
+                <item jid="other@example.org" />
+              </x>
+            </presence>
+            """
+        )
+
+        BridgeXmppClient._handle_group_membership_presence(
+            client,
+            group_jid,
+            "unavailable",
+            presence,
+        )
+
+        self.assertIn(group_jid, client._joined_group_chat_jids)
+        self.assertFalse(scheduled)
+
+    def test_kicked_self_presence_does_not_loop_rejoin(self) -> None:
+        scheduled = []
+        group_jid = "#room@whatsapp.example.org"
+        client = SimpleNamespace(
+            _joined_group_chat_jids={group_jid},
+            _group_rejoin_scheduled=set(),
+            _muc_status_codes=BridgeXmppClient._muc_status_codes,
+            _schedule_group_rejoin=scheduled.append,
+        )
+        presence = ET.fromstring(
+            """
+            <presence xmlns="jabber:client"
+                      from="#room@whatsapp.example.org/angel"
+                      type="unavailable">
+              <x xmlns="http://jabber.org/protocol/muc#user">
+                <status code="110" />
+                <status code="307" />
+              </x>
+            </presence>
+            """
+        )
+
+        BridgeXmppClient._handle_group_membership_presence(
+            client,
+            group_jid,
+            "unavailable",
+            presence,
+        )
+
+        self.assertNotIn(group_jid, client._joined_group_chat_jids)
+        self.assertFalse(scheduled)
+
     def test_existing_group_keeps_its_name_when_message_arrives(self) -> None:
         group = Chat(
             jid="#5214492757727-1485039809@whatsapp.example.org",

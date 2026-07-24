@@ -140,6 +140,7 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._group_rejoin_scheduled: set[str] = set()
         self._presence_subscription_jids: set[str] = set()
         self._session_started_at: datetime | None = None
         self._disconnect_requested = False
@@ -181,6 +182,7 @@ class BridgeXmppClient(ClientXMPP):
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
         self._joined_group_chat_jids.clear()
+        self._group_rejoin_scheduled.clear()
         self._presence_subscription_jids.clear()
         self.send_presence()
         self._emit(XmppConnected())
@@ -554,10 +556,78 @@ class BridgeXmppClient(ClientXMPP):
                 return
 
         if self._jid_may_be_group_chat(from_jid):
+            self._handle_group_membership_presence(
+                from_jid,
+                presence_type,
+                getattr(presence, "xml", None),
+            )
             self._emit_group_participant_from_presence(from_jid, full_from_jid, presence)
             return
 
         self._emit_contact_presence(from_jid, presence_type, show, status, presence)
+
+    def _handle_group_membership_presence(
+        self,
+        group_jid: str,
+        presence_type: str,
+        xml: ET.Element | None,
+    ) -> None:
+        status_codes = self._muc_status_codes(xml)
+        if 110 not in status_codes:
+            return
+
+        if presence_type in {"unavailable", "error"}:
+            self._joined_group_chat_jids.discard(group_jid)
+            self._group_rejoin_scheduled.discard(group_jid)
+            if not status_codes.intersection({301, 307, 321, 322}):
+                self._schedule_group_rejoin(group_jid)
+            return
+
+        self._joined_group_chat_jids.add(group_jid)
+        self._group_rejoin_scheduled.discard(group_jid)
+
+    @staticmethod
+    def _muc_status_codes(xml: ET.Element | None) -> set[int]:
+        if xml is None:
+            return set()
+
+        status_codes: set[int] = set()
+        for status in xml.findall(f".//{{{MUC_USER_NS}}}status"):
+            try:
+                status_codes.add(int(status.attrib.get("code", "")))
+            except ValueError:
+                continue
+        return status_codes
+
+    def _schedule_group_rejoin(self, group_jid: str, delay: float = 1.0) -> None:
+        if (
+            group_jid not in self._group_chat_jids
+            or group_jid in self._group_rejoin_scheduled
+            or self._disconnect_requested
+        ):
+            return
+
+        loop = getattr(self, "loop", None)
+        if loop is None or not loop.is_running():
+            return
+
+        session_generation = self._session_generation
+        self._group_rejoin_scheduled.add(group_jid)
+
+        def rejoin() -> None:
+            if group_jid not in self._group_rejoin_scheduled:
+                return
+            self._group_rejoin_scheduled.discard(group_jid)
+            if (
+                self._disconnect_requested
+                or session_generation != self._session_generation
+                or group_jid not in self._group_chat_jids
+                or not self.is_connected()
+            ):
+                return
+            self._join_group_chat(group_jid)
+
+        loop.call_later(delay, rejoin)
 
     def _emit_group_participant_from_presence(
         self,

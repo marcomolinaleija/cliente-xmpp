@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.phone_numbers import (
@@ -12,6 +15,7 @@ from cliente_xmpp.models.phone_numbers import (
     whatsapp_contact_jid,
     whatsapp_contact_jid_candidates,
 )
+from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.main_window import MainWindow
 
 
@@ -137,6 +141,218 @@ class DirectChatMaterializationTests(unittest.TestCase):
         self.assertIs(window.searchable_chats_by_jid[chat.jid], chat)
         self.assertEqual(window.chat_names_by_jid[chat.jid], chat.name)
         window.chat_list.upsert_chat.assert_called_once_with(chat)
+
+
+class GroupPrivateMessageTests(unittest.TestCase):
+    class _MenuItem:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.enabled = True
+
+        def Enable(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class _Menu:
+        def __init__(self) -> None:
+            self.items: list[GroupPrivateMessageTests._MenuItem] = []
+
+        def Append(self, _item_id: int, label: str) -> GroupPrivateMessageTests._MenuItem:
+            item = GroupPrivateMessageTests._MenuItem(label)
+            self.items.append(item)
+            return item
+
+        def AppendSubMenu(self, _submenu: object, label: str) -> None:
+            self.items.append(GroupPrivateMessageTests._MenuItem(label))
+
+        def Destroy(self) -> None:
+            return
+
+    @staticmethod
+    def _window(group: Chat) -> MainWindow:
+        window = MainWindow.__new__(MainWindow)
+        window.conversation = SimpleNamespace(current_chat=group)
+        window.whatsapp_component_jid = ""
+        window.group_participants_by_chat = {}
+        return window
+
+    @staticmethod
+    def _group_message(group: Chat, sender_jid: str, *, outgoing: bool = False) -> Message:
+        return Message(
+            chat_jid=group.jid,
+            sender_jid=sender_jid,
+            body="Hola",
+            outgoing=outgoing,
+            chat_is_group=True,
+        )
+
+    def test_group_sender_phone_is_available_for_private_message(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        message = self._group_message(
+            group,
+            "+524491234567@whatsapp.example.org",
+        )
+
+        recipient = MainWindow._private_message_recipient(window, message)
+
+        self.assertIsNotNone(recipient)
+        normalized, component_jid = recipient
+        self.assertEqual(normalized.e164, "+524491234567")
+        self.assertEqual(component_jid, "whatsapp.example.org")
+
+    def test_context_menu_appends_and_binds_private_message_action(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        message = self._group_message(
+            group,
+            "+524491234567@whatsapp.example.org",
+        )
+        window.conversation = SimpleNamespace(
+            current_chat=None,
+            selected_message=Mock(return_value=message),
+        )
+        window.messages_by_chat = {group.jid: [message]}
+        window._message_can_be_edited = Mock(return_value=False)
+        window._send_private_message_to_group_sender = Mock()
+
+        with (
+            patch("cliente_xmpp.ui.main_window.wx.Menu", self._Menu),
+            patch.object(MainWindow, "Bind") as bind,
+            patch.object(MainWindow, "PopupMenu") as popup_menu,
+        ):
+            MainWindow._show_message_context_menu(window)
+
+        shown_menu = popup_menu.call_args.args[0]
+        private_item = next(
+            item for item in shown_menu.items if item.label == "Enviar mensaje privado"
+        )
+        private_binding = next(
+            call for call in bind.call_args_list if call.args[2] is private_item
+        )
+        private_binding.args[1](None)
+
+        window._send_private_message_to_group_sender.assert_called_once()
+        normalized, component_jid = (
+            window._send_private_message_to_group_sender.call_args.args
+        )
+        self.assertEqual(normalized.e164, "+524491234567")
+        self.assertEqual(component_jid, "whatsapp.example.org")
+
+    def test_group_sender_loaded_from_sqlite_is_available_for_private_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            group = Chat(
+                jid="#room@whatsapp.example.org",
+                name="Grupo",
+                is_group=True,
+            )
+            stored_message = Message(
+                chat_jid=group.jid,
+                sender_jid="+524491234567@whatsapp.example.org",
+                sender_name="Participante",
+                body="Mensaje",
+                sent_at=datetime(2026, 7, 24, 12, tzinfo=UTC),
+                outgoing=False,
+                message_id="group-message",
+                chat_is_group=True,
+            )
+            store.upsert_chat(account_jid, group)
+            store.upsert_messages(account_jid, [stored_message])
+
+            loaded_group = store.load_chats(account_jid)[0]
+            loaded_message = store.load_recent_messages(
+                account_jid,
+                group.jid,
+            )[0]
+
+        window = self._window(loaded_group)
+        recipient = MainWindow._private_message_recipient(window, loaded_message)
+
+        self.assertTrue(loaded_group.is_group)
+        self.assertTrue(loaded_message.chat_is_group)
+        self.assertIsNotNone(recipient)
+        normalized, component_jid = recipient
+        self.assertEqual(normalized.e164, "+524491234567")
+        self.assertEqual(component_jid, "whatsapp.example.org")
+
+    def test_private_message_is_hidden_without_valid_group_identity(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        invalid_messages = (
+            self._group_message(group, "#room@whatsapp.example.org/Nickname"),
+            self._group_message(group, "nickname@whatsapp.example.org"),
+            self._group_message(group, "+524491234567@other.example.org"),
+            self._group_message(
+                group,
+                "+524491234567@whatsapp.example.org",
+                outgoing=True,
+            ),
+        )
+
+        for message in invalid_messages:
+            with self.subTest(sender_jid=message.sender_jid, outgoing=message.outgoing):
+                self.assertIsNone(
+                    MainWindow._private_message_recipient(window, message)
+                )
+
+    def test_muc_occupant_is_hidden_even_when_participant_cache_has_a_match(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        window.group_participants_by_chat[group.jid] = {
+            "+524491234567@whatsapp.example.org": SimpleNamespace(
+                jid="+524491234567@whatsapp.example.org",
+                nick="Nickname",
+            )
+        }
+        message = self._group_message(
+            group,
+            "#room@whatsapp.example.org/Nickname",
+        )
+        message.sender_name = "Nickname"
+
+        self.assertIsNone(MainWindow._private_message_recipient(window, message))
+
+    def test_private_message_reuses_existing_new_chat_resolution(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        existing = Chat(
+            jid="+5214493860911@whatsapp.example.org",
+            name="Contacto",
+        )
+        window = self._window(group)
+        window._chat_by_jid = Mock(
+            side_effect=lambda jid: existing if jid == existing.jid else None
+        )
+        window._open_chat = Mock()
+
+        MainWindow._open_chat_for_phone(
+            window,
+            normalize_phone_number("+52 449 386 0911"),
+            "whatsapp.example.org",
+        )
+
+        window._open_chat.assert_called_once_with(existing)
+
+    def test_private_message_creates_same_temporary_chat_as_new_chat(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        window._chat_by_jid = Mock(return_value=None)
+        window._open_chat = Mock()
+        normalized = normalize_phone_number("+44 20 7946 0018")
+
+        MainWindow._open_chat_for_phone(
+            window,
+            normalized,
+            "whatsapp.example.org",
+        )
+
+        temporary_chat = window._open_chat.call_args.args[0]
+        self.assertEqual(
+            temporary_chat.jid,
+            "+442079460018@whatsapp.example.org",
+        )
+        self.assertEqual(temporary_chat.name, normalized.international)
+        self.assertFalse(window._open_chat.call_args.kwargs["request_remote_context"])
 
 
 class NewChatShortcutTests(unittest.TestCase):

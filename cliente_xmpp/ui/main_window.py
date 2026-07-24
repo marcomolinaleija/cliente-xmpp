@@ -64,6 +64,8 @@ from cliente_xmpp.models.names import (
     normalize_chat_name,
 )
 from cliente_xmpp.models.phone_numbers import (
+    NormalizedPhoneNumber,
+    normalize_phone_number,
     whatsapp_contact_jid_candidates,
 )
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
@@ -1198,10 +1200,17 @@ class MainWindow(wx.Frame):
             dialog.Destroy()
 
         self.settings_store.save_new_chat_country(selected_region)
+        self._open_chat_for_phone(normalized_phone)
+
+    def _open_chat_for_phone(
+        self,
+        normalized_phone: NormalizedPhoneNumber,
+        component_jid: str = "",
+    ) -> None:
         try:
             chat_jid_candidates = whatsapp_contact_jid_candidates(
                 normalized_phone.e164,
-                self.whatsapp_component_jid,
+                component_jid or self.whatsapp_component_jid,
             )
         except ValueError as exc:
             message = str(exc)
@@ -1222,6 +1231,62 @@ class MainWindow(wx.Frame):
             ),
             request_remote_context=False,
         )
+
+    def _private_message_recipient(
+        self,
+        message: Message,
+    ) -> tuple[NormalizedPhoneNumber, str] | None:
+        if not message.chat_is_group or message.outgoing:
+            return None
+
+        component_jid = self._group_component_jid(message.chat_jid)
+        if not component_jid:
+            return None
+
+        normalized_phone = self._phone_from_private_jid(message.sender_jid, component_jid)
+        if normalized_phone is None:
+            return None
+        return normalized_phone, component_jid
+
+    def _group_component_jid(self, group_jid: str) -> str:
+        group_bare_jid = group_jid.strip().split("/", 1)[0]
+        group_local, separator, group_domain = group_bare_jid.partition("@")
+        if separator != "@" or not group_local.startswith("#") or not group_domain:
+            return ""
+
+        configured_component = self.whatsapp_component_jid.strip().split("/", 1)[0]
+        if configured_component.casefold() == group_domain.casefold():
+            return configured_component
+        return group_domain
+
+    @staticmethod
+    def _phone_from_private_jid(
+        participant_jid: str,
+        component_jid: str,
+    ) -> NormalizedPhoneNumber | None:
+        participant_bare_jid = participant_jid.strip().split("/", 1)[0]
+        sender_local, separator, sender_domain = participant_bare_jid.partition("@")
+        if (
+            separator != "@"
+            or not sender_local
+            or not sender_domain
+            or sender_domain.casefold() != component_jid.casefold()
+        ):
+            return None
+
+        try:
+            return normalize_phone_number(sender_local)
+        except ValueError:
+            return None
+
+    def _send_private_message_to_group_sender(
+        self,
+        normalized_phone: NormalizedPhoneNumber,
+        component_jid: str,
+    ) -> None:
+        if not self._require_whatsapp_connection():
+            return
+        self._open_chat_for_phone(normalized_phone, component_jid)
 
     def _rename_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()
@@ -2797,6 +2862,10 @@ class MainWindow(wx.Frame):
         forward_item.Enable(
             not message.retracted and bool(message.body or message.media_url or message.audio_url)
         )
+        private_recipient = self._private_message_recipient(message)
+        private_message_item: wx.MenuItem | None = None
+        if private_recipient is not None:
+            private_message_item = menu.Append(wx.ID_ANY, "Enviar mensaje privado")
         media_item: wx.MenuItem | None = None
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
@@ -2852,6 +2921,16 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
+        if private_message_item is not None and private_recipient is not None:
+            private_recipient_phone, private_component_jid = private_recipient
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._send_private_message_to_group_sender(
+                    private_recipient_phone,
+                    private_component_jid,
+                ),
+                private_message_item,
+            )
         if edit_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
         if link_item:

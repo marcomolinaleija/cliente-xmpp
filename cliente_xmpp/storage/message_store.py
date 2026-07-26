@@ -1129,7 +1129,7 @@ class MessageStore:
             return
 
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 DELETE FROM messages
                 WHERE account_jid = ? AND chat_jid = ? AND message_id = ?
@@ -1138,32 +1138,8 @@ class MessageStore:
                 """,
                 (account_jid, chat_jid, message_id),
             )
-            latest = conn.execute(
-                """
-                SELECT *
-                FROM messages
-                WHERE account_jid = ? AND chat_jid = ?
-                ORDER BY julianday(sent_at) DESC, rowid DESC
-                LIMIT 1
-                """,
-                (account_jid, chat_jid),
-            ).fetchone()
-            preview = _message_preview(_message_from_row(latest)) if latest is not None else ""
-            sent_at = str(latest["sent_at"]) if latest is not None else None
-            conn.execute(
-                """
-                UPDATE chats
-                SET last_message_preview = ?, last_message_at = ?, updated_at = ?
-                WHERE account_jid = ? AND jid = ?
-                """,
-                (
-                    preview,
-                    sent_at,
-                    _datetime_to_db(datetime.now()),
-                    account_jid,
-                    chat_jid,
-                ),
-            )
+            if cursor.rowcount > 0:
+                self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -1248,12 +1224,30 @@ class MessageStore:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             if previous_version >= SCHEMA_VERSION:
                 self._compact_duplicate_messages(conn)
-            if self._delete_failed_local_messages(conn):
-                self._rebuild_chat_summaries(conn)
+            for account_jid, chat_jid in self._delete_failed_local_messages(conn):
+                self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
     @staticmethod
-    def _delete_failed_local_messages(conn: sqlite3.Connection) -> int:
-        cursor = conn.execute(
+    def _delete_failed_local_messages(
+        conn: sqlite3.Connection,
+    ) -> list[tuple[str, str]]:
+        affected_chats = [
+            (str(row["account_jid"]), str(row["chat_jid"]))
+            for row in conn.execute(
+                """
+                SELECT DISTINCT account_jid, chat_jid
+                FROM messages
+                WHERE outgoing = 1
+                  AND delivery_state = 'failed'
+                  AND message_id LIKE 'cliente-xmpp-%'
+                ORDER BY account_jid, chat_jid
+                """
+            ).fetchall()
+        ]
+        if not affected_chats:
+            return []
+
+        conn.execute(
             """
             DELETE FROM messages
             WHERE outgoing = 1
@@ -1261,7 +1255,7 @@ class MessageStore:
               AND message_id LIKE 'cliente-xmpp-%'
             """
         )
-        return max(int(cursor.rowcount), 0)
+        return affected_chats
 
     def _normalize_datetime_columns(self, conn: sqlite3.Connection) -> None:
         for table, column in (
@@ -1308,50 +1302,52 @@ class MessageStore:
         )
 
     def _rebuild_chat_summaries(self, conn: sqlite3.Connection) -> None:
-        chats = conn.execute(
-            "SELECT account_jid, jid FROM chats"
-        ).fetchall()
+        chats = conn.execute("SELECT account_jid, jid FROM chats").fetchall()
         for chat in chats:
-            latest = conn.execute(
-                """
-                SELECT *
-                FROM messages
-                WHERE account_jid = ? AND chat_jid = ?
-                ORDER BY julianday(sent_at) DESC, rowid DESC
-                LIMIT 1
-                """,
-                (chat["account_jid"], chat["jid"]),
-            ).fetchone()
-            if latest is None:
-                conn.execute(
-                    """
-                    UPDATE chats
-                    SET last_message_preview = '', last_message_at = NULL, updated_at = ?
-                    WHERE account_jid = ? AND jid = ?
-                    """,
-                    (
-                        _datetime_to_db(datetime.now()),
-                        chat["account_jid"],
-                        chat["jid"],
-                    ),
-                )
-                continue
-
-            message = _message_from_row(latest)
-            conn.execute(
-                """
-                UPDATE chats
-                SET last_message_preview = ?, last_message_at = ?, updated_at = ?
-                WHERE account_jid = ? AND jid = ?
-                """,
-                (
-                    _message_preview(message),
-                    _datetime_to_db(message.sent_at),
-                    _datetime_to_db(datetime.now()),
-                    chat["account_jid"],
-                    chat["jid"],
-                ),
+            self._rebuild_chat_summary(
+                conn,
+                str(chat["account_jid"]),
+                str(chat["jid"]),
             )
+
+    @staticmethod
+    def _rebuild_chat_summary(
+        conn: sqlite3.Connection,
+        account_jid: str,
+        chat_jid: str,
+    ) -> None:
+        latest = conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE account_jid = ? AND chat_jid = ?
+            ORDER BY julianday(sent_at) DESC, rowid DESC
+            LIMIT 1
+            """,
+            (account_jid, chat_jid),
+        ).fetchone()
+        if latest is None:
+            preview = ""
+            sent_at = None
+        else:
+            message = _message_from_row(latest)
+            preview = _message_preview(message)
+            sent_at = _datetime_to_db(message.sent_at)
+
+        conn.execute(
+            """
+            UPDATE chats
+            SET last_message_preview = ?, last_message_at = ?, updated_at = ?
+            WHERE account_jid = ? AND jid = ?
+            """,
+            (
+                preview,
+                sent_at,
+                _datetime_to_db(datetime.now()),
+                account_jid,
+                chat_jid,
+            ),
+        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

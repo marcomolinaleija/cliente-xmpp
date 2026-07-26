@@ -112,6 +112,36 @@ class ReplySendingTests(unittest.TestCase):
 
         self.assertEqual(reply_to, f"{chat.jid}/angel")
 
+    def test_group_reply_without_occupant_or_nick_is_rejected(self) -> None:
+        chat = Chat(
+            jid="#120363216552048055@whatsapp.example.test",
+            name="Grupo",
+            is_group=True,
+        )
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid="+5214493860911@whatsapp.example.test",
+            body="mensaje sin nick",
+            message_id="whatsapp-message-id",
+            chat_is_group=True,
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.reply_context = None
+        window.edit_context = None
+        window.conversation = SimpleNamespace(
+            current_chat=chat,
+            insert_reply_quote=Mock(),
+        )
+        window.status_bar = self._status_bar()
+        window._require_whatsapp_connection = lambda: True
+
+        MainWindow._reply_to_message(window, target)
+
+        self.assertIsNone(window.reply_context)
+        window.conversation.insert_reply_quote.assert_not_called()
+        status = window.status_bar.SetStatusText.call_args.args[0]
+        self.assertIn("identificar al participante", status)
+
     def test_pending_local_message_cannot_be_selected_as_reply_target(self) -> None:
         chat = Chat(jid="contact@example.test", name="Contacto")
         target = Message(

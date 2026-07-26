@@ -313,6 +313,11 @@ class MessageStoreTests(unittest.TestCase):
             self.assertIn("Mensaje anterior", chat.last_message_preview)
             self.assertEqual(chat.last_message_at, older.sent_at.astimezone(UTC))
 
+            store.delete_local_message(account_jid, chat_jid, older.message_id)
+
+            loaded = store.load_recent_messages(account_jid, chat_jid)
+            self.assertEqual([message.message_id for message in loaded], ["remote-1"])
+
     def test_startup_removes_only_failed_local_optimistic_messages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "messages.sqlite3"
@@ -362,6 +367,20 @@ class MessageStoreTests(unittest.TestCase):
                 "me@example.test",
                 [failed_local, failed_remote, sent_local_direct, only_failed_local],
             )
+            untouched_updated_at = "2000-01-01T00:00:00+00:00"
+            with closing(sqlite3.connect(path)) as conn, conn:
+                conn.execute(
+                    """
+                    UPDATE chats
+                    SET updated_at = ?
+                    WHERE account_jid = ? AND jid = ?
+                    """,
+                    (
+                        untouched_updated_at,
+                        "me@example.test",
+                        sent_local_direct.chat_jid,
+                    ),
+                )
 
             reopened = MessageStore(path)
 
@@ -380,6 +399,16 @@ class MessageStoreTests(unittest.TestCase):
             }
             self.assertEqual(chats[only_failed_chat_jid].last_message_preview, "")
             self.assertIsNone(chats[only_failed_chat_jid].last_message_at)
+            with closing(sqlite3.connect(path)) as conn:
+                actual_updated_at = conn.execute(
+                    """
+                    SELECT updated_at
+                    FROM chats
+                    WHERE account_jid = ? AND jid = ?
+                    """,
+                    ("me@example.test", sent_local_direct.chat_jid),
+                ).fetchone()[0]
+            self.assertEqual(actual_updated_at, untouched_updated_at)
 
     def test_migration_normalizes_dates_and_rebuilds_chat_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

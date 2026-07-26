@@ -351,7 +351,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   interpreta `reply@to` como una sala y rechaza un `+numero@dominio` porque no comienza con `#`.
   Conserva un `sender_jid` que ya sea room/recurso; si el mensaje ajeno trae el JID privado, usa
   directamente su `sender_name`/nick como recurso. Para el fallback de un mensaje propio usa el
-  nodo de la cuenta XMPP, nunca la etiqueta visual `Tú`.
+  nodo de la cuenta XMPP, nunca la etiqueta visual `Tú`. Si no existe ni recurso MUC ni nick,
+  conserva el borrador y avisa en vez de enviar una respuesta con destino incompleto.
 - El autocompletado de menciones se activa con `@` dentro del compositor de un grupo. Busca sin
   distinguir tildes en el nombre personalizado y el nick de WhatsApp, pero inserta el nick MUC
   sin el `@`. El cliente adjunta ademas referencias XEP-0372 con JID y rango; el bridge debe tener
@@ -501,6 +502,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   propio cuyo ID empiece por `cliente-xmpp-`; después restaura el preview anterior. No borres
   mensajes remotos ni interpretes la ausencia de eco como fallo. En grupos, sólo un error que
   indique pérdida de ocupación programa el reingreso MUC; un `bad-request` no reconecta la sala.
+  Durante el arranque, reconstruye sólo los previews de los chats donde realmente eliminaste un
+  optimista fallido; no recorras todas las conversaciones por un fallo aislado.
 - El preview y la hora de un chat solo avanzan con mensajes mas recientes; una pagina vieja no
   debe pisar el preview nuevo.
 - SQLite usa WAL y migraciones defensivas. No borres mensajes ni reinicialices la base para

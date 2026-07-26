@@ -2354,7 +2354,7 @@ class MainWindow(wx.Frame):
             if message.outgoing
             else message.sender_name.strip()
         )
-        return f"{room_jid}/{nick}" if nick else room_jid
+        return f"{room_jid}/{nick}" if nick else ""
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
         self.conversation.update_send_button_state(
@@ -3104,6 +3104,18 @@ class MainWindow(wx.Frame):
             message
         ):
             return "Ese mensaje todavía se está enviando; espera a que se confirme para responder"
+        if chat.is_group and not message.outgoing:
+            room_jid = chat.jid.split("/", 1)[0]
+            sender_jid = message.sender_jid.strip()
+            sender_is_occupant = (
+                "/" in sender_jid
+                and sender_jid.split("/", 1)[0].casefold() == room_jid.casefold()
+            )
+            if not sender_is_occupant and not message.sender_name.strip():
+                return (
+                    "No se puede responder porque no se pudo identificar al participante "
+                    "del grupo"
+                )
         return ""
 
     def _cancel_reply(self) -> None:

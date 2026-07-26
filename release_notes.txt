@@ -1,35 +1,26 @@
-WhatsApp CAN 1.1.1
+WhatsApp CAN 1.1.2
 
-Mensajes privados desde grupos
+Respuestas en grupos
 
-- En los mensajes recibidos de un grupo, el menú contextual ahora ofrece Enviar mensaje privado
-  cuando WhatsApp identifica de forma segura al participante.
-- Al activar la opción, WhatsApp CAN abre la conversación individual existente o crea un nuevo
-  chat mediante el mismo flujo de Nuevo chat.
-- La acción permanece oculta para mensajes propios o cuando el remitente no tiene una identidad
-  privada válida, evitando abrir una conversación equivocada.
+- Las respuestas citadas ahora conservan correctamente la identidad del participante dentro del
+  grupo, incluso cuando el bridge también entrega su dirección de chat privado.
+- Si WhatsApp CAN no puede identificar con seguridad al participante citado, conserva el texto
+  escrito y muestra una advertencia en lugar de intentar una respuesta incompleta.
+- Las respuestas a mensajes propios dejan de usar la etiqueta visual Tú como si fuera el nombre
+  técnico del participante.
 
-Álbumes y fotografías
+Envíos rechazados
 
-- WhatsApp CAN reconoce los álbumes anunciados por WhatsApp y permite guardar todas sus fotos
-  juntas desde la opción Guardar álbum del menú contextual.
-- Al guardar un álbum, puedes elegir la carpeta de destino y las imágenes reciben nombres
-  legibles y numerados.
-- Las fotografías muestran descripciones más claras en los mensajes y en la lista de chats, sin
-  exponer los identificadores técnicos usados por el bridge como nombres de archivo.
+- Cuando el servidor rechaza explícitamente un mensaje local, WhatsApp CAN lo retira de la
+  conversación y del historial local para que no permanezca mostrado como enviado.
+- Después de retirar un envío fallido, la lista de chats recupera el mensaje anterior como vista
+  previa.
+- La limpieza protege los mensajes remotos y los envíos aceptados por el servidor: la ausencia de
+  un eco por sí sola no se interpreta como un fallo.
 
-Análisis emocional local
+Estabilidad y rendimiento
 
-- La tendencia emocional reconoce más expresiones de afecto, cariño, alegría, preocupación,
-  cansancio, enojo y otros modismos usados en conversaciones cotidianas.
-- También se amplió la interpretación de emojis, negaciones e intensificadores para representar
-  mejor el lenguaje de los mensajes guardados localmente.
-
-Estabilidad de grupos
-
-- Se corrigió un problema por el que un grupo podía dejar de recibir mensajes aunque las demás
-  conversaciones continuaran funcionando.
-- Si la conexión pierde inesperadamente la participación en un grupo conocido, WhatsApp CAN
-  vuelve a unirse automáticamente después de una espera breve.
-- La aplicación evita ese reintento cuando el servidor indica una expulsión, un bloqueo o un
-  cambio de permisos que impide volver al grupo.
+- Si un error indica que la aplicación perdió su participación en un grupo, vuelve a entrar sólo
+  en esa sala; otros rechazos no provocan reconexiones innecesarias.
+- Al abrir la aplicación, la limpieza de envíos fallidos actualiza únicamente las conversaciones
+  afectadas, evitando recorrer todos los chats por un fallo aislado.

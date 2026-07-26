@@ -346,6 +346,12 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
 - Al entrar a un grupo, Slidge llena el roster MUC con una presencia inicial por participante.
   El cliente toma esa foto completa una vez, extrae el JID real y el nick, y la guarda por lote en
   SQLite; no consulta la red al escribir una mencion.
+- En una respuesta XEP-0461 de grupo, el atributo `reply@to` debe conservar la identidad MUC
+  `#room@dominio/nick`. No uses ahí el JID privado extraído de `muc#user item jid`: Slidge
+  interpreta `reply@to` como una sala y rechaza un `+numero@dominio` porque no comienza con `#`.
+  Conserva un `sender_jid` que ya sea room/recurso; si el mensaje ajeno trae el JID privado, usa
+  directamente su `sender_name`/nick como recurso. Para el fallback de un mensaje propio usa el
+  nodo de la cuenta XMPP, nunca la etiqueta visual `Tú`.
 - El autocompletado de menciones se activa con `@` dentro del compositor de un grupo. Busca sin
   distinguir tildes en el nombre personalizado y el nick de WhatsApp, pero inserta el nick MUC
   sin el `@`. El cliente adjunta ademas referencias XEP-0372 con JID y rango; el bridge debe tener
@@ -491,6 +497,10 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
 - Los estados de entrega son monotónicos: `pending -> sent -> delivered/received ->
   read/displayed`. Un carbon, eco o resultado MAM con `sent` no puede degradar un estado
   superior; `delivery_state` se persiste en SQLite para conservarlo al reabrir el chat.
+- Un stanza saliente `type="error"` puede retirar de memoria y SQLite únicamente el optimista
+  propio cuyo ID empiece por `cliente-xmpp-`; después restaura el preview anterior. No borres
+  mensajes remotos ni interpretes la ausencia de eco como fallo. En grupos, sólo un error que
+  indique pérdida de ocupación programa el reingreso MUC; un `bad-request` no reconecta la sala.
 - El preview y la hora de un chat solo avanzan con mensajes mas recientes; una pagina vieja no
   debe pisar el preview nuevo.
 - SQLite usa WAL y migraciones defensivas. No borres mensajes ni reinicialices la base para

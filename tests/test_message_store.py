@@ -281,6 +281,106 @@ class MessageStoreTests(unittest.TestCase):
             loaded = store.load_recent_messages("me@example.test", "chat@example.test")
             self.assertEqual(loaded[0].delivery_state, "delivered")
 
+    def test_delete_local_message_restores_previous_chat_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "#room@example.test"
+            older = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="Mensaje anterior",
+                sent_at=datetime(2026, 7, 10, 11, 59),
+                message_id="remote-1",
+            )
+            failed = Message(
+                chat_jid=chat_jid,
+                sender_jid="me",
+                body="No debe quedar",
+                sent_at=datetime(2026, 7, 10, 12, 0),
+                outgoing=True,
+                chat_is_group=True,
+                message_id="cliente-xmpp-failed-1",
+                delivery_state="failed",
+            )
+            store.upsert_messages(account_jid, [older, failed])
+
+            store.delete_local_message(account_jid, chat_jid, failed.message_id)
+
+            loaded = store.load_recent_messages(account_jid, chat_jid)
+            self.assertEqual([message.message_id for message in loaded], ["remote-1"])
+            chat = store.load_chats(account_jid)[0]
+            self.assertIn("Mensaje anterior", chat.last_message_preview)
+            self.assertEqual(chat.last_message_at, older.sent_at.astimezone(UTC))
+
+    def test_startup_removes_only_failed_local_optimistic_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            store = MessageStore(path)
+            chat_jid = "#room@example.test"
+            failed_local = Message(
+                chat_jid=chat_jid,
+                sender_jid="me",
+                body="Local",
+                sent_at=datetime(2026, 7, 10, 12, 0),
+                outgoing=True,
+                chat_is_group=True,
+                message_id="cliente-xmpp-failed-1",
+                delivery_state="failed",
+            )
+            failed_remote = Message(
+                chat_jid=chat_jid,
+                sender_jid="Yo",
+                body="Remoto",
+                sent_at=datetime(2026, 7, 10, 12, 1),
+                outgoing=True,
+                chat_is_group=True,
+                message_id="whatsapp-failed-1",
+                delivery_state="failed",
+            )
+            sent_local_direct = Message(
+                chat_jid="contact@example.test",
+                sender_jid="me",
+                body="Directo confirmado localmente",
+                sent_at=datetime(2026, 7, 10, 12, 2),
+                outgoing=True,
+                message_id="cliente-xmpp-direct-1",
+                delivery_state="sent",
+            )
+            only_failed_chat_jid = "#only-failed@example.test"
+            only_failed_local = Message(
+                chat_jid=only_failed_chat_jid,
+                sender_jid="me",
+                body="Único mensaje fallido",
+                sent_at=datetime(2026, 7, 10, 12, 3),
+                outgoing=True,
+                chat_is_group=True,
+                message_id="cliente-xmpp-only-failed-1",
+                delivery_state="failed",
+            )
+            store.upsert_messages(
+                "me@example.test",
+                [failed_local, failed_remote, sent_local_direct, only_failed_local],
+            )
+
+            reopened = MessageStore(path)
+
+            loaded = reopened.load_recent_messages("me@example.test", chat_jid)
+            self.assertEqual([message.message_id for message in loaded], ["whatsapp-failed-1"])
+            direct = reopened.load_recent_messages(
+                "me@example.test",
+                "contact@example.test",
+            )
+            self.assertEqual(
+                [message.message_id for message in direct],
+                ["cliente-xmpp-direct-1"],
+            )
+            chats = {
+                chat.jid: chat for chat in reopened.load_chats("me@example.test")
+            }
+            self.assertEqual(chats[only_failed_chat_jid].last_message_preview, "")
+            self.assertIsNone(chats[only_failed_chat_jid].last_message_at)
+
     def test_migration_normalizes_dates_and_rebuilds_chat_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "messages.sqlite3"

@@ -1124,6 +1124,47 @@ class MessageStore:
                 self._upsert_message(conn, account_jid, message)
                 self._upsert_message_chat_summary(conn, account_jid, message)
 
+    def delete_local_message(self, account_jid: str, chat_jid: str, message_id: str) -> None:
+        if not account_jid or not chat_jid or not message_id:
+            return
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM messages
+                WHERE account_jid = ? AND chat_jid = ? AND message_id = ?
+                  AND outgoing = 1
+                  AND message_id LIKE 'cliente-xmpp-%'
+                """,
+                (account_jid, chat_jid, message_id),
+            )
+            latest = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                ORDER BY julianday(sent_at) DESC, rowid DESC
+                LIMIT 1
+                """,
+                (account_jid, chat_jid),
+            ).fetchone()
+            preview = _message_preview(_message_from_row(latest)) if latest is not None else ""
+            sent_at = str(latest["sent_at"]) if latest is not None else None
+            conn.execute(
+                """
+                UPDATE chats
+                SET last_message_preview = ?, last_message_at = ?, updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (
+                    preview,
+                    sent_at,
+                    _datetime_to_db(datetime.now()),
+                    account_jid,
+                    chat_jid,
+                ),
+            )
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -1207,6 +1248,20 @@ class MessageStore:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             if previous_version >= SCHEMA_VERSION:
                 self._compact_duplicate_messages(conn)
+            if self._delete_failed_local_messages(conn):
+                self._rebuild_chat_summaries(conn)
+
+    @staticmethod
+    def _delete_failed_local_messages(conn: sqlite3.Connection) -> int:
+        cursor = conn.execute(
+            """
+            DELETE FROM messages
+            WHERE outgoing = 1
+              AND delivery_state = 'failed'
+              AND message_id LIKE 'cliente-xmpp-%'
+            """
+        )
+        return max(int(cursor.rowcount), 0)
 
     def _normalize_datetime_columns(self, conn: sqlite3.Connection) -> None:
         for table, column in (
@@ -1268,6 +1323,18 @@ class MessageStore:
                 (chat["account_jid"], chat["jid"]),
             ).fetchone()
             if latest is None:
+                conn.execute(
+                    """
+                    UPDATE chats
+                    SET last_message_preview = '', last_message_at = NULL, updated_at = ?
+                    WHERE account_jid = ? AND jid = ?
+                    """,
+                    (
+                        _datetime_to_db(datetime.now()),
+                        chat["account_jid"],
+                        chat["jid"],
+                    ),
+                )
                 continue
 
             message = _message_from_row(latest)

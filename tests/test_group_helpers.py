@@ -18,6 +18,7 @@ from cliente_xmpp.xmpp.events import (
     ChatDisplayedSynced,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
+    MessageDeliveryUpdated,
     WhatsAppBridgeStatus,
     WhatsAppQrImageDataReceived,
     XmppConnected,
@@ -1590,6 +1591,101 @@ class GroupMessageParsingTests(unittest.TestCase):
         self.assertNotIn(group_jid, client._joined_group_chat_jids)
         self.assertFalse(scheduled)
 
+    def test_group_message_error_marks_send_failed_and_rejoins_room(self) -> None:
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(id="cliente-xmpp-1")
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client"
+                             from="#room@whatsapp.example.org"
+                             type="error"
+                             id="cliente-xmpp-1">
+                      <error type="cancel">
+                        <not-acceptable xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          Only occupants are allowed to send messages
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        emitted = []
+        scheduled = []
+        client = SimpleNamespace(
+            _joined_group_chat_jids={"#room@whatsapp.example.org"},
+            _jid_may_be_group_chat=lambda _jid: True,
+            _schedule_group_rejoin=scheduled.append,
+            _message_error_parts=BridgeXmppClient._message_error_parts,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._handle_message_error(
+            client,
+            ErrorMessage(),
+            "#room@whatsapp.example.org",
+        )
+
+        self.assertFalse(client._joined_group_chat_jids)
+        self.assertEqual(scheduled, ["#room@whatsapp.example.org"])
+        self.assertTrue(
+            any(
+                isinstance(event, MessageDeliveryUpdated)
+                and event.delivery_state == "failed"
+                for event in emitted
+            )
+        )
+
+    def test_group_bad_request_marks_send_failed_without_rejoining_room(self) -> None:
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(id="cliente-xmpp-2")
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client"
+                             from="#room@whatsapp.example.org"
+                             type="error"
+                             id="cliente-xmpp-2">
+                      <error type="modify">
+                        <bad-request xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          Invalid reply target
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        emitted = []
+        scheduled = []
+        client = SimpleNamespace(
+            _joined_group_chat_jids={"#room@whatsapp.example.org"},
+            _jid_may_be_group_chat=lambda _jid: True,
+            _schedule_group_rejoin=scheduled.append,
+            _message_error_parts=BridgeXmppClient._message_error_parts,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._handle_message_error(
+            client,
+            ErrorMessage(),
+            "#room@whatsapp.example.org",
+        )
+
+        self.assertEqual(
+            client._joined_group_chat_jids,
+            {"#room@whatsapp.example.org"},
+        )
+        self.assertFalse(scheduled)
+        self.assertTrue(
+            any(
+                isinstance(event, MessageDeliveryUpdated)
+                and event.delivery_state == "failed"
+                for event in emitted
+            )
+        )
+
     def test_existing_group_keeps_its_name_when_message_arrives(self) -> None:
         group = Chat(
             jid="#5214492757727-1485039809@whatsapp.example.org",
@@ -2062,6 +2158,100 @@ class GroupMessageParsingTests(unittest.TestCase):
         MainWindow._merge_messages(window, chat_jid, [message])
 
         self.assertEqual(window.messages_by_chat[chat_jid][0].delivery_state, "delivered")
+
+    def test_failed_local_message_is_removed_from_memory_and_storage(self) -> None:
+        chat_jid = "#room@example.org"
+        previous = Message(
+            chat_jid=chat_jid,
+            sender_jid=chat_jid,
+            body="Anterior",
+            sent_at=datetime.now().astimezone() - timedelta(minutes=1),
+            message_id="remote-1",
+            chat_is_group=True,
+        )
+        failed = Message(
+            chat_jid=chat_jid,
+            sender_jid="me",
+            body="No enviado",
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            message_id="cliente-xmpp-failed-1",
+            delivery_state="sent",
+            chat_is_group=True,
+        )
+        chat = Chat(jid=chat_jid, name="Grupo", is_group=True)
+        rendered = []
+        queued = []
+        updated_chats = []
+
+        class DeliveryHarness:
+            _remove_failed_local_message = MainWindow._remove_failed_local_message
+            _message_has_local_pending_id = staticmethod(MainWindow._message_has_local_pending_id)
+            _latest_message_from_sequence = MainWindow._latest_message_from_sequence
+            _message_timestamp = staticmethod(MainWindow._message_timestamp)
+            _chat_preview_for_message = staticmethod(MainWindow._chat_preview_for_message)
+            _handle_message_delivery_updated = MainWindow._handle_message_delivery_updated
+
+            def __init__(self) -> None:
+                self.messages_by_chat = {chat_jid: [previous, failed]}
+                self.delivery_states_by_message = {(chat_jid, failed.message_id): "sent"}
+                self.reply_context = None
+                self.edit_context = None
+                self.current_jid = "me@example.org"
+                self.latest_message_timestamps_by_chat = {
+                    chat_jid: MainWindow._message_timestamp(failed)
+                }
+                self.conversation = SimpleNamespace(
+                    current_chat=chat,
+                    unread_marker_count=lambda: 0,
+                    set_messages=lambda messages, unread_count=0: rendered.append(
+                        (list(messages), unread_count)
+                    ),
+                )
+                self.chat_list = SimpleNamespace(upsert_chat=updated_chats.append)
+                self.message_store = SimpleNamespace(delete_local_message=lambda *_args: None)
+                self.status_bar = SimpleNamespace(SetStatusText=lambda _detail: None)
+
+            @staticmethod
+            def _cancel_reply() -> None:
+                return None
+
+            @staticmethod
+            def _cancel_editing() -> None:
+                return None
+
+            @staticmethod
+            def _chat_by_jid(_jid: str) -> Chat:
+                return chat
+
+            @staticmethod
+            def _upsert_searchable_chat(updated: Chat) -> None:
+                updated_chats.append(updated)
+
+            @staticmethod
+            def _persist_chat(_chat: Chat) -> None:
+                return None
+
+            @staticmethod
+            def _queue_storage_write(operation: object, *args: object) -> None:
+                queued.append((operation, args))
+
+            @staticmethod
+            def _refresh_chat_order(_jid: str) -> None:
+                return None
+
+        window = DeliveryHarness()
+        window._handle_message_delivery_updated(
+            chat_jid,
+            failed.message_id,
+            "failed",
+            "No se envió",
+        )
+
+        self.assertEqual(window.messages_by_chat[chat_jid], [previous])
+        self.assertEqual(rendered[-1][0], [previous])
+        self.assertEqual(queued[-1][1], ("me@example.org", chat_jid, failed.message_id))
+        self.assertEqual(updated_chats[-1].last_message_preview, "Anterior")
 
     def test_audio_autoplay_stops_at_non_audio_message(self) -> None:
         audio_one = Message(

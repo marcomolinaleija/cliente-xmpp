@@ -2286,8 +2286,9 @@ class MainWindow(wx.Frame):
 
         reply_to_id = reply_context.message_id if reply_context else ""
         reply_to_jid = (
-            self.current_jid if reply_context and reply_context.outgoing
-            else reply_context.sender_jid if reply_context else ""
+            self._reply_target_jid(chat, reply_context, self.current_jid)
+            if chat and reply_context
+            else ""
         )
         reply_quote = reply_context.body if reply_context else ""
         body = self.conversation.consume_composed_message()
@@ -2337,6 +2338,23 @@ class MainWindow(wx.Frame):
                 message_id=message_id,
                 mentions=mentions,
             )
+
+    @staticmethod
+    def _reply_target_jid(chat: Chat, message: Message, current_jid: str) -> str:
+        if not chat.is_group:
+            return current_jid if message.outgoing else message.sender_jid
+
+        room_jid = chat.jid.split("/", 1)[0]
+        sender_jid = message.sender_jid.strip()
+        if sender_jid.split("/", 1)[0].casefold() == room_jid.casefold() and "/" in sender_jid:
+            return sender_jid
+
+        nick = (
+            current_jid.split("@", 1)[0].strip()
+            if message.outgoing
+            else message.sender_name.strip()
+        )
+        return f"{room_jid}/{nick}" if nick else room_jid
 
     def _on_composer_text_changed(self, event: wx.CommandEvent) -> None:
         self.conversation.update_send_button_state(
@@ -4639,6 +4657,14 @@ class MainWindow(wx.Frame):
         if not message_id:
             return
 
+        if delivery_state == "failed" and self._remove_failed_local_message(
+            chat_jid,
+            message_id,
+        ):
+            if detail:
+                self.status_bar.SetStatusText(detail)
+            return
+
         state_key = (chat_jid, message_id)
         known_state = self.delivery_states_by_message.get(state_key, "")
         delivery_state = self._merge_delivery_state(known_state, delivery_state)
@@ -4666,6 +4692,69 @@ class MainWindow(wx.Frame):
             if detail:
                 self.status_bar.SetStatusText(detail)
             return
+
+    def _remove_failed_local_message(self, chat_jid: str, message_id: str) -> bool:
+        messages = self.messages_by_chat.get(chat_jid, [])
+        failed_message = next(
+            (
+                message
+                for message in messages
+                if message.message_id == message_id
+                and message.outgoing
+                and self._message_has_local_pending_id(message)
+            ),
+            None,
+        )
+        if failed_message is None:
+            return False
+
+        remaining_messages = [message for message in messages if message is not failed_message]
+        self.messages_by_chat[chat_jid] = remaining_messages
+        self.delivery_states_by_message.pop((chat_jid, message_id), None)
+        if self.reply_context is failed_message:
+            self._cancel_reply()
+        if self.edit_context is failed_message:
+            self._cancel_editing()
+
+        current_chat = self.conversation.current_chat
+        if current_chat is not None and current_chat.jid == chat_jid:
+            self.conversation.set_messages(
+                remaining_messages,
+                unread_count=self.conversation.unread_marker_count(),
+            )
+
+        latest_message = (
+            self._latest_message_from_sequence(remaining_messages) if remaining_messages else None
+        )
+        if latest_message is None:
+            self.latest_message_timestamps_by_chat.pop(chat_jid, None)
+        else:
+            self.latest_message_timestamps_by_chat[chat_jid] = self._message_timestamp(
+                latest_message
+            )
+
+        chat = self._chat_by_jid(chat_jid)
+        if chat is not None:
+            updated_chat = replace(
+                chat,
+                last_message_preview=(
+                    self._chat_preview_for_message(latest_message) if latest_message else ""
+                ),
+                last_message_at=latest_message.sent_at if latest_message else None,
+            )
+            self._upsert_searchable_chat(updated_chat)
+            self.chat_list.upsert_chat(updated_chat)
+            self._persist_chat(updated_chat)
+
+        if self.current_jid:
+            self._queue_storage_write(
+                self.message_store.delete_local_message,
+                self.current_jid,
+                chat_jid,
+                message_id,
+            )
+        self._refresh_chat_order(chat_jid)
+        return True
 
     def _ensure_chat_for_message(self, message: Message) -> None:
         existing_chat = self._chat_by_jid(message.chat_jid)

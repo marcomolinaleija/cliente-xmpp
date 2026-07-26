@@ -274,6 +274,10 @@ class BridgeXmppClient(ClientXMPP):
             body = ""
             bare_jid = ""
 
+        if message_type == "error":
+            self._handle_message_error(msg, bare_jid)
+            return
+
         self._emit_chat_state_from_message(bare_jid, message_type, msg)
 
         is_whatsapp_admin_message = False
@@ -408,6 +412,54 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_marker_displayed(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "read")
+
+    def _handle_message_error(self, msg: object, from_jid: str) -> None:
+        message_id = str(msg["id"] or "")
+        condition, error_text = self._message_error_parts(getattr(msg, "xml", None))
+        reason = error_text or condition.replace("-", " ") or "rechazado por el servidor"
+        detail = f"No se pudo enviar el mensaje: {reason}."
+
+        normalized_error = error_text.casefold()
+        membership_error = condition == "registration-required" or (
+            condition == "not-acceptable"
+            and (not normalized_error or "occupant" in normalized_error)
+        )
+        if membership_error and self._jid_may_be_group_chat(from_jid):
+            self._joined_group_chat_jids.discard(from_jid)
+            self._schedule_group_rejoin(from_jid)
+
+        if message_id:
+            self._emit(
+                MessageDeliveryUpdated(
+                    chat_jid=from_jid,
+                    message_id=message_id,
+                    delivery_state="failed",
+                    detail=detail,
+                )
+            )
+        self._emit(XmppError(detail))
+
+    @staticmethod
+    def _message_error_parts(xml: ET.Element | None) -> tuple[str, str]:
+        if xml is None:
+            return "", ""
+
+        error = next(
+            (child for child in xml if child.tag.rsplit("}", 1)[-1] == "error"),
+            None,
+        )
+        if error is None:
+            return "", ""
+
+        condition = ""
+        error_text = ""
+        for child in error:
+            local_name = child.tag.rsplit("}", 1)[-1]
+            if local_name == "text":
+                error_text = (child.text or "").strip()
+            elif not condition:
+                condition = local_name
+        return condition, error_text
 
     def _on_message_displayed_synchronization(self, msg: object) -> None:
         self._emit_displayed_states_from_xml(msg.xml)

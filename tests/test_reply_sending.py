@@ -65,6 +65,53 @@ class ReplySendingTests(unittest.TestCase):
         self.assertEqual(pending_messages[0].reply_quote, target.body)
         self.assertFalse(reply_visible)
 
+    def test_group_reply_targets_room_occupant_instead_of_private_contact(self) -> None:
+        chat = Chat(
+            jid="#120363216552048055@whatsapp.example.test",
+            name="Grupo",
+            is_group=True,
+        )
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid="+5214493860911@whatsapp.example.test",
+            sender_name="Marquiños",
+            body="mensaje original",
+            message_id="whatsapp-message-id",
+            chat_is_group=True,
+        )
+
+        reply_to = MainWindow._reply_target_jid(
+            chat,
+            target,
+            "angel@example.test",
+        )
+
+        self.assertEqual(reply_to, f"{chat.jid}/Marquiños")
+
+    def test_group_reply_to_own_message_uses_own_room_nick(self) -> None:
+        chat = Chat(
+            jid="#120363216552048055@whatsapp.example.test",
+            name="Grupo",
+            is_group=True,
+        )
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid="me",
+            sender_name="Tú",
+            body="mensaje propio",
+            outgoing=True,
+            message_id="whatsapp-message-id",
+            chat_is_group=True,
+        )
+
+        reply_to = MainWindow._reply_target_jid(
+            chat,
+            target,
+            "angel@example.test",
+        )
+
+        self.assertEqual(reply_to, f"{chat.jid}/angel")
+
     def test_pending_local_message_cannot_be_selected_as_reply_target(self) -> None:
         chat = Chat(jid="contact@example.test", name="Contacto")
         target = Message(

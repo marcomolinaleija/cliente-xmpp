@@ -1,0 +1,3 @@
+services:
+  slidge-whatsapp:
+    image: cliente-xmpp-bridge:contact-names-candidate6

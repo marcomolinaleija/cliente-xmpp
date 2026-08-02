@@ -150,6 +150,7 @@ class MpvAudioPlayer:
 
         if not self._video:
             self._check_error(dll.mpv_set_option_string(handle, b"video", b"no"))
+            self._check_error(dll.mpv_set_option_string(handle, b"ad", b"libopus"))
         self._check_error(dll.mpv_set_option_string(handle, b"terminal", b"no"))
         self._check_error(
             dll.mpv_set_option_string(handle, b"input-default-bindings", b"yes")

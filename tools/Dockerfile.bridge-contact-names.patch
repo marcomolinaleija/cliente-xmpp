@@ -1,0 +1,14 @@
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -39,6 +39,12 @@ COPY patches/patch_bridge_forwarding.py /tmp/patch_bridge_forwarding.py
+ RUN python /tmp/patch_bridge_forwarding.py /tmp/unused /build \
+     --whatsapp-only --no-backup
++COPY patches/patch_slidge_whatsapp_contact_names.py /tmp/patch_contact_names.py
++COPY patches/bridge_contact_name_event_test.go /build/slidge_whatsapp/contact_name_event_test.go
++RUN python /tmp/patch_contact_names.py /build --no-backup && \
++    cd /build/slidge_whatsapp && \
++    go test ./... && \
++    rm contact_name_event_test.go
+ ARG SLIDGE_USE_LOCKFILE=
+ RUN [ -z "$SLIDGE_USE_LOCKFILE" ] && rm uv.lock || true

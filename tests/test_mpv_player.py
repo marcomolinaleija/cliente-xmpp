@@ -31,6 +31,16 @@ class _FakeMpvDll:
 
 
 class MpvVideoInputTests(unittest.TestCase):
+    def test_audio_player_prioritizes_libopus_decoder(self) -> None:
+        dll = _FakeMpvDll()
+        player = MpvAudioPlayer()
+        player._dll = dll  # type: ignore[assignment]
+
+        player._ensure_handle()
+
+        self.assertIn((b"video", b"no"), dll.options)
+        self.assertIn((b"ad", b"libopus"), dll.options)
+
     def test_video_player_enables_native_default_keyboard_bindings(self) -> None:
         dll = _FakeMpvDll()
         player = MpvAudioPlayer(video=True)

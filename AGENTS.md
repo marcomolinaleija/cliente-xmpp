@@ -359,8 +359,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 19 de julio de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v10` con menciones,
+- Desde el 1 de agosto de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -397,6 +397,12 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   actualizar `last_seen`, usando el timestamp de una presencia real de WhatsApp. El parche y su
   smoke test viven en `tools/patch_slidge_whatsapp_message_presence.py` y
   `tools/smoke_bridge_message_presence_runtime.py`.
+- `v11` conserva los nombres guardados de WhatsApp al procesar eventos e historial de contactos.
+  `v12` parte de esa imagen y deja de convertir a AAC/M4A las notas PTT entrantes: conserva sin
+  pérdida adicional los bytes OGG/Opus y el MIME anunciados por WhatsApp. El parche, Dockerfile y
+  smoke test reproducibles viven en `tools/patch_slidge_whatsapp_incoming_ptt.py`,
+  `tools/Dockerfile.bridge-audio-v12` y `tools/smoke_bridge_incoming_ptt_runtime.py`. No apliques
+  este passthrough a los audios salientes: WhatsApp sigue requiriendo OGG/Opus para una nota de voz.
 - En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
   `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
   ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría
@@ -462,6 +468,11 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
 - La reproduccion de audio debe usar solo `local_media_path(message)`. Si aun no existe,
   solicita/espera la descarga y reproduce al terminar; no hagas fallback a streaming HTTP,
   porque provoca cortes y ruido.
+- Al inicializar libmpv para audio, prioriza el decodificador `libopus` con `ad=libopus`. Las
+  notas PTT de WhatsApp pueden contener paquetes DTX de 120 ms; el decodificador Opus nativo de
+  FFmpeg introduce transiciones audibles entre esos silencios, mientras `libopus` las reconstruye
+  de forma continua. MPV conserva el fallback normal para AAC/M4A y otros formatos; no sustituyas
+  esta preferencia por una nueva recodificación con pérdida en el puente.
 - Al retraer un mensaje con multimedia, detén cualquier reproductor que tenga abierto ese archivo,
   elimina la ruta local exacta y limpia URL y metadata tanto en memoria como en SQLite. Una
   retracción es monotónica: un MAM posterior no puede restaurar el archivo ni volver a habilitar

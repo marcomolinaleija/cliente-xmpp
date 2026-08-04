@@ -13,6 +13,7 @@ DEFAULT_SENT_MESSAGE_SOUND_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATIONS_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED = False
+DEFAULT_MINIMIZE_TO_TRAY_ON_ALT_F4 = False
 DEFAULT_NEW_CHAT_COUNTRY = "MX"
 
 
@@ -158,6 +159,27 @@ class SettingsStore:
     ) -> None:
         payload = self._load_payload()
         payload["windows_notifications"] = asdict(settings)
+        self._save_payload(payload)
+
+    def load_minimize_to_tray_on_alt_f4(self) -> bool:
+        data = self._load_payload()
+        window = data.get("window", {})
+        if not isinstance(window, dict):
+            return DEFAULT_MINIMIZE_TO_TRAY_ON_ALT_F4
+        return bool(
+            window.get(
+                "minimize_to_tray_on_alt_f4",
+                DEFAULT_MINIMIZE_TO_TRAY_ON_ALT_F4,
+            )
+        )
+
+    def save_minimize_to_tray_on_alt_f4(self, enabled: bool) -> None:
+        payload = self._load_payload()
+        window = payload.get("window", {})
+        if not isinstance(window, dict):
+            window = {}
+        window["minimize_to_tray_on_alt_f4"] = bool(enabled)
+        payload["window"] = window
         self._save_payload(payload)
 
     def _load_payload(self) -> dict[str, object]:

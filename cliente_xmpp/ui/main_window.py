@@ -83,6 +83,7 @@ from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
+from cliente_xmpp.ui.system_tray import SystemTrayIcon
 from cliente_xmpp.ui.theme import apply_theme
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkPanel,
@@ -169,6 +170,9 @@ class MainWindow(wx.Frame):
         self.windows_notification_nvda_announcements_enabled = (
             desktop_notifications.announce_with_nvda
         )
+        self.minimize_to_tray_on_alt_f4 = (
+            self.settings_store.load_minimize_to_tray_on_alt_f4()
+        )
         self.message_store = MessageStore()
         self.storage_manager = StorageManager(self.message_store)
         self._storage_reset_in_progress = False
@@ -230,6 +234,7 @@ class MainWindow(wx.Frame):
         self.contact_info_dialog: ContactInfoDialog | None = None
         self.audio_recorder = MciAudioRecorder()
         self.settings_return_to_conversation = False
+        self._tray_hidden = False
         self.windows_notification_service = WindowsNotificationService(
             on_open_chat=self._open_chat_from_windows_notification,
             on_mark_read=self._mark_chat_read_from_windows_notification,
@@ -251,6 +256,10 @@ class MainWindow(wx.Frame):
         self._layout()
         apply_theme(self)
         self._bind_events()
+        self.system_tray = SystemTrayIcon(
+            on_show=self._restore_from_tray,
+            on_exit=self._exit_from_tray,
+        )
         self._load_saved_password()
         if self._can_auto_connect():
             self._set_startup_wait_ui()
@@ -440,6 +449,14 @@ class MainWindow(wx.Frame):
         except Exception:
             return
 
+    def _save_window_settings(self) -> None:
+        try:
+            self.settings_store.save_minimize_to_tray_on_alt_f4(
+                self.minimize_to_tray_on_alt_f4
+            )
+        except Exception:
+            return
+
     def _sync_settings_panel(self) -> None:
         self.settings_panel.set_values(
             windows_notifications=self.windows_notifications_enabled,
@@ -447,6 +464,7 @@ class MainWindow(wx.Frame):
             announce_with_nvda=self.windows_notification_nvda_announcements_enabled,
             open_chat_sound=self.open_chat_message_sound_enabled,
             sent_message_sound=self.sent_message_sound_enabled,
+            minimize_to_tray_on_alt_f4=self.minimize_to_tray_on_alt_f4,
         )
 
     def _on_settings_changed(self, event: wx.CommandEvent) -> None:
@@ -457,9 +475,13 @@ class MainWindow(wx.Frame):
         )
         self.open_chat_message_sound_enabled = self.settings_panel.open_chat_sound.GetValue()
         self.sent_message_sound_enabled = self.settings_panel.sent_message_sound.GetValue()
+        self.minimize_to_tray_on_alt_f4 = (
+            self.settings_panel.minimize_to_tray_on_alt_f4.GetValue()
+        )
         self.settings_panel.apply_interactive_state()
         self._save_desktop_notification_settings()
         self._save_notification_sound_settings()
+        self._save_window_settings()
         changed_control = event.GetEventObject()
         announcement = self.settings_panel.checkbox_state_text(changed_control)
         self.status_bar.SetStatusText(announcement)
@@ -1748,6 +1770,10 @@ class MainWindow(wx.Frame):
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        if self._is_alt_f4_shortcut(event) and self.minimize_to_tray_on_alt_f4:
+            self._minimize_to_tray()
+            return
+
         sound_shortcut = self._notification_sound_shortcut(event)
         if sound_shortcut == "open_chat_message":
             self._toggle_open_chat_message_sound()
@@ -1801,6 +1827,37 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    @staticmethod
+    def _is_alt_f4_shortcut(event: wx.KeyEvent) -> bool:
+        return (
+            event.GetKeyCode() == wx.WXK_F4
+            and event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+        )
+
+    def _minimize_to_tray(self) -> None:
+        if self._tray_hidden:
+            return
+
+        self._tray_hidden = True
+        self.Hide()
+        message = "WhatsApp CAN minimizado en la bandeja del sistema"
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _restore_from_tray(self) -> None:
+        if self._tray_hidden:
+            self._tray_hidden = False
+        if self.IsIconized():
+            self.Iconize(False)
+        self.Show(True)
+        self.Raise()
+        self.status_bar.SetStatusText("WhatsApp CAN restaurado desde la bandeja del sistema")
+
+    def _exit_from_tray(self) -> None:
+        self.Close()
 
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:
         self._show_chat_list()
@@ -3707,6 +3764,10 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        system_tray = getattr(self, "system_tray", None)
+        if system_tray is not None:
+            system_tray.Destroy()
+            self.system_tray = None
         self.windows_notification_service.close_all()
         self.conversation.close_audio()
         self.audio_recorder.cancel()

@@ -7,6 +7,7 @@ SHOW_PREVIEW_LABEL = "Mostrar el contenido del mensaje en la notificación"
 ANNOUNCE_WITH_NVDA_LABEL = "Anunciar también el mensaje directamente con NVDA"
 OPEN_CHAT_SOUND_LABEL = "Reproducir sonido para mensajes del chat abierto"
 SENT_MESSAGE_SOUND_LABEL = "Reproducir sonido al enviar un mensaje"
+MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL = "Minimizar a la bandeja al usar Alt+F4"
 
 
 def format_setting_state(label: str, enabled: bool) -> str:
@@ -52,6 +53,13 @@ class SettingsPanel(wx.Panel):
             self,
             label=SENT_MESSAGE_SOUND_LABEL,
         )
+        self.minimize_to_tray_on_alt_f4 = wx.CheckBox(
+            self,
+            label=MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL,
+        )
+        self.minimize_to_tray_on_alt_f4.SetToolTip(
+            "Oculta la ventana y la deja disponible desde el icono de la bandeja del sistema."
+        )
 
         self.test_notification_button = wx.Button(
             self,
@@ -69,12 +77,14 @@ class SettingsPanel(wx.Panel):
         announce_with_nvda: bool,
         open_chat_sound: bool,
         sent_message_sound: bool,
+        minimize_to_tray_on_alt_f4: bool,
     ) -> None:
         self.windows_notifications.SetValue(windows_notifications)
         self.show_preview.SetValue(show_preview)
         self.announce_with_nvda.SetValue(announce_with_nvda)
         self.open_chat_sound.SetValue(open_chat_sound)
         self.sent_message_sound.SetValue(sent_message_sound)
+        self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
         self.refresh_accessible_states()
 
     def refresh_accessible_states(self) -> None:
@@ -138,6 +148,7 @@ class SettingsPanel(wx.Panel):
             (self.announce_with_nvda, ANNOUNCE_WITH_NVDA_LABEL),
             (self.open_chat_sound, OPEN_CHAT_SOUND_LABEL),
             (self.sent_message_sound, SENT_MESSAGE_SOUND_LABEL),
+            (self.minimize_to_tray_on_alt_f4, MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL),
         )
 
     def _layout(self) -> None:
@@ -148,6 +159,9 @@ class SettingsPanel(wx.Panel):
         notification_box.Add(self.open_chat_sound, 0, wx.ALL, 8)
         notification_box.Add(self.sent_message_sound, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
+        window_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Ventana")
+        window_box.Add(self.minimize_to_tray_on_alt_f4, 0, wx.ALL, 8)
+
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self.test_notification_button, 0, wx.RIGHT, 8)
         buttons.Add(self.back_button, 0)
@@ -155,6 +169,7 @@ class SettingsPanel(wx.Panel):
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.title, 0, wx.ALL, 16)
         box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
+        box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
         box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 16)
         box.AddStretchSpacer(1)
         self.SetSizer(box)

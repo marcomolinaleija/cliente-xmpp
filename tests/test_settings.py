@@ -46,6 +46,22 @@ class NewChatSettingsTests(unittest.TestCase):
             self.assertEqual(store.load_new_chat_country(), "GB")
 
 
+class WindowSettingsTests(unittest.TestCase):
+    def test_minimize_to_tray_defaults_to_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            self.assertFalse(store.load_minimize_to_tray_on_alt_f4())
+
+    def test_minimize_to_tray_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            store.save_minimize_to_tray_on_alt_f4(True)
+
+            self.assertTrue(store.load_minimize_to_tray_on_alt_f4())
+
+
 class NotificationSoundShortcutTests(unittest.TestCase):
     @staticmethod
     def _event(*, shift: bool = False, control: bool = False, alt: bool = False):
@@ -73,6 +89,18 @@ class NotificationSoundShortcutTests(unittest.TestCase):
             MainWindow._notification_sound_shortcut(self._event(control=True))
         )
         self.assertIsNone(MainWindow._notification_sound_shortcut(self._event(alt=True)))
+
+    def test_alt_f4_shortcut_requires_only_alt(self) -> None:
+        event = SimpleNamespace(
+            GetKeyCode=lambda: wx.WXK_F4,
+            ShiftDown=lambda: False,
+            ControlDown=lambda: False,
+            AltDown=lambda: True,
+        )
+        self.assertTrue(MainWindow._is_alt_f4_shortcut(event))
+
+        event.ControlDown = lambda: True
+        self.assertFalse(MainWindow._is_alt_f4_shortcut(event))
 
     def test_toggles_announce_the_new_state(self) -> None:
         announcements: list[str] = []
@@ -152,6 +180,7 @@ class AccessibleSettingStateTests(unittest.TestCase):
             announce_with_nvda=CheckBox(False),
             open_chat_sound=CheckBox(True),
             sent_message_sound=CheckBox(True),
+            minimize_to_tray_on_alt_f4=CheckBox(False),
             apply_interactive_state=lambda: None,
             checkbox_state_text=lambda control: (
                 "Mostrar el contenido del mensaje en la notificación: desactivado"
@@ -163,6 +192,7 @@ class AccessibleSettingStateTests(unittest.TestCase):
             settings_panel=panel,
             _save_desktop_notification_settings=lambda: None,
             _save_notification_sound_settings=lambda: None,
+            _save_window_settings=lambda: None,
             status_bar=SimpleNamespace(SetStatusText=status_messages.append),
             speaker=SimpleNamespace(speak=announcements.append),
         )

@@ -64,7 +64,12 @@ ahi se puede:
 - Ocultar el contenido del mensaje por privacidad.
 - Pedir un anuncio directo adicional de NVDA si Windows no lo anuncia como se espera.
 - Configurar los sonidos del chat abierto y de mensajes enviados.
+- Dejar la ventana en la bandeja del sistema al usar `Alt+F4` y restaurarla desde su icono.
 - Enviar una notificacion de prueba.
+
+La opcion de bandeja esta desactivada por defecto para conservar el cierre habitual en
+instalaciones existentes. El menu contextual del icono permite mostrar la ventana o salir
+completamente de la aplicacion.
 
 Las notificaciones se muestran solo para mensajes nuevos recibidos en vivo. Respetan los chats
 silenciados y no aparecen si el usuario ya esta leyendo ese chat en la ventana activa. Al pulsar

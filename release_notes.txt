@@ -1,26 +1,15 @@
-WhatsApp CAN 1.1.2
+WhatsApp CAN 1.1.3
 
-Respuestas en grupos
+Bandeja del sistema
 
-- Las respuestas citadas ahora conservan correctamente la identidad del participante dentro del
-  grupo, incluso cuando el bridge también entrega su dirección de chat privado.
-- Si WhatsApp CAN no puede identificar con seguridad al participante citado, conserva el texto
-  escrito y muestra una advertencia en lugar de intentar una respuesta incompleta.
-- Las respuestas a mensajes propios dejan de usar la etiqueta visual Tú como si fuera el nombre
-  técnico del participante.
+- Nueva opción para ocultar WhatsApp CAN en la bandeja del sistema al pulsar Alt+F4.
+- La opción está desactivada de forma predeterminada para conservar el comportamiento actual.
+- El icono permite restaurar la ventana con un clic o cerrar completamente la aplicación desde
+  su menú.
+- La configuración se guarda y comunica su estado de forma accesible.
 
-Envíos rechazados
+Mejoras de audio
 
-- Cuando el servidor rechaza explícitamente un mensaje local, WhatsApp CAN lo retira de la
-  conversación y del historial local para que no permanezca mostrado como enviado.
-- Después de retirar un envío fallido, la lista de chats recupera el mensaje anterior como vista
-  previa.
-- La limpieza protege los mensajes remotos y los envíos aceptados por el servidor: la ausencia de
-  un eco por sí sola no se interpreta como un fallo.
-
-Estabilidad y rendimiento
-
-- Si un error indica que la aplicación perdió su participación en un grupo, vuelve a entrar sólo
-  en esa sala; otros rechazos no provocan reconexiones innecesarias.
-- Al abrir la aplicación, la limpieza de envíos fallidos actualiza únicamente las conversaciones
-  afectadas, evitando recorrer todos los chats por un fallo aislado.
+- La reproducción prioriza el decodificador libopus para las notas de voz OGG/Opus.
+- Esto reduce cortes, ruidos y transiciones audibles durante los silencios de algunas notas de
+  WhatsApp.

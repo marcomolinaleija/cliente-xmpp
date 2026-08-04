@@ -1,0 +1,15 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12@sha256:191ad6c686ea5e5c3d4622270a29844be97a9ccbdb14023978e31bf26feba8c9
+
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY patch_slidge_whatsapp_mexico_outbound.py /tmp/patch_mexico_outbound.py
+RUN python -B /tmp/patch_mexico_outbound.py \
+        /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_mexico_outbound.py
+
+COPY smoke_bridge_mexico_outbound_runtime.py /tmp/smoke_mexico_outbound.py
+RUN python -B /tmp/smoke_mexico_outbound.py && rm /tmp/smoke_mexico_outbound.py
+
+USER slidge

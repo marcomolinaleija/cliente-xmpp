@@ -11,13 +11,15 @@ escritorio consume:
 La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
-sha256:191ad6c686ea5e5c3d4622270a29844be97a9ccbdb14023978e31bf26feba8c9
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
+sha256:027f44d223811fb1aa09ed7df80303a3b9b653d260fb93c43a096738506104ed
 ```
 
-`v12` conserva además los nombres guardados de contactos de `v11` y entrega las notas de voz PTT
-entrantes como OGG/Opus, sin recodificarlas a AAC. `v11` se conserva como rollback inmediato de
-esta última corrección. `v9` todavía podía convertir un mensaje enviado desde WhatsApp oficial en
+`v13` parte de `v12` y conserva el JID mexicano moderno en XMPP mientras usa el alias legado para
+enviar cuando WhatsApp mantiene ambas variantes. `v12` conserva además los nombres guardados de
+contactos de `v11` y entrega las notas de voz PTT entrantes como OGG/Opus, sin recodificarlas a
+AAC. `v12` se conserva como rollback inmediato. `v9` todavía podía convertir un mensaje enviado
+desde WhatsApp oficial en
 una última conexión sintética. `v8` también permitía ese efecto con recibos de lectura y estados
 de escritura. `v7`
 se conserva sin la sincronización automática ni la fusión de alias. `v6` se conserva sin la conservación de
@@ -267,7 +269,7 @@ docker run --rm --entrypoint python \
 La versión publicada es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
 ```
 
 En la VPS:
@@ -277,7 +279,7 @@ cd /opt/xmpp
 cp -p compose.yml compose.yml.before-read-sync
 # Seleccionar Prosody 0.12 y la imagen publicada del puente.
 python RUTA_REPO/tools/patch_marco_vps_compose_read_sync.py \
-  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12 \
+  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13 \
   --automatic-roster-sync \
   compose.yml
 docker compose config -q

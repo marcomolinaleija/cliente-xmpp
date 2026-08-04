@@ -359,8 +359,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 1 de agosto de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12` con menciones,
+- Desde el 2 de agosto de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -403,6 +403,13 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   smoke test reproducibles viven en `tools/patch_slidge_whatsapp_incoming_ptt.py`,
   `tools/Dockerfile.bridge-audio-v12` y `tools/smoke_bridge_incoming_ptt_runtime.py`. No apliques
   este passthrough a los audios salientes: WhatsApp sigue requiriendo OGG/Opus para una nota de voz.
+- `v13` parte de `v12` y conserva por separado los alias mexicanos duplicados: el roster y SQLite
+  siguen usando el JID moderno `+52`, pero las operaciones salientes hacia WhatsApp usan `+521`
+  cuando ambas variantes existen en `GetContacts`. El parche y smoke test reproducibles viven en
+  `tools/patch_slidge_whatsapp_mexico_outbound.py`,
+  `tools/Dockerfile.bridge-mexico-outbound-v13` y
+  `tools/smoke_bridge_mexico_outbound_runtime.py`. No vuelvas a exponer `+521` en el roster ni
+  elimines el alias legado de WhatsMeow: se necesita para resolver el LID y el token de privacidad.
 - En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
   `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
   ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría

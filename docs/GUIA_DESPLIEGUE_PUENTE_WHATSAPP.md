@@ -8,12 +8,13 @@ secretos de ejemplo: no copies ninguno de otra instalación.
 La imagen soportada actualmente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
 ```
 
-`v12` parte de Slidge/WhatsApp y conserva las mejoras que usa el cliente:
+`v13` parte de Slidge/WhatsApp y conserva las mejoras que usa el cliente:
 sincronización de roster y leídos, menciones nativas, reenvíos, stickers,
-presencia y adjuntos de audio sin recodificación adicional. La descripción
+presencia, adjuntos de audio sin recodificación adicional y enrutamiento saliente mediante el
+alias legado de contactos mexicanos duplicados. La descripción
 técnica de esas extensiones está en [PUENTE_PERSONALIZADO.md](PUENTE_PERSONALIZADO.md).
 
 ## Qué instala esta guía
@@ -158,7 +159,7 @@ services:
       - ./prosody-data:/var/lib/prosody
 
   slidge-whatsapp:
-    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
+    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
     restart: unless-stopped
     depends_on:
       - prosody

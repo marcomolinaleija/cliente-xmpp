@@ -2,12 +2,12 @@
 
 ## Estado actual: modificaciones del puente completadas
 
-Desde el 1 de agosto de 2026, las modificaciones del puente están construidas, publicadas y
+Desde el 2 de agosto de 2026, las modificaciones del puente están construidas, publicadas y
 activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
-sha256:191ad6c686ea5e5c3d4622270a29844be97a9ccbdb14023978e31bf26feba8c9
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
+sha256:027f44d223811fb1aa09ed7df80303a3b9b653d260fb93c43a096738506104ed
 ```
 
 La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
@@ -29,6 +29,8 @@ La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
 - Sincronización automática del roster XMPP después de conectar cada cuenta.
 - Fusión condicional de contactos mexicanos duplicados `+521`/`+52`, conservando `+52` como JID
   visible únicamente cuando ambas variantes existen.
+- Enrutamiento de texto, archivos, respuestas, reacciones y estados hacia el alias mexicano
+  legado `+521` cuando existe el par duplicado, sin volver a exponerlo en el roster XMPP.
 - Uso exclusivo de eventos reales de presencia para actualizar `last_seen`; los recibos de
   lectura, estados de escritura y mensajes enviados desde WhatsApp oficial conservan su función
   sin fabricar una última conexión con la hora actual.
@@ -136,6 +138,14 @@ Elimina únicamente la conversión entrante Opus a AAC en `getMessageAttachments
 de salida hacia WhatsApp permanecen intactas. La construcción recompila el binding nativo y falla
 si el binario conserva la ruta `failed to convert incoming attachment`.
 
+La etiqueta `v13` parte del digest publicado de `v12` y aplica
+`tools/patch_slidge_whatsapp_mexico_outbound.py` mediante
+`tools/Dockerfile.bridge-mexico-outbound-v13`. El parche mantiene el mapa `+521` → `+52` para la
+identidad canónica visible y añade el mapa inverso sólo para operaciones salientes. Esto permite
+que WhatsMeow resuelva el LID y emita el token de privacidad usando el JID legado que conserva en
+su base. `tools/smoke_bridge_mexico_outbound_runtime.py` verifica ambas direcciones y que
+`Contact` use el alias saliente sin cambiar su `legacy_id` visible.
+
 Las notas PTT originales pueden contener paquetes Opus DTX de 120 ms. Para reproducir sus
 transiciones de silencio sin los microcortes del decodificador Opus nativo de FFmpeg,
 `cliente-xmpp` prioriza `libopus` mediante la opción libmpv `ad=libopus`. MPV conserva sus
@@ -162,7 +172,8 @@ Antes de publicar, ejecuta dentro de la imagen los smoke tests
 `tools/smoke_bridge_presence_sources_runtime.py` y
 `tools/smoke_bridge_message_presence_runtime.py` y
 `tools/smoke_bridge_contact_names_runtime.py` y
-`tools/smoke_bridge_incoming_ptt_runtime.py`. La prueba de stickers debe producir un
+`tools/smoke_bridge_incoming_ptt_runtime.py` y
+`tools/smoke_bridge_mexico_outbound_runtime.py`. La prueba de stickers debe producir un
 WebP válido; comprobar sólo `--help` no demuestra que el motor Lottie esté instalado. La prueba de
 persistencia ejecuta el flujo posterior a `send_files` con `NO_UPLOAD_PATH` activo y falla si el
 archivo servido desaparece. La escritura de
@@ -202,7 +213,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
 ```
 
 El servicio debe incluir:
@@ -219,12 +230,12 @@ Para instalaciones que ya tengan duplicados mexicanos, detén sólo `slidge-what
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13 \
   /tmp/migrate.py /var/lib/slidge/slidge.sqlite
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v12 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13 \
   /tmp/migrate.py --apply /var/lib/slidge/slidge.sqlite
 ```
 

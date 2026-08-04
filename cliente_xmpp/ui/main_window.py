@@ -1857,6 +1857,18 @@ class MainWindow(wx.Frame):
         self.Raise()
         self.status_bar.SetStatusText("WhatsApp CAN restaurado desde la bandeja del sistema")
 
+    def show_from_second_instance(self) -> None:
+        """Restore this window when the user launches WhatsApp CAN again."""
+        if self._tray_hidden:
+            self._tray_hidden = False
+        if self.IsIconized():
+            self.Iconize(False)
+        if not self.IsShown():
+            self.Show(True)
+        self.Raise()
+        self.RequestUserAttention()
+        self.SetFocus()
+
     def _exit_from_tray(self) -> None:
         self.Close()
 

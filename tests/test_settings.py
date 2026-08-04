@@ -203,3 +203,48 @@ class AccessibleSettingStateTests(unittest.TestCase):
         expected = "Mostrar el contenido del mensaje en la notificación: desactivado"
         self.assertEqual(status_messages, [expected])
         self.assertEqual(announcements, [expected])
+
+    def test_tray_setting_is_read_and_announced_when_changed(self) -> None:
+        announcements: list[str] = []
+        status_messages: list[str] = []
+
+        class CheckBox:
+            def __init__(self, value: bool) -> None:
+                self.value = value
+
+            def GetValue(self) -> bool:
+                return self.value
+
+        changed_control = CheckBox(True)
+        panel = SimpleNamespace(
+            windows_notifications=CheckBox(True),
+            show_preview=CheckBox(True),
+            announce_with_nvda=CheckBox(False),
+            open_chat_sound=CheckBox(True),
+            sent_message_sound=CheckBox(True),
+            minimize_to_tray_on_alt_f4=changed_control,
+            apply_interactive_state=lambda: None,
+            checkbox_state_text=lambda control: (
+                "Minimizar a la bandeja al usar Alt+F4: activado"
+                if control is changed_control
+                else "ConfiguraciÃ³n actualizada"
+            ),
+        )
+        window = SimpleNamespace(
+            settings_panel=panel,
+            _save_desktop_notification_settings=lambda: None,
+            _save_notification_sound_settings=lambda: None,
+            _save_window_settings=lambda: None,
+            status_bar=SimpleNamespace(SetStatusText=status_messages.append),
+            speaker=SimpleNamespace(speak=announcements.append),
+        )
+
+        MainWindow._on_settings_changed(
+            window,
+            SimpleNamespace(GetEventObject=lambda: changed_control),
+        )
+
+        self.assertTrue(window.minimize_to_tray_on_alt_f4)
+        expected = "Minimizar a la bandeja al usar Alt+F4: activado"
+        self.assertEqual(status_messages, [expected])
+        self.assertEqual(announcements, [expected])

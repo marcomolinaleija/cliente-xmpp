@@ -376,6 +376,7 @@ class MainWindow(wx.Frame):
             self.settings_panel.announce_with_nvda,
             self.settings_panel.open_chat_sound,
             self.settings_panel.sent_message_sound,
+            self.settings_panel.minimize_to_tray_on_alt_f4,
         ):
             checkbox.Bind(wx.EVT_CHECKBOX, self._on_settings_changed)
         self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)

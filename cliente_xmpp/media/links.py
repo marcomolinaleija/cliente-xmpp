@@ -63,8 +63,17 @@ def link_description(message: Message) -> str:
 
     if _is_link_preview_media(message):
         link = links[0]
+        caption = message.body.strip()
         title = link.title or _host_label(link.url)
-        return f"enlace, {title}, {link.url}"
+        parts = ["enlace"]
+        if caption and not _same_link_text(caption, link.url):
+            parts.append(caption)
+        if title and not _same_link_text(title, caption):
+            parts.append(f"tÃ­tulo: {title}")
+        elif not caption:
+            parts.append(title)
+        parts.append(link.url)
+        return ", ".join(parts)
 
     return message.body
 
@@ -142,6 +151,10 @@ def _link_title(message: Message) -> str:
 def _host_label(url: str) -> str:
     host = urlparse(url).netloc
     return host.removeprefix("www.") or "enlace"
+
+
+def _same_link_text(first: str, second: str) -> bool:
+    return " ".join(first.split()).casefold() == " ".join(second.split()).casefold()
 
 
 def _looks_like_downloadable_file(message: Message) -> bool:

@@ -20,6 +20,7 @@ from cliente_xmpp.media.stickers import (
 )
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.storage.message_store import MessageStore
+from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.xmpp.client import (
     OOB_NS,
     REPLY_NS,
@@ -51,6 +52,24 @@ class MessageFeatureParsingTests(unittest.TestCase):
             media_description(message),
             f"enlace, Un enlace reenviado, {destination}",
         )
+
+    def test_link_preview_keeps_caption_when_remote_title_differs(self) -> None:
+        destination = "https://example.test/redirect"
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="Texto que acompaÃ±a al enlace",
+            media_url=destination,
+            media_kind="file",
+            media_mime="application/octet-stream",
+            media_filename="TÃ­tulo remoto",
+        )
+        expected = (
+            f"enlace, Texto que acompaÃ±a al enlace, tÃ­tulo: TÃ­tulo remoto, {destination}"
+        )
+
+        self.assertEqual(media_description(message), expected)
+        self.assertEqual(ConversationPanel._format_message_body(None, message), expected)
 
     def test_generic_binary_attachment_stays_a_file(self) -> None:
         message = Message(

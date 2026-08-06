@@ -14,7 +14,12 @@ from unittest.mock import Mock, patch
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.media.downloads import media_description
-from cliente_xmpp.media.links import copyable_message_text, is_link_preview, message_links
+from cliente_xmpp.media.links import (
+    copyable_message_text,
+    forwardable_message_text,
+    is_link_preview,
+    message_links,
+)
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_bridge_sticker,
@@ -74,6 +79,10 @@ class MessageFeatureParsingTests(unittest.TestCase):
         self.assertEqual(media_description(message), expected)
         self.assertEqual(ConversationPanel._format_message_body(None, message), expected)
         self.assertEqual(message_links(message)[0].url, destination)
+        self.assertEqual(
+            forwardable_message_text(message),
+            f"Texto que acompaÃ±a al enlace\n{destination}",
+        )
 
     def test_open_selected_link_uses_preview_destination(self) -> None:
         destination = "https://example.test/redirect"

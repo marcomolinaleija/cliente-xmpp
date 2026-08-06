@@ -41,6 +41,7 @@ from cliente_xmpp.media.downloads import (
 from cliente_xmpp.media.links import (
     MessageLink,
     copyable_message_text,
+    forwardable_message_text,
     is_link_preview,
     message_links,
 )
@@ -3414,6 +3415,7 @@ class MainWindow(wx.Frame):
         if is_link_preview(source):
             forward_source = replace(
                 source,
+                body=forwardable_message_text(source),
                 audio_url="",
                 media_url="",
                 media_kind="",

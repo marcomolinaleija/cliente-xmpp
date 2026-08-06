@@ -56,6 +56,18 @@ def copyable_message_text(message: Message) -> str:
     return message.body
 
 
+def forwardable_message_text(message: Message) -> str:
+    """Keep both a link-preview caption and its destination when forwarding."""
+    if not _is_link_preview_media(message):
+        return message.body
+
+    destination = message.media_url.strip()
+    body = message.body.strip()
+    if not destination or any(url == destination for url in _urls_from_text(body)):
+        return body
+    return f"{body}\n{destination}" if body else destination
+
+
 def link_description(message: Message) -> str:
     links = message_links(message)
     if not links:

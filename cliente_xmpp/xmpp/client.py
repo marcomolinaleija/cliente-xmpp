@@ -118,6 +118,9 @@ STANZA_ID_NS = "urn:xmpp:sid:0"
 CHATSTATES_NS = "http://jabber.org/protocol/chatstates"
 RECORDING_AUDIO_NS = "urn:marco-ml:whatsapp:recording:0"
 IDLE_NS = "urn:xmpp:idle:1"
+GROUP_MEMBERSHIP_REFRESH_SECONDS = 10 * 60
+GROUP_MEMBERSHIP_PROBE_TIMEOUT_SECONDS = 30.0
+GROUP_MEMBERSHIP_PROBE_BATCH_DELAY_SECONDS = 0.1
 EXPLICIT_MIME_TYPES = {
     ".aac": "audio/aac",
     ".flac": "audio/flac",
@@ -141,6 +144,9 @@ class BridgeXmppClient(ClientXMPP):
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
         self._group_rejoin_scheduled: set[str] = set()
+        self._group_membership_probe_tokens: dict[str, int] = {}
+        self._group_membership_probe_sequence = 0
+        self._group_membership_watchdog_task: asyncio.Task[None] | None = None
         self._presence_subscription_jids: set[str] = set()
         self._session_started_at: datetime | None = None
         self._disconnect_requested = False
@@ -183,11 +189,13 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._joined_group_chat_jids.clear()
         self._group_rejoin_scheduled.clear()
+        self._group_membership_probe_tokens.clear()
         self._presence_subscription_jids.clear()
         self.send_presence()
         self._emit(XmppConnected())
         asyncio.create_task(self._enable_carbons())
         asyncio.create_task(self._load_initial_roster(session_generation))
+        self._start_group_membership_watchdog(session_generation)
 
     async def _load_initial_roster(self, session_generation: int) -> None:
         try:
@@ -223,6 +231,8 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_disconnected(self, _event: object) -> None:
         self._whatsapp_session_ready = False
+        self._stop_group_membership_watchdog()
+        self._group_membership_probe_tokens.clear()
         if self._disconnect_requested:
             self._emit(XmppDisconnected())
             if self.loop and self.loop.is_running():
@@ -628,6 +638,10 @@ class BridgeXmppClient(ClientXMPP):
         if 110 not in status_codes:
             return
 
+        probe_tokens = getattr(self, "_group_membership_probe_tokens", None)
+        if probe_tokens is not None:
+            probe_tokens.pop(group_jid, None)
+
         if presence_type in {"unavailable", "error"}:
             self._joined_group_chat_jids.discard(group_jid)
             self._group_rejoin_scheduled.discard(group_jid)
@@ -637,6 +651,90 @@ class BridgeXmppClient(ClientXMPP):
 
         self._joined_group_chat_jids.add(group_jid)
         self._group_rejoin_scheduled.discard(group_jid)
+
+    def _start_group_membership_watchdog(self, session_generation: int) -> None:
+        self._stop_group_membership_watchdog()
+        self._group_membership_watchdog_task = asyncio.create_task(
+            self._watch_group_memberships(session_generation)
+        )
+
+    def _stop_group_membership_watchdog(self) -> None:
+        task = self._group_membership_watchdog_task
+        self._group_membership_watchdog_task = None
+        if task is not None:
+            task.cancel()
+
+    async def _watch_group_memberships(self, session_generation: int) -> None:
+        try:
+            while (
+                not self._disconnect_requested
+                and session_generation == self._session_generation
+            ):
+                await asyncio.sleep(GROUP_MEMBERSHIP_REFRESH_SECONDS)
+                if (
+                    self._disconnect_requested
+                    or session_generation != self._session_generation
+                    or not self.is_connected()
+                ):
+                    continue
+
+                for group_jid in sorted(self._group_chat_jids):
+                    if (
+                        self._disconnect_requested
+                        or session_generation != self._session_generation
+                        or not self.is_connected()
+                    ):
+                        return
+                    self._refresh_group_membership(group_jid, session_generation)
+                    await asyncio.sleep(GROUP_MEMBERSHIP_PROBE_BATCH_DELAY_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+    def _refresh_group_membership(self, group_jid: str, session_generation: int) -> None:
+        if (
+            group_jid not in self._group_chat_jids
+            or group_jid not in self._joined_group_chat_jids
+            or self._disconnect_requested
+            or session_generation != self._session_generation
+            or not self.is_connected()
+        ):
+            return
+
+        self._group_membership_probe_sequence += 1
+        probe_token = self._group_membership_probe_sequence
+        self._group_membership_probe_tokens[group_jid] = probe_token
+        try:
+            self.send_presence(pto=f"{group_jid}/{self._muc_nick()}")
+        except Exception:
+            self._expire_group_membership_probe(group_jid, probe_token, session_generation)
+            return
+
+        loop = getattr(self, "loop", None)
+        if loop is not None and loop.is_running():
+            loop.call_later(
+                GROUP_MEMBERSHIP_PROBE_TIMEOUT_SECONDS,
+                self._expire_group_membership_probe,
+                group_jid,
+                probe_token,
+                session_generation,
+            )
+
+    def _expire_group_membership_probe(
+        self,
+        group_jid: str,
+        probe_token: int,
+        session_generation: int,
+    ) -> None:
+        if (
+            self._group_membership_probe_tokens.get(group_jid) != probe_token
+            or self._disconnect_requested
+            or session_generation != self._session_generation
+        ):
+            return
+
+        self._group_membership_probe_tokens.pop(group_jid, None)
+        self._joined_group_chat_jids.discard(group_jid)
+        self._schedule_group_rejoin(group_jid)
 
     @staticmethod
     def _muc_status_codes(xml: ET.Element | None) -> set[int]:

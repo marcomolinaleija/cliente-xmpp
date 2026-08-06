@@ -902,11 +902,13 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _session_generation=0,
                 _joined_group_chat_jids={"#room@example.org"},
                 _group_rejoin_scheduled={"#room@example.org"},
+                _group_membership_probe_tokens={"#room@example.org": 1},
                 _presence_subscription_jids={"contact@example.org"},
                 send_presence=lambda: calls.append("presence"),
                 _emit=events.append,
                 _enable_carbons=enable_carbons,
                 _load_initial_roster=load_initial_roster,
+                _start_group_membership_watchdog=lambda _generation: calls.append("watchdog"),
             )
 
             await BridgeXmppClient._on_session_start(client, None)
@@ -918,6 +920,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
             self.assertFalse(client._initial_remote_sync_started)
             self.assertFalse(client._joined_group_chat_jids)
             self.assertFalse(client._group_rejoin_scheduled)
+            self.assertFalse(client._group_membership_probe_tokens)
             self.assertFalse(client._presence_subscription_jids)
 
             roster_release.set()
@@ -1497,12 +1500,80 @@ class GroupArchiveTests(unittest.TestCase):
 
 
 class GroupMessageParsingTests(unittest.TestCase):
+    def test_refresh_group_membership_renews_own_directed_presence(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        sent_to = []
+        delayed = []
+        client = SimpleNamespace(
+            _group_chat_jids={group_jid},
+            _joined_group_chat_jids={group_jid},
+            _group_membership_probe_tokens={},
+            _group_membership_probe_sequence=0,
+            _disconnect_requested=False,
+            _session_generation=4,
+            is_connected=lambda: True,
+            send_presence=lambda **kwargs: sent_to.append(kwargs["pto"]),
+            _muc_nick=lambda: "angel",
+            _expire_group_membership_probe=lambda *_args: None,
+            loop=SimpleNamespace(
+                is_running=lambda: True,
+                call_later=lambda *args: delayed.append(args),
+            ),
+        )
+
+        BridgeXmppClient._refresh_group_membership(client, group_jid, 4)
+
+        self.assertEqual(sent_to, ["#room@whatsapp.example.org/angel"])
+        self.assertEqual(client._group_membership_probe_tokens, {group_jid: 1})
+        self.assertEqual(delayed[0][2:], (group_jid, 1, 4))
+
+    def test_expired_group_membership_probe_rejoins_room(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        scheduled = []
+        client = SimpleNamespace(
+            _group_membership_probe_tokens={group_jid: 7},
+            _joined_group_chat_jids={group_jid},
+            _disconnect_requested=False,
+            _session_generation=4,
+            _schedule_group_rejoin=scheduled.append,
+        )
+
+        BridgeXmppClient._expire_group_membership_probe(client, group_jid, 7, 4)
+
+        self.assertFalse(client._group_membership_probe_tokens)
+        self.assertFalse(client._joined_group_chat_jids)
+        self.assertEqual(scheduled, [group_jid])
+
+    def test_self_presence_confirms_group_membership_probe(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        client = SimpleNamespace(
+            _joined_group_chat_jids={group_jid},
+            _group_rejoin_scheduled={group_jid},
+            _group_membership_probe_tokens={group_jid: 5},
+            _muc_status_codes=BridgeXmppClient._muc_status_codes,
+            _schedule_group_rejoin=lambda _jid: self.fail("A confirmed room must not rejoin"),
+        )
+        presence = ET.fromstring(
+            """
+            <presence xmlns="jabber:client" from="#room@whatsapp.example.org/angel">
+              <x xmlns="http://jabber.org/protocol/muc#user"><status code="110" /></x>
+            </presence>
+            """
+        )
+
+        BridgeXmppClient._handle_group_membership_presence(client, group_jid, "available", presence)
+
+        self.assertFalse(client._group_membership_probe_tokens)
+        self.assertIn(group_jid, client._joined_group_chat_jids)
+        self.assertFalse(client._group_rejoin_scheduled)
+
     def test_self_unavailable_presence_rejoins_monitored_group(self) -> None:
         scheduled = []
         group_jid = "#room@whatsapp.example.org"
         client = SimpleNamespace(
             _joined_group_chat_jids={group_jid},
             _group_rejoin_scheduled=set(),
+            _group_membership_probe_tokens={},
             _muc_status_codes=BridgeXmppClient._muc_status_codes,
             _schedule_group_rejoin=scheduled.append,
         )
@@ -1534,6 +1605,7 @@ class GroupMessageParsingTests(unittest.TestCase):
         client = SimpleNamespace(
             _joined_group_chat_jids={group_jid},
             _group_rejoin_scheduled=set(),
+            _group_membership_probe_tokens={},
             _muc_status_codes=BridgeXmppClient._muc_status_codes,
             _schedule_group_rejoin=scheduled.append,
         )

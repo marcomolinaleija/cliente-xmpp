@@ -1,15 +1,13 @@
-WhatsApp CAN 1.1.3
+WhatsApp CAN 1.1.4
 
-Bandeja del sistema
+Conexión de grupos más estable
+- WhatsApp CAN mantiene activa la participación en los grupos mientras permanece abierto.
+- Si el servidor deja de reconocer la participación de la aplicación en un grupo, CAN vuelve a
+  unirse automáticamente para recuperar mensajes y envíos, sin necesidad de cerrar la aplicación.
+- Esta comprobación trabaja en segundo plano y no descarga historial ni vuelve a enviar mensajes.
 
-- Nueva opción para ocultar WhatsApp CAN en la bandeja del sistema al pulsar Alt+F4.
-- La opción está desactivada de forma predeterminada para conservar el comportamiento actual.
-- El icono permite restaurar la ventana con un clic o cerrar completamente la aplicación desde
-  su menú.
-- La configuración se guarda y comunica su estado de forma accesible.
-
-Mejoras de audio
-
-- La reproducción prioriza el decodificador libopus para las notas de voz OGG/Opus.
-- Esto reduce cortes, ruidos y transiciones audibles durante los silencios de algunas notas de
-  WhatsApp.
+Mejoras recientes
+- Las previsualizaciones de enlaces conservan el texto del mensaje y el enlace visible.
+- Pulsa L sobre un mensaje con enlace para abrirlo en el navegador predeterminado.
+- Al reenviar una previsualización, se conserva el enlace original.
+- Al intentar abrir CAN por segunda vez, se muestra la ventana que ya está en ejecución.

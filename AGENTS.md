@@ -273,8 +273,11 @@ con participación por persona, horas pico, intervalos, respuestas y frases recu
 consulta también se ejecuta en el ejecutor de storage y nunca desde el hilo wx. Los diálogos de
 información y estadísticas deben cerrarse con Escape además de su botón visible.
 
-La distribución ejecutable comprueba una sola vez por proceso la release estable más reciente,
-dos segundos después de mostrar la ventana y siempre fuera del hilo wx. Solo ofrece paquetes con
+La distribución ejecutable comprueba la release estable más reciente dos segundos después de
+mostrar la ventana y después con la frecuencia configurada, siempre fuera del hilo wx. La
+preferencia se guarda localmente y por defecto es cada 20 minutos; admite 20 o 30 minutos, una o
+cinco horas, o nunca. `Nunca` desactiva únicamente las consultas automáticas: Configuración ofrece
+`Buscar actualizaciones ahora` para una consulta manual en segundo plano. Solo ofrece paquetes con
 versión superior, ZIP `WhatsApp-CAN-<versión>.zip` y checksum homónimo `.sha256`. El usuario debe
 aceptar explícitamente. La aplicación copia `update.exe` a `%TEMP%`, cierra por su flujo normal y
 el actualizador sustituye la carpeta completa con respaldo y rollback. El código fuente no hace

@@ -7,7 +7,6 @@ import wx
 
 from cliente_xmpp.app.single_instance import SingleInstanceGuard
 from cliente_xmpp.ui.main_window import MainWindow
-from cliente_xmpp.updates import start_startup_update_check
 
 
 class ClienteXmppApp(wx.App):
@@ -33,7 +32,6 @@ class ClienteXmppApp(wx.App):
         self._activation_timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self._on_activation_timer, self._activation_timer)
         self._activation_timer.Start(250)
-        wx.CallLater(2000, start_startup_update_check, window)
         return True
 
     def _on_activation_timer(self, _event: wx.TimerEvent) -> None:

@@ -12,6 +12,8 @@ from cliente_xmpp.updates import (
     UpdateCheckError,
     UpdateInfo,
     _offer_update,
+    can_check_for_updates,
+    check_for_update_in_background,
     comparable_version,
     is_newer_version,
     release_from_payload,
@@ -98,6 +100,39 @@ class UpdateCheckTests(unittest.TestCase):
             patch.dict("cliente_xmpp.updates.os.environ", {}, clear=True),
         ):
             self.assertFalse(should_check_at_startup())
+
+    def test_runtime_requires_an_updater_next_to_the_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("cliente_xmpp.updates.should_check_at_startup", return_value=True), patch(
+                "cliente_xmpp.updates._runtime_directory",
+                return_value=root,
+            ):
+                self.assertFalse(can_check_for_updates())
+                (root / "update.exe").write_bytes(b"updater")
+                self.assertTrue(can_check_for_updates())
+
+    def test_background_update_check_reports_without_touching_wx_from_worker(self) -> None:
+        results: list[tuple[UpdateInfo | None, str]] = []
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+        with (
+            patch("cliente_xmpp.updates.threading.Thread", ImmediateThread),
+            patch("cliente_xmpp.updates.check_for_update", return_value=None),
+            patch(
+                "cliente_xmpp.updates.wx.CallAfter",
+                side_effect=lambda callback, *args: callback(*args),
+            ),
+        ):
+            check_for_update_in_background(lambda update, error: results.append((update, error)))
+
+        self.assertEqual(results, [(None, "")])
 
 
 class UpdateExecutableTests(unittest.TestCase):

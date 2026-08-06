@@ -4,10 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import wx
 
-from cliente_xmpp.config.settings import DesktopNotificationSettings, SettingsStore
+from cliente_xmpp.config.settings import (
+    DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+    DesktopNotificationSettings,
+    SettingsStore,
+)
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.settings_panel import format_setting_state
 
@@ -60,6 +65,110 @@ class WindowSettingsTests(unittest.TestCase):
             store.save_minimize_to_tray_on_alt_f4(True)
 
             self.assertTrue(store.load_minimize_to_tray_on_alt_f4())
+
+
+class UpdateCheckSettingsTests(unittest.TestCase):
+    def test_update_check_defaults_to_twenty_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            self.assertEqual(
+                store.load_update_check_interval_minutes(),
+                DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+            )
+
+    def test_update_check_interval_round_trip_including_never(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            store.save_update_check_interval_minutes(300)
+            self.assertEqual(store.load_update_check_interval_minutes(), 300)
+
+            store.save_update_check_interval_minutes(None)
+            self.assertIsNone(store.load_update_check_interval_minutes())
+
+    def test_invalid_saved_update_interval_returns_the_safe_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                '{"updates": {"check_interval_minutes": 17}}',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                SettingsStore(path).load_update_check_interval_minutes(),
+                DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+            )
+
+
+class UpdateCheckWindowTests(unittest.TestCase):
+    def test_update_timer_uses_the_selected_interval(self) -> None:
+        calls: list[object] = []
+        timer = SimpleNamespace(
+            Stop=lambda: calls.append("stop"),
+            Start=lambda milliseconds: calls.append(milliseconds),
+        )
+        window = SimpleNamespace(
+            update_check_timer=timer,
+            update_check_interval_minutes=30,
+        )
+
+        with patch("cliente_xmpp.ui.main_window.can_check_for_updates", return_value=True):
+            MainWindow._restart_update_check_timer(window)
+
+        self.assertEqual(calls, ["stop", 30 * 60_000])
+
+    def test_never_stops_automatic_update_timer(self) -> None:
+        calls: list[object] = []
+        timer = SimpleNamespace(
+            Stop=lambda: calls.append("stop"),
+            Start=lambda milliseconds: calls.append(milliseconds),
+        )
+        window = SimpleNamespace(
+            update_check_timer=timer,
+            update_check_interval_minutes=None,
+        )
+
+        with patch("cliente_xmpp.ui.main_window.can_check_for_updates", return_value=True):
+            MainWindow._restart_update_check_timer(window)
+
+        self.assertEqual(calls, ["stop"])
+
+    def test_manual_check_runs_in_background_and_announces_no_update(self) -> None:
+        callbacks = []
+        statuses: list[str] = []
+        announcements: list[str] = []
+        panel = SimpleNamespace(
+            set_update_check_in_progress=lambda _value: None,
+            set_update_check_status=statuses.append,
+        )
+        window = SimpleNamespace(
+            update_check_in_progress=False,
+            settings_panel=panel,
+            status_bar=SimpleNamespace(SetStatusText=statuses.append),
+            speaker=SimpleNamespace(speak=announcements.append),
+            update_check_offered_tags=set(),
+            IsBeingDeleted=lambda: False,
+        )
+
+        with (
+            patch("cliente_xmpp.ui.main_window.can_check_for_updates", return_value=True),
+            patch(
+                "cliente_xmpp.ui.main_window.check_for_update_in_background",
+                side_effect=callbacks.append,
+            ),
+        ):
+            MainWindow._request_update_check(window, manual=True)
+
+        self.assertTrue(window.update_check_in_progress)
+        callbacks[0](None, "")
+
+        self.assertFalse(window.update_check_in_progress)
+        self.assertEqual(statuses[-2:], [
+            "WhatsApp CAN ya está actualizado.",
+            "WhatsApp CAN ya está actualizado.",
+        ])
+        self.assertEqual(announcements, ["WhatsApp CAN ya está actualizado."])
 
 
 class NotificationSoundShortcutTests(unittest.TestCase):

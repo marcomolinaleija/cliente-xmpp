@@ -15,6 +15,8 @@ DEFAULT_WINDOWS_NOTIFICATION_PREVIEWS_ENABLED = True
 DEFAULT_WINDOWS_NOTIFICATION_NVDA_ANNOUNCEMENTS_ENABLED = False
 DEFAULT_MINIMIZE_TO_TRAY_ON_ALT_F4 = False
 DEFAULT_NEW_CHAT_COUNTRY = "MX"
+DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES = 20
+UPDATE_CHECK_INTERVAL_CHOICES = (20, 30, 60, 300)
 
 
 @dataclass(slots=True)
@@ -180,6 +182,37 @@ class SettingsStore:
             window = {}
         window["minimize_to_tray_on_alt_f4"] = bool(enabled)
         payload["window"] = window
+        self._save_payload(payload)
+
+    def load_update_check_interval_minutes(self) -> int | None:
+        data = self._load_payload()
+        updates = data.get("updates", {})
+        if not isinstance(updates, dict):
+            return DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
+
+        interval = updates.get(
+            "check_interval_minutes",
+            DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+        )
+        if interval is None:
+            return None
+        try:
+            interval = int(interval)
+        except (TypeError, ValueError):
+            return DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
+        if interval not in UPDATE_CHECK_INTERVAL_CHOICES:
+            return DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
+        return interval
+
+    def save_update_check_interval_minutes(self, interval: int | None) -> None:
+        if interval not in (*UPDATE_CHECK_INTERVAL_CHOICES, None):
+            interval = DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
+        payload = self._load_payload()
+        updates = payload.get("updates", {})
+        if not isinstance(updates, dict):
+            updates = {}
+        updates["check_interval_minutes"] = interval
+        payload["updates"] = updates
         self._save_payload(payload)
 
     def _load_payload(self) -> dict[str, object]:

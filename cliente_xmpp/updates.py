@@ -12,6 +12,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,11 @@ def should_check_at_startup() -> bool:
     )
 
 
+def can_check_for_updates() -> bool:
+    """Return whether this runtime can safely offer an installed update."""
+    return should_check_at_startup() and (_runtime_directory() / UPDATER_EXECUTABLE).is_file()
+
+
 def _show_update_dialog(parent: wx.Window, update: UpdateInfo) -> bool:
     dialog = wx.Dialog(
         parent,
@@ -281,28 +287,43 @@ def _offer_update(parent: wx.Window, update: UpdateInfo) -> None:
         )
 
 
-def start_startup_update_check(parent: wx.Window) -> None:
-    """Check once per process without delaying or interrupting the initial UI."""
-    if not should_check_at_startup():
-        return
-    if not (_runtime_directory() / UPDATER_EXECUTABLE).is_file():
-        LOGGER.info("Se omite la búsqueda de actualizaciones: falta update.exe")
-        return
+def check_for_update_in_background(
+    on_complete: Callable[[UpdateInfo | None, str], None],
+) -> None:
+    """Run a release lookup off the wx thread and report the normalized result."""
 
     def worker() -> None:
         try:
             update = check_for_update()
         except UpdateCheckError as exc:
             LOGGER.info("No se pudo comprobar actualizaciones: %s", exc)
+            wx.CallAfter(on_complete, None, str(exc))
             return
         except Exception:
             LOGGER.exception("Fallo inesperado al comprobar actualizaciones")
+            wx.CallAfter(
+                on_complete,
+                None,
+                "Ocurrió un error inesperado al buscar actualizaciones.",
+            )
             return
-        if update is not None:
-            wx.CallAfter(_offer_update, parent, update)
+        wx.CallAfter(on_complete, update, "")
 
     threading.Thread(
         target=worker,
         name="whatsapp-can-update-check",
         daemon=True,
     ).start()
+
+
+def start_startup_update_check(parent: wx.Window) -> None:
+    """Check once per process without delaying or interrupting the initial UI."""
+    if not can_check_for_updates():
+        LOGGER.info("Se omite la búsqueda de actualizaciones: falta update.exe")
+        return
+
+    def on_complete(update: UpdateInfo | None, _error: str) -> None:
+        if update is not None:
+            _offer_update(parent, update)
+
+    check_for_update_in_background(on_complete)

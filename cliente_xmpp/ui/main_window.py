@@ -25,7 +25,11 @@ from cliente_xmpp.audio.notification import (
 )
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
-from cliente_xmpp.config.settings import APP_DIR, DesktopNotificationSettings, SettingsStore
+from cliente_xmpp.config.settings import (
+    APP_DIR,
+    DesktopNotificationSettings,
+    SettingsStore,
+)
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
@@ -90,6 +94,11 @@ from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppPairingCodeDialog,
     WhatsAppQrDialog,
 )
+from cliente_xmpp.updates import (
+    _offer_update,
+    can_check_for_updates,
+    check_for_update_in_background,
+)
 from cliente_xmpp.xmpp.client import XmppService
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
@@ -132,6 +141,7 @@ SEARCH_RESULT_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
 WHATSAPP_QR_TIMEOUT_SECONDS = 60
+UPDATE_CHECK_INITIAL_DELAY_MS = 2000
 MESSAGE_EDIT_WINDOW = timedelta(minutes=15)
 APP_WINDOW_TITLE = "whatsapp-CAN"
 PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
@@ -174,6 +184,12 @@ class MainWindow(wx.Frame):
         self.minimize_to_tray_on_alt_f4 = (
             self.settings_store.load_minimize_to_tray_on_alt_f4()
         )
+        self.update_check_interval_minutes = (
+            self.settings_store.load_update_check_interval_minutes()
+        )
+        self.update_check_in_progress = False
+        self.update_check_offered_tags: set[str] = set()
+        self.update_check_timer = wx.Timer(self)
         self.message_store = MessageStore()
         self.storage_manager = StorageManager(self.message_store)
         self._storage_reset_in_progress = False
@@ -273,6 +289,7 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("Desconectado")
         if not self.development_mode:
             self._schedule_auto_connect()
+        wx.CallLater(UPDATE_CHECK_INITIAL_DELAY_MS, self._start_configured_update_checks)
 
     def _layout(self) -> None:
         menu_bar = wx.MenuBar()
@@ -374,6 +391,14 @@ class MainWindow(wx.Frame):
             wx.EVT_BUTTON,
             self._on_test_windows_notification,
         )
+        self.settings_panel.update_check_interval.Bind(
+            wx.EVT_COMBOBOX,
+            self._on_update_check_interval_changed,
+        )
+        self.settings_panel.check_updates_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_check_updates_now,
+        )
         for checkbox in (
             self.settings_panel.windows_notifications,
             self.settings_panel.show_preview,
@@ -392,6 +417,7 @@ class MainWindow(wx.Frame):
         self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
         self.conversation.messages.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_message_right_click)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
+        self.Bind(wx.EVT_TIMER, self._on_update_check_timer, self.update_check_timer)
         self.Bind(EVT_XMPP_EVENT, self._on_xmpp_event)
         self.Bind(wx.EVT_CLOSE, self._on_close)
 
@@ -462,6 +488,14 @@ class MainWindow(wx.Frame):
         except Exception:
             return
 
+    def _save_update_check_settings(self) -> None:
+        try:
+            self.settings_store.save_update_check_interval_minutes(
+                self.update_check_interval_minutes
+            )
+        except Exception:
+            return
+
     def _sync_settings_panel(self) -> None:
         self.settings_panel.set_values(
             windows_notifications=self.windows_notifications_enabled,
@@ -470,7 +504,90 @@ class MainWindow(wx.Frame):
             open_chat_sound=self.open_chat_message_sound_enabled,
             sent_message_sound=self.sent_message_sound_enabled,
             minimize_to_tray_on_alt_f4=self.minimize_to_tray_on_alt_f4,
+            update_check_interval_minutes=self.update_check_interval_minutes,
         )
+        self.settings_panel.set_update_check_runtime_available(can_check_for_updates())
+
+    def _start_configured_update_checks(self) -> None:
+        self._restart_update_check_timer()
+        if self.update_check_interval_minutes is not None:
+            self._request_update_check(manual=False)
+
+    def _restart_update_check_timer(self) -> None:
+        self.update_check_timer.Stop()
+        if not can_check_for_updates() or self.update_check_interval_minutes is None:
+            return
+        self.update_check_timer.Start(self.update_check_interval_minutes * 60_000)
+
+    def _on_update_check_timer(self, _event: wx.TimerEvent) -> None:
+        self._request_update_check(manual=False)
+
+    def _on_update_check_interval_changed(self, _event: wx.CommandEvent) -> None:
+        self.update_check_interval_minutes = (
+            self.settings_panel.update_check_interval_minutes()
+        )
+        self._save_update_check_settings()
+        self._restart_update_check_timer()
+        if self.update_check_interval_minutes is None:
+            announcement = "Búsqueda automática de actualizaciones desactivada"
+        else:
+            label = self.settings_panel.update_check_interval.GetValue()
+            announcement = f"Búsqueda automática de actualizaciones: {label}"
+        self.settings_panel.set_update_check_status(announcement)
+        self.status_bar.SetStatusText(announcement)
+        self.speaker.speak(announcement)
+
+    def _on_check_updates_now(self, _event: wx.CommandEvent) -> None:
+        self._request_update_check(manual=True)
+
+    def _request_update_check(self, *, manual: bool) -> None:
+        if not can_check_for_updates():
+            if manual:
+                message = "La búsqueda de actualizaciones requiere la aplicación instalada."
+                self.settings_panel.set_update_check_status(message)
+                self.status_bar.SetStatusText(message)
+                self.speaker.speak(message)
+            return
+        if self.update_check_in_progress:
+            if manual:
+                message = "Ya se está buscando una actualización."
+                self.settings_panel.set_update_check_status(message)
+                self.status_bar.SetStatusText(message)
+                self.speaker.speak(message)
+            return
+
+        self.update_check_in_progress = True
+        self.settings_panel.set_update_check_in_progress(True)
+        if manual:
+            self.status_bar.SetStatusText("Buscando actualizaciones en segundo plano...")
+
+        def on_complete(update: object, error: str) -> None:
+            if self.IsBeingDeleted():
+                return
+            self.update_check_in_progress = False
+            self.settings_panel.set_update_check_in_progress(False)
+            if error:
+                if manual:
+                    message = f"No se pudo buscar actualizaciones: {error}"
+                    self.settings_panel.set_update_check_status(message)
+                    self.status_bar.SetStatusText(message)
+                    self.speaker.speak(message)
+                return
+            if update is None:
+                if manual:
+                    message = "WhatsApp CAN ya está actualizado."
+                    self.settings_panel.set_update_check_status(message)
+                    self.status_bar.SetStatusText(message)
+                    self.speaker.speak(message)
+                return
+
+            tag = getattr(update, "tag", "")
+            if manual or tag not in self.update_check_offered_tags:
+                if tag:
+                    self.update_check_offered_tags.add(tag)
+                _offer_update(self, update)
+
+        check_for_update_in_background(on_complete)
 
     def _on_settings_changed(self, event: wx.CommandEvent) -> None:
         self.windows_notifications_enabled = self.settings_panel.windows_notifications.GetValue()
@@ -3836,6 +3953,9 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        update_check_timer = getattr(self, "update_check_timer", None)
+        if update_check_timer is not None:
+            update_check_timer.Stop()
         system_tray = getattr(self, "system_tray", None)
         if system_tray is not None:
             system_tray.Destroy()

@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import wx
 
+from cliente_xmpp.config.settings import (
+    DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+    UPDATE_CHECK_INTERVAL_CHOICES,
+)
+
 WINDOWS_NOTIFICATIONS_LABEL = "Mostrar mensajes como notificaciones de Windows"
 SHOW_PREVIEW_LABEL = "Mostrar el contenido del mensaje en la notificación"
 ANNOUNCE_WITH_NVDA_LABEL = "Anunciar también el mensaje directamente con NVDA"
 OPEN_CHAT_SOUND_LABEL = "Reproducir sonido para mensajes del chat abierto"
 SENT_MESSAGE_SOUND_LABEL = "Reproducir sonido al enviar un mensaje"
 MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL = "Minimizar a la bandeja al usar Alt+F4"
+UPDATE_CHECK_INTERVAL_LABEL = "Buscar actualizaciones automáticamente"
+UPDATE_CHECK_INTERVAL_LABELS = {
+    20: "Cada 20 minutos",
+    30: "Cada 30 minutos",
+    60: "Cada hora",
+    300: "Cada 5 horas",
+    None: "Nunca",
+}
 
 
 def format_setting_state(label: str, enabled: bool) -> str:
@@ -17,6 +30,7 @@ def format_setting_state(label: str, enabled: bool) -> str:
 class SettingsPanel(wx.Panel):
     def __init__(self, parent: wx.Window) -> None:
         super().__init__(parent)
+        self._update_check_runtime_available = False
 
         self.title = wx.StaticText(self, label="Configuración")
         title_font = self.title.GetFont()
@@ -60,6 +74,21 @@ class SettingsPanel(wx.Panel):
         self.minimize_to_tray_on_alt_f4.SetToolTip(
             "Oculta la ventana y la deja disponible desde el icono de la bandeja del sistema."
         )
+        self.update_check_interval = wx.ComboBox(
+            self,
+            choices=[UPDATE_CHECK_INTERVAL_LABELS[value] for value in UPDATE_CHECK_INTERVAL_CHOICES]
+            + [UPDATE_CHECK_INTERVAL_LABELS[None]],
+            style=wx.CB_READONLY,
+        )
+        self.update_check_interval.SetName(UPDATE_CHECK_INTERVAL_LABEL)
+        self.update_check_interval.SetToolTip(
+            "Busca releases nuevas en segundo plano con la frecuencia elegida."
+        )
+        self.check_updates_button = wx.Button(self, label="Buscar actualizaciones ahora")
+        self.check_updates_button.SetToolTip(
+            "Busca una actualización ahora, sin bloquear la aplicación."
+        )
+        self.update_check_status = wx.StaticText(self, label="")
 
         self.test_notification_button = wx.Button(
             self,
@@ -78,6 +107,7 @@ class SettingsPanel(wx.Panel):
         open_chat_sound: bool,
         sent_message_sound: bool,
         minimize_to_tray_on_alt_f4: bool,
+        update_check_interval_minutes: int | None = DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
     ) -> None:
         self.windows_notifications.SetValue(windows_notifications)
         self.show_preview.SetValue(show_preview)
@@ -85,7 +115,43 @@ class SettingsPanel(wx.Panel):
         self.open_chat_sound.SetValue(open_chat_sound)
         self.sent_message_sound.SetValue(sent_message_sound)
         self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
+        self.set_update_check_interval_minutes(update_check_interval_minutes)
         self.refresh_accessible_states()
+
+    def update_check_interval_minutes(self) -> int | None:
+        label = self.update_check_interval.GetValue()
+        for interval, interval_label in UPDATE_CHECK_INTERVAL_LABELS.items():
+            if label == interval_label:
+                return interval
+        return DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
+
+    def set_update_check_interval_minutes(self, interval: int | None) -> None:
+        label = UPDATE_CHECK_INTERVAL_LABELS.get(
+            interval,
+            UPDATE_CHECK_INTERVAL_LABELS[DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES],
+        )
+        self.update_check_interval.SetValue(label)
+
+    def set_update_check_runtime_available(self, available: bool) -> None:
+        self._update_check_runtime_available = available
+        self.update_check_interval.Enable(available)
+        self.check_updates_button.Enable(available)
+        if available:
+            self.update_check_status.SetLabel("")
+        else:
+            self.update_check_status.SetLabel(
+                "Disponible al ejecutar la aplicación instalada."
+            )
+
+    def set_update_check_in_progress(self, in_progress: bool) -> None:
+        self.check_updates_button.Enable(
+            self._update_check_runtime_available and not in_progress
+        )
+        if in_progress:
+            self.update_check_status.SetLabel("Buscando actualizaciones en segundo plano...")
+
+    def set_update_check_status(self, status: str) -> None:
+        self.update_check_status.SetLabel(status)
 
     def refresh_accessible_states(self) -> None:
         self._apply_control_state()
@@ -162,6 +228,17 @@ class SettingsPanel(wx.Panel):
         window_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Ventana")
         window_box.Add(self.minimize_to_tray_on_alt_f4, 0, wx.ALL, 8)
 
+        updates_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Actualizaciones")
+        updates_box.Add(wx.StaticText(self, label=UPDATE_CHECK_INTERVAL_LABEL), 0, wx.ALL, 8)
+        updates_box.Add(
+            self.update_check_interval,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
+            8,
+        )
+        updates_box.Add(self.check_updates_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        updates_box.Add(self.update_check_status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self.test_notification_button, 0, wx.RIGHT, 8)
         buttons.Add(self.back_button, 0)
@@ -170,6 +247,7 @@ class SettingsPanel(wx.Panel):
         box.Add(self.title, 0, wx.ALL, 16)
         box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
         box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
+        box.Add(updates_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
         box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 16)
         box.AddStretchSpacer(1)
         self.SetSizer(box)

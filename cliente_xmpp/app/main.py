@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+from collections.abc import Sequence
+
 import wx
 
 from cliente_xmpp.app.single_instance import SingleInstanceGuard
@@ -8,17 +11,23 @@ from cliente_xmpp.updates import start_startup_update_check
 
 
 class ClienteXmppApp(wx.App):
-    def __init__(self, single_instance: SingleInstanceGuard) -> None:
-        super().__init__(False)
+    def __init__(
+        self,
+        single_instance: SingleInstanceGuard,
+        *,
+        development_mode: bool = False,
+    ) -> None:
         self._single_instance = single_instance
+        self._development_mode = development_mode
         self._main_window: MainWindow | None = None
         self._activation_timer: wx.Timer | None = None
+        super().__init__(False)
 
     def OnInit(self) -> bool:
         self.SetAppName("whatsapp-CAN")
         self.SetAppDisplayName("WhatsApp CAN")
         self.SetVendorName("Marco ML")
-        window = MainWindow()
+        window = MainWindow(development_mode=self._development_mode)
         self._main_window = window
         window.Show()
         self._activation_timer = wx.Timer(self)
@@ -37,7 +46,19 @@ class ClienteXmppApp(wx.App):
         return 0
 
 
-def main() -> None:
+def _parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Cliente WhatsApp CAN")
+    parser.add_argument(
+        "-d",
+        "--develop",
+        action="store_true",
+        help="Muestra primero la caché local y verifica la conexión en segundo plano.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    arguments = _parse_arguments(argv)
     single_instance = SingleInstanceGuard()
     if not single_instance.acquire():
         single_instance.request_activation()
@@ -45,7 +66,7 @@ def main() -> None:
         return
 
     try:
-        app = ClienteXmppApp(single_instance)
+        app = ClienteXmppApp(single_instance, development_mode=arguments.develop)
         app.MainLoop()
     finally:
         single_instance.close()

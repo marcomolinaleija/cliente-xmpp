@@ -150,9 +150,10 @@ class ClipboardAttachment:
 
 
 class MainWindow(wx.Frame):
-    def __init__(self) -> None:
+    def __init__(self, *, development_mode: bool = False) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
+        self.development_mode = development_mode
         self.settings_store = SettingsStore()
         self.credential_store = CredentialStore()
         self.connection_settings = self.settings_store.load_connection()
@@ -261,14 +262,17 @@ class MainWindow(wx.Frame):
             on_exit=self._exit_from_tray,
         )
         self._load_saved_password()
-        if self._can_auto_connect():
+        if self.development_mode:
+            self._start_development_mode()
+        elif self._can_auto_connect():
             self._set_startup_wait_ui()
             self.status_bar.SetStatusText("Conectando automáticamente...")
             wx.CallAfter(self.speaker.speak, "Bienvenido a WhatsApp CAN. Espera por favor...")
         else:
             self._set_connected_ui(False)
             self.status_bar.SetStatusText("Desconectado")
-        self._schedule_auto_connect()
+        if not self.development_mode:
+            self._schedule_auto_connect()
 
     def _layout(self) -> None:
         menu_bar = wx.MenuBar()
@@ -517,6 +521,43 @@ class MainWindow(wx.Frame):
 
         wx.CallAfter(self._on_connect, wx.CommandEvent())
 
+    def _start_development_mode(self) -> None:
+        """Show the local cache before an optional background verification."""
+        self.current_jid = self.connection_settings.jid
+        self._set_connected_ui(True)
+        self._set_whatsapp_remote_actions_enabled(False)
+        self.connection_header.set_account(self.current_jid or "sin cuenta local")
+        self.connection_header.set_status("Modo de desarrollo: datos locales")
+
+        if not self.current_jid:
+            self._show_chat_placeholder("Modo de desarrollo: no hay una cuenta local guardada.")
+            self.status_bar.SetStatusText("Modo de desarrollo sin cuenta local")
+            return
+
+        cached_chats = self._load_cached_chats()
+        self._set_searchable_chats(cached_chats)
+        visible_chats = self._chats_with_activity(cached_chats)
+        self.loaded_chat_summaries = len(visible_chats)
+        if visible_chats:
+            self.chat_list.set_chats(self._sort_chats_by_recency(visible_chats))
+            self.chat_list.select_first()
+        else:
+            self._show_chat_placeholder("Modo de desarrollo: no hay chats locales descargados.")
+
+        if self._can_auto_connect():
+            status = (
+                "Modo de desarrollo. "
+                f"{self.loaded_chat_summaries} chats locales. Verificando en segundo plano..."
+            )
+            wx.CallAfter(self._on_connect, wx.CommandEvent())
+        else:
+            status = (
+                "Modo de desarrollo sin conexión. "
+                f"{self.loaded_chat_summaries} chats locales disponibles."
+            )
+        self.status_bar.SetStatusText(status)
+        wx.CallAfter(self.speaker.speak, status)
+
     def _auto_connect_enabled(self) -> bool:
         return (
             self.connection_settings.auto_connect
@@ -628,7 +669,8 @@ class MainWindow(wx.Frame):
             ),
             can_cancel=self._has_cancelable_whatsapp_link(component_jid),
         )
-        self._show_chat_placeholder("WhatsApp requiere vinculacion.")
+        if not getattr(self, "development_mode", False):
+            self._show_chat_placeholder("WhatsApp requiere vinculacion.")
         self.connection_header.set_status("WhatsApp requiere vinculacion")
         self.status_bar.SetStatusText(message)
         self.workspace_panel.Layout()
@@ -3826,7 +3868,7 @@ class MainWindow(wx.Frame):
                 self._set_whatsapp_remote_actions_enabled(self.whatsapp_verified)
                 if self.whatsapp_verified:
                     self._apply_pending_roster_if_ready()
-                else:
+                elif not getattr(self, "development_mode", False):
                     message = "Verificando confirmación de conexión con WhatsApp..."
                     self._show_chat_placeholder(message)
                     self.status_bar.SetStatusText(message)
@@ -3835,7 +3877,8 @@ class MainWindow(wx.Frame):
                 self.whatsapp_link_status = "unknown"
                 self.pending_roster_chats = None
                 self._set_whatsapp_remote_actions_enabled(False)
-                self._show_chat_placeholder("Conexión interrumpida. Esperando reconexión...")
+                if not getattr(self, "development_mode", False):
+                    self._show_chat_placeholder("Conexión interrumpida. Esperando reconexión...")
                 self.login_panel.set_connecting(False)
                 if reason:
                     self.connection_header.set_status(reason)
@@ -3849,6 +3892,10 @@ class MainWindow(wx.Frame):
                     self._set_connected_ui(False)
                 if self.whatsapp_qr_request_in_flight and "vincul" in message.casefold():
                     self._mark_whatsapp_qr_error(message)
+                if getattr(self, "development_mode", False) and self.workspace_panel.IsShown():
+                    self.connection_header.set_status("Modo de desarrollo sin conexión")
+                    self.status_bar.SetStatusText(f"Modo de desarrollo: {message}")
+                    return
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
             case WhatsAppBridgeStatus(status=status, component_jid=component_jid, detail=detail):
@@ -3899,7 +3946,7 @@ class MainWindow(wx.Frame):
                 self._update_chat_names(chats)
                 if self.whatsapp_verified:
                     self._apply_roster_chats(chats)
-                else:
+                elif not getattr(self, "development_mode", False):
                     message = "Verificando confirmación de conexión con WhatsApp..."
                     self._show_chat_placeholder(message)
                     self.status_bar.SetStatusText(message)
@@ -5844,7 +5891,7 @@ class MainWindow(wx.Frame):
         self.displayed_marker_ids_by_chat[chat_jid] = marker_id
 
     def _show_selected_chat(self) -> None:
-        if not self.whatsapp_verified:
+        if not self.whatsapp_verified and not getattr(self, "development_mode", False):
             message = "Verificando confirmación de conexión con WhatsApp..."
             self._show_chat_placeholder(message)
             self.status_bar.SetStatusText(message)

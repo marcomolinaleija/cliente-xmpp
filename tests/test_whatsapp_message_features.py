@@ -9,10 +9,12 @@ import zipfile
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.media.downloads import media_description
-from cliente_xmpp.media.links import copyable_message_text, is_link_preview
+from cliente_xmpp.media.links import copyable_message_text, is_link_preview, message_links
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_bridge_sticker,
@@ -21,6 +23,7 @@ from cliente_xmpp.media.stickers import (
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
+from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import (
     OOB_NS,
     REPLY_NS,
@@ -50,7 +53,7 @@ class MessageFeatureParsingTests(unittest.TestCase):
         self.assertEqual(copyable_message_text(message), destination)
         self.assertEqual(
             media_description(message),
-            f"enlace, Un enlace reenviado, {destination}",
+            f"enlace, {destination}, Un enlace reenviado",
         )
 
     def test_link_preview_keeps_caption_when_remote_title_differs(self) -> None:
@@ -65,11 +68,35 @@ class MessageFeatureParsingTests(unittest.TestCase):
             media_filename="TÃ­tulo remoto",
         )
         expected = (
-            f"enlace, Texto que acompaÃ±a al enlace, tÃ­tulo: TÃ­tulo remoto, {destination}"
+            f"enlace, {destination}, Texto que acompaÃ±a al enlace, tÃ­tulo: TÃ­tulo remoto"
         )
 
         self.assertEqual(media_description(message), expected)
         self.assertEqual(ConversationPanel._format_message_body(None, message), expected)
+        self.assertEqual(message_links(message)[0].url, destination)
+
+    def test_open_selected_link_uses_preview_destination(self) -> None:
+        destination = "https://example.test/redirect"
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="Texto que acompaÃ±a al enlace",
+            media_url=destination,
+            media_kind="file",
+            media_mime="application/octet-stream",
+            media_filename="TÃ­tulo remoto",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.conversation = SimpleNamespace(selected_message=lambda: message)
+        window.status_bar = Mock()
+
+        with patch(
+            "cliente_xmpp.ui.main_window.wx.LaunchDefaultBrowser",
+            return_value=True,
+        ) as open_browser:
+            self.assertTrue(window._open_selected_message_link())
+
+        open_browser.assert_called_once_with(destination)
 
     def test_generic_binary_attachment_stays_a_file(self) -> None:
         message = Message(

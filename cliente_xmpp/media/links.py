@@ -65,14 +65,15 @@ def link_description(message: Message) -> str:
         link = links[0]
         caption = message.body.strip()
         title = link.title or _host_label(link.url)
-        parts = ["enlace"]
+        # The message list is one visual line, so putting the URL first keeps
+        # it visible even when the caption or remote title is long.
+        parts = ["enlace", link.url]
         if caption and not _same_link_text(caption, link.url):
             parts.append(caption)
         if title and not _same_link_text(title, caption):
             parts.append(f"tÃ­tulo: {title}")
         elif not caption:
             parts.append(title)
-        parts.append(link.url)
         return ", ".join(parts)
 
     return message.body

@@ -7,7 +7,6 @@ import threading
 import time
 import unicodedata
 import uuid
-import webbrowser
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -1799,6 +1798,13 @@ class MainWindow(wx.Frame):
             self._refresh_current_view()
             return
 
+        if (
+            self.conversation.messages.HasFocus()
+            and self._is_open_link_shortcut(event)
+            and self._open_selected_message_link()
+        ):
+            return
+
         if key_code == wx.WXK_ESCAPE and self.settings_panel.IsShown():
             self._close_settings()
             return
@@ -2864,6 +2870,15 @@ class MainWindow(wx.Frame):
             and event.GetKeyCode() == wx.WXK_UP
         )
 
+    @staticmethod
+    def _is_open_link_shortcut(event: wx.KeyEvent) -> bool:
+        if event.ControlDown() or event.AltDown() or event.ShiftDown():
+            return False
+
+        key_code = event.GetKeyCode()
+        unicode_key = event.GetUnicodeKey()
+        return key_code in (ord("L"), ord("l")) or unicode_key in (ord("L"), ord("l"))
+
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
         if (
             event.GetKeyCode() == wx.WXK_RIGHT
@@ -2905,7 +2920,7 @@ class MainWindow(wx.Frame):
         if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_video():
             return
 
-        if event.GetKeyCode() in (ord("L"), ord("l")) and self._open_selected_message_link():
+        if self._is_open_link_shortcut(event) and self._open_selected_message_link():
             return
 
         if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
@@ -3459,7 +3474,7 @@ class MainWindow(wx.Frame):
         if link is None:
             return True
 
-        if webbrowser.open(link.url):
+        if wx.LaunchDefaultBrowser(link.url):
             self.status_bar.SetStatusText(f"Abriendo enlace: {link.url}")
         else:
             self.status_bar.SetStatusText("No se pudo abrir el enlace")

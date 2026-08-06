@@ -97,7 +97,8 @@ class ConversationPanel(wx.Panel):
         )
         self.messages.SetName("Historial de mensajes")
         self.messages.SetToolTip(
-            "Historial de mensajes. Pulsa Enter para leer el mensaje completo."
+            "Historial de mensajes. Pulsa Enter para leer el mensaje completo. "
+            "Pulsa L para abrir el enlace del mensaje enfocado."
         )
         self.go_to_quoted_button = wx.Button(self, label="Ir a mensaje citado")
         self.go_to_quoted_button.SetName("Ir a mensaje citado")

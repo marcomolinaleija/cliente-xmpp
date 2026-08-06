@@ -1,13 +1,18 @@
-WhatsApp CAN 1.1.4
+WhatsApp CAN 1.1.5
 
-Conexión de grupos más estable
-- WhatsApp CAN mantiene activa la participación en los grupos mientras permanece abierto.
-- Si el servidor deja de reconocer la participación de la aplicación en un grupo, CAN vuelve a
-  unirse automáticamente para recuperar mensajes y envíos, sin necesidad de cerrar la aplicación.
-- Esta comprobación trabaja en segundo plano y no descarga historial ni vuelve a enviar mensajes.
+Actualizaciones en segundo plano
+- Ahora puedes elegir desde Configuración cada cuánto comprobar actualizaciones: cada 20 minutos,
+  30 minutos, una hora, cinco horas o nunca.
+- La frecuencia predeterminada es cada 20 minutos. Las comprobaciones no bloquean el uso de CAN.
+- Se añadió el botón "Buscar actualizaciones ahora" para comprobar una nueva versión cuando lo
+  necesites.
+- Elegir "Nunca" detiene solamente las comprobaciones automáticas; puedes seguir buscando una
+  actualización manualmente.
 
-Mejoras recientes
-- Las previsualizaciones de enlaces conservan el texto del mensaje y el enlace visible.
+Mejoras incluidas
+- WhatsApp CAN mantiene activa la participación en los grupos mientras permanece abierto y vuelve
+  a unirse automáticamente si el servidor deja de reconocerla.
+- Las previsualizaciones de enlaces conservan el texto que las acompaña y el enlace visible.
 - Pulsa L sobre un mensaje con enlace para abrirlo en el navegador predeterminado.
 - Al reenviar una previsualización, se conserva el enlace original.
 - Al intentar abrir CAN por segunda vez, se muestra la ventana que ya está en ejecución.

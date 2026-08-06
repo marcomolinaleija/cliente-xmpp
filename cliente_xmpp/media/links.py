@@ -76,6 +76,14 @@ def link_description(message: Message) -> str:
     if _is_link_preview_media(message):
         link = links[0]
         caption = message.body.strip()
+        if (
+            caption
+            and not _same_link_text(caption, link.url)
+            and link.url in _urls_from_text(caption)
+        ):
+            # Some bridge stanzas expose OpenGraph data as a generic file even
+            # though the body is the sender's complete text plus its URL.
+            return caption
         title = link.title or _host_label(link.url)
         # The message list is one visual line, so putting the URL first keeps
         # it visible even when the caption or remote title is long.

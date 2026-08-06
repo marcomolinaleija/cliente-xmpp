@@ -4469,7 +4469,10 @@ class MainWindow(wx.Frame):
             target.reply_to_jid = incoming.reply_to_jid
         if incoming.reply_to_id and not target.reply_to_id:
             target.reply_to_id = incoming.reply_to_id
-        if not target.body and incoming.body:
+        if incoming.body and (
+            not target.body
+            or MainWindow._generated_file_label_hides_link_text(target, incoming)
+        ):
             target.body = incoming.body
         if not target.audio_url and incoming.audio_url:
             target.audio_url = incoming.audio_url
@@ -4490,6 +4493,19 @@ class MainWindow(wx.Frame):
         target.is_sticker = target.is_sticker or incoming.is_sticker
         target.is_forwarded = target.is_forwarded or incoming.is_forwarded
         target.chat_is_group = target.chat_is_group or incoming.chat_is_group
+
+    @staticmethod
+    def _generated_file_label_hides_link_text(target: Message, incoming: Message) -> bool:
+        """Replace an old synthetic file label with the MAM text it hid."""
+        if target.media_kind != "file" or not target.media_url:
+            return False
+
+        body = target.body.strip()
+        expected = "Archivo"
+        if target.media_filename:
+            expected = f"{expected}: {target.media_filename}"
+
+        return body == expected and target.media_url in incoming.body
 
     def _request_full_history(self, chat_jid: str) -> None:
         if not self.whatsapp_verified:

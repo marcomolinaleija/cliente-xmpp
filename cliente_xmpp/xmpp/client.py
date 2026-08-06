@@ -3434,7 +3434,7 @@ class BridgeXmppClient(ClientXMPP):
 
         for url in self._urls_from_text(body):
             media_kind = self._media_kind_from_url(url)
-            if media_kind:
+            if media_kind in {"audio", "image", "video"}:
                 return url, media_kind, "", self._filename_from_url(url), 0, 0.0
 
         return "", "", "", "", 0, 0.0
@@ -3456,7 +3456,9 @@ class BridgeXmppClient(ClientXMPP):
         if is_sticker:
             return "Sticker"
 
-        if body and media_url not in cls._urls_from_text(body):
+        # A message may contain prose followed by a URL. It is not an
+        # attachment just because the URL has no familiar file extension.
+        if body and body != media_url:
             return body
 
         match media_kind:

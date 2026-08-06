@@ -84,6 +84,87 @@ class MessageFeatureParsingTests(unittest.TestCase):
             f"Texto que acompaÃ±a al enlace\n{destination}",
         )
 
+    def test_text_with_drive_link_keeps_the_full_sender_caption(self) -> None:
+        destination = "https://drive.google.com/drive/folders/example?usp=drive_link"
+        body = f"Lee el documento y hablamos luego. {destination}"
+
+        class Stanza:
+            def __init__(self, text: str, xml: ET.Element) -> None:
+                self._text = text
+                self.xml = xml
+
+            def __getitem__(self, key: str) -> str:
+                if key == "body":
+                    return self._text
+                raise KeyError(key)
+
+        stanza = Stanza(
+            body,
+            ET.fromstring(
+                f"""
+                <message xmlns="jabber:client">
+                  <body>{body}</body>
+                  <Description xmlns="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                               about="{destination}">
+                    <title xmlns="https://ogp.me/ns#">drive.google.com</title>
+                  </Description>
+                </message>
+                """
+            ),
+        )
+        client = SimpleNamespace(
+            _media_from_xml=BridgeXmppClient._media_from_xml,
+            _urls_from_text=BridgeXmppClient._urls_from_text,
+            _media_kind_from_url=BridgeXmppClient._media_kind_from_url,
+            _filename_from_url=BridgeXmppClient._filename_from_url,
+        )
+
+        media_url, media_kind, *_ = BridgeXmppClient._media_from_stanza(client, stanza)
+
+        self.assertEqual((media_url, media_kind), ("", ""))
+        self.assertEqual(
+            BridgeXmppClient._message_body_for_display(
+                body,
+                destination,
+                "file",
+                "example",
+            ),
+            body,
+        )
+        self.assertEqual(
+            media_description(
+                Message(
+                    chat_jid="chat@example.test",
+                    sender_jid="contact@example.test",
+                    body=body,
+                    media_url=destination,
+                    media_kind="file",
+                    media_filename="example",
+                )
+            ),
+            body,
+        )
+
+    def test_merging_mam_text_replaces_old_generated_file_label(self) -> None:
+        destination = "https://drive.google.com/drive/folders/example?usp=drive_link"
+        target = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="Archivo: example",
+            media_url=destination,
+            media_kind="file",
+            media_filename="example",
+        )
+        incoming = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body=f"Lee el documento y hablamos luego. {destination}",
+        )
+
+        MainWindow._merge_message_metadata(target, incoming)
+
+        self.assertEqual(target.body, incoming.body)
+
     def test_open_selected_link_uses_preview_destination(self) -> None:
         destination = "https://example.test/redirect"
         message = Message(

@@ -57,6 +57,7 @@ class StorageManagerDialog(wx.Dialog):
         self._request_id = 0
         self._active = True
         self._busy = False
+        self._can_close_while_busy = True
 
         self.notebook = wx.Notebook(self)
         self.summary = self._create_summary_page()
@@ -483,7 +484,11 @@ class StorageManagerDialog(wx.Dialog):
         finally:
             dialog.Destroy()
 
-        self._set_busy(True, "Borrando todos los datos locales...")
+        self._set_busy(
+            True,
+            "Borrando todos los datos locales...",
+            can_close_while_busy=False,
+        )
         self._delete_all_data(self._finish_total_deletion)
 
     def _finish_total_deletion(self, result: StorageCleanupResult | None, error: str) -> None:
@@ -505,8 +510,15 @@ class StorageManagerDialog(wx.Dialog):
         self._active = False
         self.EndModal(wx.ID_DELETE)
 
-    def _set_busy(self, busy: bool, message: str = "") -> None:
+    def _set_busy(
+        self,
+        busy: bool,
+        message: str = "",
+        *,
+        can_close_while_busy: bool = True,
+    ) -> None:
         self._busy = busy
+        self._can_close_while_busy = not busy or can_close_while_busy
         for control in (
             self.refresh_button,
             self.delete_chats_button,
@@ -518,6 +530,19 @@ class StorageManagerDialog(wx.Dialog):
             self.delete_all_button,
         ):
             control.Enable(not busy)
+        self.close_button.Enable(self._can_close_while_busy)
+        self.close_button.SetLabel(
+            "Cerrar (la operación continúa)"
+            if busy and self._can_close_while_busy
+            else "Cerrar"
+        )
+        self.close_button.SetToolTip(
+            "Cierra este diálogo. La limpieza ya iniciada continuará en segundo plano."
+            if busy and self._can_close_while_busy
+            else "El borrado irreversible debe terminar antes de cerrar este diálogo."
+            if busy
+            else "Cierra el gestor de almacenamiento."
+        )
         if not busy:
             self._update_marked_action_buttons()
         if message:
@@ -584,12 +609,13 @@ class StorageManagerDialog(wx.Dialog):
         )
 
     def _on_close_button(self, _event: wx.CommandEvent) -> None:
-        if not self._busy:
-            self.deactivate()
-            self.EndModal(wx.ID_CANCEL)
+        if not getattr(self, "_can_close_while_busy", True):
+            return
+        self.deactivate()
+        self.EndModal(wx.ID_CANCEL)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
-        if self._busy:
+        if not getattr(self, "_can_close_while_busy", True):
             event.Veto()
             return
         self.deactivate()
@@ -599,7 +625,10 @@ class StorageManagerDialog(wx.Dialog):
             event.Skip()
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
-        if event.GetKeyCode() == wx.WXK_ESCAPE and not self._busy:
+        if (
+            event.GetKeyCode() == wx.WXK_ESCAPE
+            and getattr(self, "_can_close_while_busy", True)
+        ):
             self.deactivate()
             self.EndModal(wx.ID_CANCEL)
             return

@@ -2135,14 +2135,17 @@ class MainWindow(wx.Frame):
         result: StorageCleanupResult,
         callback: Callable[[StorageCleanupResult | None, str], None],
     ) -> None:
+        deleted_paths = set(result.deleted_paths)
+        if not deleted_paths:
+            callback(result, "")
+            return
+
         changed_current_chat = False
         current_chat = self.conversation.current_chat
         for chat_jid, messages in self.messages_by_chat.items():
             for message in messages:
-                if not message.media_local_path:
-                    continue
                 old_path = message.media_local_path
-                if Path(old_path).is_file():
+                if not old_path or old_path not in deleted_paths:
                     continue
                 self.conversation.discard_message_media(message, old_path)
                 message.media_local_path = ""
@@ -2151,11 +2154,18 @@ class MainWindow(wx.Frame):
         if changed_current_chat and current_chat is not None:
             self.conversation.set_messages(self.messages_by_chat.get(current_chat.jid, []))
 
-        previous_avatars = dict(self.contact_avatar_paths_by_chat)
+        previous_avatars = {
+            chat_jid: path
+            for chat_jid, path in self.contact_avatar_paths_by_chat.items()
+            if str(path) in deleted_paths
+        }
+        if not previous_avatars:
+            callback(result, "")
+            return
         self.contact_avatar_paths_by_chat = {
             chat_jid: path
-            for chat_jid, path in previous_avatars.items()
-            if path.is_file()
+            for chat_jid, path in self.contact_avatar_paths_by_chat.items()
+            if chat_jid not in previous_avatars
         }
         if (
             current_chat is not None

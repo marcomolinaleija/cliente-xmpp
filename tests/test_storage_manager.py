@@ -7,13 +7,15 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import wx
 
 from cliente_xmpp.media.downloads import sanitize_filename
 from cliente_xmpp.models.chat import Chat, Message
-from cliente_xmpp.storage.manager import StorageManager
+from cliente_xmpp.storage.manager import StorageCleanupResult, StorageManager
 from cliente_xmpp.storage.message_store import MessageStore
+from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog, format_storage_size
 
 
@@ -243,6 +245,52 @@ class StorageManagerTests(unittest.TestCase):
 
         self.assertEqual(control.checked, {0})
         self.assertTrue(event.skipped)
+
+    def test_escape_closes_dialog_while_cleanup_continues_in_background(self) -> None:
+        dialog = SimpleNamespace(
+            deactivate=Mock(),
+            EndModal=Mock(),
+        )
+
+        StorageManagerDialog._on_key_down(dialog, _FakeKeyEvent(wx.WXK_ESCAPE))
+
+        dialog.deactivate.assert_called_once_with()
+        dialog.EndModal.assert_called_once_with(wx.ID_CANCEL)
+
+    def test_cleanup_completion_updates_only_deleted_paths(self) -> None:
+        deleted_path = "C:/cache/deleted.ogg"
+        untouched_path = "C:/cache/untouched.ogg"
+        deleted_message = SimpleNamespace(media_local_path=deleted_path)
+        untouched_message = SimpleNamespace(media_local_path=untouched_path)
+        current_chat = Chat(jid="chat@example.test", name="Chat")
+        conversation = Mock(current_chat=current_chat)
+        callback = Mock()
+        window = SimpleNamespace(
+            conversation=conversation,
+            messages_by_chat={
+                current_chat.jid: [deleted_message, untouched_message],
+            },
+            contact_avatar_paths_by_chat={},
+        )
+        result = StorageCleanupResult(
+            attempted_file_count=1,
+            deleted_file_count=1,
+            reclaimed_bytes=10,
+            deleted_paths=(deleted_path,),
+        )
+
+        MainWindow._finish_storage_cleanup(window, result, callback)
+
+        self.assertEqual(deleted_message.media_local_path, "")
+        self.assertEqual(untouched_message.media_local_path, untouched_path)
+        conversation.discard_message_media.assert_called_once_with(
+            deleted_message,
+            deleted_path,
+        )
+        conversation.set_messages.assert_called_once_with(
+            [deleted_message, untouched_message]
+        )
+        callback.assert_called_once_with(result, "")
 
 
 if __name__ == "__main__":

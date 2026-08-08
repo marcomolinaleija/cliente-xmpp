@@ -9,7 +9,6 @@ class ConnectionHeaderPanel(wx.Panel):
 
         self.account_label = wx.StaticText(self, label="Cuenta:")
         self.status_label = wx.StaticText(self, label="Conectado")
-        self.disconnect_button = wx.Button(self, label="Desconectar")
         self.mark_all_read_button = wx.Button(self, label="Marcar todos como leídos (&M)")
         self.mark_all_read_button.SetToolTip("Marca todos los chats como leídos en WhatsApp.")
         self.settings_button = wx.Button(self, label="&Configuración")
@@ -27,7 +26,6 @@ class ConnectionHeaderPanel(wx.Panel):
         box = wx.BoxSizer(wx.HORIZONTAL)
         box.Add(self.account_label, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         box.Add(self.status_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
-        box.Add(self.disconnect_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         box.Add(self.mark_all_read_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         box.Add(self.settings_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
         self.SetSizer(box)

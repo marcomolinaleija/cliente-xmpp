@@ -293,6 +293,15 @@ class MainWindow(wx.Frame):
 
     def _layout(self) -> None:
         menu_bar = wx.MenuBar()
+        account_menu = wx.Menu()
+        connection_menu = wx.Menu()
+        self.disconnect_menu_item = connection_menu.Append(
+            wx.ID_ANY,
+            "&Desconectar esta ventana...",
+            "Cierra la conexión XMPP de esta ventana sin desvincular WhatsApp ni borrar chats",
+        )
+        account_menu.AppendSubMenu(connection_menu, "&Conexión")
+        menu_bar.Append(account_menu, "C&uenta")
         view_menu = wx.Menu()
         self.statistics_menu_item = view_menu.Append(
             wx.ID_ANY,
@@ -359,7 +368,6 @@ class MainWindow(wx.Frame):
 
     def _bind_events(self) -> None:
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
-        self.connection_header.disconnect_button.Bind(wx.EVT_BUTTON, self._on_disconnect)
         self.connection_header.mark_all_read_button.Bind(
             wx.EVT_BUTTON,
             self._on_mark_all_chats_read,
@@ -385,6 +393,7 @@ class MainWindow(wx.Frame):
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
+        self.Bind(wx.EVT_MENU, self._on_disconnect, self.disconnect_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_storage_manager, self.storage_manager_menu_item)
         self.settings_panel.test_notification_button.Bind(
@@ -701,6 +710,19 @@ class MainWindow(wx.Frame):
         print(f"{PERF_DEBUG_PREFIX} {label} {elapsed_ms:.1f}ms{suffix}", flush=True)
 
     def _on_disconnect(self, _event: wx.CommandEvent) -> None:
+        result = wx.MessageBox(
+            "Esta acción desconecta solamente esta ventana de la cuenta XMPP actual.\n\n"
+            "No desvincula WhatsApp. Tampoco borra tus chats, archivos o contraseña "
+            "guardada.\n\n"
+            "La aplicación permanecerá abierta sin cargar chats nuevos. Para volver a "
+            "conectarte, ciérrala y ábrela de nuevo, o usa la pantalla de conexión.\n\n"
+            "¿Quieres desconectar esta ventana ahora?",
+            "Desconectar esta ventana",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
         self.connection_header.set_status("Desconectando...")
         self.status_bar.SetStatusText("Desconectando...")
         self.xmpp.disconnect()

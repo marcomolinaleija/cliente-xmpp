@@ -301,6 +301,12 @@ class MainWindow(wx.Frame):
             "Cierra la conexión XMPP de esta ventana sin desvincular WhatsApp ni borrar chats",
         )
         account_menu.AppendSubMenu(connection_menu, "&Conexión")
+        account_menu.AppendSeparator()
+        self.exit_menu_item = account_menu.Append(
+            wx.ID_EXIT,
+            "&Salir",
+            "Cierra WhatsApp CAN de forma segura",
+        )
         menu_bar.Append(account_menu, "C&uenta")
         view_menu = wx.Menu()
         self.statistics_menu_item = view_menu.Append(
@@ -394,6 +400,7 @@ class MainWindow(wx.Frame):
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
         self.Bind(wx.EVT_MENU, self._on_disconnect, self.disconnect_menu_item)
+        self.Bind(wx.EVT_MENU, self._on_exit_application, self.exit_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_storage_manager, self.storage_manager_menu_item)
         self.settings_panel.test_notification_button.Bind(
@@ -2058,6 +2065,10 @@ class MainWindow(wx.Frame):
         self.SetFocus()
 
     def _exit_from_tray(self) -> None:
+        self._on_exit_application(wx.CommandEvent())
+
+    def _on_exit_application(self, _event: wx.CommandEvent) -> None:
+        """Close through wx so XMPP, audio, and executors are released cleanly."""
         self.Close()
 
     def _on_back_to_chat_list(self, _event: wx.CommandEvent) -> None:

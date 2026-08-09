@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
+from slixmpp.exceptions import IqError, IqTimeout
+
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
@@ -1498,23 +1500,121 @@ class GroupArchiveTests(unittest.TestCase):
 
 
 class GroupMessageParsingTests(unittest.TestCase):
-    def test_refresh_group_membership_renews_own_directed_presence(self) -> None:
+    def _membership_ping_client(self, ping: object) -> object:
         group_jid = "#room@whatsapp.example.org"
-        sent_to = []
-        client = SimpleNamespace(
-            _group_chat_jids={group_jid},
-            _joined_group_chat_jids={group_jid},
-            _disconnect_requested=False,
-            _session_generation=4,
-            is_connected=lambda: True,
-            send_presence=lambda **kwargs: sent_to.append(kwargs["pto"]),
-            _muc_nick=lambda: "angel",
-        )
+        class MembershipPingClient:
+            _group_chat_jids = {group_jid}
+            _joined_group_chat_jids = {group_jid}
+            _group_membership_ping_failures: dict[str, int] = {}
+            _group_membership_ping_unsupported_jids: set[str] = set()
+            _disconnect_requested = False
+            _session_generation = 4
 
-        BridgeXmppClient._refresh_group_membership(client, group_jid, 4)
+            @staticmethod
+            def is_connected() -> bool:
+                return True
 
-        self.assertEqual(sent_to, ["#room@whatsapp.example.org/angel"])
+            @staticmethod
+            def _muc_nick() -> str:
+                return "angel"
+
+            @staticmethod
+            def _schedule_group_rejoin(_jid: str) -> None:
+                return None
+
+            @staticmethod
+            def _debug_whatsapp(_message: str) -> None:
+                return None
+
+            def __getitem__(self, _key: str) -> object:
+                return ping
+
+        return MembershipPingClient()
+
+    def test_refresh_group_membership_uses_occupant_ping(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        received: list[tuple[str, int]] = []
+
+        class Ping:
+            async def ping(self, jid: str, *, timeout: int) -> None:
+                received.append((jid, timeout))
+
+        client = self._membership_ping_client(Ping())
+
+        asyncio.run(BridgeXmppClient._refresh_group_membership(client, group_jid, 4))
+
+        self.assertEqual(received, [("#room@whatsapp.example.org/angel", 20)])
         self.assertEqual(client._joined_group_chat_jids, {group_jid})
+
+    def test_membership_ping_rejoins_after_explicit_absence(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        scheduled: list[str] = []
+
+        class Ping:
+            async def ping(self, _jid: str, *, timeout: int) -> None:
+                raise IqError(
+                    {
+                        "to": group_jid,
+                        "error": {
+                            "condition": "item-not-found",
+                            "text": "",
+                            "type": "cancel",
+                        },
+                    }
+                )
+
+        client = self._membership_ping_client(Ping())
+        client._schedule_group_rejoin = scheduled.append
+
+        asyncio.run(BridgeXmppClient._refresh_group_membership(client, group_jid, 4))
+
+        self.assertNotIn(group_jid, client._joined_group_chat_jids)
+        self.assertEqual(scheduled, [group_jid])
+
+    def test_membership_ping_does_not_rejoin_when_muc_cannot_route_iq(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        scheduled: list[str] = []
+
+        class Ping:
+            async def ping(self, _jid: str, *, timeout: int) -> None:
+                raise IqError(
+                    {
+                        "to": group_jid,
+                        "error": {
+                            "condition": "service-unavailable",
+                            "text": "",
+                            "type": "cancel",
+                        },
+                    }
+                )
+
+        client = self._membership_ping_client(Ping())
+        client._schedule_group_rejoin = scheduled.append
+
+        asyncio.run(BridgeXmppClient._refresh_group_membership(client, group_jid, 4))
+
+        self.assertIn(group_jid, client._joined_group_chat_jids)
+        self.assertIn(group_jid, client._group_membership_ping_unsupported_jids)
+        self.assertFalse(scheduled)
+
+    def test_membership_ping_rejoins_after_two_timeouts(self) -> None:
+        group_jid = "#room@whatsapp.example.org"
+        scheduled: list[str] = []
+
+        class Ping:
+            async def ping(self, _jid: str, *, timeout: int) -> None:
+                raise IqTimeout({"to": group_jid, "error": {}})
+
+        client = self._membership_ping_client(Ping())
+        client._schedule_group_rejoin = scheduled.append
+
+        asyncio.run(BridgeXmppClient._refresh_group_membership(client, group_jid, 4))
+        self.assertIn(group_jid, client._joined_group_chat_jids)
+        self.assertFalse(scheduled)
+
+        asyncio.run(BridgeXmppClient._refresh_group_membership(client, group_jid, 4))
+        self.assertNotIn(group_jid, client._joined_group_chat_jids)
+        self.assertEqual(scheduled, [group_jid])
 
     def test_self_unavailable_presence_rejoins_monitored_group(self) -> None:
         scheduled = []

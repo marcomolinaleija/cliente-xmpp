@@ -120,6 +120,16 @@ RECORDING_AUDIO_NS = "urn:marco-ml:whatsapp:recording:0"
 IDLE_NS = "urn:xmpp:idle:1"
 GROUP_MEMBERSHIP_REFRESH_SECONDS = 10 * 60
 GROUP_MEMBERSHIP_REFRESH_BATCH_DELAY_SECONDS = 0.1
+GROUP_MEMBERSHIP_PING_TIMEOUT_SECONDS = 20
+GROUP_MEMBERSHIP_PING_FAILURES_BEFORE_REJOIN = 2
+GROUP_MEMBERSHIP_ABSENT_CONDITIONS = frozenset(
+    {
+        "item-not-found",
+        "not-acceptable",
+        "recipient-unavailable",
+        "registration-required",
+    }
+)
 EXPLICIT_MIME_TYPES = {
     ".aac": "audio/aac",
     ".flac": "audio/flac",
@@ -143,6 +153,8 @@ class BridgeXmppClient(ClientXMPP):
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
         self._group_rejoin_scheduled: set[str] = set()
+        self._group_membership_ping_failures: dict[str, int] = {}
+        self._group_membership_ping_unsupported_jids: set[str] = set()
         self._group_membership_watchdog_task: asyncio.Task[None] | None = None
         self._presence_subscription_jids: set[str] = set()
         self._session_started_at: datetime | None = None
@@ -186,6 +198,8 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._joined_group_chat_jids.clear()
         self._group_rejoin_scheduled.clear()
+        getattr(self, "_group_membership_ping_failures", {}).clear()
+        getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
         self._presence_subscription_jids.clear()
         self.send_presence()
         self._emit(XmppConnected())
@@ -228,6 +242,8 @@ class BridgeXmppClient(ClientXMPP):
     def _on_disconnected(self, _event: object) -> None:
         self._whatsapp_session_ready = False
         self._stop_group_membership_watchdog()
+        getattr(self, "_group_membership_ping_failures", {}).clear()
+        getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
         if self._disconnect_requested:
             self._emit(XmppDisconnected())
             if self.loop and self.loop.is_running():
@@ -676,15 +692,20 @@ class BridgeXmppClient(ClientXMPP):
                         or not self.is_connected()
                     ):
                         return
-                    self._refresh_group_membership(group_jid, session_generation)
+                    await self._refresh_group_membership(group_jid, session_generation)
                     await asyncio.sleep(GROUP_MEMBERSHIP_REFRESH_BATCH_DELAY_SECONDS)
         except asyncio.CancelledError:
             raise
 
-    def _refresh_group_membership(self, group_jid: str, session_generation: int) -> None:
+    async def _refresh_group_membership(
+        self,
+        group_jid: str,
+        session_generation: int,
+    ) -> None:
         if (
             group_jid not in self._group_chat_jids
             or group_jid not in self._joined_group_chat_jids
+            or group_jid in self._group_membership_ping_unsupported_jids
             or self._disconnect_requested
             or session_generation != self._session_generation
             or not self.is_connected()
@@ -692,9 +713,50 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         try:
-            self.send_presence(pto=f"{group_jid}/{self._muc_nick()}")
-        except Exception:
+            await self["xep_0199"].ping(
+                f"{group_jid}/{self._muc_nick()}",
+                timeout=GROUP_MEMBERSHIP_PING_TIMEOUT_SECONDS,
+            )
+        except IqError as exc:
+            condition = str(getattr(exc, "condition", "") or "")
+            if condition == "service-unavailable":
+                # A MUC may not route IQs to occupants. That is not proof that
+                # we left the room, so disable this optional check for that room.
+                self._group_membership_ping_unsupported_jids.add(group_jid)
+                self._group_membership_ping_failures.pop(group_jid, None)
+                self._debug_whatsapp(
+                    f"group membership ping unsupported for {group_jid}; keeping live MUC"
+                )
+                return
+            if condition in GROUP_MEMBERSHIP_ABSENT_CONDITIONS:
+                self._group_membership_ping_failures.pop(group_jid, None)
+                self._joined_group_chat_jids.discard(group_jid)
+                self._schedule_group_rejoin(group_jid)
+                return
+            self._group_membership_ping_failures.pop(group_jid, None)
+            self._debug_whatsapp(
+                f"group membership ping error for {group_jid}: {_format_xmpp_error(exc)}"
+            )
             return
+        except IqTimeout:
+            failures = self._group_membership_ping_failures.get(group_jid, 0) + 1
+            self._group_membership_ping_failures[group_jid] = failures
+            if failures < GROUP_MEMBERSHIP_PING_FAILURES_BEFORE_REJOIN:
+                self._debug_whatsapp(
+                    f"group membership ping timed out for {group_jid}; retrying once before rejoin"
+                )
+                return
+            self._group_membership_ping_failures.pop(group_jid, None)
+            self._joined_group_chat_jids.discard(group_jid)
+            self._schedule_group_rejoin(group_jid)
+            return
+        except Exception as exc:
+            self._debug_whatsapp(
+                f"group membership ping failed for {group_jid}: {_format_xmpp_error(exc)}"
+            )
+            return
+
+        self._group_membership_ping_failures.pop(group_jid, None)
 
     @staticmethod
     def _muc_status_codes(xml: ET.Element | None) -> set[int]:

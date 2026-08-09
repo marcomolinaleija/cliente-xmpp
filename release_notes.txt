@@ -15,7 +15,7 @@ Grupos y conexión más estables
   cuando realmente se ha perdido, para que sigan llegando y saliendo mensajes tras varias horas.
 - En Cuenta > Conexión > Desconectar esta ventana, se explica con claridad que desconectar no
   desvincula WhatsApp ni borra tus chats.
-- En Cuenta > Salir puedes cerrar WhatsApp CAN de forma segura desde el menú.
+- En Cuenta > Salir puedes cerrar WhatsApp CAN de forma segura desde el menú en caso de que alt + f4 minimice a la bandeja.
 
 Gestor de almacenamiento más claro
 - Durante una limpieza normal puedes cerrar el gestor con Escape o Cerrar: la operación continúa

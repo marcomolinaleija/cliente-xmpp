@@ -963,6 +963,33 @@ class MessageStore:
                 (int(muted), now, account_jid, chat_jid),
             )
 
+    def load_chat_media_paths(self, account_jid: str, chat_jid: str) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT media_local_path
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ? AND media_local_path != ''
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+        return list(dict.fromkeys(str(row["media_local_path"]) for row in rows))
+
+    def delete_chat(self, account_jid: str, chat_jid: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM group_participants WHERE account_jid = ? AND group_jid = ?",
+                (account_jid, chat_jid),
+            )
+            conn.execute(
+                "DELETE FROM messages WHERE account_jid = ? AND chat_jid = ?",
+                (account_jid, chat_jid),
+            )
+            conn.execute(
+                "DELETE FROM chats WHERE account_jid = ? AND jid = ?",
+                (account_jid, chat_jid),
+            )
+
     def load_group_participants(self, account_jid: str, group_jid: str) -> list[GroupParticipant]:
         with self._connect() as conn:
             rows = conn.execute(

@@ -17,6 +17,7 @@ DEFAULT_MINIMIZE_TO_TRAY_ON_ALT_F4 = False
 DEFAULT_NEW_CHAT_COUNTRY = "MX"
 DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES = 20
 UPDATE_CHECK_INTERVAL_CHOICES = (20, 30, 60, 300)
+MAX_PINNED_CHATS = 4
 
 
 @dataclass(slots=True)
@@ -213,6 +214,51 @@ class SettingsStore:
             updates = {}
         updates["check_interval_minutes"] = interval
         payload["updates"] = updates
+        self._save_payload(payload)
+
+    def load_pinned_chats(self, account_jid: str) -> list[str]:
+        if not account_jid:
+            return []
+
+        data = self._load_payload()
+        pinned_by_account = data.get("pinned_chats", {})
+        if not isinstance(pinned_by_account, dict):
+            return []
+
+        stored = pinned_by_account.get(account_jid, [])
+        if not isinstance(stored, list):
+            return []
+
+        pinned: list[str] = []
+        for chat_jid in stored:
+            jid = str(chat_jid).strip()
+            if jid and jid not in pinned:
+                pinned.append(jid)
+            if len(pinned) == MAX_PINNED_CHATS:
+                break
+        return pinned
+
+    def save_pinned_chats(self, account_jid: str, chat_jids: list[str]) -> None:
+        if not account_jid:
+            return
+
+        pinned: list[str] = []
+        for chat_jid in chat_jids:
+            jid = str(chat_jid).strip()
+            if jid and jid not in pinned:
+                pinned.append(jid)
+            if len(pinned) == MAX_PINNED_CHATS:
+                break
+
+        payload = self._load_payload()
+        pinned_by_account = payload.get("pinned_chats", {})
+        if not isinstance(pinned_by_account, dict):
+            pinned_by_account = {}
+        if pinned:
+            pinned_by_account[account_jid] = pinned
+        else:
+            pinned_by_account.pop(account_jid, None)
+        payload["pinned_chats"] = pinned_by_account
         self._save_payload(payload)
 
     def _load_payload(self) -> dict[str, object]:

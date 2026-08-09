@@ -27,6 +27,7 @@ from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import (
     APP_DIR,
+    MAX_PINNED_CHATS,
     DesktopNotificationSettings,
     SettingsStore,
 )
@@ -227,6 +228,7 @@ class MainWindow(wx.Frame):
         self.contact_avatar_requests_in_progress: set[str] = set()
         self.chat_state_by_chat: dict[str, str] = {}
         self.searchable_chats_by_jid: dict[str, Chat] = {}
+        self.pinned_chat_jids: list[str] = []
         self.roster_jids: set[str] = set()
         self.loading_initial_chat_activity = False
         self.pending_chat_activity: dict[str, ChatActivityLoaded] = {}
@@ -387,6 +389,7 @@ class MainWindow(wx.Frame):
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX, self._on_chat_selected)
         self.chat_list.list_box.Bind(wx.EVT_LISTBOX_DCLICK, self._on_open_selected_chat)
         self.chat_list.list_box.Bind(wx.EVT_KEY_DOWN, self._on_chat_list_key_down)
+        self.chat_list.list_box.Bind(wx.EVT_CONTEXT_MENU, self._on_chat_list_context_menu)
         self.chat_list.search_ctrl.Bind(wx.EVT_TEXT, self._on_search_text_changed)
         self.chat_list.search_ctrl.Bind(wx.EVT_KEY_DOWN, self._on_search_key_down)
         self.chat_list.new_chat_button.Bind(wx.EVT_BUTTON, self._on_new_chat)
@@ -446,6 +449,7 @@ class MainWindow(wx.Frame):
         self.settings_store.save_connection(login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
+        self._load_pinned_chats()
         self.whatsapp_verified = False
         self.whatsapp_link_status = "unknown"
         self.whatsapp_link_detail = ""
@@ -1370,6 +1374,201 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    def _on_chat_list_context_menu(self, event: wx.ContextMenuEvent) -> None:
+        position = event.GetPosition()
+        if position != wx.DefaultPosition:
+            hit = self.chat_list.list_box.HitTest(
+                self.chat_list.list_box.ScreenToClient(position)
+            )
+            index = hit[0] if isinstance(hit, tuple) else hit
+            if index != wx.NOT_FOUND:
+                self.chat_list.list_box.SetSelection(index)
+                self.chat_list.selected_chat()
+        self._show_chat_context_menu()
+
+    def _show_chat_context_menu(self) -> None:
+        chat = self.chat_list.selected_chat()
+        if chat is None:
+            return
+
+        menu = wx.Menu()
+        rename_item = menu.Append(wx.ID_ANY, "Cambiar nombre\tF2")
+        mute_item = menu.Append(
+            wx.ID_ANY,
+            "Desilenciar chat" if chat.notifications_muted else "Silenciar chat",
+        )
+        pin_label = "Desfijar chat" if self._is_chat_pinned(chat.jid) else "Fijar chat"
+        pin_item = menu.Append(wx.ID_ANY, pin_label)
+        if not self._is_chat_pinned(chat.jid) and len(self.pinned_chat_jids) >= MAX_PINNED_CHATS:
+            pin_item.Enable(False)
+        menu.AppendSeparator()
+        delete_item = menu.Append(wx.ID_ANY, "Eliminar chat...")
+
+        self.Bind(wx.EVT_MENU, lambda _event: self._rename_selected_chat(), rename_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._toggle_selected_chat_mute(), mute_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._toggle_selected_chat_pin(), pin_item)
+        self.Bind(wx.EVT_MENU, lambda _event: self._delete_selected_chat(), delete_item)
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def _load_pinned_chats(self) -> None:
+        self.pinned_chat_jids = self.settings_store.load_pinned_chats(self.current_jid)
+
+    def _is_chat_pinned(self, chat_jid: str) -> bool:
+        return chat_jid in getattr(self, "pinned_chat_jids", [])
+
+    def _save_pinned_chats(self) -> bool:
+        if not self.current_jid:
+            return False
+        try:
+            self.settings_store.save_pinned_chats(self.current_jid, self.pinned_chat_jids)
+        except Exception:
+            self.status_bar.SetStatusText("No se pudo guardar los chats fijados")
+            return False
+        return True
+
+    def _toggle_selected_chat_pin(self) -> None:
+        chat = self.chat_list.selected_chat()
+        if chat is None:
+            self.status_bar.SetStatusText("Selecciona un chat para fijarlo")
+            return
+
+        pinned = list(getattr(self, "pinned_chat_jids", []))
+        if chat.jid in pinned:
+            pinned.remove(chat.jid)
+            self.pinned_chat_jids = pinned
+            if not self._save_pinned_chats():
+                self.pinned_chat_jids.append(chat.jid)
+                return
+            self._refresh_chat_order(selected_jid=chat.jid, preserve_focused_order=False)
+            self.status_bar.SetStatusText(f"Chat desfijado: {chat.name}")
+            return
+
+        if len(pinned) >= MAX_PINNED_CHATS:
+            self.status_bar.SetStatusText("Solo se pueden fijar hasta 4 chats")
+            return
+
+        pinned.append(chat.jid)
+        self.pinned_chat_jids = pinned
+        if not self._save_pinned_chats():
+            self.pinned_chat_jids.pop()
+            return
+        self._refresh_chat_order(selected_jid=chat.jid, preserve_focused_order=False)
+        self.status_bar.SetStatusText(f"Chat fijado: {chat.name}")
+
+    def _delete_selected_chat(self) -> None:
+        chat = self.chat_list.selected_chat()
+        if chat is None:
+            self.status_bar.SetStatusText("Selecciona un chat para eliminarlo")
+            return
+        if not self.current_jid:
+            self.status_bar.SetStatusText("No hay una cuenta activa para eliminar el chat")
+            return
+
+        result = wx.MessageBox(
+            (
+                f"¿Eliminar el contenido local de {chat.name}?\n\n"
+                "Se borrarán los mensajes guardados, los participantes y los archivos "
+                "descargados administrados por la aplicación. No se borrará el historial "
+                "remoto de WhatsApp."
+            ),
+            "Eliminar chat",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
+
+        account_jid = self.current_jid
+        self.conversation.close_audio()
+        self.status_bar.SetStatusText(f"Eliminando el contenido local de {chat.name}...")
+
+        def worker() -> None:
+            try:
+                cleanup = self.storage_manager.delete_chat(account_jid, chat.jid)
+            except Exception:
+                wx.CallAfter(
+                    self._finish_local_chat_deletion,
+                    chat,
+                    None,
+                    "No se pudo eliminar el chat local.",
+                )
+                return
+            wx.CallAfter(self._finish_local_chat_deletion, chat, cleanup, "")
+
+        self._submit_storage_manager_worker(
+            worker,
+            lambda _result, error: self._finish_local_chat_deletion(chat, None, error),
+        )
+
+    def _finish_local_chat_deletion(
+        self,
+        chat: Chat,
+        cleanup: StorageCleanupResult | None,
+        error: str,
+    ) -> None:
+        if error or cleanup is None:
+            self.status_bar.SetStatusText(error or "No se pudo eliminar el chat local")
+            return
+
+        chat_jid = chat.jid
+        self.messages_by_chat.pop(chat_jid, None)
+        self.latest_message_timestamps_by_chat.pop(chat_jid, None)
+        self.displayed_marker_ids_by_chat.pop(chat_jid, None)
+        self.synced_displayed_marker_ids_by_chat.pop(chat_jid, None)
+        self.group_participants_by_chat.pop(chat_jid, None)
+        self.contact_presence_by_chat.pop(chat_jid, None)
+        self.contact_avatar_paths_by_chat.pop(chat_jid, None)
+        self.contact_avatar_requests_in_progress.discard(chat_jid)
+        self.chat_state_by_chat.pop(chat_jid, None)
+        self.chat_names_by_jid.pop(chat_jid, None)
+        self.searchable_chats_by_jid.pop(chat_jid, None)
+        for chat_set in (
+            self.history_loaded_chats,
+            self.history_exhausted_chats,
+            self.history_loading_chats,
+            self.preloaded_history_chats,
+            self.background_history_queued_chats,
+        ):
+            chat_set.discard(chat_jid)
+        self.cached_message_loads = {
+            entry for entry in self.cached_message_loads if entry[1] != chat_jid
+        }
+        self.delivery_states_by_message = {
+            key: state
+            for key, state in self.delivery_states_by_message.items()
+            if key[0] != chat_jid
+        }
+        self.auto_downloading_media_keys = {
+            key for key in self.auto_downloading_media_keys if key[0] != chat_jid
+        }
+        self.background_history_queue = deque(
+            queued_jid
+            for queued_jid in self.background_history_queue
+            if queued_jid != chat_jid
+        )
+        if self.background_history_loading_chat == chat_jid:
+            self.background_history_loading_chat = ""
+        self.pinned_chat_jids = [jid for jid in self.pinned_chat_jids if jid != chat_jid]
+        self._save_pinned_chats()
+
+        remaining_chats = [
+            visible_chat
+            for visible_chat in self.chat_list.chats()
+            if visible_chat.jid != chat_jid
+        ]
+        self.chat_list.set_chats(
+            self._sort_chats_by_recency(remaining_chats),
+            preserve_focused_order=False,
+        )
+        if self._search_is_active():
+            self._apply_chat_search()
+
+        message = f"Chat eliminado localmente: {chat.name}"
+        if cleanup.failures:
+            message += "; algunos archivos no se pudieron borrar"
+        self.status_bar.SetStatusText(message)
 
     def _on_search_text_changed(self, event: wx.CommandEvent) -> None:
         self._schedule_chat_search()
@@ -5672,7 +5871,18 @@ class MainWindow(wx.Frame):
             self._apply_chat_search()
 
     def _sort_chats_by_recency(self, chats: list[Chat]) -> list[Chat]:
-        return sorted(chats, key=self._chat_recency_key)
+        pinned_positions = {
+            chat_jid: index
+            for index, chat_jid in enumerate(getattr(self, "pinned_chat_jids", []))
+        }
+        return sorted(
+            chats,
+            key=lambda chat: (
+                0 if chat.jid in pinned_positions else 1,
+                pinned_positions.get(chat.jid, MAX_PINNED_CHATS),
+                *self._chat_recency_key(chat),
+            ),
+        )
 
     @staticmethod
     def _chats_with_activity(chats: Iterable[Chat]) -> list[Chat]:

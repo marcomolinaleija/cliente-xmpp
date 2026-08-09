@@ -200,6 +200,7 @@ class GroupPrivateMessageTests(unittest.TestCase):
         self.assertEqual(normalized.e164, "+524491234567")
         self.assertEqual(component_jid, "whatsapp.example.org")
 
+
     def test_context_menu_appends_and_binds_private_message_action(self) -> None:
         group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
         window = self._window(group)
@@ -353,6 +354,56 @@ class GroupPrivateMessageTests(unittest.TestCase):
         )
         self.assertEqual(temporary_chat.name, normalized.international)
         self.assertFalse(window._open_chat.call_args.kwargs["request_remote_context"])
+
+
+class ChatContextMenuTests(unittest.TestCase):
+    class _MenuItem:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.enabled = True
+
+        def Enable(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class _Menu:
+        def __init__(self) -> None:
+            self.items: list[ChatContextMenuTests._MenuItem] = []
+
+        def Append(self, _item_id: int, label: str) -> ChatContextMenuTests._MenuItem:
+            item = ChatContextMenuTests._MenuItem(label)
+            self.items.append(item)
+            return item
+
+        def AppendSeparator(self) -> None:
+            return
+
+        def Destroy(self) -> None:
+            return
+
+    def test_menu_uses_dynamic_mute_and_pin_labels_and_respects_pin_limit(self) -> None:
+        chat = Chat(
+            jid="chat@example.test",
+            name="Chat",
+            notifications_muted=True,
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.chat_list = SimpleNamespace(selected_chat=Mock(return_value=chat))
+        window.pinned_chat_jids = [f"pinned-{index}@example.test" for index in range(4)]
+
+        with (
+            patch("cliente_xmpp.ui.main_window.wx.Menu", self._Menu),
+            patch.object(MainWindow, "Bind"),
+            patch.object(MainWindow, "PopupMenu") as popup_menu,
+        ):
+            MainWindow._show_chat_context_menu(window)
+
+        menu = popup_menu.call_args.args[0]
+        items = {item.label: item for item in menu.items}
+        self.assertIn("Cambiar nombre\tF2", items)
+        self.assertIn("Desilenciar chat", items)
+        self.assertIn("Fijar chat", items)
+        self.assertFalse(items["Fijar chat"].enabled)
+        self.assertIn("Eliminar chat...", items)
 
 
 class NewChatShortcutTests(unittest.TestCase):

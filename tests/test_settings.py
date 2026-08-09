@@ -10,9 +10,11 @@ import wx
 
 from cliente_xmpp.config.settings import (
     DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+    MAX_PINNED_CHATS,
     DesktopNotificationSettings,
     SettingsStore,
 )
+from cliente_xmpp.models.chat import Chat
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.settings_panel import format_setting_state
 
@@ -99,6 +101,49 @@ class UpdateCheckSettingsTests(unittest.TestCase):
                 SettingsStore(path).load_update_check_interval_minutes(),
                 DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
             )
+
+
+class PinnedChatSettingsTests(unittest.TestCase):
+    def test_pinned_chats_are_per_account_unique_and_limited(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            account = "me@example.test"
+            chats = [f"chat-{index}@example.test" for index in range(6)]
+
+            store.save_pinned_chats(account, [chats[0], chats[1], chats[0], *chats[2:]])
+            store.save_pinned_chats("other@example.test", [chats[-1]])
+
+            self.assertEqual(
+                store.load_pinned_chats(account),
+                chats[:MAX_PINNED_CHATS],
+            )
+            self.assertEqual(
+                store.load_pinned_chats("other@example.test"),
+                [chats[-1]],
+            )
+
+    def test_sorting_keeps_pinned_chats_above_newer_unpinned_chats(self) -> None:
+        oldest_pinned = Chat(jid="first@example.test", name="Primero")
+        newest_pinned = Chat(jid="second@example.test", name="Segundo")
+        newest_unpinned = Chat(jid="third@example.test", name="Tercero")
+        window = MainWindow.__new__(MainWindow)
+        window.pinned_chat_jids = [oldest_pinned.jid, newest_pinned.jid]
+        window.latest_message_timestamps_by_chat = {
+            oldest_pinned.jid: 1.0,
+            newest_pinned.jid: 2.0,
+            newest_unpinned.jid: 99.0,
+        }
+        window.messages_by_chat = {}
+
+        sorted_chats = MainWindow._sort_chats_by_recency(
+            window,
+            [newest_unpinned, newest_pinned, oldest_pinned],
+        )
+
+        self.assertEqual(
+            [chat.jid for chat in sorted_chats],
+            [oldest_pinned.jid, newest_pinned.jid, newest_unpinned.jid],
+        )
 
 
 class UpdateCheckWindowTests(unittest.TestCase):

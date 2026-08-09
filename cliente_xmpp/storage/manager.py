@@ -297,6 +297,12 @@ class StorageManager:
             failures=tuple(failures),
         )
 
+    def delete_chat(self, account_jid: str, chat_jid: str) -> StorageCleanupResult:
+        paths = self.message_store.load_chat_media_paths(account_jid, chat_jid)
+        result = self.delete_files(paths)
+        self.message_store.delete_chat(account_jid, chat_jid)
+        return result
+
     def compact_database(self) -> int:
         before = self._database_family_size()
         self.message_store.compact_database()

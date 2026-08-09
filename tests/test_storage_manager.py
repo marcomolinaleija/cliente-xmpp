@@ -194,6 +194,35 @@ class StorageManagerTests(unittest.TestCase):
             loaded = store.load_recent_messages(account_jid, chat_jid)
             self.assertEqual(loaded[0].media_local_path, "")
 
+    def test_delete_chat_removes_its_managed_files_and_local_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_dir = Path(temp_dir) / ".cliente-xmpp"
+            store = MessageStore(app_dir / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "friend@example.test"
+            media_path = app_dir / "downloads" / "account" / "chat" / "photo.jpg"
+            media_path.parent.mkdir(parents=True)
+            media_path.write_bytes(b"photo")
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="foto",
+                        message_id="photo-1",
+                        media_local_path=str(media_path),
+                    )
+                ],
+            )
+
+            result = StorageManager(store, app_dir=app_dir).delete_chat(account_jid, chat_jid)
+
+            self.assertFalse(media_path.exists())
+            self.assertEqual(result.deleted_file_count, 1)
+            self.assertEqual(store.load_chats(account_jid), [])
+            self.assertEqual(store.load_recent_messages(account_jid, chat_jid), [])
+
     def test_total_deletion_only_operates_on_valid_app_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

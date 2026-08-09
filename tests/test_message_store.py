@@ -71,6 +71,50 @@ class MessageStoreTests(unittest.TestCase):
             store.update_message_starred(account_jid, starred)
             self.assertEqual(store.load_starred_messages(account_jid, chat_jid), [])
 
+    def test_delete_chat_removes_its_messages_and_media_paths_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            deleted_chat = "deleted@example.test"
+            kept_chat = "kept@example.test"
+            media_path = str(Path(temp_dir) / "photo.jpg")
+            store.upsert_chat(account_jid, Chat(jid=deleted_chat, name="Eliminar"))
+            store.upsert_chat(account_jid, Chat(jid=kept_chat, name="Conservar"))
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=deleted_chat,
+                        sender_jid=deleted_chat,
+                        body="Foto",
+                        sent_at=datetime(2026, 8, 9, tzinfo=UTC),
+                        message_id="deleted-message",
+                        media_local_path=media_path,
+                    ),
+                    Message(
+                        chat_jid=kept_chat,
+                        sender_jid=kept_chat,
+                        body="Conservar",
+                        sent_at=datetime(2026, 8, 9, 1, tzinfo=UTC),
+                        message_id="kept-message",
+                    ),
+                ],
+            )
+
+            self.assertEqual(store.load_chat_media_paths(account_jid, deleted_chat), [media_path])
+            store.delete_chat(account_jid, deleted_chat)
+
+            self.assertEqual(store.load_chat_media_paths(account_jid, deleted_chat), [])
+            self.assertEqual(store.load_recent_messages(account_jid, deleted_chat), [])
+            self.assertEqual([chat.jid for chat in store.load_chats(account_jid)], [kept_chat])
+            self.assertEqual(
+                [
+                    message.message_id
+                    for message in store.load_recent_messages(account_jid, kept_chat)
+                ],
+                ["kept-message"],
+            )
+
     def test_technical_group_name_does_not_replace_stored_human_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

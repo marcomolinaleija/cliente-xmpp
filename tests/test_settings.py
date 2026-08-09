@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import wx
 
@@ -14,7 +15,7 @@ from cliente_xmpp.config.settings import (
     DesktopNotificationSettings,
     SettingsStore,
 )
-from cliente_xmpp.models.chat import Chat
+from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.settings_panel import format_setting_state
 
@@ -143,6 +144,83 @@ class PinnedChatSettingsTests(unittest.TestCase):
         self.assertEqual(
             [chat.jid for chat in sorted_chats],
             [oldest_pinned.jid, newest_pinned.jid, newest_unpinned.jid],
+        )
+
+
+class ClearedChatSettingsTests(unittest.TestCase):
+    def test_cleared_chat_cutoffs_are_per_account_and_ignore_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            account = "me@example.test"
+
+            store.save_cleared_chat_cutoffs(
+                account,
+                {
+                    "group@example.test": 1_755_000_000.5,
+                    "": 1_755_000_001,
+                    "invalid@example.test": -1,
+                },
+            )
+
+            self.assertEqual(
+                store.load_cleared_chat_cutoffs(account),
+                {"group@example.test": 1_755_000_000.5},
+            )
+            self.assertEqual(store.load_cleared_chat_cutoffs("other@example.test"), {})
+
+
+class ChatListContextActionTests(unittest.TestCase):
+    def test_pinning_forces_the_list_to_refresh_without_leaving_the_chat_list(self) -> None:
+        chat = Chat(jid="chat@example.test", name="Chat")
+        window = MainWindow.__new__(MainWindow)
+        window.chat_list = SimpleNamespace(
+            selected_chat=Mock(return_value=chat),
+            set_pinned_chat_jids=Mock(),
+            force_refresh_visible=Mock(),
+        )
+        window.pinned_chat_jids = []
+        window._save_pinned_chats = Mock(return_value=True)
+        window._refresh_chat_order = Mock()
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+
+        MainWindow._toggle_selected_chat_pin(window)
+
+        self.assertEqual(window.pinned_chat_jids, [chat.jid])
+        window.chat_list.set_pinned_chat_jids.assert_called_once_with([chat.jid])
+        window._refresh_chat_order.assert_called_once_with(
+            selected_jid=chat.jid,
+            preserve_focused_order=False,
+        )
+        window.chat_list.force_refresh_visible.assert_called_once_with(selected_jid=chat.jid)
+
+    def test_cleared_chat_filters_remote_history_at_its_local_cutoff(self) -> None:
+        chat_jid = "#group@example.test"
+        older = Chat(jid=chat_jid, name="Grupo")
+        old_message = Message(
+            chat_jid=chat_jid,
+            sender_jid=chat_jid,
+            body="anterior",
+            sent_at=datetime.fromtimestamp(99, UTC),
+        )
+        new_message = Message(
+            chat_jid=chat_jid,
+            sender_jid=chat_jid,
+            body="nuevo",
+            sent_at=datetime.fromtimestamp(101, UTC),
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.cleared_chat_cutoffs = {chat_jid: 100.0}
+
+        self.assertTrue(
+            MainWindow._cleared_chat_blocks_timestamp(window, chat_jid, 100.0)
+        )
+        self.assertFalse(
+            MainWindow._cleared_chat_blocks_timestamp(window, chat_jid, 101.0)
+        )
+        self.assertTrue(MainWindow._chat_is_cleared_without_new_activity(window, older))
+        self.assertEqual(
+            MainWindow._messages_after_chat_clear(window, chat_jid, [old_message, new_message]),
+            [new_message],
         )
 
 

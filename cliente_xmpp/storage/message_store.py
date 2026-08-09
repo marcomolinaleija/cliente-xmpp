@@ -976,6 +976,7 @@ class MessageStore:
         return list(dict.fromkeys(str(row["media_local_path"]) for row in rows))
 
     def delete_chat(self, account_jid: str, chat_jid: str) -> None:
+        now = _datetime_to_db(datetime.now())
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM group_participants WHERE account_jid = ? AND group_jid = ?",
@@ -986,8 +987,13 @@ class MessageStore:
                 (account_jid, chat_jid),
             )
             conn.execute(
-                "DELETE FROM chats WHERE account_jid = ? AND jid = ?",
-                (account_jid, chat_jid),
+                """
+                UPDATE chats
+                SET unread_count = 0, last_message_preview = '', last_message_at = NULL,
+                    updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (now, account_jid, chat_jid),
             )
 
     def load_group_participants(self, account_jid: str, group_jid: str) -> list[GroupParticipant]:

@@ -26,6 +26,7 @@ class ChatListPanel(wx.Panel):
         self._chat_indexes_by_jid: dict[str, int] = {}
         self._items: list[ChatListItem] = []
         self._last_selected_jid = ""
+        self._pinned_chat_jids: set[str] = set()
         self._updating = False
         self._searching = False
         self._visible_stale = False
@@ -98,6 +99,9 @@ class ChatListPanel(wx.Panel):
         self._visible_stale = False
         self._searching = False
         self.list_box.Set([text])
+
+    def set_pinned_chat_jids(self, chat_jids: list[str]) -> None:
+        self._pinned_chat_jids = {chat_jid for chat_jid in chat_jids if chat_jid}
 
     def clear_search_results(self, selected_jid: str = "") -> None:
         self._searching = False
@@ -371,9 +375,10 @@ class ChatListPanel(wx.Panel):
             return sender_jid.rsplit("/", 1)[-1]
         return sender_jid or chat.name
 
-    @staticmethod
-    def _format_status(chat: Chat) -> str:
+    def _format_status(self, chat: Chat) -> str:
         parts: list[str] = []
+        if chat.jid in getattr(self, "_pinned_chat_jids", set()):
+            parts.append("fijado")
         if chat.is_self_group:
             parts.append("grupo personal")
         if chat.notifications_muted:

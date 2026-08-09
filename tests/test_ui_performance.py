@@ -82,6 +82,13 @@ class ChatListPerformanceTests(unittest.TestCase):
         self.assertTrue(panel.has_chat("two@example.test"))
         self.assertEqual(panel.chat_by_jid("two@example.test").name, "Dos")
 
+    def test_pinned_chat_has_a_visible_status_identifier(self) -> None:
+        chat = Chat(jid="one@example.test", name="Uno")
+        panel = ChatListPanel.__new__(ChatListPanel)
+        panel._pinned_chat_jids = {chat.jid}
+
+        self.assertEqual(panel._format_status(chat), "fijado")
+
 
 class MainWindowPerformanceTests(unittest.TestCase):
     def test_incoming_audio_is_downloaded_automatically(self) -> None:

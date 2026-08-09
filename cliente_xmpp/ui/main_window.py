@@ -229,6 +229,7 @@ class MainWindow(wx.Frame):
         self.chat_state_by_chat: dict[str, str] = {}
         self.searchable_chats_by_jid: dict[str, Chat] = {}
         self.pinned_chat_jids: list[str] = []
+        self.cleared_chat_cutoffs: dict[str, float] = {}
         self.roster_jids: set[str] = set()
         self.loading_initial_chat_activity = False
         self.pending_chat_activity: dict[str, ChatActivityLoaded] = {}
@@ -450,6 +451,7 @@ class MainWindow(wx.Frame):
         self._save_login_password(login)
         self.current_jid = login.settings.jid
         self._load_pinned_chats()
+        self._load_cleared_chat_cutoffs()
         self.whatsapp_verified = False
         self.whatsapp_link_status = "unknown"
         self.whatsapp_link_detail = ""
@@ -1414,6 +1416,7 @@ class MainWindow(wx.Frame):
 
     def _load_pinned_chats(self) -> None:
         self.pinned_chat_jids = self.settings_store.load_pinned_chats(self.current_jid)
+        self.chat_list.set_pinned_chat_jids(self.pinned_chat_jids)
 
     def _is_chat_pinned(self, chat_jid: str) -> bool:
         return chat_jid in getattr(self, "pinned_chat_jids", [])
@@ -1428,6 +1431,67 @@ class MainWindow(wx.Frame):
             return False
         return True
 
+    def _load_cleared_chat_cutoffs(self) -> None:
+        self.cleared_chat_cutoffs = self.settings_store.load_cleared_chat_cutoffs(
+            self.current_jid
+        )
+
+    def _save_cleared_chat_cutoffs(self) -> bool:
+        if not self.current_jid:
+            return False
+        try:
+            self.settings_store.save_cleared_chat_cutoffs(
+                self.current_jid,
+                self.cleared_chat_cutoffs,
+            )
+        except Exception:
+            self.status_bar.SetStatusText("No se pudo guardar el borrado local del chat")
+            return False
+        return True
+
+    def _mark_chat_content_cleared(self, chat_jid: str) -> None:
+        if not hasattr(self, "cleared_chat_cutoffs"):
+            self.cleared_chat_cutoffs = {}
+        self.cleared_chat_cutoffs[chat_jid] = time.time()
+        self._save_cleared_chat_cutoffs()
+
+    def _forget_cleared_chat_content(self, chat_jid: str) -> None:
+        cutoffs = getattr(self, "cleared_chat_cutoffs", {})
+        if chat_jid not in cutoffs:
+            return
+        cutoffs.pop(chat_jid, None)
+        self._save_cleared_chat_cutoffs()
+
+    def _cleared_chat_blocks_timestamp(
+        self,
+        chat_jid: str,
+        timestamp: float | None,
+    ) -> bool:
+        cutoff = getattr(self, "cleared_chat_cutoffs", {}).get(chat_jid)
+        if cutoff is None:
+            return False
+        return timestamp is None or timestamp <= cutoff
+
+    def _messages_after_chat_clear(
+        self,
+        chat_jid: str,
+        messages: list[Message],
+    ) -> list[Message]:
+        cutoff = getattr(self, "cleared_chat_cutoffs", {}).get(chat_jid)
+        if cutoff is None:
+            return messages
+        return [
+            message
+            for message in messages
+            if self._message_timestamp(message) > cutoff
+        ]
+
+    def _chat_is_cleared_without_new_activity(self, chat: Chat) -> bool:
+        return self._cleared_chat_blocks_timestamp(
+            chat.jid,
+            self._datetime_timestamp(chat.last_message_at),
+        )
+
     def _toggle_selected_chat_pin(self) -> None:
         chat = self.chat_list.selected_chat()
         if chat is None:
@@ -1441,7 +1505,9 @@ class MainWindow(wx.Frame):
             if not self._save_pinned_chats():
                 self.pinned_chat_jids.append(chat.jid)
                 return
+            self.chat_list.set_pinned_chat_jids(self.pinned_chat_jids)
             self._refresh_chat_order(selected_jid=chat.jid, preserve_focused_order=False)
+            self.chat_list.force_refresh_visible(selected_jid=chat.jid)
             self.status_bar.SetStatusText(f"Chat desfijado: {chat.name}")
             return
 
@@ -1454,7 +1520,9 @@ class MainWindow(wx.Frame):
         if not self._save_pinned_chats():
             self.pinned_chat_jids.pop()
             return
+        self.chat_list.set_pinned_chat_jids(self.pinned_chat_jids)
         self._refresh_chat_order(selected_jid=chat.jid, preserve_focused_order=False)
+        self.chat_list.force_refresh_visible(selected_jid=chat.jid)
         self.status_bar.SetStatusText(f"Chat fijado: {chat.name}")
 
     def _delete_selected_chat(self) -> None:
@@ -1481,6 +1549,7 @@ class MainWindow(wx.Frame):
             return
 
         account_jid = self.current_jid
+        self._mark_chat_content_cleared(chat.jid)
         self.conversation.close_audio()
         self.status_bar.SetStatusText(f"Eliminando el contenido local de {chat.name}...")
 
@@ -1509,6 +1578,7 @@ class MainWindow(wx.Frame):
         error: str,
     ) -> None:
         if error or cleanup is None:
+            self._forget_cleared_chat_content(chat.jid)
             self.status_bar.SetStatusText(error or "No se pudo eliminar el chat local")
             return
 
@@ -1522,7 +1592,6 @@ class MainWindow(wx.Frame):
         self.contact_avatar_paths_by_chat.pop(chat_jid, None)
         self.contact_avatar_requests_in_progress.discard(chat_jid)
         self.chat_state_by_chat.pop(chat_jid, None)
-        self.chat_names_by_jid.pop(chat_jid, None)
         self.searchable_chats_by_jid.pop(chat_jid, None)
         for chat_set in (
             self.history_loaded_chats,
@@ -1552,6 +1621,7 @@ class MainWindow(wx.Frame):
             self.background_history_loading_chat = ""
         self.pinned_chat_jids = [jid for jid in self.pinned_chat_jids if jid != chat_jid]
         self._save_pinned_chats()
+        self.chat_list.set_pinned_chat_jids(self.pinned_chat_jids)
 
         remaining_chats = [
             visible_chat
@@ -1562,6 +1632,7 @@ class MainWindow(wx.Frame):
             self._sort_chats_by_recency(remaining_chats),
             preserve_focused_order=False,
         )
+        self.chat_list.force_refresh_visible()
         if self._search_is_active():
             self._apply_chat_search()
 
@@ -2015,7 +2086,11 @@ class MainWindow(wx.Frame):
         )
 
     def _set_searchable_chats(self, chats: list[Chat]) -> None:
-        self.searchable_chats_by_jid = {chat.jid: chat for chat in chats}
+        self.searchable_chats_by_jid = {
+            chat.jid: chat
+            for chat in chats
+            if not self._chat_is_cleared_without_new_activity(chat)
+        }
 
     def _searchable_chats_by_jid(self) -> dict[str, Chat]:
         chats = dict(self.searchable_chats_by_jid)
@@ -4322,6 +4397,11 @@ class MainWindow(wx.Frame):
             case GroupParticipantsLoaded(participants=participants):
                 self._remember_group_participants(participants)
             case MessageReceived(message=message, notify=notify):
+                if self._cleared_chat_blocks_timestamp(
+                    message.chat_jid,
+                    self._message_timestamp(message),
+                ):
+                    return
                 message, added_message, hydrated_replies = self._store_message(message)
                 if not message.outgoing:
                     self._set_chat_state(message.chat_jid, "")
@@ -4390,6 +4470,7 @@ class MainWindow(wx.Frame):
             ):
                 if not self.whatsapp_verified:
                     return
+                messages = self._messages_after_chat_clear(chat_jid, messages)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case MessageDeliveryUpdated(
                 chat_jid=chat_jid,
@@ -4427,6 +4508,11 @@ class MainWindow(wx.Frame):
                 is_group=is_group,
             ):
                 if not self.whatsapp_verified:
+                    return
+                if self._cleared_chat_blocks_timestamp(
+                    chat_jid,
+                    self._datetime_timestamp(sent_at),
+                ):
                     return
                 if sent_at or preview or unread_count is not None:
                     if self.loading_initial_chat_activity:
@@ -6720,6 +6806,8 @@ class MainWindow(wx.Frame):
         added = 0
         merged_chats: list[Chat] = []
         for chat in chats:
+            if self._chat_is_cleared_without_new_activity(chat):
+                continue
             existing = self._chat_by_jid(chat.jid)
             if existing is not None:
                 merged_chat = Chat(

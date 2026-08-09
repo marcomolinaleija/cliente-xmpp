@@ -106,7 +106,14 @@ class MessageStoreTests(unittest.TestCase):
 
             self.assertEqual(store.load_chat_media_paths(account_jid, deleted_chat), [])
             self.assertEqual(store.load_recent_messages(account_jid, deleted_chat), [])
-            self.assertEqual([chat.jid for chat in store.load_chats(account_jid)], [kept_chat])
+            cleared_chat = next(
+                chat
+                for chat in store.load_chats(account_jid)
+                if chat.jid == deleted_chat
+            )
+            self.assertEqual(cleared_chat.last_message_preview, "")
+            self.assertIsNone(cleared_chat.last_message_at)
+            self.assertEqual(cleared_chat.unread_count, 0)
             self.assertEqual(
                 [
                     message.message_id

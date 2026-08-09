@@ -261,6 +261,62 @@ class SettingsStore:
         payload["pinned_chats"] = pinned_by_account
         self._save_payload(payload)
 
+    def load_cleared_chat_cutoffs(self, account_jid: str) -> dict[str, float]:
+        if not account_jid:
+            return {}
+
+        data = self._load_payload()
+        cleared_by_account = data.get("cleared_chats", {})
+        if not isinstance(cleared_by_account, dict):
+            return {}
+        stored = cleared_by_account.get(account_jid, {})
+        if not isinstance(stored, dict):
+            return {}
+
+        cutoffs: dict[str, float] = {}
+        for chat_jid, timestamp in stored.items():
+            jid = str(chat_jid).strip()
+            if not jid or isinstance(timestamp, bool):
+                continue
+            try:
+                cutoff = float(timestamp)
+            except (TypeError, ValueError):
+                continue
+            if cutoff > 0:
+                cutoffs[jid] = cutoff
+        return cutoffs
+
+    def save_cleared_chat_cutoffs(
+        self,
+        account_jid: str,
+        cutoffs: dict[str, float],
+    ) -> None:
+        if not account_jid:
+            return
+
+        cleaned: dict[str, float] = {}
+        for chat_jid, timestamp in cutoffs.items():
+            jid = str(chat_jid).strip()
+            if not jid or isinstance(timestamp, bool):
+                continue
+            try:
+                cutoff = float(timestamp)
+            except (TypeError, ValueError):
+                continue
+            if cutoff > 0:
+                cleaned[jid] = cutoff
+
+        payload = self._load_payload()
+        cleared_by_account = payload.get("cleared_chats", {})
+        if not isinstance(cleared_by_account, dict):
+            cleared_by_account = {}
+        if cleaned:
+            cleared_by_account[account_jid] = cleaned
+        else:
+            cleared_by_account.pop(account_jid, None)
+        payload["cleared_chats"] = cleared_by_account
+        self._save_payload(payload)
+
     def _load_payload(self) -> dict[str, object]:
         if not self.path.exists():
             return {}

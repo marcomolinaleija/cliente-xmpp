@@ -220,7 +220,8 @@ class StorageManagerTests(unittest.TestCase):
 
             self.assertFalse(media_path.exists())
             self.assertEqual(result.deleted_file_count, 1)
-            self.assertEqual(store.load_chats(account_jid), [])
+            self.assertEqual(len(store.load_chats(account_jid)), 1)
+            self.assertEqual(store.load_chats(account_jid)[0].last_message_preview, "")
             self.assertEqual(store.load_recent_messages(account_jid, chat_jid), [])
 
     def test_total_deletion_only_operates_on_valid_app_directory(self) -> None:

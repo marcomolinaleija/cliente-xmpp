@@ -89,8 +89,12 @@ if (git tag --list $tag) {
 if ((git ls-remote --tags origin "refs/tags/$tag" | Out-String).Trim()) {
     throw "Ya existe el tag remoto $tag."
 }
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & gh release view $tag --repo $Repository *> $null
-if ($LASTEXITCODE -eq 0) {
+$releaseViewExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
+if ($releaseViewExitCode -eq 0) {
     throw "Ya existe la release $tag."
 }
 Invoke-Native gh @("auth", "status")

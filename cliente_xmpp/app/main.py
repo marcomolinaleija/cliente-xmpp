@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import wx
 
 from cliente_xmpp.app.single_instance import SingleInstanceGuard
+from cliente_xmpp.config.settings import SUPPORTED_CONNECTION_MODES, SettingsStore
 from cliente_xmpp.ui.main_window import MainWindow
 
 
@@ -52,11 +53,20 @@ def _parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Muestra primero la caché local y verifica la conexión en segundo plano.",
     )
+    parser.add_argument(
+        "--set-connection-mode",
+        choices=SUPPORTED_CONNECTION_MODES,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = _parse_arguments(argv)
+    if arguments.set_connection_mode:
+        SettingsStore().save_connection_mode(arguments.set_connection_mode)
+        return
+
     single_instance = SingleInstanceGuard()
     if not single_instance.acquire():
         single_instance.request_activation()

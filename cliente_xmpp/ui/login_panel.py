@@ -6,6 +6,11 @@ import wx
 
 from cliente_xmpp.config.settings import ConnectionSettings
 
+CONNECTION_MODE_LABELS = {
+    "local": "Puente local (WSL2)",
+    "remote": "Servidor XMPP",
+}
+
 
 @dataclass(slots=True)
 class LoginData:
@@ -16,7 +21,13 @@ class LoginData:
 
 
 class LoginPanel(wx.Panel):
-    def __init__(self, parent: wx.Window, settings: ConnectionSettings) -> None:
+    def __init__(
+        self,
+        parent: wx.Window,
+        settings: ConnectionSettings,
+        *,
+        connection_mode: str = "remote",
+    ) -> None:
         super().__init__(parent)
 
         self.settings = settings
@@ -30,6 +41,18 @@ class LoginPanel(wx.Panel):
         self.connect_button: wx.Button
 
         self._layout()
+        self.set_connection_mode(connection_mode)
+
+    def get_connection_mode(self) -> str:
+        selected = self.connection_mode.GetStringSelection()
+        for mode, label in CONNECTION_MODE_LABELS.items():
+            if selected == label:
+                return mode
+        return "remote"
+
+    def set_connection_mode(self, mode: str) -> None:
+        label = CONNECTION_MODE_LABELS.get(mode, CONNECTION_MODE_LABELS["remote"])
+        self.connection_mode.SetStringSelection(label)
 
     def get_login_data(self) -> LoginData:
         settings = ConnectionSettings(
@@ -37,6 +60,7 @@ class LoginPanel(wx.Panel):
             host=self.host.GetValue().strip(),
             port=self.port.GetValue(),
             use_tls=self.use_tls.GetValue(),
+            ca_file=self.settings.ca_file,
             remember_password=self.remember_password.GetValue(),
             auto_connect=self.remember_password.GetValue() and self.auto_connect.GetValue(),
         )
@@ -50,12 +74,35 @@ class LoginPanel(wx.Panel):
     def set_password(self, password: str) -> None:
         self.password.SetValue(password)
 
+    def set_connection(self, settings: ConnectionSettings, password: str) -> None:
+        self.settings = settings
+        self.connection_mode: wx.Choice
+        self.jid.SetValue(settings.jid)
+        self.password.SetValue(password)
+        self.host.SetValue(settings.host)
+        self.port.SetValue(settings.port)
+        self.use_tls.SetValue(settings.use_tls)
+        self.remember_password.SetValue(settings.remember_password)
+        self.auto_connect.SetValue(settings.auto_connect)
+        self._sync_auto_connect_enabled()
+
     def set_connecting(self, connecting: bool) -> None:
         self.connect_button.Enable(not connecting)
         self.connect_button.SetLabel("Conectando..." if connecting else "Conectar")
 
     def _layout(self) -> None:
         box = wx.BoxSizer(wx.VERTICAL)
+
+        box.Add(wx.StaticText(self, label="Tipo de conexión:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        self.connection_mode = wx.Choice(
+            self,
+            choices=list(CONNECTION_MODE_LABELS.values()),
+        )
+        self.connection_mode.SetName("Tipo de conexión")
+        self.connection_mode.SetToolTip(
+            "Elige el puente privado instalado en WSL2 o un servidor XMPP."
+        )
+        box.Add(self.connection_mode, 0, wx.ALL | wx.EXPAND, 10)
 
         box.Add(wx.StaticText(self, label="JID:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
         self.jid = wx.TextCtrl(self, value=self.settings.jid)
@@ -69,7 +116,7 @@ class LoginPanel(wx.Panel):
 
         box.Add(wx.StaticText(self, label="Servidor:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
         self.host = wx.TextCtrl(self, value=self.settings.host)
-        self.host.SetToolTip("Servidor XMPP. Puedes dejarlo vacio si el JID resuelve el host.")
+        self.host.SetToolTip("Servidor XMPP. Puedes dejarlo vacío si el JID resuelve el host.")
         box.Add(self.host, 0, wx.ALL | wx.EXPAND, 10)
 
         box.Add(wx.StaticText(self, label="Puerto:"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)

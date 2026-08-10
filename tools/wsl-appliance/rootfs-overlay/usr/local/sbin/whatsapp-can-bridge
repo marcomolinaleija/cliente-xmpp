@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="/var/lib/whatsapp-can-bridge"
+config_dir="/etc/whatsapp-can-bridge"
+credentials_file="$config_dir/credentials"
+environment_file="$config_dir/environment"
+tls_dir="$config_dir/tls"
+image_archive="/opt/whatsapp-can-bridge/images/slidge-v14.oci"
+image_id_file="/opt/whatsapp-can-bridge/images/slidge-v14.image-id"
+bridge_image="ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14"
+xmpp_domain="xmpp.whatsappcan.local"
+component_domain="whatsapp.xmpp.whatsappcan.local"
+xmpp_user="whatsappcan"
+configured_marker="$state_dir/configured"
+
+require_root() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "Este comando debe ejecutarse como root dentro del appliance." >&2
+        exit 1
+    fi
+}
+
+load_credentials() {
+    if [[ ! -f "$credentials_file" ]]; then
+        echo "El appliance todavía no está configurado." >&2
+        exit 2
+    fi
+    # shellcheck disable=SC1090
+    source "$credentials_file"
+}
+
+service_state() {
+    systemctl is-active "$1" 2>/dev/null || true
+}
+
+ensure_tls() {
+    install -d -o root -g prosody -m 0750 "$tls_dir"
+    if [[ -s "$tls_dir/ca.crt" && -s "$tls_dir/ca.key" && -s "$tls_dir/server.crt" && -s "$tls_dir/server.key" ]]; then
+        return
+    fi
+
+    rm -f "$tls_dir/ca.crt" "$tls_dir/ca.key" "$tls_dir/ca.srl" \
+        "$tls_dir/server.crt" "$tls_dir/server.csr" "$tls_dir/server.key" "$tls_dir/server.ext"
+    openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 \
+        -subj "/CN=WhatsApp CAN Local CA" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -keyout "$tls_dir/ca.key" -out "$tls_dir/ca.crt" >/dev/null 2>&1
+    openssl req -new -newkey rsa:3072 -nodes -sha256 \
+        -subj "/CN=$xmpp_domain" \
+        -keyout "$tls_dir/server.key" -out "$tls_dir/server.csr" >/dev/null 2>&1
+    printf '%s\n' \
+        "subjectAltName=DNS:$xmpp_domain,IP:127.0.0.1" \
+        "basicConstraints=critical,CA:FALSE" \
+        "keyUsage=critical,digitalSignature,keyEncipherment" \
+        "extendedKeyUsage=serverAuth" \
+        > "$tls_dir/server.ext"
+    openssl x509 -req -sha256 -days 825 \
+        -in "$tls_dir/server.csr" \
+        -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/ca.key" -CAcreateserial \
+        -extfile "$tls_dir/server.ext" -out "$tls_dir/server.crt" >/dev/null 2>&1
+    rm -f "$tls_dir/server.csr" "$tls_dir/server.ext"
+    chown root:prosody "$tls_dir/server.key" "$tls_dir/server.crt"
+    chmod 0640 "$tls_dir/server.key" "$tls_dir/server.crt"
+    chmod 0644 "$tls_dir/ca.crt"
+    chmod 0600 "$tls_dir/ca.key" "$tls_dir/ca.srl"
+}
+
+ensure_bridge_image() {
+    if ! podman image exists "$bridge_image"; then
+        if [[ ! -f "$image_archive" ]]; then
+            echo "La imagen v14 no está incluida en este build del appliance." >&2
+            echo "Reconstruye sin --SkipBridgeImage antes de distribuirlo." >&2
+            exit 3
+        fi
+        (cd "$(dirname "$image_archive")" && sha256sum -c "$(basename "$image_archive").sha256")
+        podman load -i "$image_archive"
+    fi
+
+    if [[ ! -s "$image_id_file" ]]; then
+        echo "Falta el ID inmutable de la imagen v14 incluida." >&2
+        exit 4
+    fi
+
+    local actual_image_id expected_image_id
+    actual_image_id="$(podman image inspect "$bridge_image" --format '{{.Id}}')"
+    expected_image_id="$(tr -d '\r\n' < "$image_id_file")"
+    if [[ "$actual_image_id" != "$expected_image_id" ]]; then
+        echo "La imagen local de Slidge no coincide con el ID aprobado de v14." >&2
+        exit 4
+    fi
+}
+
+configure_bridge() {
+    require_root
+    if [[ -f "$configured_marker" ]]; then
+        echo "El appliance ya estaba configurado; se conservaron sus credenciales."
+    fi
+
+    local xmpp_password component_secret rendered
+    install -d -o root -g prosody -m 0750 "$config_dir"
+    install -d -o 10000 -g 10000 -m 0700 "$state_dir/slidge"
+    install -d -o 10000 -g 10000 -m 0755 "$state_dir/attachments"
+
+    if [[ -f "$credentials_file" ]]; then
+        load_credentials
+        xmpp_password="$XMPP_PASSWORD"
+        component_secret="$COMPONENT_SECRET"
+    else
+        xmpp_password="$(openssl rand -hex 24)"
+        component_secret="$(openssl rand -hex 32)"
+        cat > "$credentials_file" <<EOF
+XMPP_DOMAIN=$xmpp_domain
+COMPONENT_DOMAIN=$component_domain
+XMPP_USER=$xmpp_user
+XMPP_PASSWORD=$xmpp_password
+COMPONENT_SECRET=$component_secret
+EOF
+        chmod 0600 "$credentials_file"
+    fi
+
+    ensure_tls
+
+    rendered="$(mktemp)"
+    sed \
+        -e "s/@@XMPP_DOMAIN@@/$xmpp_domain/g" \
+        -e "s/@@COMPONENT_DOMAIN@@/$component_domain/g" \
+        -e "s/@@COMPONENT_SECRET@@/$component_secret/g" \
+        /opt/whatsapp-can-bridge/templates/prosody.cfg.lua.in > "$rendered"
+    install -m 0644 "$rendered" /etc/prosody/prosody.cfg.lua
+    rm -f "$rendered"
+    install -m 0644 /opt/whatsapp-can-bridge/templates/nginx.conf /etc/nginx/nginx.conf
+
+    cat > "$environment_file" <<EOF
+SLIDGE_JID=$component_domain
+SLIDGE_SECRET=$component_secret
+SLIDGE_SERVER=127.0.0.1
+SLIDGE_HOME_DIR=/var/lib/slidge
+SLIDGE_NO_UPLOAD_PATH=/var/lib/slidge-attachments
+SLIDGE_NO_UPLOAD_URL_PREFIX=http://127.0.0.1:8080/whatsapp/
+SLIDGE_NO_UPLOAD_FILE_READ_OTHERS=true
+SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER=true
+SLIDGE_CONVERT_STICKERS=true
+SLIDGE_FIX_FILENAME_SUFFIX_MIME_TYPE=true
+EOF
+    chmod 0600 "$environment_file"
+
+    ensure_bridge_image
+    runuser -u prosody -- test -r "$tls_dir/server.key"
+    openssl verify -CAfile "$tls_dir/ca.crt" "$tls_dir/server.crt"
+    prosodyctl check config
+    prosodyctl register "$xmpp_user" "$xmpp_domain" "$xmpp_password"
+    systemctl daemon-reload
+    systemctl stop whatsapp-can-slidge.service >/dev/null 2>&1 || true
+    systemctl reset-failed whatsapp-can-slidge.service >/dev/null 2>&1 || true
+    systemctl enable prosody.service nginx.service whatsapp-can-slidge.service
+    systemctl restart prosody.service nginx.service
+    systemctl start whatsapp-can-slidge.service
+    smoke_test
+    touch "$configured_marker"
+    chmod 0600 "$configured_marker"
+    echo "Appliance configurado correctamente."
+}
+
+print_connection() {
+    local show_password=false
+    if [[ "${1:-}" == "--show-password" ]]; then
+        require_root
+        show_password=true
+    fi
+    load_credentials
+    if $show_password; then
+        jq -n \
+            --arg jid "$XMPP_USER@$XMPP_DOMAIN" \
+            --arg password "$XMPP_PASSWORD" \
+            '{jid:$jid,password:$password,host:"127.0.0.1",port:5222,use_tls:true}'
+    else
+        jq -n \
+            --arg jid "$XMPP_USER@$XMPP_DOMAIN" \
+            '{jid:$jid,host:"127.0.0.1",port:5222,use_tls:true}'
+    fi
+}
+
+print_status() {
+    local configured=false image_present=false
+    [[ -f "$configured_marker" ]] && configured=true
+    podman image exists "$bridge_image" >/dev/null 2>&1 && image_present=true
+    jq -n \
+        --argjson configured "$configured" \
+        --arg prosody "$(service_state prosody.service)" \
+        --arg attachments "$(service_state nginx.service)" \
+        --arg slidge "$(service_state whatsapp-can-slidge.service)" \
+        --argjson image_present "$image_present" \
+        '{configured:$configured,services:{prosody:$prosody,attachments:$attachments,slidge:$slidge},bridge_image_present:$image_present}'
+}
+
+smoke_test() {
+    require_root
+    local failed=false
+    local service
+    local restarts_before
+    restarts_before="$(systemctl show whatsapp-can-slidge.service --property=NRestarts --value)"
+    for _attempt in {1..40}; do
+        if systemctl is-active --quiet prosody.service \
+            && systemctl is-active --quiet nginx.service \
+            && systemctl is-active --quiet whatsapp-can-slidge.service \
+            && ss -ltn | grep -qE '127\.0\.0\.1:5222\b' \
+            && ss -ltn | grep -qE '127\.0\.0\.1:8080\b' \
+            && [[ "$(podman inspect whatsapp-can-slidge --format '{{.State.Running}}' 2>/dev/null || true)" == "true" ]] \
+            && podman logs whatsapp-can-slidge 2>&1 \
+                | grep 'Slidge has successfully started' >/dev/null; then
+            break
+        fi
+        sleep 0.25
+    done
+    for service in prosody.service nginx.service whatsapp-can-slidge.service; do
+        if ! systemctl is-active --quiet "$service"; then
+            echo "FALLO: $service no está activo." >&2
+            failed=true
+        fi
+    done
+    if ! ss -ltn | grep -qE '127\.0\.0\.1:5222\b'; then
+        echo "FALLO: Prosody no escucha en 127.0.0.1:5222." >&2
+        failed=true
+    fi
+    if ! ss -ltn | grep -qE '127\.0\.0\.1:8080\b'; then
+        echo "FALLO: nginx no escucha en 127.0.0.1:8080." >&2
+        failed=true
+    fi
+    if [[ "$(podman inspect whatsapp-can-slidge --format '{{.State.Running}}' 2>/dev/null || true)" != "true" ]]; then
+        echo "FALLO: el contenedor de Slidge no permanece activo." >&2
+        failed=true
+    fi
+    if ! podman logs whatsapp-can-slidge 2>&1 \
+        | grep 'Slidge has successfully started' >/dev/null; then
+        echo "FALLO: Slidge todavía no terminó de autenticarse con Prosody." >&2
+        failed=true
+    fi
+    if [[ "$(systemctl show whatsapp-can-slidge.service --property=NRestarts --value)" != "$restarts_before" ]]; then
+        echo "FALLO: Slidge se reinició durante la comprobación." >&2
+        failed=true
+    fi
+    if $failed; then
+        exit 1
+    fi
+    echo "Smoke test local correcto."
+}
+
+action="${1:-status}"
+shift || true
+case "$action" in
+    configure)
+        configure_bridge
+        ;;
+    connection)
+        print_connection "$@"
+        ;;
+    status)
+        print_status
+        ;;
+    start)
+        require_root
+        systemctl start prosody.service nginx.service whatsapp-can-slidge.service
+        ;;
+    stop)
+        require_root
+        systemctl stop whatsapp-can-slidge.service nginx.service prosody.service
+        ;;
+    restart)
+        require_root
+        systemctl restart prosody.service nginx.service whatsapp-can-slidge.service
+        ;;
+    logs)
+        require_root
+        journalctl -u prosody.service -u nginx.service -u whatsapp-can-slidge.service -n 200 --no-pager
+        ;;
+    smoke)
+        smoke_test
+        ;;
+    keepalive)
+        require_root
+        cat >/dev/null
+        ;;
+    version)
+        jq . /opt/whatsapp-can-bridge/version.json
+        ;;
+    ca-certificate)
+        cat "$tls_dir/ca.crt"
+        ;;
+    *)
+        echo "Uso: whatsapp-can-bridge {configure|connection|status|start|stop|restart|logs|smoke|keepalive|version|ca-certificate}" >&2
+        exit 64
+        ;;
+esac

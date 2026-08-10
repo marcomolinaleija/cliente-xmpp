@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
-from cliente_xmpp.app.main import _parse_arguments
+from cliente_xmpp.app.main import _parse_arguments, main
 from cliente_xmpp.models.chat import Chat
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.events import XmppDisconnected
@@ -15,6 +15,16 @@ class DevelopmentModeTests(unittest.TestCase):
         self.assertTrue(_parse_arguments(["-d"]).develop)
         self.assertTrue(_parse_arguments(["--develop"]).develop)
         self.assertFalse(_parse_arguments([]).develop)
+
+    def test_setup_can_select_connection_mode_without_starting_wx(self) -> None:
+        with (
+            patch("cliente_xmpp.app.main.SettingsStore") as settings_store,
+            patch("cliente_xmpp.app.main.SingleInstanceGuard") as single_instance,
+        ):
+            main(["--set-connection-mode", "remote"])
+
+        settings_store.return_value.save_connection_mode.assert_called_once_with("remote")
+        single_instance.assert_not_called()
 
     def test_development_mode_loads_cache_before_background_verification(self) -> None:
         window = MainWindow.__new__(MainWindow)

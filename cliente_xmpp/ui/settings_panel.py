@@ -3,6 +3,8 @@ from __future__ import annotations
 import wx
 
 from cliente_xmpp.config.settings import (
+    CONNECTION_MODE_LOCAL,
+    CONNECTION_MODE_REMOTE,
     DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
     UPDATE_CHECK_INTERVAL_CHOICES,
 )
@@ -21,6 +23,10 @@ UPDATE_CHECK_INTERVAL_LABELS = {
     300: "Cada 5 horas",
     None: "Nunca",
 }
+CONNECTION_MODE_LABELS = {
+    CONNECTION_MODE_LOCAL: "Puente local (WSL2)",
+    CONNECTION_MODE_REMOTE: "Servidor XMPP",
+}
 
 
 def format_setting_state(label: str, enabled: bool) -> str:
@@ -31,12 +37,23 @@ class SettingsPanel(wx.Panel):
     def __init__(self, parent: wx.Window) -> None:
         super().__init__(parent)
         self._update_check_runtime_available = False
+        self._local_bridge_available = False
 
         self.title = wx.StaticText(self, label="Configuración")
         title_font = self.title.GetFont()
         title_font.SetPointSize(title_font.GetPointSize() + 3)
         title_font.SetWeight(wx.FONTWEIGHT_BOLD)
         self.title.SetFont(title_font)
+
+        self.connection_mode = wx.Choice(
+            self,
+            choices=list(CONNECTION_MODE_LABELS.values()),
+        )
+        self.connection_mode.SetName("Tipo de conexión")
+        self.connection_mode.SetToolTip(
+            "Elige que perfil se usara la proxima vez que abras la aplicacion."
+        )
+        self.connection_mode_status = wx.StaticText(self, label="")
 
         self.windows_notifications = wx.CheckBox(
             self,
@@ -108,7 +125,11 @@ class SettingsPanel(wx.Panel):
         sent_message_sound: bool,
         minimize_to_tray_on_alt_f4: bool,
         update_check_interval_minutes: int | None = DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+        connection_mode: str = CONNECTION_MODE_REMOTE,
+        local_bridge_available: bool = False,
     ) -> None:
+        self._local_bridge_available = local_bridge_available
+        self.set_connection_mode(connection_mode)
         self.windows_notifications.SetValue(windows_notifications)
         self.show_preview.SetValue(show_preview)
         self.announce_with_nvda.SetValue(announce_with_nvda)
@@ -117,6 +138,21 @@ class SettingsPanel(wx.Panel):
         self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
         self.set_update_check_interval_minutes(update_check_interval_minutes)
         self.refresh_accessible_states()
+
+    def connection_mode_value(self) -> str:
+        selected = self.connection_mode.GetStringSelection()
+        for mode, label in CONNECTION_MODE_LABELS.items():
+            if selected == label:
+                return mode
+        return CONNECTION_MODE_REMOTE
+
+    def set_connection_mode(self, mode: str) -> None:
+        label = CONNECTION_MODE_LABELS.get(mode, CONNECTION_MODE_LABELS[CONNECTION_MODE_REMOTE])
+        self.connection_mode.SetStringSelection(label)
+
+    def set_connection_mode_status(self, status: str) -> None:
+        self.connection_mode_status.SetLabel(status)
+        self.Layout()
 
     def update_check_interval_minutes(self) -> int | None:
         label = self.update_check_interval.GetValue()
@@ -166,7 +202,7 @@ class SettingsPanel(wx.Panel):
         return "Configuración actualizada"
 
     def focus(self) -> None:
-        self.windows_notifications.SetFocus()
+        self.connection_mode.SetFocus()
 
     def _sync_windows_controls(self) -> None:
         enabled = self.windows_notifications.GetValue()
@@ -218,6 +254,21 @@ class SettingsPanel(wx.Panel):
         )
 
     def _layout(self) -> None:
+        connection_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Conexión")
+        connection_box.Add(wx.StaticText(self, label="Usar al iniciar:"), 0, wx.ALL, 8)
+        connection_box.Add(
+            self.connection_mode,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
+            8,
+        )
+        connection_box.Add(
+            self.connection_mode_status,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            8,
+        )
+
         notification_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Notificaciones")
         notification_box.Add(self.windows_notifications, 0, wx.ALL, 8)
         notification_box.Add(self.show_preview, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
@@ -245,6 +296,7 @@ class SettingsPanel(wx.Panel):
 
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.title, 0, wx.ALL, 16)
+        box.Add(connection_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
         box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
         box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
         box.Add(updates_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)

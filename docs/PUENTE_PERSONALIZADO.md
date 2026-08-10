@@ -2,12 +2,12 @@
 
 ## Estado actual: modificaciones del puente completadas
 
-Desde el 2 de agosto de 2026, las modificaciones del puente están construidas, publicadas y
+Desde el 9 de agosto de 2026, las modificaciones del puente están construidas, publicadas y
 activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
-sha256:027f44d223811fb1aa09ed7df80303a3b9b653d260fb93c43a096738506104ed
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
 ```
 
 La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
@@ -37,6 +37,8 @@ La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
 - Conservación de los nombres guardados de WhatsApp durante eventos e historial de contactos.
 - Entrega directa de las notas PTT entrantes como OGG/Opus, sin la recodificación AAC/M4A que
   añadía pérdida y artefactos audibles en pausas.
+- Ciclo de vida seguro para la renovación periódica de presencias: el timer ya no puede usar un
+  cliente limpiado concurrentemente ni sobrevivir al teardown de su sesión.
 
 El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
 Si trabaja en otra instalación, debe configurar esa etiqueta y seguir la guía independiente
@@ -52,6 +54,31 @@ docker compose up -d --no-deps --force-recreate slidge-whatsapp
 En `marco-vps` estos pasos ya se realizaron. Después de confirmar `Successfully authenticated`
 y `Login success`, puede concentrarse en modificar y reconstruir `cliente-xmpp`. El código del
 cliente no fue modificado durante este despliegue del puente.
+
+### v14: ciclo de vida de renovación de presencias
+
+El 9 de agosto de 2026 se construyó, publicó y desplegó `v14` en `marco-vps`. El contenedor activo
+resuelve al digest `sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f`.
+El respaldo previo está en
+`/opt/xmpp/backups/presence-lifecycle-v14-20260809-141226/`.
+
+`v13` puede terminar con un panic periódico en `Session.SubscribeToPresences()` cuando el timer de
+12 horas con jitter coincide con la limpieza de la sesión. La corrección de `v14` hace que el
+renovador capture su propio cliente y contexto, añade cancelación con espera idempotente antes de
+limpiar la sesión y usa instantáneas sincronizadas del cliente tanto en la suscripción como en el
+dispatcher de eventos. No elimina la renovación de presencias.
+
+La implementación reproducible está en:
+
+- `tools/patch_slidge_whatsapp_presence_lifecycle.py`.
+- `tools/bridge_presence_lifecycle_test.go`.
+- `tools/Dockerfile.bridge-presence-lifecycle-v14`.
+- `tools/smoke_bridge_presence_lifecycle_runtime.py`.
+
+El build ejecuta `go test .`, `go test -race .`, recompila el binding nativo y ejecuta el smoke
+runtime. Además se volvieron a ejecutar los trece smoke tests heredados de `v13`. La investigación,
+las invariantes de la corrección y el procedimiento de publicación están en
+`docs/PUENTE_WHATSAPP_CICLO_PRESENCIAS.md`.
 
 La implementación, el despliegue y la lista de validación de lecturas desde WhatsApp oficial se
 documentan en
@@ -146,6 +173,13 @@ que WhatsMeow resuelva el LID y emita el token de privacidad usando el JID legad
 su base. `tools/smoke_bridge_mexico_outbound_runtime.py` verifica ambas direcciones y que
 `Contact` use el alias saliente sin cambiar su `legacy_id` visible.
 
+La etiqueta `v14` parte del digest publicado de `v13` y aplica
+`tools/patch_slidge_whatsapp_presence_lifecycle.py` mediante
+`tools/Dockerfile.bridge-presence-lifecycle-v14`. La prueba Go fuerza en paralelo una renovación y
+la limpieza del puntero del cliente; el Dockerfile la ejecuta también con el detector de carreras.
+El smoke runtime comprueba que el código instalado y el binding reconstruido contienen el nuevo
+ciclo de vida. La publicación y el despliegue controlado se documentan en la guía específica.
+
 Las notas PTT originales pueden contener paquetes Opus DTX de 120 ms. Para reproducir sus
 transiciones de silencio sin los microcortes del decodificador Opus nativo de FFmpeg,
 `cliente-xmpp` prioriza `libopus` mediante la opción libmpv `ad=libopus`. MPV conserva sus
@@ -173,7 +207,8 @@ Antes de publicar, ejecuta dentro de la imagen los smoke tests
 `tools/smoke_bridge_message_presence_runtime.py` y
 `tools/smoke_bridge_contact_names_runtime.py` y
 `tools/smoke_bridge_incoming_ptt_runtime.py` y
-`tools/smoke_bridge_mexico_outbound_runtime.py`. La prueba de stickers debe producir un
+`tools/smoke_bridge_mexico_outbound_runtime.py` y
+`tools/smoke_bridge_presence_lifecycle_runtime.py`. La prueba de stickers debe producir un
 WebP válido; comprobar sólo `--help` no demuestra que el motor Lottie esté instalado. La prueba de
 persistencia ejecuta el flujo posterior a `send_files` con `NO_UPLOAD_PATH` activo y falla si el
 archivo servido desaparece. La escritura de
@@ -213,7 +248,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
 ```
 
 El servicio debe incluir:
@@ -230,12 +265,12 @@ Para instalaciones que ya tengan duplicados mexicanos, detén sólo `slidge-what
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14 \
   /tmp/migrate.py /var/lib/slidge/slidge.sqlite
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14 \
   /tmp/migrate.py --apply /var/lib/slidge/slidge.sqlite
 ```
 

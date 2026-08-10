@@ -167,6 +167,10 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._session_generation = 0
         self.force_starttls = settings.use_tls
+        self.enable_starttls = settings.use_tls
+        self.enable_direct_tls = False
+        if settings.ca_file:
+            self.ca_certs = Path(settings.ca_file)
 
         self.add_event_handler("session_start", self._on_session_start)
         self.add_event_handler("disconnected", self._on_disconnected)
@@ -205,6 +209,11 @@ class BridgeXmppClient(ClientXMPP):
         self._emit(XmppConnected())
         asyncio.create_task(self._enable_carbons())
         asyncio.create_task(self._load_initial_roster(session_generation))
+        local_component = self._configured_local_whatsapp_component()
+        if local_component:
+            asyncio.create_task(
+                self._probe_local_whatsapp_state(local_component, session_generation)
+            )
         self._start_group_membership_watchdog(session_generation)
 
     async def _load_initial_roster(self, session_generation: int) -> None:
@@ -222,7 +231,8 @@ class BridgeXmppClient(ClientXMPP):
         chats = self._build_roster_chats()
         self._initial_roster_chats = chats
         self._emit(RosterLoaded(chats))
-        asyncio.create_task(self._debug_whatsapp_bridge_state(chats))
+        if not self._configured_local_whatsapp_component():
+            asyncio.create_task(self._debug_whatsapp_bridge_state(chats))
         self._start_initial_remote_sync_if_ready()
 
     def _start_initial_remote_sync_if_ready(self) -> None:
@@ -1061,6 +1071,34 @@ class BridgeXmppClient(ClientXMPP):
         for jid in probable:
             await self._debug_whatsapp_component(jid)
 
+    def _configured_local_whatsapp_component(self) -> str:
+        host = self.settings.host.strip().casefold()
+        if host not in {"127.0.0.1", "::1", "localhost"}:
+            return ""
+        _local_part, separator, domain = self.settings.jid.strip().casefold().partition("@")
+        if not separator or domain != "xmpp.whatsappcan.local":
+            return ""
+        return f"whatsapp.{domain}"
+
+    async def _probe_local_whatsapp_state(
+        self,
+        component_jid: str,
+        session_generation: int,
+    ) -> None:
+        self._debug_whatsapp(f"probing configured local component {component_jid}")
+        retry_delays = (0, 1, 2, 4, 8)
+        for attempt, delay in enumerate(retry_delays):
+            if delay:
+                await asyncio.sleep(delay)
+            if session_generation != self._session_generation:
+                return
+            state = await self._debug_whatsapp_component_commands(
+                component_jid,
+                defer_unlinked_state=attempt < len(retry_delays) - 1,
+            )
+            if state not in {"unknown", "connecting"}:
+                return
+
     async def _debug_whatsapp_component(self, jid: str) -> None:
         try:
             info = await self["xep_0030"].get_info(jid=jid, timeout=10)
@@ -1085,12 +1123,35 @@ class BridgeXmppClient(ClientXMPP):
 
         await self._debug_whatsapp_component_commands(jid)
 
-    async def _debug_whatsapp_component_commands(self, jid: str) -> None:
+    async def _debug_whatsapp_component_commands(
+        self,
+        jid: str,
+        *,
+        defer_unlinked_state: bool = False,
+    ) -> str:
         commands = await self._adhoc_commands(jid)
         self._debug_whatsapp_commands(jid, commands)
         state = self._whatsapp_command_state(commands)
-        if state not in ("unknown", "connected"):
+        current_state = self._last_whatsapp_status_by_component.get(
+            jid.split("/", 1)[0], ""
+        ).partition("\n")[0]
+        if current_state in {"needs_qr", "connected", "paired"} and state in {
+            "needs_pairing",
+            "needs_relogin",
+        }:
+            return current_state
+        if defer_unlinked_state and state in {"needs_pairing", "needs_relogin"}:
+            if current_state == "connecting":
+                return current_state
+            self._emit_whatsapp_status(
+                jid,
+                "connecting",
+                "Esperando el estado real de la sesion de WhatsApp.",
+            )
+            return "connecting"
+        if state != "unknown":
             self._emit_whatsapp_status(jid, state)
+        return state
 
     @staticmethod
     def _component_domains_from_chats(chats: list[Chat]) -> set[str]:
@@ -1777,7 +1838,7 @@ class BridgeXmppClient(ClientXMPP):
 
     def _emit_whatsapp_status(self, component_jid: str, status: str, detail: str = "") -> None:
         component_jid = component_jid.split("/", 1)[0]
-        key = f"{status}\n{detail}"
+        key = status if status == "connecting" else f"{status}\n{detail}"
         if self._last_whatsapp_status_by_component.get(component_jid) == key:
             return
 
@@ -1793,6 +1854,7 @@ class BridgeXmppClient(ClientXMPP):
             self._whatsapp_session_ready = True
             self._start_initial_remote_sync_if_ready()
         elif status in {
+            "connecting",
             "connection_error",
             "logged_out",
             "needs_pairing",
@@ -2027,6 +2089,11 @@ class BridgeXmppClient(ClientXMPP):
             return "unknown"
         if normalized.startswith("connected as ") or " connected as +" in normalized:
             return "connected"
+        if any(
+            hint in normalized
+            for hint in ("logging in", "syncing contacts", "syncing groups")
+        ):
+            return "connecting"
         if "qr scan needed" in normalized or "scan the following qr" in normalized:
             return "needs_qr"
         if "pair-phone" in normalized or "input the following code" in normalized:

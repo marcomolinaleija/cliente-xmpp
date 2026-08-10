@@ -17,18 +17,19 @@ class CredentialStore:
         except Exception:
             return ""
 
-    def save_password(self, jid: str, password: str) -> None:
+    def save_password(self, jid: str, password: str) -> bool:
         if not jid or not password:
-            return
+            return False
 
         keyring = _load_keyring()
         if keyring is None:
-            return
+            return False
 
         try:
             keyring.set_password(SERVICE_NAME, jid, password)
         except Exception:
-            return
+            return False
+        return True
 
     def delete_password(self, jid: str) -> None:
         if not jid:

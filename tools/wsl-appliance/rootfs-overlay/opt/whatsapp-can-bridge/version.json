@@ -1,0 +1,7 @@
+{
+  "appliance_version": "0.1.0-dev",
+  "architecture": "amd64",
+  "base": "ubuntu-24.04",
+  "bridge_image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14",
+  "bridge_digest": "sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f"
+}

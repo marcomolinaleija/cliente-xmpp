@@ -5,6 +5,7 @@ import base64
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
 from slixmpp.exceptions import IqError, IqTimeout
@@ -871,6 +872,14 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
             "needs_relogin",
         )
 
+    def test_login_and_sync_presences_are_transient_connecting_states(self) -> None:
+        for status in ("Logging in...", "Syncing contacts...", "Syncing groups..."):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    BridgeXmppClient._whatsapp_state_hint(status),
+                    "connecting",
+                )
+
     def test_component_status_message_is_admin_message(self) -> None:
         self.assertTrue(
             BridgeXmppClient._is_whatsapp_component_admin_message(
@@ -909,6 +918,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _emit=events.append,
                 _enable_carbons=enable_carbons,
                 _load_initial_roster=load_initial_roster,
+                _configured_local_whatsapp_component=lambda: "",
                 _start_group_membership_watchdog=lambda _generation: calls.append("watchdog"),
             )
 
@@ -931,6 +941,135 @@ class InitialConnectionFlowTests(unittest.TestCase):
 
         self.assertTrue(any(isinstance(event, XmppConnected) for event in events))
         self.assertIn("roster-finished", calls)
+
+    def test_local_whatsapp_probe_retries_until_component_is_ready(self) -> None:
+        async def scenario() -> tuple[list[str], list[float]]:
+            states = iter(("unknown", "unknown", "needs_registration"))
+            probes: list[str] = []
+            delays: list[float] = []
+
+            async def check_commands(
+                jid: str,
+                *,
+                defer_unlinked_state: bool = False,
+            ) -> str:
+                del defer_unlinked_state
+                probes.append(jid)
+                return next(states)
+
+            async def fast_sleep(delay: float) -> None:
+                delays.append(delay)
+
+            client = SimpleNamespace(
+                _session_generation=4,
+                _debug_whatsapp=lambda _message: None,
+                _debug_whatsapp_component_commands=check_commands,
+            )
+            with patch("cliente_xmpp.xmpp.client.asyncio.sleep", new=fast_sleep):
+                await BridgeXmppClient._probe_local_whatsapp_state(
+                    client,
+                    "whatsapp.xmpp.whatsappcan.local",
+                    4,
+                )
+            return probes, delays
+
+        probes, delays = asyncio.run(scenario())
+
+        self.assertEqual(probes, ["whatsapp.xmpp.whatsappcan.local"] * 3)
+        self.assertEqual(delays, [1, 2])
+
+    def test_local_whatsapp_probe_stops_after_reconnect(self) -> None:
+        async def check_commands(
+            _jid: str,
+            *,
+            defer_unlinked_state: bool = False,
+        ) -> str:
+            del defer_unlinked_state
+            self.fail("A stale session must not query the component")
+
+        client = SimpleNamespace(
+            _session_generation=5,
+            _debug_whatsapp=lambda _message: None,
+            _debug_whatsapp_component_commands=check_commands,
+        )
+
+        asyncio.run(
+            BridgeXmppClient._probe_local_whatsapp_state(
+                client,
+                "whatsapp.xmpp.whatsappcan.local",
+                4,
+            )
+        )
+
+    def test_command_guess_does_not_override_live_connecting_presence(self) -> None:
+        emitted: list[tuple[str, str]] = []
+
+        async def commands(_jid: str) -> list[tuple[str, str]]:
+            return [
+                ("https://slidge.im/command/core/re-login", "Re-login"),
+                ("wa_pair_phone", "Pair phone"),
+            ]
+
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={
+                "whatsapp.xmpp.whatsappcan.local": "connecting"
+            },
+            _adhoc_commands=commands,
+            _debug_whatsapp_commands=lambda _jid, _commands: None,
+            _whatsapp_command_state=BridgeXmppClient._whatsapp_command_state,
+            _emit_whatsapp_status=lambda jid, state: emitted.append((jid, state)),
+        )
+
+        state = asyncio.run(
+            BridgeXmppClient._debug_whatsapp_component_commands(
+                client,
+                "whatsapp.xmpp.whatsappcan.local",
+                defer_unlinked_state=True,
+            )
+        )
+
+        self.assertEqual(state, "connecting")
+        self.assertFalse(emitted)
+
+    def test_local_probe_defers_qr_action_until_unlinked_state_is_confirmed(self) -> None:
+        emitted: list[tuple[str, str]] = []
+
+        async def commands(_jid: str) -> list[tuple[str, str]]:
+            return [("https://slidge.im/command/core/re-login", "Re-login")]
+
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={},
+            _adhoc_commands=commands,
+            _debug_whatsapp_commands=lambda _jid, _commands: None,
+            _whatsapp_command_state=BridgeXmppClient._whatsapp_command_state,
+            _emit_whatsapp_status=lambda jid, state, _detail="": emitted.append(
+                (jid, state)
+            ),
+        )
+
+        deferred = asyncio.run(
+            BridgeXmppClient._debug_whatsapp_component_commands(
+                client,
+                "whatsapp.xmpp.whatsappcan.local",
+                defer_unlinked_state=True,
+            )
+        )
+        confirmed = asyncio.run(
+            BridgeXmppClient._debug_whatsapp_component_commands(
+                client,
+                "whatsapp.xmpp.whatsappcan.local",
+            )
+        )
+
+        self.assertEqual(deferred, "connecting")
+        self.assertEqual(confirmed, "needs_relogin")
+        self.assertEqual(
+            emitted,
+            [
+                ("whatsapp.xmpp.whatsappcan.local", "connecting"),
+                ("whatsapp.xmpp.whatsappcan.local", "needs_relogin"),
+            ],
+        )
 
     def test_initial_remote_sync_waits_for_roster_and_live_whatsapp_status(self) -> None:
         async def scenario() -> list[str]:

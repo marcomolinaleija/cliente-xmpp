@@ -1,23 +1,23 @@
-WhatsApp CAN 1.2.0
+WhatsApp CAN 1.3.0
 
-Acciones de chat más rápidas
-- Abre el menú contextual de un chat con clic derecho, Shift+F10 o la tecla Aplicaciones.
-- Desde allí puedes cambiar el nombre, silenciar o desilenciar, fijar o desfijar y eliminar el
-  contenido local del chat.
-- Puedes fijar hasta cuatro chats. Permanecen arriba de la lista, se guardan por cuenta y se
-  identifican como "fijado".
-- Al eliminar un chat se borran sus mensajes, participantes y archivos descargados de este equipo.
-  WhatsApp no se modifica; el historial anterior no volverá a aparecer al sincronizarse y el chat
-  solo reaparecerá si recibe un mensaje posterior al borrado.
+Puente local opcional para Windows
+- El instalador pregunta cómo quieres usar WhatsApp CAN: con un puente local en WSL2 o con un
+  servidor XMPP/VPS.
+- Si eliges el modo local, descarga el appliance oficial desde una release inmutable, comprueba su
+  SHA-256 y configura Prosody, Slidge WhatsApp v14 y adjuntos exclusivamente en 127.0.0.1.
+- El instalador del cliente sigue siendo ligero: el appliance de aproximadamente 688 MiB sólo se
+  descarga cuando eliges el puente local.
+- La instalación local se puede reanudar de forma segura si Windows o la red interrumpen el proceso.
 
-Grupos y conexión más estables
-- CAN comprueba de forma más segura la participación en los grupos y recupera la conexión solo
-  cuando realmente se ha perdido, para que sigan llegando y saliendo mensajes tras varias horas.
-- En Cuenta > Conexión > Desconectar esta ventana, se explica con claridad que desconectar no
-  desvincula WhatsApp ni borra tus chats.
-- En Cuenta > Salir puedes cerrar WhatsApp CAN de forma segura desde el menú en caso de que alt + f4 minimice a la bandeja.
+Cliente híbrido
+- Los perfiles local y remoto se guardan por separado. Puedes seguir usando tu VPS y cambiar de
+  perfil desde la pantalla de conexión o desde Configuración.
+- Las credenciales locales pasan al almacén seguro de Windows y la CA privada del appliance se fija
+  para validar STARTTLS sin confiar en certificados de terceros.
+- El cliente inicia y comprueba el puente fuera del hilo de interfaz, muestra estados claros durante
+  el arranque y evita ofrecer el QR antes de que Slidge termine de autenticarse con Prosody.
 
-Gestor de almacenamiento más claro
-- Durante una limpieza normal puedes cerrar el gestor con Escape o Cerrar: la operación continúa
-  en segundo plano.
-- El borrado total de datos sigue bloqueando el cierre hasta terminar, porque es irreversible.
+Puente WhatsApp v14
+- Corrige la carrera de presencias que podía reiniciar Slidge durante una renovación simultánea.
+- Conserva las mejoras anteriores del puente para menciones, reenvíos, stickers, notas de voz,
+  sincronización de leídos, nombres de contactos y alias mexicanos.

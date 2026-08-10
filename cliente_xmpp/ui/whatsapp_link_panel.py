@@ -8,11 +8,13 @@ import wx
 
 class WhatsAppLinkPanel(wx.Panel):
     def __init__(self, parent: wx.Window) -> None:
-        super().__init__(parent)
+        super().__init__(parent, style=wx.TAB_TRAVERSAL)
 
         self.message = wx.StaticText(self, label="")
         self.open_button = wx.Button(self, label="Generar QR")
+        self.open_button.SetName("Acción de vinculación de WhatsApp")
         self.cancel_button = wx.Button(self, label="Cancelar vinculacion")
+        self.cancel_button.SetName("Cancelar vinculación de WhatsApp")
         self.cancel_button.Hide()
 
         self._layout()
@@ -23,14 +25,21 @@ class WhatsAppLinkPanel(wx.Panel):
         text: str,
         action_label: str = "Generar QR",
         can_cancel: bool = False,
+        action_enabled: bool = True,
     ) -> None:
         self.message.SetLabel(text)
         self.open_button.SetLabel(action_label)
+        self.open_button.Enable(action_enabled)
         self.cancel_button.Show(can_cancel)
         self.Show(True)
         self.Layout()
 
+    def focus_action(self) -> None:
+        if self.IsShownOnScreen() and self.open_button.IsEnabled():
+            self.open_button.SetFocus()
+
     def clear(self) -> None:
+        self.open_button.Enable()
         self.cancel_button.Hide()
         self.Hide()
 

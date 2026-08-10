@@ -18,6 +18,9 @@ DEFAULT_NEW_CHAT_COUNTRY = "MX"
 DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES = 20
 UPDATE_CHECK_INTERVAL_CHOICES = (20, 30, 60, 300)
 MAX_PINNED_CHATS = 4
+CONNECTION_MODE_LOCAL = "local"
+CONNECTION_MODE_REMOTE = "remote"
+SUPPORTED_CONNECTION_MODES = (CONNECTION_MODE_LOCAL, CONNECTION_MODE_REMOTE)
 
 
 @dataclass(slots=True)
@@ -26,6 +29,7 @@ class ConnectionSettings:
     host: str = ""
     port: int = 5222
     use_tls: bool = True
+    ca_file: str = ""
     remember_password: bool = False
     auto_connect: bool = False
 
@@ -43,18 +47,52 @@ class SettingsStore:
 
     def load_connection(self) -> ConnectionSettings:
         data = self._load_payload()
-        connection = data.get("connection", {})
-        return ConnectionSettings(
-            jid=str(connection.get("jid", "")),
-            host=str(connection.get("host", "")),
-            port=int(connection.get("port", 5222)),
-            use_tls=bool(connection.get("use_tls", True)),
-            remember_password=bool(connection.get("remember_password", False)),
-            auto_connect=bool(connection.get("auto_connect", False)),
-        )
+        return self._connection_from_payload(data.get("connection", {}))
 
     def save_connection(self, settings: ConnectionSettings) -> None:
         payload = self._load_payload()
+        payload["connection"] = asdict(settings)
+        self._save_payload(payload)
+
+    def load_connection_mode(self) -> str:
+        mode = str(self._load_payload().get("connection_mode", "")).strip().casefold()
+        return mode if mode in SUPPORTED_CONNECTION_MODES else ""
+
+    def save_connection_mode(self, mode: str) -> None:
+        mode = mode.strip().casefold()
+        if mode not in SUPPORTED_CONNECTION_MODES:
+            raise ValueError(f"Modo de conexión no compatible: {mode}")
+        payload = self._load_payload()
+        payload["connection_mode"] = mode
+        self._save_payload(payload)
+
+    def load_connection_profile(self, mode: str) -> ConnectionSettings:
+        mode = mode.strip().casefold()
+        if mode not in SUPPORTED_CONNECTION_MODES:
+            return ConnectionSettings()
+
+        payload = self._load_payload()
+        profiles = payload.get("connection_profiles", {})
+        if isinstance(profiles, dict) and isinstance(profiles.get(mode), dict):
+            return self._connection_from_payload(profiles[mode])
+
+        legacy = self._connection_from_payload(payload.get("connection", {}))
+        if bool(legacy.jid) and (
+            (mode == CONNECTION_MODE_LOCAL) == is_local_bridge_connection(legacy)
+        ):
+            return legacy
+        return ConnectionSettings()
+
+    def save_connection_profile(self, mode: str, settings: ConnectionSettings) -> None:
+        mode = mode.strip().casefold()
+        if mode not in SUPPORTED_CONNECTION_MODES:
+            raise ValueError(f"Modo de conexión no compatible: {mode}")
+        payload = self._load_payload()
+        profiles = payload.get("connection_profiles", {})
+        if not isinstance(profiles, dict):
+            profiles = {}
+        profiles[mode] = asdict(settings)
+        payload["connection_profiles"] = profiles
         payload["connection"] = asdict(settings)
         self._save_payload(payload)
 
@@ -331,3 +369,30 @@ class SettingsStore:
     def _save_payload(self, payload: dict[str, object]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _connection_from_payload(connection: object) -> ConnectionSettings:
+        if not isinstance(connection, dict):
+            return ConnectionSettings()
+        try:
+            port = int(connection.get("port", 5222))
+        except (TypeError, ValueError):
+            port = 5222
+        return ConnectionSettings(
+            jid=str(connection.get("jid", "")),
+            host=str(connection.get("host", "")),
+            port=port,
+            use_tls=bool(connection.get("use_tls", True)),
+            ca_file=str(connection.get("ca_file", "")),
+            remember_password=bool(connection.get("remember_password", False)),
+            auto_connect=bool(connection.get("auto_connect", False)),
+        )
+
+
+def is_local_bridge_connection(settings: ConnectionSettings) -> bool:
+    jid = settings.jid.strip().casefold()
+    host = settings.host.strip().casefold()
+    return (
+        jid == "whatsappcan@xmpp.whatsappcan.local"
+        and host in {"127.0.0.1", "::1", "localhost"}
+    )

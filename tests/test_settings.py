@@ -10,14 +10,83 @@ from unittest.mock import Mock, patch
 import wx
 
 from cliente_xmpp.config.settings import (
+    CONNECTION_MODE_LOCAL,
+    CONNECTION_MODE_REMOTE,
     DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
     MAX_PINNED_CHATS,
+    ConnectionSettings,
     DesktopNotificationSettings,
     SettingsStore,
 )
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.settings_panel import format_setting_state
+
+
+class ConnectionSettingsTests(unittest.TestCase):
+    def test_custom_ca_defaults_to_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            self.assertEqual(store.load_connection().ca_file, "")
+
+    def test_custom_ca_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            expected = ConnectionSettings(
+                jid="whatsappcan@xmpp.whatsappcan.local",
+                host="127.0.0.1",
+                ca_file=r"C:\WhatsAppCAN\bridge-ca.crt",
+            )
+
+            store.save_connection(expected)
+
+            self.assertEqual(store.load_connection(), expected)
+
+    def test_connection_mode_and_profiles_are_stored_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            local = ConnectionSettings(
+                jid="whatsappcan@xmpp.whatsappcan.local",
+                host="127.0.0.1",
+                ca_file=r"C:\WhatsAppCAN\bridge-ca.crt",
+            )
+            remote = ConnectionSettings(
+                jid="usuario@servidor.example",
+                host="servidor.example",
+                remember_password=True,
+            )
+
+            self.assertEqual(store.load_connection_mode(), "")
+            store.save_connection_profile(CONNECTION_MODE_LOCAL, local)
+            store.save_connection_profile(CONNECTION_MODE_REMOTE, remote)
+            store.save_connection_mode(CONNECTION_MODE_REMOTE)
+
+            self.assertEqual(store.load_connection_mode(), CONNECTION_MODE_REMOTE)
+            self.assertEqual(store.load_connection_profile(CONNECTION_MODE_LOCAL), local)
+            self.assertEqual(store.load_connection_profile(CONNECTION_MODE_REMOTE), remote)
+
+    def test_legacy_connection_only_populates_its_matching_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            remote = ConnectionSettings(
+                jid="usuario@servidor.example",
+                host="servidor.example",
+            )
+            store.save_connection(remote)
+
+            self.assertEqual(store.load_connection_profile(CONNECTION_MODE_REMOTE), remote)
+            self.assertEqual(
+                store.load_connection_profile(CONNECTION_MODE_LOCAL),
+                ConnectionSettings(),
+            )
+
+    def test_rejects_unknown_connection_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+
+            with self.assertRaises(ValueError):
+                store.save_connection_mode("automatic")
 
 
 class NotificationSoundSettingsTests(unittest.TestCase):

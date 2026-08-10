@@ -1,10 +1,43 @@
-param(
-    [switch]$SkipChecks
+﻿param(
+    [switch]$SkipChecks,
+    [string]$WslManifestPath = (Join-Path $PSScriptRoot "tools\wsl-appliance\release-manifest.json")
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path $PSScriptRoot).Path
 Set-Location $projectRoot
+
+$resolvedWslManifest = (Resolve-Path -LiteralPath $WslManifestPath).Path
+$wslManifest = Get-Content -LiteralPath $resolvedWslManifest -Raw | ConvertFrom-Json
+if ($wslManifest.schema_version -ne 1) {
+    throw "Versión de manifiesto WSL no compatible: $($wslManifest.schema_version)."
+}
+$wslPackageName = [string]$wslManifest.asset_name
+$wslPackageUrl = [string]$wslManifest.download_url
+$wslPackageSha256 = ([string]$wslManifest.sha256).Trim().ToLowerInvariant()
+$wslPackageSize = [long]$wslManifest.size_bytes
+if (-not $wslPackageName.EndsWith(".wsl", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "El manifiesto WSL no contiene un nombre de asset .wsl válido."
+}
+if (-not [Uri]::IsWellFormedUriString($wslPackageUrl, [UriKind]::Absolute) -or -not $wslPackageUrl.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "El manifiesto WSL debe usar una URL HTTPS absoluta."
+}
+if ($wslPackageSha256 -notmatch '^[0-9a-f]{64}$') {
+    throw "El manifiesto WSL no contiene un SHA-256 válido."
+}
+if ($wslPackageSize -le 0) {
+    throw "El manifiesto WSL no contiene un tamaño válido."
+}
+$wslPackageSizeMb = [Math]::Ceiling($wslPackageSize / 1MB)
+$wslInstallScript = (Resolve-Path -LiteralPath "tools\wsl-appliance\install-appliance.ps1").Path
+$localWslArtifact = Join-Path $projectRoot "dist\wsl\$wslPackageName"
+if (Test-Path -LiteralPath $localWslArtifact -PathType Leaf) {
+    $localWslItem = Get-Item -LiteralPath $localWslArtifact
+    $localWslHash = (Get-FileHash -LiteralPath $localWslArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($localWslItem.Length -ne $wslPackageSize -or $localWslHash -ne $wslPackageSha256) {
+        throw "El artefacto WSL local no coincide con release-manifest.json."
+    }
+}
 
 $runningBuild = @(
     Get-CimInstance Win32_Process -Filter "Name='WhatsApp-CAN.exe'" |
@@ -95,6 +128,11 @@ Remove-Item -LiteralPath $installerPath, $installerChecksumPath -Force -ErrorAct
     "/DMyAppVersion=$version" `
     "/DSourceDir=$distDir" `
     "/DOutputDir=$releaseDir" `
+    "/DWslPackageUrl=$wslPackageUrl" `
+    "/DWslPackageName=$wslPackageName" `
+    "/DWslPackageSha256=$wslPackageSha256" `
+    "/DWslPackageSizeMb=$wslPackageSizeMb" `
+    "/DWslInstallScript=$wslInstallScript" `
     (Join-Path $projectRoot "installer\WhatsApp-CAN.iss")
 if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar el instalador con Inno Setup." }
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {

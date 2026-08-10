@@ -362,8 +362,8 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   aplicado `tools/patch_slidge_whatsapp_mentions.py` sobre su fuente Slidge para convertir esas
   referencias en `MentionedJID` nativo de WhatsApp. No cambies ese detalle por `@nick`, pues el
   parser de compatibilidad de Slidge espera el nick sin prefijo.
-- Desde el 2 de agosto de 2026, `marco-vps` usa la imagen
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13` con menciones,
+- Desde el 9 de agosto de 2026, `marco-vps` usa la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14` con menciones,
   conversión de stickers y reenvíos nativos ya incorporados. Los reenvíos se transportan con
   `<forwarded xmlns="urn:marco-ml:whatsapp:forwarded:0"/>`. El cliente conserva esa bandera y
   XEP-0449 (`urn:xmpp:stickers:0`) en mensajes vivos, inbox, MAM y SQLite. La UI presenta
@@ -413,6 +413,50 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/Dockerfile.bridge-mexico-outbound-v13` y
   `tools/smoke_bridge_mexico_outbound_runtime.py`. No vuelvas a exponer `+521` en el roster ni
   elimines el alias legado de WhatsMeow: se necesita para resolver el LID y el token de privacidad.
+- `v14` parte del digest publicado de `v13` y corrige la carrera entre el temporizador
+  de renovación de presencias y la limpieza de `Session.client`. Cada renovador captura su cliente y
+  contexto, se cancela y espera de forma idempotente antes del teardown, y `handleEvent` usa una
+  instantánea sincronizada del cliente. El parche, la prueba concurrente, el Dockerfile y el smoke
+  test viven en `tools/patch_slidge_whatsapp_presence_lifecycle.py`,
+  `tools/bridge_presence_lifecycle_test.go`,
+  `tools/Dockerfile.bridge-presence-lifecycle-v14` y
+  `tools/smoke_bridge_presence_lifecycle_runtime.py`. La imagen publicada tiene digest
+  `sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f`; no vuelvas a
+  desplegar una etiqueta mutable sin comprobar ese digest y conservar el respaldo anterior.
+- La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
+  `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y la imagen v14
+  fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,
+  publica solamente `127.0.0.1:5222` y `127.0.0.1:8080`, y conserva sesión y adjuntos dentro del
+  VHDX. El cliente debe usar `ConnectionSettings.ca_file` para confiar sólo en esa CA. No abras
+  esos puertos a la LAN, no permitas dos instancias simultáneas y no desinstales sin exportar un
+  respaldo recuperable. `cliente_xmpp/local_bridge.py` detecta y prepara la distribución fuera
+  del hilo wx. En la primera apertura migra la contraseña del contrato local a `CredentialStore`
+  antes de retirarla del JSON; si el almacén seguro falla, conserva el JSON y no conecta.
+  WSL no permanece activo sólo por tener servicios systemd: mientras el cliente usa el modo local,
+  `LocalBridgeService` mantiene abierto el comando `keepalive` y lo cierra al salir. `smoke` debe
+  esperar el marcador real `Slidge has successfully started`; no uses `grep -q` en esa tubería con
+  `pipefail`, porque un log largo produciría un falso fallo por SIGPIPE.
+  Al preparar el rootfs genérico, vacía `/etc/machine-id` en lugar de eliminarlo y enlaza
+  `/var/lib/dbus/machine-id`: si el archivo queda ausente, `systemd-firstboot` intenta preguntar
+  locale, zona horaria y contraseña sin una consola disponible y bloquea toda la instalación.
+  La primera fase técnica se validó en una instalación limpia real: registro y QR, carga de chats,
+  mensajes en ambos sentidos, reapertura de la aplicación, arranque con la distribución detenida y
+  reinicio completo de Windows conservaron la sesión. El instalador debe seguir siendo reanudable,
+  poder reemplazar su CA previamente protegida y conservar BOM UTF-8 en sus scripts PowerShell para
+  que Windows PowerShell 5.1 muestre correctamente los textos en español.
+- El cliente es híbrido y guarda perfiles independientes `local` y `remote` junto con
+  `connection_mode`. La elección en Configuración se aplica en la siguiente apertura; la pantalla
+  de conexión permite cambiar inmediatamente cuando está desconectado. Instalar WSL no puede volver
+  a sobrescribir silenciosamente el perfil remoto. La migración inicial recupera ese perfil desde
+  `%LOCALAPPDATA%\WhatsAppCAN\migration-backups\settings-before-local-bridge.json` si existe; las
+  contraseñas siguen separadas por JID en `CredentialStore`.
+- El Setup final pregunta `local` o `remote`. El modo remoto no descarga ni modifica WSL; el local
+  usa `DownloadTemporaryFile` de Inno Setup con la URL inmutable y el SHA-256 fijados en
+  `tools/wsl-appliance/release-manifest.json`, y luego ejecuta `install-appliance.ps1` en modo
+  reanudable. El `.wsl` nunca se incrusta en el instalador del cliente. La release dedicada del
+  appliance debe publicarse con `tools/wsl-appliance/publish-appliance-release.ps1` y
+  `--latest=false` antes de publicar un Setup que la referencie. Desinstalar el cliente no debe
+  desregistrar la distribución ni borrar la sesión; ese flujo exige respaldo y confirmación aparte.
 - En Slidge actual, cuando `NO_UPLOAD_PATH` está configurado, `send_files` cambia
   `attachment.path` para que apunte al archivo ya persistido en esa ruta. El puente no debe
   ejecutar `unlink` después: la URL anunciada quedaría en HTTP 404 y el cliente no podría

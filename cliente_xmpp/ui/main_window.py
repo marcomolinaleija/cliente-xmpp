@@ -27,11 +27,20 @@ from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import (
     APP_DIR,
+    CONNECTION_MODE_LOCAL,
+    CONNECTION_MODE_REMOTE,
     MAX_PINNED_CHATS,
+    ConnectionSettings,
     DesktopNotificationSettings,
     SettingsStore,
+    is_local_bridge_connection,
 )
 from cliente_xmpp.integrations import rayoai
+from cliente_xmpp.local_bridge import (
+    LocalBridgeConnection,
+    LocalBridgeError,
+    LocalBridgeService,
+)
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
     album_photo_count,
@@ -167,7 +176,20 @@ class MainWindow(wx.Frame):
         self.development_mode = development_mode
         self.settings_store = SettingsStore()
         self.credential_store = CredentialStore()
-        self.connection_settings = self.settings_store.load_connection()
+        self.local_bridge = LocalBridgeService()
+        self.local_bridge_available = self.local_bridge.has_connection_contract()
+        self.connection_mode = self.settings_store.load_connection_mode()
+        if not self.connection_mode:
+            self.connection_mode = (
+                CONNECTION_MODE_LOCAL
+                if self.local_bridge_available
+                else CONNECTION_MODE_REMOTE
+            )
+            self.settings_store.save_connection_mode(self.connection_mode)
+        self.preferred_connection_mode = self.connection_mode
+        self.connection_settings = self._load_connection_settings_for_mode(
+            self.connection_mode
+        )
         self.speaker = NvdaSpeaker()
         self.new_message_sound = NewMessageSound()
         self.open_chat_message_sound = OpenChatMessageSound()
@@ -202,6 +224,12 @@ class MainWindow(wx.Frame):
             max_workers=1,
             thread_name_prefix="cliente-xmpp-audio-metadata",
         )
+        self.local_bridge_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cliente-xmpp-local-bridge",
+        )
+        self.local_bridge_startup_in_progress = False
+        self._closing = False
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
@@ -262,7 +290,11 @@ class MainWindow(wx.Frame):
 
         self.startup_panel: wx.Panel
         self.startup_message: wx.TextCtrl
-        self.login_panel = LoginPanel(self, self.connection_settings)
+        self.login_panel = LoginPanel(
+            self,
+            self.connection_settings,
+            connection_mode=self.connection_mode,
+        )
         self.workspace_panel: wx.Panel
         self.content_panel: wx.Panel
         self.content_box: wx.BoxSizer
@@ -281,8 +313,17 @@ class MainWindow(wx.Frame):
             on_exit=self._exit_from_tray,
         )
         self._load_saved_password()
+        local_bridge_scheduled = False
         if self.development_mode:
             self._start_development_mode()
+        elif self.connection_mode == CONNECTION_MODE_LOCAL:
+            if self._schedule_local_bridge_startup():
+                local_bridge_scheduled = True
+            else:
+                self._set_connected_ui(False)
+                self.status_bar.SetStatusText(
+                    "El puente local no está instalado. Cambia a servidor en Configuración."
+                )
         elif self._can_auto_connect():
             self._set_startup_wait_ui()
             self.status_bar.SetStatusText("Conectando automáticamente...")
@@ -290,7 +331,11 @@ class MainWindow(wx.Frame):
         else:
             self._set_connected_ui(False)
             self.status_bar.SetStatusText("Desconectado")
-        if not self.development_mode:
+        if (
+            not self.development_mode
+            and self.connection_mode == CONNECTION_MODE_REMOTE
+            and not local_bridge_scheduled
+        ):
             self._schedule_auto_connect()
         wx.CallLater(UPDATE_CHECK_INITIAL_DELAY_MS, self._start_configured_update_checks)
 
@@ -377,6 +422,10 @@ class MainWindow(wx.Frame):
 
     def _bind_events(self) -> None:
         self.login_panel.connect_button.Bind(wx.EVT_BUTTON, self._on_connect)
+        self.login_panel.connection_mode.Bind(
+            wx.EVT_CHOICE,
+            self._on_login_connection_mode_changed,
+        )
         self.connection_header.mark_all_read_button.Bind(
             wx.EVT_BUTTON,
             self._on_mark_all_chats_read,
@@ -415,6 +464,10 @@ class MainWindow(wx.Frame):
             wx.EVT_COMBOBOX,
             self._on_update_check_interval_changed,
         )
+        self.settings_panel.connection_mode.Bind(
+            wx.EVT_CHOICE,
+            self._on_settings_connection_mode_changed,
+        )
         self.settings_panel.check_updates_button.Bind(
             wx.EVT_BUTTON,
             self._on_check_updates_now,
@@ -447,7 +500,7 @@ class MainWindow(wx.Frame):
             wx.MessageBox("El JID y el password son obligatorios.", "Datos incompletos")
             return
 
-        self.settings_store.save_connection(login.settings)
+        self.settings_store.save_connection_profile(self.connection_mode, login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
         self._load_pinned_chats()
@@ -460,6 +513,52 @@ class MainWindow(wx.Frame):
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
+
+    def _on_login_connection_mode_changed(self, _event: wx.CommandEvent) -> None:
+        mode = self.login_panel.get_connection_mode()
+        if mode == CONNECTION_MODE_LOCAL and not self.local_bridge_available:
+            self.login_panel.set_connection_mode(CONNECTION_MODE_REMOTE)
+            message = "El puente local no está instalado en este equipo."
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
+        if mode == self.connection_mode:
+            return
+
+        self.connection_mode = mode
+        self.preferred_connection_mode = mode
+        self.settings_store.save_connection_mode(mode)
+        settings = self._load_connection_settings_for_mode(mode)
+        password = (
+            self.credential_store.get_password(settings.jid)
+            if settings.remember_password and settings.jid
+            else ""
+        )
+        self.connection_settings = settings
+        self.login_panel.set_connection(settings, password)
+        if mode == CONNECTION_MODE_LOCAL:
+            self._schedule_local_bridge_startup()
+            return
+
+        self.status_bar.SetStatusText("Modo servidor XMPP seleccionado")
+        self.login_panel.jid.SetFocus()
+
+    def _load_connection_settings_for_mode(self, mode: str) -> ConnectionSettings:
+        settings = self.settings_store.load_connection_profile(mode)
+        if settings.jid or mode != CONNECTION_MODE_REMOTE:
+            return settings
+
+        backup_path = self.local_bridge.remote_settings_backup_file
+        if not backup_path.is_file():
+            return settings
+        backup = SettingsStore(backup_path).load_connection()
+        if not backup.jid or is_local_bridge_connection(backup):
+            return settings
+        try:
+            self.settings_store.save_connection_profile(CONNECTION_MODE_REMOTE, backup)
+        except OSError:
+            pass
+        return backup
 
     def _load_saved_password(self) -> None:
         if not self.connection_settings.remember_password:
@@ -527,8 +626,42 @@ class MainWindow(wx.Frame):
             sent_message_sound=self.sent_message_sound_enabled,
             minimize_to_tray_on_alt_f4=self.minimize_to_tray_on_alt_f4,
             update_check_interval_minutes=self.update_check_interval_minutes,
+            connection_mode=self.preferred_connection_mode,
+            local_bridge_available=self.local_bridge_available,
         )
+        if self.preferred_connection_mode != self.connection_mode:
+            connection_status = "El cambio se aplicará al reiniciar WhatsApp CAN."
+        else:
+            connection_status = (
+                "Modo activo: puente local."
+                if self.connection_mode == CONNECTION_MODE_LOCAL
+                else "Modo activo: servidor XMPP."
+            )
+        self.settings_panel.set_connection_mode_status(connection_status)
         self.settings_panel.set_update_check_runtime_available(can_check_for_updates())
+
+    def _on_settings_connection_mode_changed(self, _event: wx.CommandEvent) -> None:
+        mode = self.settings_panel.connection_mode_value()
+        if mode == CONNECTION_MODE_LOCAL and not self.local_bridge_available:
+            self.settings_panel.set_connection_mode(self.preferred_connection_mode)
+            message = "El puente local no está instalado en este equipo."
+            self.settings_panel.set_connection_mode_status(message)
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
+        if mode == self.preferred_connection_mode:
+            return
+
+        self.settings_store.save_connection_mode(mode)
+        self.preferred_connection_mode = mode
+        message = (
+            "Puente local seleccionado. Se aplicará al reiniciar WhatsApp CAN."
+            if mode == CONNECTION_MODE_LOCAL
+            else "Servidor XMPP seleccionado. Se aplicará al reiniciar WhatsApp CAN."
+        )
+        self.settings_panel.set_connection_mode_status(message)
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
 
     def _start_configured_update_checks(self) -> None:
         self._restart_update_check_timer()
@@ -660,6 +793,99 @@ class MainWindow(wx.Frame):
 
         wx.CallAfter(self._on_connect, wx.CommandEvent())
 
+    def _schedule_local_bridge_startup(self) -> bool:
+        if not self.local_bridge.has_connection_contract():
+            return False
+
+        self.local_bridge_startup_in_progress = True
+        self._set_startup_wait_ui()
+        self.startup_message.SetValue(
+            "Preparando el puente local de WhatsApp.\nEspera por favor..."
+        )
+        self.status_bar.SetStatusText("Iniciando puente local de WhatsApp...")
+        self.login_panel.set_connecting(True)
+        future = self.local_bridge_executor.submit(self.local_bridge.prepare)
+
+        def completed() -> None:
+            if self._closing:
+                return
+            try:
+                result = future.result()
+            except LocalBridgeError as exc:
+                wx.CallAfter(self._finish_local_bridge_startup, None, str(exc))
+            except Exception as exc:
+                wx.CallAfter(
+                    self._finish_local_bridge_startup,
+                    None,
+                    f"No se pudo preparar el puente local: {exc}",
+                )
+            else:
+                wx.CallAfter(self._finish_local_bridge_startup, result, "")
+
+        future.add_done_callback(lambda _future: completed())
+        return True
+
+    def _finish_local_bridge_startup(
+        self,
+        connection: LocalBridgeConnection | None,
+        error: str,
+    ) -> None:
+        self.local_bridge_startup_in_progress = False
+        if self.IsBeingDeleted():
+            return
+        if error:
+            self._show_local_bridge_error(error)
+            return
+        if connection is None:
+            self.login_panel.set_connecting(False)
+            self._set_connected_ui(False)
+            self.status_bar.SetStatusText("Desconectado")
+            self._schedule_auto_connect()
+            return
+
+        password = connection.password or self.credential_store.get_password(
+            connection.settings.jid
+        )
+        if connection.needs_password_migration:
+            if not self.credential_store.save_password(connection.settings.jid, password):
+                self._show_local_bridge_error(
+                    "No se pudo guardar la contraseña local en el almacén seguro de Windows."
+                )
+                return
+            try:
+                self.local_bridge.remove_plaintext_password()
+            except (LocalBridgeError, OSError) as exc:
+                self._show_local_bridge_error(
+                    f"La contraseña quedó guardada, pero no se pudo retirarla del JSON local: {exc}"
+                )
+                return
+        if not password:
+            self._show_local_bridge_error(
+                "No se encontró la contraseña del puente local en el almacén seguro."
+            )
+            return
+
+        self.connection_settings = connection.settings
+        try:
+            self.settings_store.save_connection_profile(
+                CONNECTION_MODE_LOCAL,
+                connection.settings,
+            )
+        except OSError as exc:
+            self._show_local_bridge_error(
+                f"No se pudo guardar la configuración del puente local: {exc}"
+            )
+            return
+        self.login_panel.set_connection(connection.settings, password)
+        self.status_bar.SetStatusText("Puente local listo. Conectando por STARTTLS...")
+        self._on_connect(wx.CommandEvent())
+
+    def _show_local_bridge_error(self, message: str) -> None:
+        self.login_panel.set_connecting(False)
+        self._set_connected_ui(False)
+        self.status_bar.SetStatusText(message)
+        wx.MessageBox(message, "Puente local de WhatsApp", wx.OK | wx.ICON_ERROR)
+
     def _start_development_mode(self) -> None:
         """Show the local cache before an optional background verification."""
         self.current_jid = self.connection_settings.jid
@@ -760,6 +986,8 @@ class MainWindow(wx.Frame):
             self.whatsapp_qr_deadline = 0.0
             self.whatsapp_link_panel.clear()
             self._close_whatsapp_qr_dialog()
+            if not self.workspace_panel.IsShown():
+                self._set_connected_ui(True)
             message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
             self.connection_header.set_status(message)
             self.status_bar.SetStatusText(message)
@@ -774,29 +1002,32 @@ class MainWindow(wx.Frame):
             )
             return
 
-        if status == "needs_qr":
+        if status == "connecting":
+            self.whatsapp_verified = False
+            message = "WhatsApp está iniciando sesión. Espera por favor."
+        elif status == "needs_qr":
             self.whatsapp_verified = False
             self.whatsapp_qr_request_in_flight = True
             if self.whatsapp_qr_deadline <= time.monotonic():
                 self.whatsapp_qr_deadline = (
                     time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
                 )
-            message = "WhatsApp esta preparando el QR."
+            message = "WhatsApp está preparando el QR."
         elif status in {"needs_pairing", "needs_relogin", "needs_pair_code", "logged_out"}:
             self.whatsapp_verified = False
-            message = "WhatsApp todavia no esta vinculado."
+            message = "WhatsApp todavía no está vinculado."
         elif status == "needs_registration":
             self.whatsapp_verified = False
             message = "WhatsApp necesita registrarse en el bridge."
         elif status == "connection_error":
             self.whatsapp_verified = False
-            message = "WhatsApp reporto un error de conexion."
+            message = "WhatsApp reportó un error de conexión."
         else:
             return
 
         self._set_whatsapp_remote_actions_enabled(False)
 
-        if detail:
+        if detail and status != "connecting":
             message = f"{message} {detail}"
         if status == "needs_qr" and self.whatsapp_qr_dialog is not None:
             self.whatsapp_qr_dialog.set_pending(
@@ -817,15 +1048,29 @@ class MainWindow(wx.Frame):
             action_label=(
                 "Generar nuevo QR"
                 if qr_finished
-                else self._whatsapp_link_action_label()
+                else (
+                    "Espera..."
+                    if status == "connecting"
+                    else self._whatsapp_link_action_label()
+                )
             ),
             can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+            action_enabled=status != "connecting",
         )
         if not getattr(self, "development_mode", False):
-            self._show_chat_placeholder("WhatsApp requiere vinculacion.")
-        self.connection_header.set_status("WhatsApp requiere vinculacion")
+            self._show_chat_placeholder(
+                "WhatsApp está iniciando sesión."
+                if status == "connecting"
+                else "WhatsApp requiere vinculacion."
+            )
+        self.connection_header.set_status(
+            "WhatsApp iniciando sesión"
+            if status == "connecting"
+            else "WhatsApp requiere vinculacion"
+        )
         self.status_bar.SetStatusText(message)
         self.workspace_panel.Layout()
+        wx.CallAfter(self.whatsapp_link_panel.focus_action)
         wx.CallAfter(self.speaker.speak, message)
 
     def _handle_whatsapp_pairing_code(self, component_jid: str, code: str) -> None:
@@ -893,7 +1138,7 @@ class MainWindow(wx.Frame):
             )
         if self.whatsapp_link_panel.IsShown():
             self.whatsapp_link_panel.set_status(
-                detail or "WhatsApp todavia no esta vinculado.",
+                detail or "WhatsApp todavía no está vinculado.",
                 action_label="Generar nuevo QR" if not canceled else "Generar QR",
                 can_cancel=False,
             )
@@ -4270,6 +4515,7 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        self._closing = True
         update_check_timer = getattr(self, "update_check_timer", None)
         if update_check_timer is not None:
             update_check_timer.Stop()
@@ -4281,12 +4527,18 @@ class MainWindow(wx.Frame):
         self.conversation.close_audio()
         self.audio_recorder.cancel()
         self.xmpp.disconnect()
+        local_bridge = getattr(self, "local_bridge", None)
+        if local_bridge is not None:
+            local_bridge.close()
         storage_executor = getattr(self, "storage_executor", None)
         if storage_executor is not None:
             storage_executor.shutdown(wait=False, cancel_futures=False)
         audio_metadata_executor = getattr(self, "audio_metadata_executor", None)
         if audio_metadata_executor is not None:
             audio_metadata_executor.shutdown(wait=False, cancel_futures=True)
+        local_bridge_executor = getattr(self, "local_bridge_executor", None)
+        if local_bridge_executor is not None:
+            local_bridge_executor.shutdown(wait=False, cancel_futures=True)
         event.Skip()
 
     def _post_xmpp_event(self, event: XmppEvent) -> None:
@@ -4301,7 +4553,15 @@ class MainWindow(wx.Frame):
                 self.connection_header.set_account(self.current_jid)
                 self.connection_header.set_status("Verificando conexión con WhatsApp")
                 if not self.workspace_panel.IsShown():
-                    self._set_connected_ui(True)
+                    if getattr(self, "development_mode", False):
+                        self._set_connected_ui(True)
+                    else:
+                        self._set_startup_wait_ui()
+                        self.startup_message.SetValue(
+                            "Conexión local lista.\n"
+                            "Verificando el estado de vinculación de WhatsApp..."
+                        )
+                        self.startup_message.SetFocus()
                 self._set_whatsapp_remote_actions_enabled(self.whatsapp_verified)
                 if self.whatsapp_verified:
                     self._apply_pending_roster_if_ready()

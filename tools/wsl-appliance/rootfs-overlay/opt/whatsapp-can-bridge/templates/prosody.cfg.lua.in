@@ -1,0 +1,65 @@
+admins = { }
+
+plugin_paths = {
+    "/usr/lib/prosody/modules/mod_privilege";
+    "/usr/lib/prosody/modules";
+}
+
+interfaces = { "127.0.0.1", "::1" }
+c2s_ports = { 5222 }
+s2s_ports = { }
+component_ports = { 5347 }
+http_ports = { }
+
+allow_registration = false
+c2s_require_encryption = true
+allow_unencrypted_plain_auth = false
+authentication = "internal_hashed"
+archive_expires_after = "never"
+ssl = {
+    key = "/etc/whatsapp-can-bridge/tls/server.key";
+    certificate = "/etc/whatsapp-can-bridge/tls/server.crt";
+}
+log = {
+    info = "/var/log/prosody/prosody.log";
+    error = "/var/log/prosody/prosody.err";
+}
+
+modules_enabled = {
+    "roster";
+    "saslauth";
+    "tls";
+    "disco";
+    "carbons";
+    "pep";
+    "private";
+    "blocklist";
+    "vcard4";
+    "vcard_legacy";
+    "smacks";
+    "csi_simple";
+    "mam";
+    "limits";
+    "ping";
+    "privilege";
+}
+
+local slidge_privileges = {
+    roster = "both";
+    message = "outgoing";
+    presence = "roster";
+    iq = {
+        ["jabber:iq:roster"] = "both";
+        ["http://jabber.org/protocol/pubsub"] = "both";
+        ["http://jabber.org/protocol/pubsub#owner"] = "set";
+    };
+}
+
+VirtualHost "@@XMPP_DOMAIN@@"
+    privileged_entities = {
+        ["@@COMPONENT_DOMAIN@@"] = slidge_privileges;
+    }
+
+Component "@@COMPONENT_DOMAIN@@"
+    component_secret = "@@COMPONENT_SECRET@@"
+    modules_enabled = { "privilege" }

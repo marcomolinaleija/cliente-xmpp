@@ -15,8 +15,8 @@ privilegios permiten:
 La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
-sha256:027f44d223811fb1aa09ed7df80303a3b9b653d260fb93c43a096738506104ed
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
 ```
 
 ## Requisito fundamental
@@ -189,13 +189,13 @@ Validar el archivo con las herramientas de la versión de ejabberd instalada ant
 
 ## Configuración del puente
 
-En el servicio `slidge-whatsapp` de `compose.yml`, seleccionar la imagen v13 y activar la
+En el servicio `slidge-whatsapp` de `compose.yml`, seleccionar la imagen v14 y activar la
 sincronización automática:
 
 ```yaml
 services:
   slidge-whatsapp:
-    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v13
+    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
     environment:
       SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER: "true"
 ```
@@ -255,7 +255,7 @@ Una sincronización inicial puede tardar con cuentas grandes, pero un IQ de rost
 | `Automatic XMPP roster sync failed ... IqTimeout` | El IQ privilegiado de roster no recibió respuesta | Revisar `mod_privilege`, `privileged_entities`, dominio del componente y `roster = "both"` |
 | `IQ privileges not granted` | Faltan permisos PubSub para XEP-0490 | Revisar los dos namespaces PubSub y reiniciar primero el servidor XMPP |
 | El roster sincroniza pero los leídos de grupos no | Falta `pubsub#owner = "set"` o se usa Prosody antiguo | Completar IQ PubSub y usar Prosody 0.12 |
-| No aparece ninguna sincronización automática | Falta la variable o no está activa la imagen v13 | Inspeccionar el Compose efectivo y la imagen del contenedor |
+| No aparece ninguna sincronización automática | Falta la variable o no está activa la imagen v14 | Inspeccionar el Compose efectivo y la imagen del contenedor |
 | El componente no autentica | Dominio, puerto o secreto no coinciden | Restaurar los valores propios del servidor; no copiar los de otra instalación |
 | Se solicita QR después del despliegue | No se montaron los datos persistentes anteriores | Detenerse y restaurar el volumen/ruta de Slidge |
 
@@ -283,4 +283,4 @@ mediante XEP-0356; modificar esos archivos directamente puede dejar el roster in
 - XEP-0490, Message Displayed Synchronization: https://xmpp.org/extensions/xep-0490.html
 - Implementación y prueba de la sincronización de leídos:
   `docs/PUENTE_WHATSAPP_SINCRONIZACION_LEIDOS.md`
-- Contenido y construcción reproducible de la imagen v13: `docs/PUENTE_PERSONALIZADO.md`
+- Contenido y construcción reproducible de la imagen v14: `docs/PUENTE_PERSONALIZADO.md`

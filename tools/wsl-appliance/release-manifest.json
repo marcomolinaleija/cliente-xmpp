@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "appliance_version": "1.0.0",
+  "bridge_image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14",
+  "release_tag": "wsl-appliance-v1.0.0",
+  "asset_name": "WhatsAppCAN-Bridge-amd64.wsl",
+  "download_url": "https://github.com/marcomolinaleija/cliente-xmpp/releases/download/wsl-appliance-v1.0.0/WhatsAppCAN-Bridge-amd64.wsl",
+  "sha256": "983e3622d654bb1bed0c523b99621ce239435edf851a9b37be26ab12251ed358",
+  "size_bytes": 721274880
+}

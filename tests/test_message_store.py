@@ -7,7 +7,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.chat import Chat, Message, Poll
 from cliente_xmpp.storage.message_store import MessageStore
 
 
@@ -289,6 +289,28 @@ class MessageStoreTests(unittest.TestCase):
 
             loaded = store.load_recent_messages("me@example.test", message.chat_jid)
             self.assertEqual(loaded[0].displayed_marker_id, "room-stanza-id")
+
+    def test_persists_poll_metadata_for_cached_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            message = Message(
+                chat_jid="contact@example.test",
+                sender_jid="contact@example.test",
+                body="🗳 ¿Café o té?\n☐ Café\n☐ Té",
+                message_id="poll-1",
+                poll=Poll(
+                    poll_id="poll-1",
+                    title="¿Café o té?",
+                    options=("Café", "Té"),
+                    creator_jid="123@s.whatsapp.net",
+                    creator_lid="456@lid",
+                ),
+            )
+
+            store.upsert_messages("me@example.test", [message])
+
+            loaded = store.load_recent_messages("me@example.test", message.chat_jid)
+            self.assertEqual(loaded[0].poll, message.poll)
 
     def test_edited_message_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

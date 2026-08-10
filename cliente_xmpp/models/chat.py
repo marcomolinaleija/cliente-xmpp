@@ -4,6 +4,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+@dataclass(frozen=True, slots=True)
+class Poll:
+    """Metadata required to present and vote on a native WhatsApp poll."""
+
+    poll_id: str
+    title: str
+    options: tuple[str, ...]
+    creator_jid: str
+    creator_lid: str = ""
+    creator_is_me: bool = False
+    selectable_count: int = 1
+
+
 @dataclass(slots=True)
 class Chat:
     jid: str
@@ -37,6 +50,7 @@ class Message:
     media_local_path: str = ""
     is_sticker: bool = False
     is_forwarded: bool = False
+    poll: Poll | None = None
     message_id: str = ""
     displayed_marker_id: str = ""
     chat_is_group: bool = False

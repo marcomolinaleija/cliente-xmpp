@@ -3733,6 +3733,10 @@ class MainWindow(wx.Frame):
             reaction_items.append((reaction_menu.Append(wx.ID_ANY, reaction), reaction))
         menu.AppendSubMenu(reaction_menu, "Reaccionar")
 
+        vote_item: wx.MenuItem | None = None
+        if message.poll is not None and not message.retracted:
+            vote_item = menu.Append(wx.ID_ANY, "Votar en encuesta...")
+
         star_label = "No destacar" if message.starred else "Destacar"
         star_item = menu.Append(wx.ID_ANY, star_label)
         delete_item: wx.MenuItem | None = None
@@ -3790,11 +3794,54 @@ class MainWindow(wx.Frame):
                 ),
                 item,
             )
+        if vote_item is not None:
+            self.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
         if delete_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
         self.PopupMenu(menu)
         menu.Destroy()
+
+    def _vote_in_poll(self, message: Message) -> None:
+        if not self._require_whatsapp_connection():
+            return
+        chat = self.conversation.current_chat
+        poll = message.poll
+        if chat is None or poll is None:
+            return
+
+        prompt = f"{poll.title}\nSelecciona hasta {poll.selectable_count} opciÃ³n(es)."
+        if poll.selectable_count == 1:
+            dialog = wx.SingleChoiceDialog(
+                self, prompt, "Votar en encuesta", list(poll.options)
+            )
+            try:
+                if dialog.ShowModal() != wx.ID_OK:
+                    return
+                selected = [dialog.GetStringSelection()]
+            finally:
+                dialog.Destroy()
+        else:
+            dialog = wx.MultiChoiceDialog(
+                self, prompt, "Votar en encuesta", list(poll.options)
+            )
+            try:
+                if dialog.ShowModal() != wx.ID_OK:
+                    return
+                selected = [poll.options[index] for index in dialog.GetSelections()]
+            finally:
+                dialog.Destroy()
+            if len(selected) > poll.selectable_count:
+                self.status_bar.SetStatusText(
+                    f"La encuesta permite hasta {poll.selectable_count} opciones"
+                )
+                return
+
+        if not selected:
+            self.status_bar.SetStatusText("No se seleccionÃ³ ninguna opciÃ³n")
+            return
+        self.xmpp.send_poll_vote(chat.jid, poll, selected, is_group=chat.is_group)
+        self.status_bar.SetStatusText("Enviando voto a WhatsApp...")
 
     def _save_photo_album(self, album: Message) -> None:
         expected_count = album_photo_count(album)
@@ -5196,6 +5243,8 @@ class MainWindow(wx.Frame):
             target.media_size = incoming.media_size
         if target.media_duration_seconds <= 0 and incoming.media_duration_seconds > 0:
             target.media_duration_seconds = incoming.media_duration_seconds
+        if target.poll is None and incoming.poll is not None:
+            target.poll = incoming.poll
         if not target.media_local_path and incoming.media_local_path:
             target.media_local_path = incoming.media_local_path
         target.is_sticker = target.is_sticker or incoming.is_sticker

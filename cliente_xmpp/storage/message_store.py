@@ -17,7 +17,7 @@ from statistics import median
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
-from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.chat import Chat, Message, Poll
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.sentiment import sentiment_weights
@@ -32,7 +32,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -1218,6 +1218,7 @@ class MessageStore:
                     media_local_path TEXT NOT NULL DEFAULT '',
                     is_sticker INTEGER NOT NULL DEFAULT 0,
                     is_forwarded INTEGER NOT NULL DEFAULT 0,
+                    poll_json TEXT NOT NULL DEFAULT '',
                     chat_is_group INTEGER NOT NULL DEFAULT 0,
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
@@ -1407,6 +1408,7 @@ class MessageStore:
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
             "is_sticker": "INTEGER NOT NULL DEFAULT 0",
             "is_forwarded": "INTEGER NOT NULL DEFAULT 0",
+            "poll_json": "TEXT NOT NULL DEFAULT ''",
             "sender_name": "TEXT NOT NULL DEFAULT ''",
             "chat_is_group": "INTEGER NOT NULL DEFAULT 0",
             "reply_quote": "TEXT NOT NULL DEFAULT ''",
@@ -1644,13 +1646,13 @@ class MessageStore:
                 account_jid, chat_jid, message_key, message_id, displayed_marker_id, sender_jid,
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
-                media_local_path, is_sticker, is_forwarded, chat_is_group, starred,
+                media_local_path, is_sticker, is_forwarded, poll_json, chat_is_group, starred,
                 reactions_json, reply_quote,
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -1718,6 +1720,7 @@ class MessageStore:
                     WHEN excluded.is_forwarded = 1 OR messages.is_forwarded = 1 THEN 1
                     ELSE 0
                 END,
+                poll_json = COALESCE(NULLIF(excluded.poll_json, ''), messages.poll_json),
                 chat_is_group = CASE
                     WHEN excluded.chat_is_group = 1 OR messages.chat_is_group = 1 THEN 1
                     ELSE 0
@@ -1778,6 +1781,7 @@ class MessageStore:
                 message.media_local_path,
                 int(message.is_sticker),
                 int(message.is_forwarded),
+                _poll_to_db(message.poll),
                 int(message.chat_is_group),
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
@@ -2173,6 +2177,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_local_path=str(row["media_local_path"] or ""),
         is_sticker=is_sticker,
         is_forwarded=bool(row["is_forwarded"]),
+        poll=_poll_from_db(str(row["poll_json"] or "")),
         message_id=str(row["message_id"] or ""),
         displayed_marker_id=str(row["displayed_marker_id"] or ""),
         chat_is_group=bool(row["chat_is_group"]),
@@ -2184,6 +2189,51 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         retracted=bool(row["retracted"]),
         edited=bool(row["edited"]),
         delivery_state=str(row["delivery_state"] or ""),
+    )
+
+
+def _poll_to_db(poll: Poll | None) -> str:
+    if poll is None:
+        return ""
+    return json.dumps(
+        {
+            "id": poll.poll_id,
+            "title": poll.title,
+            "options": list(poll.options),
+            "creator": poll.creator_jid,
+            "creator_lid": poll.creator_lid,
+            "creator_is_me": poll.creator_is_me,
+            "max_selections": poll.selectable_count,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _poll_from_db(raw: str) -> Poll | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        poll_id = str(value["id"]).strip()
+        title = str(value["title"]).strip()
+        creator_jid = str(value["creator"]).strip()
+        options = tuple(
+            str(option).strip() for option in value["options"] if str(option).strip()
+        )
+        selectable_count = int(value.get("max_selections", 1))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not poll_id or not title or not creator_jid or not options:
+        return None
+    return Poll(
+        poll_id=poll_id,
+        title=title,
+        options=options,
+        creator_jid=creator_jid,
+        creator_lid=str(value.get("creator_lid", "")).strip(),
+        creator_is_me=bool(value.get("creator_is_me", False)),
+        selectable_count=max(1, min(selectable_count, len(options))),
     )
 
 

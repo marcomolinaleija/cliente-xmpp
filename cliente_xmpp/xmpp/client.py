@@ -27,7 +27,7 @@ from cliente_xmpp.audio.opus import (
 )
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
-from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.chat import Chat, Message, Poll
 from cliente_xmpp.models.mentions import GroupParticipant, MentionReference
 from cliente_xmpp.models.names import (
     display_label_from_jid,
@@ -98,6 +98,7 @@ SIMS_NS = "urn:xmpp:sims:1"
 REFERENCE_NS = "urn:xmpp:reference:0"
 STICKER_NS = "urn:xmpp:stickers:0"
 WHATSAPP_FORWARDED_NS = "urn:marco-ml:whatsapp:forwarded:0"
+WHATSAPP_POLL_NS = "urn:marco-ml:whatsapp:poll:0"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 BOB_NS = "urn:xmpp:bob"
@@ -2844,6 +2845,7 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(stanza.xml),
+            poll=self._poll_from_xml(stanza.xml),
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             displayed_marker_id=(
                 self._room_stanza_id_from_xml(stanza.xml, message_chat_jid) if is_group else ""
@@ -2923,6 +2925,7 @@ class BridgeXmppClient(ClientXMPP):
                     media_duration_seconds=media_duration,
                     is_sticker=is_sticker,
                     is_forwarded=self._message_is_forwarded(stanza.xml),
+                    poll=self._poll_from_xml(stanza.xml),
                     message_id=str(stanza["id"] or ""),
                     displayed_marker_id=(
                         self._room_stanza_id_from_xml(stanza.xml, chat_jid) if is_group else ""
@@ -2990,6 +2993,7 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(stanza.xml),
+            poll=self._poll_from_xml(stanza.xml),
             message_id=str(stanza["id"] or ""),
             displayed_marker_id=self._room_stanza_id_from_xml(
                 stanza.xml,
@@ -3140,6 +3144,7 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(message),
+            poll=self._poll_from_xml(message),
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
@@ -3354,6 +3359,41 @@ class BridgeXmppClient(ClientXMPP):
     @staticmethod
     def _message_is_forwarded(xml: ET.Element) -> bool:
         return xml.find(f".//{{{WHATSAPP_FORWARDED_NS}}}forwarded") is not None
+
+    @staticmethod
+    def _poll_from_xml(xml: ET.Element | None) -> Poll | None:
+        if xml is None:
+            return None
+
+        poll = xml.find(f".//{{{WHATSAPP_POLL_NS}}}poll")
+        if poll is None:
+            return None
+
+        poll_id = poll.attrib.get("id", "").strip()
+        creator_jid = poll.attrib.get("creator", "").strip()
+        title = poll.attrib.get("title", "").strip()
+        options = tuple(
+            option.text.strip()
+            for option in poll.findall(f"{{{WHATSAPP_POLL_NS}}}option")
+            if option.text and option.text.strip()
+        )
+        if not poll_id or not creator_jid or not title or not options:
+            return None
+
+        try:
+            selectable_count = int(poll.attrib.get("max-selections", "1"))
+        except ValueError:
+            selectable_count = 1
+        selectable_count = max(1, min(selectable_count, len(options)))
+        return Poll(
+            poll_id=poll_id,
+            title=title,
+            options=options,
+            creator_jid=creator_jid,
+            creator_lid=poll.attrib.get("creator-lid", "").strip(),
+            creator_is_me=poll.attrib.get("creator-is-me", "false").lower() == "true",
+            selectable_count=selectable_count,
+        )
 
     @staticmethod
     def _jid_resource(jid: str) -> str:
@@ -4407,6 +4447,61 @@ class XmppService:
                 msg.send()
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo eliminar el mensaje: {exc}"))
+
+        self._loop.call_soon_threadsafe(send)
+
+    def send_poll_vote(
+        self,
+        to_jid: str,
+        poll: Poll,
+        options: list[str],
+        is_group: bool = False,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(XmppError("No hay una conexiÃ³n XMPP activa."))
+            return
+
+        selected = [option for option in options if option in poll.options]
+        if not selected:
+            self._emit(XmppError("Selecciona al menos una opciÃ³n de la encuesta."))
+            return
+        if len(selected) > poll.selectable_count:
+            self._emit(
+                XmppError(
+                    "La encuesta permite seleccionar "
+                    f"hasta {poll.selectable_count} opciones."
+                )
+            )
+            return
+
+        def send() -> None:
+            if not self._client:
+                return
+            try:
+                if is_group:
+                    self._client._join_group_chat(to_jid)
+                message_type = "groupchat" if is_group else "chat"
+                msg = self._client.make_message(
+                    mto=to_jid,
+                    mbody="",
+                    mtype=message_type,
+                )
+                vote = ET.Element(
+                    f"{{{WHATSAPP_POLL_NS}}}vote",
+                    {
+                        "id": poll.poll_id,
+                        "creator": poll.creator_jid,
+                        "creator-is-me": str(poll.creator_is_me).lower(),
+                    },
+                )
+                if poll.creator_lid:
+                    vote.set("creator-lid", poll.creator_lid)
+                for option in selected:
+                    ET.SubElement(vote, f"{{{WHATSAPP_POLL_NS}}}option").text = option
+                msg.append(vote)
+                msg.send()
+            except Exception as exc:
+                self._emit(XmppError(f"No se pudo enviar el voto: {exc}"))
 
         self._loop.call_soon_threadsafe(send)
 

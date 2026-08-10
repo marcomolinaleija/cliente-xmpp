@@ -25,7 +25,7 @@ from cliente_xmpp.media.stickers import (
     looks_like_bridge_sticker,
     looks_like_lottie_sticker_attachment,
 )
-from cliente_xmpp.models.chat import Message
+from cliente_xmpp.models.chat import Message, Poll
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
@@ -34,6 +34,7 @@ from cliente_xmpp.xmpp.client import (
     REPLY_NS,
     STICKER_NS,
     WHATSAPP_FORWARDED_NS,
+    WHATSAPP_POLL_NS,
     BridgeXmppClient,
     XmppService,
 )
@@ -235,6 +236,32 @@ class MessageFeatureParsingTests(unittest.TestCase):
         self.assertIsNotNone(xml.find(f"{{{STICKER_NS}}}sticker"))
         self.assertIsNotNone(xml.find(f"{{{WHATSAPP_FORWARDED_NS}}}forwarded"))
         self.assertIsNone(xml.find("{urn:xmpp:forward:0}forwarded"))
+
+    def test_parses_native_whatsapp_poll_metadata(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message xmlns="jabber:client">
+              <poll xmlns="urn:marco-ml:whatsapp:poll:0"
+                    id="poll-1" title="¿Café o té?" creator="123@s.whatsapp.net"
+                    creator-lid="456@lid" creator-is-me="false" max-selections="1">
+                <option>Café</option><option>Té</option>
+              </poll>
+            </message>
+            """
+        )
+
+        poll = BridgeXmppClient._poll_from_xml(xml)
+
+        self.assertEqual(
+            poll,
+            Poll(
+                poll_id="poll-1",
+                title="¿Café o té?",
+                options=("Café", "Té"),
+                creator_jid="123@s.whatsapp.net",
+                creator_lid="456@lid",
+            ),
+        )
 
     def test_sticker_description_does_not_expose_opaque_filename(self) -> None:
         message = Message(
@@ -563,6 +590,36 @@ class ForwardSendContractTests(unittest.TestCase):
         assert reply is not None
         self.assertEqual(reply.attrib["to"], "contact@example.test")
         self.assertEqual(reply.attrib["id"], "whatsapp-message-id")
+        self.assertTrue(fake_client.message.sent)
+
+    def test_vote_sends_only_the_private_poll_extension(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+        poll = Poll(
+            poll_id="poll-1",
+            title="¿Café o té?",
+            options=("Café", "Té"),
+            creator_jid="123@s.whatsapp.net",
+            creator_lid="456@lid",
+        )
+
+        service.send_poll_vote("contact@example.test", poll, ["Té"])
+
+        assert fake_client.message is not None
+        vote = fake_client.message.xml.find(f"{{{WHATSAPP_POLL_NS}}}vote")
+        self.assertIsNotNone(vote)
+        assert vote is not None
+        self.assertEqual(vote.attrib["id"], "poll-1")
+        self.assertEqual(vote.attrib["creator"], "123@s.whatsapp.net")
+        self.assertEqual(vote.attrib["creator-lid"], "456@lid")
+        self.assertEqual(
+            [node.text for node in vote.findall(f"{{{WHATSAPP_POLL_NS}}}option")],
+            ["Té"],
+        )
+        self.assertEqual(fake_client.message.xml.findtext("body"), "")
         self.assertTrue(fake_client.message.sent)
 
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:

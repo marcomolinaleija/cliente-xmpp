@@ -4561,11 +4561,17 @@ class XmppService:
                     mbody=" ",
                     mtype=message_type,
                 )
+                creator = (poll.creator_jid or poll.creator_lid or "").strip()
+                if not creator:
+                    raise ValueError("la encuesta no contiene la identidad de su creador")
                 vote = ET.Element(
                     f"{{{WHATSAPP_POLL_NS}}}vote",
                     {
                         "id": poll.poll_id,
-                        "creator": poll.creator_jid,
+                        # WhatsApp may expose a poll authored on another own
+                        # device using only its LID. The bridge understands that
+                        # identity for both direct and group poll secrets.
+                        "creator": creator,
                         "creator-is-me": str(poll.creator_is_me).lower(),
                     },
                 )

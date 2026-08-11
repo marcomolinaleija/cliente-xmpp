@@ -98,7 +98,10 @@ def patch_session_py(path: Path, *, backup: bool) -> bool:
             attrs = {
                 "id": message.ID,
                 "title": message.Poll.Title,
-                "creator": message.Actor.JID,
+                # Own WhatsApp polls can be addressed only by their LID. Keep a
+                # non-empty creator attribute so the XMPP client can vote after
+                # a restart; Go uses creator-lid for the actual poll secret.
+                "creator": message.Actor.JID or message.Actor.LID,
                 "creator-is-me": str(message.Actor.IsMe).lower(),
                 "max-selections": str(max_selections),
             }

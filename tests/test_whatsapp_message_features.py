@@ -641,6 +641,31 @@ class ForwardSendContractTests(unittest.TestCase):
         self.assertIsNotNone(fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}store"))
         self.assertTrue(fake_client.message.sent)
 
+    def test_vote_uses_lid_when_own_creator_jid_is_missing(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+        poll = Poll(
+            poll_id="poll-own-group",
+            title="Propia desde otro dispositivo",
+            options=("A", "B"),
+            creator_jid="",
+            creator_lid="456@lid",
+            creator_is_me=True,
+        )
+
+        service.send_poll_vote("#group@example.test", poll, ["A"], is_group=True)
+
+        assert fake_client.message is not None
+        vote = fake_client.message.xml.find(f"{{{WHATSAPP_POLL_NS}}}vote")
+        self.assertIsNotNone(vote)
+        assert vote is not None
+        self.assertEqual(vote.attrib["creator"], "456@lid")
+        self.assertEqual(vote.attrib["creator-lid"], "456@lid")
+        self.assertTrue(fake_client.message.sent)
+
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:
         emitted: list[object] = []
         service = XmppService(emitted.append)

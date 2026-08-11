@@ -4,9 +4,12 @@ FROM ${BASE_IMAGE} AS patched
 
 USER root
 COPY patch_slidge_whatsapp_polls.py /tmp/patch_slidge_whatsapp_polls.py
+COPY patch_slidge_whatsapp_stickers.py /tmp/patch_slidge_whatsapp_stickers.py
 RUN python -B /tmp/patch_slidge_whatsapp_polls.py /venv/lib/python3.13/site-packages \
         --no-backup && \
-    rm /tmp/patch_slidge_whatsapp_polls.py
+    python -B /tmp/patch_slidge_whatsapp_stickers.py /venv/lib/python3.13/site-packages \
+        --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_polls.py /tmp/patch_slidge_whatsapp_stickers.py
 
 FROM golang:1.25-trixie AS go_builder
 
@@ -20,12 +23,13 @@ RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
 
 COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
 COPY bridge_poll_vote_test.go /src/slidge_whatsapp/poll_vote_test.go
+COPY bridge_native_sticker_test.go /src/slidge_whatsapp/native_sticker_test.go
 COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
 
 WORKDIR /src/slidge_whatsapp
-RUN gofmt -w event.go session.go poll_vote_test.go && \
+RUN gofmt -w event.go session.go poll_vote_test.go native_sticker_test.go && \
     go test . && \
-    rm poll_vote_test.go && \
+    rm poll_vote_test.go native_sticker_test.go && \
     cd generated && \
     go build -buildmode=c-shared -tags "mupdf extlib" \
         -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \

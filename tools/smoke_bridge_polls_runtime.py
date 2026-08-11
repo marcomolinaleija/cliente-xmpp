@@ -34,6 +34,10 @@ required = (
     "strconv.Itoa(int(p.GetSelectableOptionsCount()))",
     "func pollVoteInfo(message Message, chat types.JID)",
     "s.client.BuildPollVote(s.ctx, pollInfo, optionNames)",
+    "application/x-whatsapp-can-sticker",
+    "func uploadStickerAttachment(",
+    "StickerMessage:",
+    "native WhatsApp stickers must be WebP",
 )
 combined = "\n".join((session_py, mixins_py, event_go, session_go, dispatcher_py, message_text_py))
 for fragment in required:

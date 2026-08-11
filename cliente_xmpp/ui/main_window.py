@@ -3807,7 +3807,7 @@ class MainWindow(wx.Frame):
         if chat is None or poll is None:
             return
 
-        prompt = f"{poll.title}\nSelecciona hasta {poll.selectable_count} opciÃ³n(es)."
+        prompt = f"{poll.title}\nSelecciona hasta {poll.selectable_count} opción(es)."
         if poll.selectable_count == 1:
             dialog = wx.SingleChoiceDialog(
                 self, prompt, "Votar en encuesta", list(poll.options)
@@ -3835,7 +3835,7 @@ class MainWindow(wx.Frame):
                 return
 
         if not selected:
-            self.status_bar.SetStatusText("No se seleccionÃ³ ninguna opciÃ³n")
+            self.status_bar.SetStatusText("No se seleccionó ninguna opción")
             return
         self.xmpp.send_poll_vote(chat.jid, poll, selected, is_group=chat.is_group)
         self.status_bar.SetStatusText("Enviando voto a WhatsApp...")

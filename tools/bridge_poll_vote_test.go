@@ -25,6 +25,29 @@ func TestPollVoteInfoForDirectChat(t *testing.T) {
 	}
 }
 
+func TestPollVoteInfoForOwnDirectChatUsesCreatorLIDSecret(t *testing.T) {
+	chat, err := types.ParseJID("123456789@s.whatsapp.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _, err := pollVoteInfo(Message{
+		ID: "POLL-OWN-DIRECT",
+		Chat: Chat{JID: chat.String()},
+		Actor: Actor{
+			JID:  "111111111@s.whatsapp.net",
+			LID:  "222222222@lid",
+			IsMe: true,
+		},
+		Poll: Poll{Options: []PollOption{{Title: "SÃ­"}}},
+	}, chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Chat.String() != "222222222@lid" || info.Sender.String() != "222222222@lid" {
+		t.Fatalf("own direct poll must use its LID secret: %#v", info)
+	}
+}
+
 func TestPollVoteInfoForGroupUsesCreatorLID(t *testing.T) {
 	chat, err := types.ParseJID("123456789@g.us")
 	if err != nil {

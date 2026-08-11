@@ -263,8 +263,20 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 	}
 
 	creator := message.Actor.JID
+	pollChat := chat
 	if message.Chat.IsGroup {
 		creator = message.Actor.LID
+	} else if message.Actor.IsMe && message.Actor.LID != "" {
+		// WhatsApp stores a poll authored from another one of our devices under
+		// our LID, rather than under the direct recipient. BuildPollVote must use
+		// that same MessageInfo to retrieve and encrypt with its message secret;
+		// Session.SendMessage still uses `chat` as the outgoing destination.
+		creator = message.Actor.LID
+		var err error
+		pollChat, err = types.ParseJID(creator)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not parse own poll creator LID: %w", err)
+		}
 	}
 	if creator == "" {
 		return nil, nil, fmt.Errorf("missing poll creator identity")
@@ -289,7 +301,7 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 
 	return &types.MessageInfo{
 		MessageSource: types.MessageSource{
-			Chat:     chat,
+			Chat:     pollChat,
 			Sender:   sender,
 			IsFromMe: message.Actor.IsMe,
 			IsGroup:  message.Chat.IsGroup,

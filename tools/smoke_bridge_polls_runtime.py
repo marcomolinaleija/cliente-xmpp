@@ -6,6 +6,7 @@ from pathlib import Path
 
 import slidge_whatsapp
 import slidge_whatsapp.generated._whatsapp  # noqa: F401
+from slidge_whatsapp.generated import whatsapp
 
 
 package_dir = Path(slidge_whatsapp.__file__).parent
@@ -40,10 +41,10 @@ required = (
     "func uploadStickerAttachment(",
     "StickerMessage:",
     "native WhatsApp stickers must be WebP",
-    "MessagePollUpdate",
+    "message.ReferenceID",
     "DecryptPollVote(ctx, evt)",
     "poll-update",
-    "OptionHashes",
+    "optionHashes",
 )
 combined = "\n".join((session_py, mixins_py, event_go, session_go, dispatcher_py, message_text_py))
 for fragment in required:
@@ -51,4 +52,6 @@ for fragment in required:
 
 binary = package_dir / "generated" / "_whatsapp.cpython-313-x86_64-linux-gnu.so"
 assert binary.is_file(), "rebuilt Go binding is missing"
+assert hasattr(whatsapp, "MessagePoll"), "poll event kind is missing from the Go binding"
+assert hasattr(whatsapp.Message, "ReferenceID"), "poll reference is missing from the Go binding"
 print("WhatsApp poll bridge runtime smoke: ok")

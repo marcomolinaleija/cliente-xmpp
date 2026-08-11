@@ -24,7 +24,7 @@ def _write(path: Path, text: str, backup: bool) -> None:
 
 def patch_event_go(path: Path, *, backup: bool) -> bool:
     source = path.read_text(encoding="utf-8")
-    if "MessagePollUpdate" in source:
+    if "Handle encrypted poll vote updates" in source:
         return False
     source = _replace_once(
         source,
@@ -32,62 +32,27 @@ def patch_event_go(path: Path, *, backup: bool) -> bool:
         'import (\n\t// Standard library.\n\t"context"\n\t"encoding/hex"\n',
         "event.go poll-update import",
     )
-    source = _replace_once(
-        source,
-        "\tMessagePoll\n)",
-        "\tMessagePoll\n\tMessagePollUpdate\n)",
-        "event.go poll-update kind",
-    )
-    source = _replace_once(
-        source,
-        "\tPoll        Poll         // The multiple-choice poll contained in the message, if any.\n",
-        "\tPoll        Poll         // The multiple-choice poll contained in the message, if any.\n\tPollUpdate  PollUpdate   // A decrypted vote update for a previous poll, if any.\n",
-        "event.go poll-update message field",
-    )
-    source = _replace_once(
-        source,
-        "type PollOption struct {\n\tTitle string // The human-readable name for the poll option.\n}\n",
-        '''type PollOption struct {
-	Title string // The human-readable name for the poll option.
-}
-
-// PollUpdate identifies one voter's current selected option hashes. The option
-// names remain private to WhatsApp; the XMPP client matches these SHA-256 hashes
-// against the poll options it already received.
-type PollUpdate struct {
-	PollID       string
-	Voter        string
-	VoterLID     string
-	OptionHashes []string
-}
-''',
-        "event.go poll-update type",
-    )
-    update = '''	// Handle encrypted poll vote updates. WhatsMeow decrypts these using the
-	// message secret retained in its own store; no poll secret crosses to XMPP.
-	if update := evt.Message.GetPollUpdateMessage(); update != nil {
-		vote, err := client.DecryptPollVote(ctx, evt)
-		if err != nil {
-			client.Log.Warnf("Ignoring undecipherable poll update %s: %v", evt.Info.ID, err)
-			return EventUnknown, nil
-		}
-		key := update.GetPollCreationMessageKey()
-		if key == nil || key.GetID() == "" {
-			return EventUnknown, nil
-		}
-		message.Kind = MessagePollUpdate
-		message.PollUpdate = PollUpdate{
-			PollID:   key.GetID(),
-			Voter:    message.Actor.JID,
-			VoterLID: message.Actor.LID,
-		}
-		for _, optionHash := range vote.GetSelectedOptions() {
-			message.PollUpdate.OptionHashes = append(
-				message.PollUpdate.OptionHashes, hex.EncodeToString(optionHash),
-			)
-		}
-		return EventMessage, &EventPayload{Message: message}
-	}
+    update = '''\t// Handle encrypted poll vote updates. WhatsMeow decrypts these using the
+\t// message secret retained in its own store; no poll secret crosses to XMPP.
+\tif update := evt.Message.GetPollUpdateMessage(); update != nil {
+\t\tvote, err := client.DecryptPollVote(ctx, evt)
+\t\tif err != nil {
+\t\t\tclient.Log.Warnf("Ignoring undecipherable poll update %s: %v", evt.Info.ID, err)
+\t\t\treturn EventUnknown, nil
+\t\t}
+\t\tkey := update.GetPollCreationMessageKey()
+\t\tif key == nil || key.GetID() == "" {
+\t\t\treturn EventUnknown, nil
+\t\t}
+\t\tmessage.Kind = MessagePoll
+\t\tmessage.ReferenceID = key.GetID()
+\t\tvar optionHashes []string
+\t\tfor _, optionHash := range vote.GetSelectedOptions() {
+\t\t\toptionHashes = append(optionHashes, hex.EncodeToString(optionHash))
+\t\t}
+\t\tmessage.Body = strings.Join(optionHashes, ",")
+\t\treturn EventMessage, &EventPayload{Message: message}
+\t}
 
 '''
     source = _replace_once(
@@ -107,20 +72,19 @@ def patch_session_py(path: Path, *, backup: bool) -> bool:
     source = _replace_once(
         source,
         "            case whatsapp.MessagePoll:\n                await self.on_wa_msg_poll(message, actor, muc)\n",
-        "            case whatsapp.MessagePoll:\n                await self.on_wa_msg_poll(message, actor, muc)\n            case whatsapp.MessagePollUpdate:\n                await self.on_wa_msg_poll_update(message, actor, muc)\n",
+        "            case whatsapp.MessagePoll:\n                if message.ReferenceID:\n                    await self.on_wa_msg_poll_update(message, actor, muc)\n                else:\n                    await self.on_wa_msg_poll(message, actor, muc)\n",
         "session.py poll-update dispatch",
     )
     handler = '''    async def on_wa_msg_poll_update(
         self, message: whatsapp.Message, actor: Contact | Participant, _muc: MUC | None
     ) -> None:
-        update = message.PollUpdate
-        if not update.PollID or not update.Voter:
+        if not message.ReferenceID or not message.Actor.JID:
             return
-        attrs = {"id": update.PollID, "voter": update.Voter}
-        if update.VoterLID:
-            attrs["voter-lid"] = update.VoterLID
+        attrs = {"id": message.ReferenceID, "voter": message.Actor.JID}
+        if message.Actor.LID:
+            attrs["voter-lid"] = message.Actor.LID
         poll_xml = ET.Element(f"{{{POLL_NAMESPACE}}}poll-update", attrs)
-        for option_hash in update.OptionHashes:
+        for option_hash in message.Body.split(","):
             if option_hash:
                 ET.SubElement(poll_xml, f"{{{POLL_NAMESPACE}}}option", {"hash": option_hash})
         actor.send_text(
@@ -134,8 +98,8 @@ def patch_session_py(path: Path, *, backup: bool) -> bool:
 '''
     source = _replace_once(
         source,
-            "    async def on_wa_avatar(self, avatar: whatsapp.Avatar) -> None:\n",
-            handler + "    async def on_wa_avatar(self, avatar: whatsapp.Avatar) -> None:\n",
+        "    async def on_wa_avatar(self, avatar: whatsapp.Avatar) -> None:\n",
+        handler + "    async def on_wa_avatar(self, avatar: whatsapp.Avatar) -> None:\n",
         "session.py poll-update XMPP forwarding",
     )
     _write(path, source, backup)

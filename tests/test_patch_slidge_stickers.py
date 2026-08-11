@@ -15,13 +15,19 @@ class NativeStickerPatchTests(unittest.TestCase):
             root = Path(temp_dir)
             mixins = root / "slidge_whatsapp/mixins.py"
             event_go = root / "slidge_whatsapp/event.go"
+            dispatcher = root / "slidge/core/dispatcher/message/message.py"
             mixins.parent.mkdir(parents=True)
+            dispatcher.parent.mkdir(parents=True)
             mixins.write_text(
                 '''from slidge.util.types import ChatState, Mention, XMPPMessage\n\nclass RecipientMixin:\n    async def _on_text(self, xmpp_msg: XMPPMessage) -> str:\n        return ""\n\nmessage_attachment = whatsapp.Attachment(\n            MIME=content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=xmpp_msg.body or "",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n)\n''',
                 encoding="utf-8",
             )
             event_go.write_text(
                 '''var knownMediaTypes = map[string]whatsmeow.MediaType{\n}\n\n// UploadAttachment attempts to push the given attachment data to WhatsApp according to the MIME\nfunc uploadAttachment(ctx context.Context, client *whatsmeow.Client, attach *Attachment) (*waE2E.Message, error) {\n\tvar originalMIME = attach.MIME\n}\n''',
+                encoding="utf-8",
+            )
+            dispatcher.write_text(
+                '        is_sticker = "sticker" in msg\n',
                 encoding="utf-8",
             )
 
@@ -38,6 +44,10 @@ class NativeStickerPatchTests(unittest.TestCase):
             patched_go = event_go.read_text(encoding="utf-8")
             self.assertIn("func uploadStickerAttachment", patched_go)
             self.assertIn("StickerMessage", patched_go)
+            self.assertIn(
+                'msg.xml.find("{urn:xmpp:stickers:0}sticker") is not None',
+                dispatcher.read_text(encoding="utf-8"),
+            )
 
 
 if __name__ == "__main__":

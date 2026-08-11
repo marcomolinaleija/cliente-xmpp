@@ -139,16 +139,36 @@ func buildStickerMessage(attach *Attachment, upload whatsmeow.UploadResponse, sp
     return True
 
 
+def patch_dispatcher(path: Path, *, backup: bool) -> bool:
+    source = path.read_text(encoding="utf-8")
+    marker = 'msg.xml.find("{urn:xmpp:stickers:0}sticker") is not None'
+    if marker in source:
+        return False
+    source = replace_once(
+        source,
+        '        is_sticker = "sticker" in msg\n',
+        '        is_sticker = (\n'
+        '            "sticker" in msg\n'
+        '            or msg.xml.find("{urn:xmpp:stickers:0}sticker") is not None\n'
+        '        )\n',
+        "slidge XEP-0449 raw sticker detection",
+    )
+    write(path, source, backup=backup)
+    return True
+
+
 def patch_package(package_root: Path, *, backup: bool) -> bool:
     package_root = package_root.resolve()
     mixins = package_root / "slidge_whatsapp/mixins.py"
     event_go = package_root / "slidge_whatsapp/event.go"
-    missing = [str(path) for path in (mixins, event_go) if not path.is_file()]
+    dispatcher = package_root / "slidge/core/dispatcher/message/message.py"
+    missing = [str(path) for path in (mixins, event_go, dispatcher) if not path.is_file()]
     if missing:
         raise SystemExit("Missing bridge files:\n" + "\n".join(missing))
     changed_mixins = patch_mixins(mixins, backup=backup)
     changed_event_go = patch_event_go(event_go, backup=backup)
-    return changed_mixins or changed_event_go
+    changed_dispatcher = patch_dispatcher(dispatcher, backup=backup)
+    return changed_mixins or changed_event_go or changed_dispatcher
 
 
 def main() -> int:

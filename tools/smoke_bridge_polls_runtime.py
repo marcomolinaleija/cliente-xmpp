@@ -36,6 +36,7 @@ required = (
     "s.client.BuildPollVote(s.ctx, pollInfo, optionNames)",
     "application/x-whatsapp-can-sticker",
     "async def on_sticker(self, sticker: Sticker)",
+    'msg.xml.find("{urn:xmpp:stickers:0}sticker") is not None',
     "func uploadStickerAttachment(",
     "StickerMessage:",
     "native WhatsApp stickers must be WebP",

@@ -3,7 +3,9 @@
 ## Estado y objetivo
 
 El cliente ya reconoce el contrato XMPP privado `urn:marco-ml:whatsapp:poll:0`, conserva sus
-metadatos en SQLite y ofrece **Votar en encuesta...** en el menú contextual del mensaje.
+metadatos en SQLite y muestra **Votar en encuesta** junto al historial cuando se selecciona una
+encuesta, igual que la acción para ir a un mensaje citado. No debe duplicarse esa acción en el
+menú contextual.
 
 La imagen actual del puente reconoce `PollCreationMessage`, pero lo convierte a este texto de
 compatibilidad antes de enviarlo por XMPP:
@@ -154,10 +156,28 @@ imagen anterior para rollback inmediato.
 ## Alcance de la primera entrega
 
 Esta entrega permite leer y votar encuestas. Los votos enviados se confirman por el estado de envío
-del cliente y por WhatsApp oficial. La actualización de conteos y quién votó exige procesar
-`PollUpdateMessage`, descifrar los votos recibidos y emitir un evento de actualización adicional;
-debe implementarse como una segunda fase para no presentar resultados incompletos como si fueran
-autoridad de WhatsApp.
+del cliente y por WhatsApp oficial.
+
+## Resultados y cambios de voto
+
+La segunda fase procesa `PollUpdateMessage`. El bridge debe descifrarlo exclusivamente mediante
+`client.DecryptPollVote(ctx, evt)`, que usa el secreto que WhatsApp conserva en su propio almacén.
+Debe emitir una stanza auxiliar, sin cuerpo visible, con los hashes SHA-256 de las opciones:
+
+```xml
+<poll-update xmlns="urn:marco-ml:whatsapp:poll:0"
+             id="ID-WHATSAPP-DE-LA-ENCUESTA"
+             voter="numero@s.whatsapp.net"
+             voter-lid="identidad@lid">
+  <option hash="sha256-en-hexadecimal"/>
+</poll-update>
+```
+
+El cliente ya conoce los textos de las opciones, calcula sus hashes localmente y conserva una
+selección vigente por votante. Al llegar un voto nuevo del mismo votante, reemplaza el anterior,
+recalcula los totales y ordena las opciones de mayor a menor (manteniendo el orden original en
+empates). No se envían textos de opciones, secretos ni resultados falsos desde XMPP hacia
+WhatsApp.
 
 Las encuestas que el puente ya archivó únicamente como texto, como las recibidas antes de aplicar
 este contrato, no pueden volverse votables de forma fiable desde la caché del cliente: carecen de

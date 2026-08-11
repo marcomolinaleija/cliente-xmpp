@@ -263,6 +263,23 @@ class MessageFeatureParsingTests(unittest.TestCase):
             ),
         )
 
+    def test_parses_poll_update_option_hashes(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message xmlns="jabber:client">
+              <poll-update xmlns="urn:marco-ml:whatsapp:poll:0"
+                           id="poll-1" voter="123@s.whatsapp.net" voter-lid="456@lid">
+                <option hash="AABB" /><option hash="ccdd" />
+              </poll-update>
+            </message>
+            """
+        )
+
+        self.assertEqual(
+            BridgeXmppClient._poll_update_from_xml(xml),
+            ("poll-1", "123@s.whatsapp.net", "456@lid", ("aabb", "ccdd")),
+        )
+
     def test_sticker_description_does_not_expose_opaque_filename(self) -> None:
         message = Message(
             chat_jid="chat@example.test",

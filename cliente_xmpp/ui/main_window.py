@@ -124,6 +124,7 @@ from cliente_xmpp.xmpp.events import (
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
     MessageReceived,
+    PollUpdated,
     RosterLoaded,
     WhatsAppBridgeStatus,
     WhatsAppLinkSessionEnded,
@@ -232,6 +233,7 @@ class MainWindow(wx.Frame):
         self._closing = False
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
+        self.poll_vote_hashes: dict[tuple[str, str, str], tuple[str, ...]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.displayed_marker_ids_by_chat: dict[str, str] = {}
         self.synced_displayed_marker_ids_by_chat: dict[str, str] = {}
@@ -400,6 +402,7 @@ class MainWindow(wx.Frame):
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
             on_go_to_quoted_message=self._go_to_quoted_message,
+            on_vote_in_poll=self._vote_in_poll,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
@@ -3733,10 +3736,6 @@ class MainWindow(wx.Frame):
             reaction_items.append((reaction_menu.Append(wx.ID_ANY, reaction), reaction))
         menu.AppendSubMenu(reaction_menu, "Reaccionar")
 
-        vote_item: wx.MenuItem | None = None
-        if message.poll is not None and not message.retracted:
-            vote_item = menu.Append(wx.ID_ANY, "Votar en encuesta...")
-
         star_label = "No destacar" if message.starred else "Destacar"
         star_item = menu.Append(wx.ID_ANY, star_label)
         delete_item: wx.MenuItem | None = None
@@ -3794,8 +3793,6 @@ class MainWindow(wx.Frame):
                 ),
                 item,
             )
-        if vote_item is not None:
-            self.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
         if delete_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
@@ -3842,6 +3839,68 @@ class MainWindow(wx.Frame):
             return
         self.xmpp.send_poll_vote(chat.jid, poll, selected, is_group=chat.is_group)
         self.status_bar.SetStatusText("Enviando voto a WhatsApp...")
+
+    def _handle_poll_updated(
+        self,
+        chat_jid: str,
+        poll_id: str,
+        voter_jid: str,
+        voter_lid: str,
+        option_hashes: tuple[str, ...],
+    ) -> None:
+        """Apply one WhatsApp PollUpdateMessage without adding a chat row."""
+        voter = voter_lid or voter_jid
+        if not poll_id or not voter:
+            return
+        self.poll_vote_hashes[(chat_jid, poll_id, voter)] = tuple(
+            dict.fromkeys(option_hashes)
+        )
+        if self.current_jid:
+            self._queue_storage_write(
+                self.message_store.upsert_poll_vote,
+                self.current_jid,
+                chat_jid,
+                poll_id,
+                voter,
+                self.poll_vote_hashes[(chat_jid, poll_id, voter)],
+            )
+
+        changed: list[Message] = []
+        for message in self.messages_by_chat.get(chat_jid, []):
+            poll = message.poll
+            if poll is None or poll.poll_id != poll_id:
+                continue
+
+            option_hashes_by_index = tuple(
+                hashlib.sha256(option.encode("utf-8")).hexdigest()
+                for option in poll.options
+            )
+            selections = tuple(
+                selection
+                for (known_chat, known_poll, _known_voter), selection in (
+                    self.poll_vote_hashes.items()
+                )
+                if known_chat == chat_jid and known_poll == poll_id
+            )
+            totals = tuple(
+                sum(option_hash in selected for selected in selections)
+                for option_hash in option_hashes_by_index
+            )
+            if poll.option_votes == totals:
+                continue
+            message.poll = replace(poll, option_votes=totals)
+            changed.append(message)
+
+        if not changed:
+            return
+        self._persist_messages(changed)
+        if (
+            self.conversation.IsShown()
+            and self.conversation.current_chat is not None
+            and self.conversation.current_chat.jid == chat_jid
+        ):
+            for message in changed:
+                self.conversation.refresh_message(message)
 
     def _save_photo_album(self, album: Message) -> None:
         expected_count = album_photo_count(album)
@@ -4779,6 +4838,20 @@ class MainWindow(wx.Frame):
                     return
                 messages = self._messages_after_chat_clear(chat_jid, messages)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
+            case PollUpdated(
+                chat_jid=chat_jid,
+                poll_id=poll_id,
+                voter_jid=voter_jid,
+                voter_lid=voter_lid,
+                option_hashes=option_hashes,
+            ):
+                self._handle_poll_updated(
+                    chat_jid,
+                    poll_id,
+                    voter_jid,
+                    voter_lid,
+                    option_hashes,
+                )
             case MessageDeliveryUpdated(
                 chat_jid=chat_jid,
                 message_id=message_id,
@@ -6064,15 +6137,23 @@ class MainWindow(wx.Frame):
                 chat=chat_jid,
                 messages=len(cached_messages),
             )
+            cached_poll_votes = self.message_store.load_poll_votes(
+                self.current_jid,
+                chat_jid,
+            )
         except Exception:
             return
         self.cached_message_loads.add(cache_key)
+        for (poll_id, voter), option_hashes in cached_poll_votes.items():
+            self.poll_vote_hashes[(chat_jid, poll_id, voter)] = option_hashes
 
         if cached_messages:
             merge_started_at = time.perf_counter()
             self._normalize_audio_metadata_for_messages(cached_messages)
             hydrated_replies = self._merge_messages(chat_jid, cached_messages)
             self._persist_messages(hydrated_replies)
+            for (poll_id, voter), option_hashes in cached_poll_votes.items():
+                self._handle_poll_updated(chat_jid, poll_id, voter, "", option_hashes)
             self._update_chat_activity_from_messages(chat_jid, cached_messages)
             self._update_chat_preview_from_messages(chat_jid, cached_messages)
             for message in cached_messages:

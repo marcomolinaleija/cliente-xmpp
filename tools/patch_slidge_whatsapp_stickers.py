@@ -24,14 +24,56 @@ def write(path: Path, text: str, *, backup: bool) -> None:
 
 def patch_mixins(path: Path, *, backup: bool) -> bool:
     source = path.read_text(encoding="utf-8")
-    if 'MIME="application/x-whatsapp-can-sticker" if att.is_sticker' in source:
+    changed = False
+    if 'MIME="application/x-whatsapp-can-sticker" if att.is_sticker' not in source:
+        source = replace_once(
+            source,
+            "            MIME=content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=xmpp_msg.body or \"\",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n",
+            "            MIME=\"application/x-whatsapp-can-sticker\" if att.is_sticker else content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=\"\" if att.is_sticker else xmpp_msg.body or \"\",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n",
+            "slidge_whatsapp mixins sticker attachment",
+        )
+        changed = True
+    if "async def on_sticker(self, sticker: Sticker)" not in source:
+        source = replace_once(
+            source,
+            "from slidge.util.types import ChatState, Mention, XMPPMessage\n",
+            "from slidge.util.types import ChatState, Mention, Sticker, XMPPMessage\n",
+            "slidge_whatsapp Sticker import",
+        )
+        sticker_handler = '''    async def on_sticker(self, sticker: Sticker) -> str:
+        """Send the XEP-0449 dispatch path as a native WhatsApp sticker."""
+        try:
+            data = sticker.path.read_bytes()
+        except OSError as exc:
+            raise XMPPError("internal-server-error", "Unable to read XMPP sticker") from exc
+
+        message_id: str = self.wa.GenerateMessageID()  # type:ignore[no-untyped-call]
+        attachment = whatsapp.Attachment(  # type:ignore[no-untyped-call]
+            MIME="application/x-whatsapp-can-sticker",
+            Filename=sticker.path.name,
+            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]
+            Caption="",
+        )
+        message = whatsapp.Message(  # type:ignore[no-untyped-call]
+            Kind=whatsapp.MessageAttachment,
+            ID=message_id,
+            Chat=self.get_wa_chat(),
+            ReplyID=sticker.reply.msg_id if sticker.reply else "",
+            Attachments=whatsapp.Slice_whatsapp_Attachment([attachment]),  # type:ignore[no-untyped-call]
+        )
+        self.wa.SendMessage(message)  # type:ignore[no-untyped-call]
+        return message_id
+
+'''
+        source = replace_once(
+            source,
+            "    async def _on_text(self, xmpp_msg: XMPPMessage) -> str:\n",
+            sticker_handler + "    async def _on_text(self, xmpp_msg: XMPPMessage) -> str:\n",
+            "slidge_whatsapp native XEP-0449 sticker handler",
+        )
+        changed = True
+    if not changed:
         return False
-    source = replace_once(
-        source,
-        "            MIME=content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=xmpp_msg.body or \"\",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n",
-        "            MIME=\"application/x-whatsapp-can-sticker\" if att.is_sticker else content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=\"\" if att.is_sticker else xmpp_msg.body or \"\",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n",
-        "slidge_whatsapp mixins sticker attachment",
-    )
     write(path, source, backup=backup)
     return True
 

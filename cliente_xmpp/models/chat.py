@@ -15,6 +15,10 @@ class Poll:
     creator_lid: str = ""
     creator_is_me: bool = False
     selectable_count: int = 1
+    # Totals are aligned with ``options``. They are supplied by poll-update
+    # events and intentionally default to zero for polls received before the
+    # bridge can report their results.
+    option_votes: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)

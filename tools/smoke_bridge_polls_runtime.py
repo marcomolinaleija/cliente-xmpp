@@ -35,9 +35,14 @@ required = (
     "func pollVoteInfo(message Message, chat types.JID)",
     "s.client.BuildPollVote(s.ctx, pollInfo, optionNames)",
     "application/x-whatsapp-can-sticker",
+    "async def on_sticker(self, sticker: Sticker)",
     "func uploadStickerAttachment(",
     "StickerMessage:",
     "native WhatsApp stickers must be WebP",
+    "MessagePollUpdate",
+    "DecryptPollVote(ctx, evt)",
+    "poll-update",
+    "OptionHashes",
 )
 combined = "\n".join((session_py, mixins_py, event_go, session_go, dispatcher_py, message_text_py))
 for fragment in required:

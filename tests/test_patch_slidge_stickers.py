@@ -17,7 +17,7 @@ class NativeStickerPatchTests(unittest.TestCase):
             event_go = root / "slidge_whatsapp/event.go"
             mixins.parent.mkdir(parents=True)
             mixins.write_text(
-                '''message_attachment = whatsapp.Attachment(\n            MIME=content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=xmpp_msg.body or "",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n)\n''',
+                '''from slidge.util.types import ChatState, Mention, XMPPMessage\n\nclass RecipientMixin:\n    async def _on_text(self, xmpp_msg: XMPPMessage) -> str:\n        return ""\n\nmessage_attachment = whatsapp.Attachment(\n            MIME=content_type,\n            Filename=basename(att.url),\n            Data=go.Slice_byte.from_bytes(data),  # type:ignore[no-untyped-call]\n            Caption=xmpp_msg.body or "",\n            ViewOnce=xmpp_msg.thread == VIEW_ONCE_THREAD,\n)\n''',
                 encoding="utf-8",
             )
             event_go.write_text(
@@ -29,6 +29,10 @@ class NativeStickerPatchTests(unittest.TestCase):
             self.assertFalse(patch_package(root, backup=False))
             self.assertIn(
                 "application/x-whatsapp-can-sticker",
+                mixins.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "async def on_sticker(self, sticker: Sticker)",
                 mixins.read_text(encoding="utf-8"),
             )
             patched_go = event_go.read_text(encoding="utf-8")

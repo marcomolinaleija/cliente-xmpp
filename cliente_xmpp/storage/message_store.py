@@ -32,7 +32,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -1157,6 +1157,62 @@ class MessageStore:
                 self._upsert_message(conn, account_jid, message)
                 self._upsert_message_chat_summary(conn, account_jid, message)
 
+    def upsert_poll_vote(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        poll_id: str,
+        voter_id: str,
+        option_hashes: tuple[str, ...],
+    ) -> None:
+        if not all((account_jid, chat_jid, poll_id, voter_id)):
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO poll_votes (
+                    account_jid, chat_jid, poll_id, voter_id, option_hashes_json
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_jid, chat_jid, poll_id, voter_id) DO UPDATE SET
+                    option_hashes_json = excluded.option_hashes_json
+                """,
+                (
+                    account_jid,
+                    chat_jid,
+                    poll_id,
+                    voter_id,
+                    json.dumps(list(option_hashes), separators=(",", ":")),
+                ),
+            )
+
+    def load_poll_votes(
+        self,
+        account_jid: str,
+        chat_jid: str,
+    ) -> dict[tuple[str, str], tuple[str, ...]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT poll_id, voter_id, option_hashes_json
+                FROM poll_votes
+                WHERE account_jid = ? AND chat_jid = ?
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+        results: dict[tuple[str, str], tuple[str, ...]] = {}
+        for row in rows:
+            try:
+                hashes = tuple(
+                    str(value).strip().lower()
+                    for value in json.loads(str(row["option_hashes_json"] or "[]"))
+                    if str(value).strip()
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            results[(str(row["poll_id"]), str(row["voter_id"]))] = hashes
+        return results
+
     def delete_local_message(self, account_jid: str, chat_jid: str, message_id: str) -> None:
         if not account_jid or not chat_jid or not message_id:
             return
@@ -1237,6 +1293,15 @@ class MessageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_messages_account_sent
                 ON messages (account_jid, sent_at);
+
+                CREATE TABLE IF NOT EXISTS poll_votes (
+                    account_jid TEXT NOT NULL,
+                    chat_jid TEXT NOT NULL,
+                    poll_id TEXT NOT NULL,
+                    voter_id TEXT NOT NULL,
+                    option_hashes_json TEXT NOT NULL DEFAULT '[]',
+                    PRIMARY KEY (account_jid, chat_jid, poll_id, voter_id)
+                );
 
                 CREATE TABLE IF NOT EXISTS group_participants (
                     account_jid TEXT NOT NULL,
@@ -2204,6 +2269,7 @@ def _poll_to_db(poll: Poll | None) -> str:
             "creator_lid": poll.creator_lid,
             "creator_is_me": poll.creator_is_me,
             "max_selections": poll.selectable_count,
+            "option_votes": list(poll.option_votes),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -2222,6 +2288,7 @@ def _poll_from_db(raw: str) -> Poll | None:
             str(option).strip() for option in value["options"] if str(option).strip()
         )
         selectable_count = int(value.get("max_selections", 1))
+        option_votes = tuple(max(0, int(count)) for count in value.get("option_votes", ()))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
     if not poll_id or not title or not creator_jid or not options:
@@ -2234,6 +2301,7 @@ def _poll_from_db(raw: str) -> Poll | None:
         creator_lid=str(value.get("creator_lid", "")).strip(),
         creator_is_me=bool(value.get("creator_is_me", False)),
         selectable_count=max(1, min(selectable_count, len(options))),
+        option_votes=(option_votes if len(option_votes) == len(options) else ()),
     )
 
 

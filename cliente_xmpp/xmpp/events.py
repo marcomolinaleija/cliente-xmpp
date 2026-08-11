@@ -105,6 +105,15 @@ class MessageHistoryLoaded:
 
 
 @dataclass(slots=True)
+class PollUpdated:
+    chat_jid: str
+    poll_id: str
+    voter_jid: str
+    voter_lid: str = ""
+    option_hashes: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
 class MessageDeliveryUpdated:
     chat_jid: str
     message_id: str
@@ -177,6 +186,7 @@ XmppEvent = (
     | GroupParticipantsLoaded
     | MessageReceived
     | MessageHistoryLoaded
+    | PollUpdated
     | MessageDeliveryUpdated
     | ChatDisplayedSynced
     | ContactPresenceUpdated

@@ -1,0 +1,46 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14@sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
+
+FROM ${BASE_IMAGE} AS patched
+
+USER root
+COPY patch_slidge_whatsapp_polls.py /tmp/patch_slidge_whatsapp_polls.py
+COPY patch_slidge_whatsapp_stickers.py /tmp/patch_slidge_whatsapp_stickers.py
+COPY patch_slidge_whatsapp_poll_results.py /tmp/patch_slidge_whatsapp_poll_results.py
+RUN python -B /tmp/patch_slidge_whatsapp_polls.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -B /tmp/patch_slidge_whatsapp_stickers.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -B /tmp/patch_slidge_whatsapp_poll_results.py /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_polls.py /tmp/patch_slidge_whatsapp_stickers.py /tmp/patch_slidge_whatsapp_poll_results.py
+
+FROM golang:1.25-trixie AS go_builder
+
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_poll_vote_test.go /src/slidge_whatsapp/poll_vote_test.go
+COPY bridge_native_sticker_test.go /src/slidge_whatsapp/native_sticker_test.go
+COPY bridge_poll_results_test.go /src/slidge_whatsapp/poll_results_test.go
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go session.go poll_vote_test.go native_sticker_test.go poll_results_test.go && \
+    go test . && \
+    rm poll_vote_test.go native_sticker_test.go poll_results_test.go && \
+    cd generated && \
+    go build -buildmode=c-shared -tags "mupdf extlib" \
+        -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+        -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+
+COPY --from=go_builder /src/slidge_whatsapp/event.go /venv/lib/python3.13/site-packages/slidge_whatsapp/event.go
+COPY --from=go_builder /src/slidge_whatsapp/session.go /venv/lib/python3.13/site-packages/slidge_whatsapp/session.go
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so
+COPY smoke_bridge_polls_runtime.py /tmp/smoke_bridge_polls_runtime.py
+RUN python -B /tmp/smoke_bridge_polls_runtime.py && rm /tmp/smoke_bridge_polls_runtime.py
+USER slidge

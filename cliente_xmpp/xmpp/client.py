@@ -100,6 +100,7 @@ REFERENCE_NS = "urn:xmpp:reference:0"
 STICKER_NS = "urn:xmpp:stickers:0"
 WHATSAPP_FORWARDED_NS = "urn:marco-ml:whatsapp:forwarded:0"
 WHATSAPP_POLL_NS = "urn:marco-ml:whatsapp:poll:0"
+XMPP_HINTS_NS = "urn:xmpp:hints"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 BOB_NS = "urn:xmpp:bob"
@@ -4554,7 +4555,10 @@ class XmppService:
                 message_type = "groupchat" if is_group else "chat"
                 msg = self._client.make_message(
                     mto=to_jid,
-                    mbody="",
+                    # Some XMPP routing layers discard extension-only messages.
+                    # The bridge dispatches <vote/> before text handling, so this
+                    # harmless body is never relayed to WhatsApp as a message.
+                    mbody=" ",
                     mtype=message_type,
                 )
                 vote = ET.Element(
@@ -4570,6 +4574,7 @@ class XmppService:
                 for option in selected:
                     ET.SubElement(vote, f"{{{WHATSAPP_POLL_NS}}}option").text = option
                 msg.append(vote)
+                msg.append(ET.Element(f"{{{XMPP_HINTS_NS}}}store"))
                 msg.send()
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el voto: {exc}"))

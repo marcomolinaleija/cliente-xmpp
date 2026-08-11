@@ -35,6 +35,7 @@ from cliente_xmpp.xmpp.client import (
     STICKER_NS,
     WHATSAPP_FORWARDED_NS,
     WHATSAPP_POLL_NS,
+    XMPP_HINTS_NS,
     BridgeXmppClient,
     XmppService,
 )
@@ -636,7 +637,8 @@ class ForwardSendContractTests(unittest.TestCase):
             [node.text for node in vote.findall(f"{{{WHATSAPP_POLL_NS}}}option")],
             ["Té"],
         )
-        self.assertEqual(fake_client.message.xml.findtext("body"), "")
+        self.assertEqual(fake_client.message.xml.findtext("body"), " ")
+        self.assertIsNotNone(fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}store"))
         self.assertTrue(fake_client.message.sent)
 
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:

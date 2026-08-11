@@ -130,7 +130,7 @@ def patch_dispatcher(path: Path, *, backup: bool) -> bool:
     source = _replace_once(
         source,
         "if TYPE_CHECKING:\n    from slidge.util.types import AnyGateway\n\n\n",
-        "if TYPE_CHECKING:\n    from slidge.util.types import AnyGateway\n\n\nPOLL_NAMESPACE = \"urn:marco-ml:whatsapp:poll:0\"\nMAX_POLL_OPTIONS = 12\nMAX_POLL_VALUE_LENGTH = 1024\n\n\n",
+        "if TYPE_CHECKING:\n    from slidge.util.types import AnyGateway\n\n\nPOLL_NAMESPACE = \"urn:marco-ml:whatsapp:poll:0\"\nPOLL_LOG = logging.getLogger(__name__)\nMAX_POLL_OPTIONS = 12\nMAX_POLL_VALUE_LENGTH = 1024\n\n\n",
         "dispatcher poll constants",
     )
     source = _replace_once(
@@ -172,6 +172,7 @@ def patch_dispatcher(path: Path, *, backup: bool) -> bool:
         ):
             raise XMPPError("bad-request", "Invalid poll vote options")
 
+        POLL_LOG.info("Received poll vote id=%s option_count=%d", poll_id, len(options))
         await recipient.on_poll_vote(
             poll_id=poll_id,
             creator=creator,
@@ -179,6 +180,7 @@ def patch_dispatcher(path: Path, *, backup: bool) -> bool:
             creator_is_me=creator_is_me == "true",
             options=options,
         )
+        POLL_LOG.info("Forwarded poll vote id=%s to WhatsApp", poll_id)
         self.__ack(msg)
 
 '''
@@ -220,7 +222,18 @@ def patch_mixins(path: Path, *, backup: bool) -> bool:
             ),
             Poll=whatsapp.Poll(Options=poll_options),
         )
-        self.wa.SendMessage(message)  # type:ignore[no-untyped-call]
+        self.log.info(
+            "Building WhatsApp poll vote id=%s own_creator=%s option_count=%d",
+            poll_id,
+            creator_is_me,
+            len(options),
+        )
+        try:
+            self.wa.SendMessage(message)  # type:ignore[no-untyped-call]
+        except Exception:
+            self.log.exception("WhatsApp poll vote failed id=%s", poll_id)
+            raise
+        self.log.info("WhatsApp poll vote accepted id=%s", poll_id)
         return poll_id
 
 '''

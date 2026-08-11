@@ -4581,7 +4581,10 @@ class XmppService:
                     ET.SubElement(vote, f"{{{WHATSAPP_POLL_NS}}}option").text = option
                 msg.append(vote)
                 msg.append(ET.Element(f"{{{XMPP_HINTS_NS}}}store"))
-                msg.send()
+                # ``Message.send()`` can silently queue a stanza while SlixMPP
+                # is not session-ready. A poll vote must either reach the live
+                # transport now or report a concrete error to the user.
+                self._client.send_raw(ET.tostring(msg.xml, encoding="utf-8"))
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el voto: {exc}"))
 

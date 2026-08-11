@@ -573,10 +573,14 @@ class _FakeMessage:
 class _FakeClient:
     def __init__(self) -> None:
         self.message: _FakeMessage | None = None
+        self.raw_stanza: bytes | None = None
 
     def make_message(self, mto: str, mbody: str, mtype: str) -> _FakeMessage:
         self.message = _FakeMessage(mto, mbody, mtype)
         return self.message
+
+    def send_raw(self, data: bytes) -> None:
+        self.raw_stanza = data
 
     @staticmethod
     def _join_group_chat(_jid: str) -> None:
@@ -639,7 +643,7 @@ class ForwardSendContractTests(unittest.TestCase):
         )
         self.assertEqual(fake_client.message.xml.findtext("body"), " ")
         self.assertIsNotNone(fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}store"))
-        self.assertTrue(fake_client.message.sent)
+        self.assertIsNotNone(fake_client.raw_stanza)
 
     def test_vote_uses_lid_when_own_creator_jid_is_missing(self) -> None:
         emitted: list[object] = []
@@ -664,7 +668,7 @@ class ForwardSendContractTests(unittest.TestCase):
         assert vote is not None
         self.assertEqual(vote.attrib["creator"], "456@lid")
         self.assertEqual(vote.attrib["creator-lid"], "456@lid")
-        self.assertTrue(fake_client.message.sent)
+        self.assertIsNotNone(fake_client.raw_stanza)
 
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:
         emitted: list[object] = []

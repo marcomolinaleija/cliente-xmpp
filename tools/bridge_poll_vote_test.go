@@ -25,7 +25,7 @@ func TestPollVoteInfoForDirectChat(t *testing.T) {
 	}
 }
 
-func TestPollVoteInfoForOwnDirectChatUsesCreatorLIDSecret(t *testing.T) {
+func TestPollVoteInfoForOwnDirectChatUsesCreatorLID(t *testing.T) {
 	chat, err := types.ParseJID("123456789@s.whatsapp.net")
 	if err != nil {
 		t.Fatal(err)
@@ -43,8 +43,8 @@ func TestPollVoteInfoForOwnDirectChatUsesCreatorLIDSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Chat.String() != "222222222@lid" || info.Sender.String() != "222222222@lid" {
-		t.Fatalf("own direct poll must use its LID secret: %#v", info)
+	if info.Chat.String() != chat.String() || info.Sender.String() != "222222222@lid" {
+		t.Fatalf("own direct poll must preserve the chat and use its creator LID: %#v", info)
 	}
 }
 

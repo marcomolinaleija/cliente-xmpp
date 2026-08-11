@@ -263,20 +263,12 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 	}
 
 	creator := message.Actor.JID
-	pollChat := chat
 	if message.Chat.IsGroup {
 		creator = message.Actor.LID
 	} else if message.Actor.IsMe && message.Actor.LID != "" {
-		// WhatsApp stores a poll authored from another one of our devices under
-		// our LID, rather than under the direct recipient. BuildPollVote must use
-		// that same MessageInfo to retrieve and encrypt with its message secret;
-		// Session.SendMessage still uses `chat` as the outgoing destination.
+		// A poll created from another one of our devices stores its creator as our
+		// LID, even in a direct chat.
 		creator = message.Actor.LID
-		var err error
-		pollChat, err = types.ParseJID(creator)
-		if err != nil {
-			return nil, nil, fmt.Errorf("could not parse own poll creator LID: %w", err)
-		}
 	}
 	if creator == "" {
 		return nil, nil, fmt.Errorf("missing poll creator identity")
@@ -301,7 +293,7 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 
 	return &types.MessageInfo{
 		MessageSource: types.MessageSource{
-			Chat:     pollChat,
+			Chat:     chat,
 			Sender:   sender,
 			IsFromMe: message.Actor.IsMe,
 			IsGroup:  message.Chat.IsGroup,
@@ -315,7 +307,7 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
     source = _replace_once(
         source,
         "\tcase MessageReaction:\n\t\t// Send message as emoji reaction to a given message.\n",
-        "\tcase MessagePoll:\n\t\tpollInfo, optionNames, pollErr := pollVoteInfo(message, jid)\n\t\tif pollErr != nil {\n\t\t\treturn pollErr\n\t\t}\n\t\tpayload, err = s.client.BuildPollVote(s.ctx, pollInfo, optionNames)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed building poll vote: %w\", err)\n\t\t}\n\tcase MessageReaction:\n\t\t// Send message as emoji reaction to a given message.\n",
+        "\tcase MessagePoll:\n\t\tpollInfo, optionNames, pollErr := pollVoteInfo(message, jid)\n\t\tif pollErr != nil {\n\t\t\treturn pollErr\n\t\t}\n\t\tif message.Actor.IsMe && !message.Chat.IsGroup && message.Actor.LID != \"\" {\n\t\t\t// Poll secrets for a direct chat authored on another own device are\n\t\t\t// indexed by the recipient LID, while the wire send still targets jid.\n\t\t\trecipientLID, lidErr := s.client.Store.LIDs.GetLIDForPN(s.ctx, pollInfo.Chat)\n\t\t\tif lidErr != nil {\n\t\t\t\treturn fmt.Errorf(\"failed to resolve direct poll recipient LID: %w\", lidErr)\n\t\t\t}\n\t\t\tif recipientLID.IsEmpty() {\n\t\t\t\treturn fmt.Errorf(\"missing direct poll recipient LID\")\n\t\t\t}\n\t\t\tpollInfo.Chat = recipientLID\n\t\t}\n\t\tpayload, err = s.client.BuildPollVote(s.ctx, pollInfo, optionNames)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed building poll vote: %w\", err)\n\t\t}\n\tcase MessageReaction:\n\t\t// Send message as emoji reaction to a given message.\n",
         "session.go poll vote SendMessage case",
     )
     _write(path, source, backup)

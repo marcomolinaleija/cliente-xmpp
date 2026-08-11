@@ -34,7 +34,7 @@ required = (
     "whatsapp.MessagePoll",
     "strconv.Itoa(int(p.GetSelectableOptionsCount()))",
     "func pollVoteInfo(message Message, chat types.JID)",
-    "own poll creator LID",
+    "direct poll recipient LID",
     "s.client.BuildPollVote(s.ctx, pollInfo, optionNames)",
     "application/x-whatsapp-can-sticker",
     "async def on_sticker(self, sticker: Sticker)",

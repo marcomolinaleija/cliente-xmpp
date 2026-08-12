@@ -9,6 +9,7 @@ import threading
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,7 +28,14 @@ from cliente_xmpp.audio.opus import (
 )
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
-from cliente_xmpp.models.chat import Chat, Message, Poll
+from cliente_xmpp.models.chat import (
+    Chat,
+    Message,
+    Poll,
+    PollUpdate,
+    poll_display_text,
+    poll_option_hash,
+)
 from cliente_xmpp.models.mentions import GroupParticipant, MentionReference
 from cliente_xmpp.models.names import (
     display_label_from_jid,
@@ -66,6 +74,16 @@ from cliente_xmpp.xmpp.http_upload import (
 )
 
 EventHandler = Callable[[XmppEvent], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingPollVote:
+    chat_jid: str
+    poll_id: str
+    option_hashes: tuple[str, ...]
+    is_group: bool
+
+
 INBOX_NS = "urn:xmpp:inbox:1"
 MDS_DISPLAYED_NS = "urn:xmpp:mds:displayed:0"
 MAM_NS = "urn:xmpp:mam:2"
@@ -99,6 +117,7 @@ REFERENCE_NS = "urn:xmpp:reference:0"
 STICKER_NS = "urn:xmpp:stickers:0"
 WHATSAPP_FORWARDED_NS = "urn:marco-ml:whatsapp:forwarded:0"
 WHATSAPP_POLL_NS = "urn:marco-ml:whatsapp:poll:0"
+XMPP_HINTS_NS = "urn:xmpp:hints"
 JINGLE_FILE_TRANSFER_NS = "urn:xmpp:jingle:apps:file-transfer:5"
 URL_DATA_NS = "http://jabber.org/protocol/url-data"
 BOB_NS = "urn:xmpp:bob"
@@ -167,6 +186,7 @@ class BridgeXmppClient(ClientXMPP):
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
         self._session_generation = 0
+        self._pending_poll_votes: dict[str, _PendingPollVote] = {}
         self.force_starttls = settings.use_tls
         self.enable_starttls = settings.use_tls
         self.enable_direct_tls = False
@@ -252,6 +272,7 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_disconnected(self, _event: object) -> None:
         self._whatsapp_session_ready = False
+        getattr(self, "_pending_poll_votes", {}).clear()
         self._stop_group_membership_watchdog()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
@@ -377,17 +398,28 @@ class BridgeXmppClient(ClientXMPP):
             self._debug_whatsapp_qr_candidate(bare_jid, body, msg.xml, media_url, media_kind)
         if is_whatsapp_admin_message:
             return
-        if not body and not media_url:
+        poll = self._poll_from_xml(msg.xml)
+        poll_update = self._poll_update_from_xml(msg.xml)
+        if poll_update is not None:
+            self._debug_whatsapp(
+                "direct poll update received "
+                f"poll={poll_update.poll_id} own={poll_update.voter_is_me} "
+                f"from={bare_jid}"
+            )
+        if not body and not media_url and poll is None and poll_update is None:
             return
 
-        display_body, reply_quote = self._message_display_parts(
-            body,
-            media_url,
-            media_kind,
-            media_filename,
-            media_size,
-            msg.xml,
-        )
+        if poll is not None:
+            display_body, reply_quote = poll_display_text(poll), ""
+        else:
+            display_body, reply_quote = self._message_display_parts(
+                body,
+                media_url,
+                media_kind,
+                media_filename,
+                media_size,
+                msg.xml,
+            )
         self._emit(
             MessageReceived(
                 Message(
@@ -403,6 +435,8 @@ class BridgeXmppClient(ClientXMPP):
                     media_filename=media_filename,
                     media_size=media_size,
                     media_duration_seconds=media_duration,
+                    poll=poll,
+                    poll_update=poll_update,
                     message_id=str(msg["id"] or ""),
                     reply_quote=reply_quote,
                     reply_to_jid=self._reply_to_jid_from_xml(msg.xml),
@@ -418,6 +452,13 @@ class BridgeXmppClient(ClientXMPP):
 
         message = self._message_from_groupchat_stanza(msg)
         if message is not None:
+            if message.poll_update is not None:
+                self._debug_whatsapp(
+                    "group poll update received "
+                    f"poll={message.poll_update.poll_id} "
+                    f"own={message.poll_update.voter_is_me} "
+                    f"chat={message.chat_jid}"
+                )
             self._group_chat_jids.add(message.chat_jid)
             notify = not self._message_predates_session(message)
             self._emit(MessageReceived(message, notify=notify))
@@ -437,7 +478,44 @@ class BridgeXmppClient(ClientXMPP):
         self._emit_message_from_stanza(stanza, outgoing=True)
 
     def _on_receipt_received(self, msg: object) -> None:
+        message_id = self._delivery_marker_id(msg)
+        self._debug_whatsapp(
+            "receipt received "
+            f"id={message_id or '-'} pending_poll="
+            f"{message_id in self._pending_poll_votes if message_id else False}"
+        )
+        if self._confirm_pending_poll_vote(message_id):
+            return
         self._emit_delivery_update_from_marker(msg, "delivered")
+
+    def _confirm_pending_poll_vote(self, message_id: str) -> bool:
+        pending = self._pending_poll_votes.pop(message_id, None)
+        if pending is None:
+            return False
+
+        self._debug_whatsapp(
+            f"confirming pending poll vote poll={pending.poll_id} chat={pending.chat_jid}"
+        )
+
+        self._emit(
+            MessageReceived(
+                Message(
+                    chat_jid=pending.chat_jid,
+                    sender_jid="me",
+                    body="",
+                    chat_is_group=pending.is_group,
+                    poll_update=PollUpdate(
+                        poll_id=pending.poll_id,
+                        voter_jid="me",
+                        voter_name="Tú",
+                        voter_is_me=True,
+                        option_hashes=pending.option_hashes,
+                    ),
+                ),
+                notify=False,
+            )
+        )
+        return True
 
     def _on_marker_received(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "delivered")
@@ -445,7 +523,15 @@ class BridgeXmppClient(ClientXMPP):
     def _on_marker_displayed(self, msg: object) -> None:
         self._emit_delivery_update_from_marker(msg, "read")
 
-    def _handle_message_error(self, msg: object, from_jid: str) -> None:
+    def _handle_message_error(self, msg: object, from_jid: str = "") -> None:
+        # BaseXMPP registers this method directly and calls it with only the
+        # stanza. Our generic message handler may also provide the bare JID.
+        if not from_jid:
+            try:
+                stanza_from = msg["from"]
+                from_jid = str(getattr(stanza_from, "bare", stanza_from) or "")
+            except Exception:
+                from_jid = ""
         message_id = str(msg["id"] or "")
         condition, error_text = self._message_error_parts(getattr(msg, "xml", None))
         reason = error_text or condition.replace("-", " ") or "rechazado por el servidor"
@@ -461,6 +547,7 @@ class BridgeXmppClient(ClientXMPP):
             self._schedule_group_rejoin(from_jid)
 
         if message_id:
+            getattr(self, "_pending_poll_votes", {}).pop(message_id, None)
             self._emit(
                 MessageDeliveryUpdated(
                     chat_jid=from_jid,
@@ -2799,9 +2886,6 @@ class BridgeXmppClient(ClientXMPP):
             media_duration,
         ) = self._media_from_mam_result(result)
         audio_url = media_url if media_kind == "audio" else ""
-        if not body and not media_url:
-            return None
-
         forwarded = result["mam_result"]["forwarded"]
         stanza = forwarded["stanza"]
         is_group = self._stanza_is_groupchat(stanza)
@@ -2809,6 +2893,10 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
+        poll = self._poll_from_xml(stanza.xml)
+        poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
+        if not body and not media_url and poll is None and poll_update is None:
+            return None
         is_sticker = self._message_is_sticker(
             stanza.xml,
             media_kind=media_kind,
@@ -2816,15 +2904,18 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_url=media_url,
         )
-        display_body, reply_quote = self._message_display_parts(
-            body,
-            media_url,
-            media_kind,
-            media_filename,
-            media_size,
-            stanza.xml,
-            is_sticker=is_sticker,
-        )
+        if poll is not None:
+            display_body, reply_quote = poll_display_text(poll), ""
+        else:
+            display_body, reply_quote = self._message_display_parts(
+                body,
+                media_url,
+                media_kind,
+                media_filename,
+                media_size,
+                stanza.xml,
+                is_sticker=is_sticker,
+            )
         sent_at = self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
         if sent_at is None:
             return None
@@ -2845,7 +2936,8 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(stanza.xml),
-            poll=self._poll_from_xml(stanza.xml),
+            poll=poll,
+            poll_update=poll_update,
             message_id=str(stanza["id"] or result["mam_result"]["id"] or ""),
             displayed_marker_id=(
                 self._room_stanza_id_from_xml(stanza.xml, message_chat_jid) if is_group else ""
@@ -2878,9 +2970,6 @@ class BridgeXmppClient(ClientXMPP):
             media_duration,
         ) = self._media_from_stanza(stanza)
         audio_url = media_url if media_kind == "audio" else ""
-        if not body and not media_url:
-            return
-
         if is_group and outgoing and str(stanza["from"].bare) == self.boundjid.bare:
             chat_jid = str(stanza["to"].bare)
         elif is_group:
@@ -2891,6 +2980,10 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid = str(stanza["from"].bare)
         sender_jid = "Yo" if outgoing else self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = "" if outgoing else self._sender_name_from_stanza(stanza, is_group=is_group)
+        poll = self._poll_from_xml(stanza.xml)
+        poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
+        if not body and not media_url and poll is None and poll_update is None:
+            return
         is_sticker = self._message_is_sticker(
             stanza.xml,
             media_kind=media_kind,
@@ -2898,15 +2991,18 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_url=media_url,
         )
-        display_body, reply_quote = self._message_display_parts(
-            body,
-            media_url,
-            media_kind,
-            media_filename,
-            media_size,
-            stanza.xml,
-            is_sticker=is_sticker,
-        )
+        if poll is not None:
+            display_body, reply_quote = poll_display_text(poll), ""
+        else:
+            display_body, reply_quote = self._message_display_parts(
+                body,
+                media_url,
+                media_kind,
+                media_filename,
+                media_size,
+                stanza.xml,
+                is_sticker=is_sticker,
+            )
         self._emit(
             MessageReceived(
                 Message(
@@ -2925,7 +3021,8 @@ class BridgeXmppClient(ClientXMPP):
                     media_duration_seconds=media_duration,
                     is_sticker=is_sticker,
                     is_forwarded=self._message_is_forwarded(stanza.xml),
-                    poll=self._poll_from_xml(stanza.xml),
+                    poll=poll,
+                    poll_update=poll_update,
                     message_id=str(stanza["id"] or ""),
                     displayed_marker_id=(
                         self._room_stanza_id_from_xml(stanza.xml, chat_jid) if is_group else ""
@@ -2955,12 +3052,13 @@ class BridgeXmppClient(ClientXMPP):
             media_duration,
         ) = self._media_from_stanza(stanza)
         audio_url = media_url if media_kind == "audio" else ""
-        if not body and not media_url:
-            return None
-
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=True)
         sender_name = self._sender_name_from_stanza(stanza, is_group=True)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
+        poll = self._poll_from_xml(stanza.xml)
+        poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
+        if not body and not media_url and poll is None and poll_update is None:
+            return None
         is_sticker = self._message_is_sticker(
             stanza.xml,
             media_kind=media_kind,
@@ -2968,15 +3066,18 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_url=media_url,
         )
-        display_body, reply_quote = self._message_display_parts(
-            body,
-            media_url,
-            media_kind,
-            media_filename,
-            media_size,
-            stanza.xml,
-            is_sticker=is_sticker,
-        )
+        if poll is not None:
+            display_body, reply_quote = poll_display_text(poll), ""
+        else:
+            display_body, reply_quote = self._message_display_parts(
+                body,
+                media_url,
+                media_kind,
+                media_filename,
+                media_size,
+                stanza.xml,
+                is_sticker=is_sticker,
+            )
         return Message(
             chat_jid=str(stanza["from"].bare),
             sender_jid="Yo" if outgoing else sender_jid,
@@ -2993,7 +3094,8 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(stanza.xml),
-            poll=self._poll_from_xml(stanza.xml),
+            poll=poll,
+            poll_update=poll_update,
             message_id=str(stanza["id"] or ""),
             displayed_marker_id=self._room_stanza_id_from_xml(
                 stanza.xml,
@@ -3102,9 +3204,6 @@ class BridgeXmppClient(ClientXMPP):
             self._media_from_xml(message)
         )
         audio_url = media_url if media_kind == "audio" else ""
-        if not body and not media_url:
-            return None
-
         is_group = (
             message.attrib.get("type", "") == "groupchat"
             or self._xml_message_addresses_groupchat(message)
@@ -3112,6 +3211,10 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
         sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        poll = self._poll_from_xml(message)
+        poll_update = self._poll_update_from_xml(message, voter_name=sender_name)
+        if not body and not media_url and poll is None and poll_update is None:
+            return None
         is_sticker = self._message_is_sticker(
             message,
             media_kind=media_kind,
@@ -3119,15 +3222,18 @@ class BridgeXmppClient(ClientXMPP):
             media_filename=media_filename,
             media_url=media_url,
         )
-        display_body, reply_quote = self._message_display_parts(
-            body,
-            media_url,
-            media_kind,
-            media_filename,
-            media_size,
-            message,
-            is_sticker=is_sticker,
-        )
+        if poll is not None:
+            display_body, reply_quote = poll_display_text(poll), ""
+        else:
+            display_body, reply_quote = self._message_display_parts(
+                body,
+                media_url,
+                media_kind,
+                media_filename,
+                media_size,
+                message,
+                is_sticker=is_sticker,
+            )
         return Message(
             chat_jid=chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
@@ -3144,7 +3250,8 @@ class BridgeXmppClient(ClientXMPP):
             media_duration_seconds=media_duration,
             is_sticker=is_sticker,
             is_forwarded=self._message_is_forwarded(message),
-            poll=self._poll_from_xml(message),
+            poll=poll,
+            poll_update=poll_update,
             message_id=message.attrib.get("id", "") or result.attrib.get("id", ""),
             chat_is_group=is_group or chat_jid in self._group_chat_jids,
             reply_quote=reply_quote,
@@ -3384,7 +3491,10 @@ class BridgeXmppClient(ClientXMPP):
             selectable_count = int(poll.attrib.get("max-selections", "1"))
         except ValueError:
             selectable_count = 1
-        selectable_count = max(1, min(selectable_count, len(options)))
+        allows_multiple = poll.attrib.get("selection-mode", "single") == "multiple"
+        selectable_count = (
+            max(1, min(selectable_count, len(options))) if allows_multiple else 1
+        )
         return Poll(
             poll_id=poll_id,
             title=title,
@@ -3393,6 +3503,52 @@ class BridgeXmppClient(ClientXMPP):
             creator_lid=poll.attrib.get("creator-lid", "").strip(),
             creator_is_me=poll.attrib.get("creator-is-me", "false").lower() == "true",
             selectable_count=selectable_count,
+            allows_multiple=allows_multiple,
+        )
+
+    @staticmethod
+    def _poll_update_from_xml(
+        xml: ET.Element | None,
+        *,
+        voter_name: str = "",
+    ) -> PollUpdate | None:
+        if xml is None:
+            return None
+
+        update = xml.find(f".//{{{WHATSAPP_POLL_NS}}}poll-update")
+        if update is None:
+            return None
+
+        poll_id = update.attrib.get("id", "").strip()
+        voter_jid = update.attrib.get("voter", "").strip()
+        voter_lid = update.attrib.get("voter-lid", "").strip()
+        voter_is_me_value = update.attrib.get("voter-is-me", "false").strip().lower()
+        if (
+            not poll_id
+            or (not voter_jid and not voter_lid)
+            or voter_is_me_value not in {"true", "false"}
+        ):
+            return None
+
+        option_hashes = tuple(
+            option_hash
+            for option in update.findall(f"{{{WHATSAPP_POLL_NS}}}option")
+            if (
+                option_hash := option.attrib.get("hash", "").strip().lower()
+            )
+            and len(option_hash) == 64
+            and all(character in "0123456789abcdef" for character in option_hash)
+        )
+        if len(set(option_hashes)) != len(option_hashes) or len(option_hashes) > 12:
+            return None
+
+        return PollUpdate(
+            poll_id=poll_id,
+            voter_jid=voter_jid,
+            voter_lid=voter_lid,
+            voter_name=voter_name.strip(),
+            voter_is_me=voter_is_me_value == "true",
+            option_hashes=option_hashes,
         )
 
     @staticmethod
@@ -4483,14 +4639,21 @@ class XmppService:
                 message_type = "groupchat" if is_group else "chat"
                 msg = self._client.make_message(
                     mto=to_jid,
-                    mbody="",
+                    # Some XMPP routing layers discard extension-only messages.
+                    # The bridge consumes <vote/> before processing this body.
+                    mbody=" ",
                     mtype=message_type,
                 )
+                message_id = uuid.uuid4().hex
+                msg["id"] = message_id
+                creator = (poll.creator_jid or poll.creator_lid or "").strip()
+                if not creator:
+                    raise ValueError("la encuesta no contiene la identidad de su creador")
                 vote = ET.Element(
                     f"{{{WHATSAPP_POLL_NS}}}vote",
                     {
                         "id": poll.poll_id,
-                        "creator": poll.creator_jid,
+                        "creator": creator,
                         "creator-is-me": str(poll.creator_is_me).lower(),
                     },
                 )
@@ -4499,7 +4662,21 @@ class XmppService:
                 for option in selected:
                     ET.SubElement(vote, f"{{{WHATSAPP_POLL_NS}}}option").text = option
                 msg.append(vote)
-                msg.send()
+                msg.append(ET.Element(f"{{{XMPP_HINTS_NS}}}store"))
+                msg.append(ET.Element("{urn:xmpp:receipts}request"))
+                self._client._pending_poll_votes[message_id] = _PendingPollVote(
+                    chat_jid=to_jid,
+                    poll_id=poll.poll_id,
+                    option_hashes=tuple(poll_option_hash(option) for option in selected),
+                    is_group=is_group,
+                )
+                # Send on the live transport so a disconnected session reports
+                # an error instead of silently queuing or dropping the vote.
+                try:
+                    self._client.send_raw(ET.tostring(msg.xml, encoding="utf-8"))
+                except Exception:
+                    self._client._pending_poll_votes.pop(message_id, None)
+                    raise
             except Exception as exc:
                 self._emit(XmppError(f"No se pudo enviar el voto: {exc}"))
 

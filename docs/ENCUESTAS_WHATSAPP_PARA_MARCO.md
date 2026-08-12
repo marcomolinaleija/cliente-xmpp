@@ -1,9 +1,10 @@
 # Encuestas nativas de WhatsApp: cambio requerido en el puente
 
-## Estado y objetivo
+## Estado y objetivo de v16
 
-El cliente ya reconoce el contrato XMPP privado `urn:marco-ml:whatsapp:poll:0`, conserva sus
-metadatos en SQLite y ofrece **Votar en encuesta...** en el menú contextual del mensaje.
+El cliente reconoce el contrato XMPP privado `urn:marco-ml:whatsapp:poll:0`, conserva encuestas y
+últimos votos conocidos en SQLite, muestra totales en el mensaje y ofrece **Votar en encuesta...**
+y **Ver resultados de encuesta...** en su menú contextual.
 
 La imagen actual del puente reconoce `PollCreationMessage`, pero lo convierte a este texto de
 compatibilidad antes de enviarlo por XMPP:
@@ -14,13 +15,19 @@ compatibilidad antes de enviarlo por XMPP:
 ☐ Opción 2
 ```
 
-Además, actualmente descarta `PollUpdateMessage`. Por ello el texto llega al cliente, pero no la
-identidad criptográfica que WhatsApp exige para emitir un voto. No se debe intentar votar enviando
-un mensaje de texto, una reacción ni un hash calculado desde el cliente.
+La imagen v16 debe dejar de descartar `PollUpdateMessage`: WhatsMeow lo descifra con
+`DecryptPollVote` y entrega hashes SHA-256 de las opciones seleccionadas. Esos hashes sirven para
+relacionar el voto con las opciones ya conocidas, pero no sustituyen el secreto criptográfico que
+WhatsApp conserva en su almacén local. No se debe intentar votar enviando un mensaje de texto, una
+reacción ni construyendo el payload cifrado desde el cliente.
 
 Este cambio mantiene el texto anterior para clientes XMPP que aún no soporten encuestas y añade
 metadatos sólo para el cliente actualizado. No toca cuentas, QR, sesiones vinculadas, roster,
 Prosody ni las bases de datos de Slidge.
+
+La base exacta es `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v15` con digest
+`sha256:c0431c164ba1f0e1ef6490fe41e86cef550ceec517ec876feb9b8b0fe2264307`. La construcción de v16
+debe fijar ambos; no se acepta una etiqueta mutable sin digest.
 
 ## Contrato XMPP
 
@@ -33,7 +40,8 @@ El puente debe añadir al mensaje XMPP de creación:
       creator="numero@s.whatsapp.net"
       creator-lid="identidad@lid"
       creator-is-me="false"
-      max-selections="1">
+      max-selections="1"
+      selection-mode="single">
   <option>Primera opción</option>
   <option>Segunda opción</option>
 </poll>
@@ -41,8 +49,13 @@ El puente debe añadir al mensaje XMPP de creación:
 
 Los atributos `id`, `title`, `creator` y al menos una opción son obligatorios. En grupos debe
 conservarse también `creator-lid`: WhatsApp usa esa identidad al cifrar votos. `max-selections`
-es el valor real de `SelectableOptionsCount`; cuando WhatsApp entrega cero, el puente debe
-anunciar el número de opciones como límite práctico para el cliente.
+se deriva de `SelectableOptionsCount` y de la variante del mensaje. WhatsApp usa la variante V3
+para voto único: allí un cero se interpreta como `1`. En la variante V1 de voto múltiple, cero
+significa que pueden marcarse todas las opciones. Un valor positivo explícito se conserva como el
+límite en cualquier variante.
+`selection-mode` es obligatorio en v16 y vale `single` o `multiple`. Si falta —por ejemplo, en
+una stanza o caché creada durante los diagnósticos anteriores— el cliente asume `single` para no
+habilitar votos múltiples accidentalmente.
 
 Cuando el usuario elige una opción, el cliente envía al mismo contacto o sala:
 
@@ -59,9 +72,47 @@ Cuando el usuario elige una opción, el cliente envía al mismo contacto o sala:
 No incluye cuerpo de texto. El puente debe consumir esta extensión antes del manejador genérico de
 mensajes y no debe reenviarla como una conversación normal.
 
+Cada voto recibido o modificado se transporta así:
+
+```xml
+<poll-update xmlns="urn:marco-ml:whatsapp:poll:0"
+             id="ID-WHATSAPP-DE-LA-ENCUESTA"
+             voter="numero@s.whatsapp.net"
+             voter-lid="identidad@lid"
+             voter-is-me="false">
+  <option hash="SHA256-HEX-DE-LA-OPCION"/>
+</poll-update>
+```
+
+El `id` referencia la creación, no el evento de voto. Un evento posterior del mismo votante
+reemplaza completamente su selección anterior; jamás se suma como otro voto. Cero opciones retira
+su voto. El cliente identifica primero a la propia cuenta, después por LID y finalmente por JID.
+Las actualizaciones no crean mensajes visibles, previews, no leídos ni notificaciones: mutan la
+encuesta original y se archivan para poder reconstruir resultados desde MAM.
+
+Después de que `Whatsmeow.SendMessage` devuelva aceptación del servidor de WhatsApp, el puente
+emite al mismo cliente un `poll-update` con `voter-is-me="true"` y los hashes de la selección. El
+cliente no modifica el voto propio al hacer clic: espera este evento. La confirmación demuestra
+que WhatsApp aceptó el envío; no pretende ser un recibo de visualización en el teléfono de otra
+persona. Si el envío falla, el puente no emite la actualización y el resultado visible permanece
+sin cambios.
+
+## Presentación y accesibilidad
+
+El cuerpo visible conserva pregunta y opciones. Cada opción muestra su total y `☑` cuando forma
+parte de la última selección propia; al final se indica cuántas personas han votado. El menú
+**Ver resultados de encuesta...** presenta por opción el total y los nombres conocidos de los
+votantes, usando `Tú` para la cuenta propia. Un voto desconocido conserva su JID/LID como fallback.
+
+El diálogo para votar preselecciona el voto propio conocido. En encuestas de voto único presenta
+cada opción como un `wx.RadioButton` independiente. Sólo cuando `max-selections` es mayor que uno
+presenta `wx.CheckBox` independientes y valida el límite. La respuesta se envía sólo como `<vote>`
+y la interfaz considera confirmado el cambio cuando vuelve el correspondiente `<poll-update>`.
+Esto evita mostrar como aceptado un voto que WhatsApp no pudo cifrar o enviar.
+
 ## Cambios de código
 
-Partir de la misma fuente y dependencias que generaron la imagen v14 fijada por digest. Aplicar los
+Partir de la misma fuente y dependencias que generaron la imagen v15 fijada por digest. Aplicar los
 cambios como un parche reproducible en la construcción de una imagen nueva; no editar archivos
 dentro de un contenedor que ya está en ejecución.
 
@@ -75,7 +126,8 @@ dentro de un contenedor que ya está en ejecución.
    message.Poll = Poll{Title: p.GetName()}
    ```
 
-   Si el límite es cero, el adaptador Python lo sustituye por el número de opciones. Esto requiere
+   No interpretes el cero sin conocer la variante: V3 usa uno como fallback y V1 usa el total de
+   opciones. Esto requiere
    importar `strconv` y no cambia el texto visible de la encuesta.
 
 2. En `slidge/core/mixins/message_text.py`, ampliar `send_text()` con un parámetro explícito
@@ -102,7 +154,8 @@ dentro de un contenedor que ya está en ejecución.
 4. En `slidge/core/dispatcher/message/message.py`, justo después de resolver `recipient` y antes
    de leer cuerpo, adjuntos o respuestas, detectar `vote` con ese namespace. Validar que `id` y
    `creator` no estén vacíos, que las opciones sean texto no vacío, no repetido y que el total sea
-   razonable. Llamar a `await recipient.on_poll_vote(...)`, confirmar la stanza directa con el
+   razonable. Llamar a `await recipient.on_poll_vote(...)` y sólo si termina correctamente emitir
+   al remitente el `poll-update` propio de confirmación, confirmar la stanza directa con el
    mecanismo de acuse que ya usa Slidge y salir sin pasar por `__dispatch_msg()`.
 
 5. En `slidge_whatsapp/mixins.py`, añadir `RecipientMixin.on_poll_vote()`. Debe crear una
@@ -128,9 +181,20 @@ dentro de un contenedor que ya está en ejecución.
    expuestos de `Message`, `Actor`, `Chat` y `Poll`, no debe ser necesario alterar el API público
    del binding Python.
 
+8. En `event.go`, detectar `PollUpdateMessage`, llamar a `DecryptPollVote`, conservar el ID de la
+   creación y convertir cada hash seleccionado a hexadecimal. El mismo camino debe usarse para
+   encuestas recuperadas del historial con `ParseWebMessage`.
+
+9. En `session.py`, distinguir creación de actualización por `Message.ReferenceID`. La creación
+   emite `<poll>` con fallback visible; la actualización emite `<poll-update>` sin cuerpo de chat.
+
+10. En el cliente, fusionar cada actualización en la encuesta por `(chat, poll_id)` y por identidad
+    de votante, recalcular el cuerpo, persistir el `poll_json` actualizado y refrescar sólo ese
+    mensaje si la conversación está abierta.
+
 ## Pruebas obligatorias antes de desplegar
 
-1. Construir la imagen con la base v14 fijada por digest y una etiqueta nueva e inmutable.
+1. Construir la imagen con la base v15 fijada por digest y una etiqueta candidata local.
 2. Ejecutar las pruebas Go del paquete y una prueba de humo Python que compruebe el namespace,
    `on_poll_vote()` y que el binario compartido reconstruido exista.
 3. Levantar el contenedor de prueba con una copia aislada de datos; no reutilizar ni borrar la
@@ -142,22 +206,25 @@ dentro de un contenedor que ya está en ejecución.
 6. Reiniciar sólo el contenedor de prueba y comprobar que una encuesta archivada sigue siendo
    votable mientras WhatsApp conserve su secreto local. Si el secreto ya no está disponible, el
    puente debe devolver un error claro y no emitir un mensaje de texto accidental.
+7. Cambiar el voto desde WhatsApp oficial y desde el cliente. Confirmar que el total no se duplica,
+   que la selección anterior se reemplaza y que quitar el voto reduce el total.
+8. Cerrar y abrir el cliente para comprobar que SQLite conserva resultados; después consultar MAM
+   para confirmar que las actualizaciones no aparecen como mensajes independientes.
 
 ## Despliegue posterior a autorización
 
 Cuando se autorice expresamente, respaldar primero el archivo Compose y registrar el digest de la
-imagen v14 que está activa. Validar el Compose sin imprimir secretos, actualizar sólo la imagen de
+imagen activa. Validar el Compose sin imprimir secretos, actualizar sólo la imagen de
 `slidge-whatsapp`, recrear únicamente ese servicio y verificar el marcador de arranque de Slidge.
 No reiniciar Prosody, no borrar volúmenes y no ejecutar logout. Conservar la referencia exacta a la
 imagen anterior para rollback inmediato.
 
-## Alcance de la primera entrega
+## Alcance de v16
 
-Esta entrega permite leer y votar encuestas. Los votos enviados se confirman por el estado de envío
-del cliente y por WhatsApp oficial. La actualización de conteos y quién votó exige procesar
-`PollUpdateMessage`, descifrar los votos recibidos y emitir un evento de actualización adicional;
-debe implementarse como una segunda fase para no presentar resultados incompletos como si fueran
-autoridad de WhatsApp.
+V16 permite leer, votar, cambiar el voto y mostrar los últimos resultados conocidos. Los resultados
+son una proyección local de los `PollUpdateMessage` que el puente pudo descifrar y entregar; si el
+puente estuvo desconectado y WhatsApp no reenvía un evento, no se inventa el dato faltante. Tampoco
+se presentan porcentajes como definitivos mientras existan actualizaciones pendientes.
 
 Las encuestas que el puente ya archivó únicamente como texto, como las recibidas antes de aplicar
 este contrato, no pueden volverse votables de forma fiable desde la caché del cliente: carecen de

@@ -63,7 +63,16 @@ from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_lottie_sticker_attachment,
 )
-from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.chat import (
+    Chat,
+    Message,
+    PollUpdate,
+    apply_poll_update,
+    poll_display_text,
+    poll_option_counts,
+    poll_option_hash,
+    poll_selected_options,
+)
 from cliente_xmpp.models.mentions import (
     GroupParticipant,
     MentionCandidate,
@@ -94,6 +103,8 @@ from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
+from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
+from cliente_xmpp.ui.poll_vote_dialog import PollVoteDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
@@ -3734,8 +3745,10 @@ class MainWindow(wx.Frame):
         menu.AppendSubMenu(reaction_menu, "Reaccionar")
 
         vote_item: wx.MenuItem | None = None
+        poll_results_item: wx.MenuItem | None = None
         if message.poll is not None and not message.retracted:
             vote_item = menu.Append(wx.ID_ANY, "Votar en encuesta...")
+            poll_results_item = menu.Append(wx.ID_ANY, "Ver resultados de encuesta...")
 
         star_label = "No destacar" if message.starred else "Destacar"
         star_item = menu.Append(wx.ID_ANY, star_label)
@@ -3796,6 +3809,12 @@ class MainWindow(wx.Frame):
             )
         if vote_item is not None:
             self.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
+        if poll_results_item is not None:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._show_poll_results(message),
+                poll_results_item,
+            )
         if delete_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
@@ -3810,38 +3829,64 @@ class MainWindow(wx.Frame):
         if chat is None or poll is None:
             return
 
-        prompt = f"{poll.title}\nSelecciona hasta {poll.selectable_count} opciÃ³n(es)."
-        if poll.selectable_count == 1:
-            dialog = wx.SingleChoiceDialog(
-                self, prompt, "Votar en encuesta", list(poll.options)
-            )
-            try:
-                if dialog.ShowModal() != wx.ID_OK:
-                    return
-                selected = [dialog.GetStringSelection()]
-            finally:
-                dialog.Destroy()
-        else:
-            dialog = wx.MultiChoiceDialog(
-                self, prompt, "Votar en encuesta", list(poll.options)
-            )
-            try:
-                if dialog.ShowModal() != wx.ID_OK:
-                    return
-                selected = [poll.options[index] for index in dialog.GetSelections()]
-            finally:
-                dialog.Destroy()
-            if len(selected) > poll.selectable_count:
-                self.status_bar.SetStatusText(
-                    f"La encuesta permite hasta {poll.selectable_count} opciones"
-                )
+        selected_before = poll_selected_options(poll, voter_is_me=True)
+        dialog = PollVoteDialog(
+            self,
+            poll.title,
+            poll.options,
+            poll.selectable_count,
+            selected_before,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
                 return
+            selected = dialog.get_selected_options()
+        finally:
+            dialog.Destroy()
 
-        if not selected:
-            self.status_bar.SetStatusText("No se seleccionÃ³ ninguna opciÃ³n")
-            return
         self.xmpp.send_poll_vote(chat.jid, poll, selected, is_group=chat.is_group)
-        self.status_bar.SetStatusText("Enviando voto a WhatsApp...")
+        self.status_bar.SetStatusText(
+            "Voto enviado; esperando confirmación de WhatsApp"
+        )
+
+    def _show_poll_results(self, message: Message) -> None:
+        poll = message.poll
+        if poll is None:
+            return
+
+        counts = poll_option_counts(poll)
+        lines = [poll.title, ""]
+        for option, count in zip(poll.options, counts, strict=True):
+            option_hash = poll_option_hash(option)
+            voters = []
+            for vote in poll.votes:
+                if option_hash not in vote.option_hashes:
+                    continue
+                if vote.voter_is_me:
+                    voters.append("Tú")
+                else:
+                    voters.append(
+                        vote.voter_name
+                        or display_label_from_jid(vote.voter_jid or vote.voter_lid)
+                        or "Participante desconocido"
+                    )
+            vote_label = "1 voto" if count == 1 else f"{count} votos"
+            lines.append(f"{option}: {vote_label}")
+            if voters:
+                lines.append("  " + ", ".join(voters))
+
+        total = len(poll.votes)
+        lines.extend(
+            (
+                "",
+                "1 persona votó" if total == 1 else f"{total} personas votaron",
+            )
+        )
+        dialog = PollResultsDialog(self, poll.title, "\n".join(lines[2:]))
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
 
     def _save_photo_album(self, album: Message) -> None:
         expected_count = album_photo_count(album)
@@ -4709,6 +4754,9 @@ class MainWindow(wx.Frame):
                     self._message_timestamp(message),
                 ):
                     return
+                if message.poll_update is not None:
+                    self._handle_poll_update(message)
+                    return
                 message, added_message, hydrated_replies = self._store_message(message)
                 if not message.outgoing:
                     self._set_chat_state(message.chat_jid, "")
@@ -4884,19 +4932,22 @@ class MainWindow(wx.Frame):
             self.history_exhausted_chats.add(chat_jid)
 
         self._normalize_audio_metadata_for_messages(messages)
-        hydrated_replies = self._merge_messages(chat_jid, messages)
-        corrections = {message.replaces_id for message in messages if message.replaces_id}
+        merged_updates = self._merge_messages(chat_jid, messages)
+        regular_messages = [message for message in messages if message.poll_update is None]
+        corrections = {message.replaces_id for message in regular_messages if message.replaces_id}
         corrected_messages = [
             message
             for message in self.messages_by_chat.get(chat_jid, [])
             if message.message_id in corrections
         ]
         self._persist_messages(
-            [message for message in messages if not message.replaces_id]
+            [message for message in regular_messages if not message.replaces_id]
             + corrected_messages
-            + hydrated_replies
+            + merged_updates
         )
-        activity_messages = [message for message in messages if not message.replaces_id]
+        activity_messages = [
+            message for message in regular_messages if not message.replaces_id
+        ]
         activity_messages.extend(corrected_messages)
         if activity_messages:
             self._update_chat_activity_from_messages(chat_jid, activity_messages)
@@ -4946,7 +4997,18 @@ class MainWindow(wx.Frame):
         indexes_by_key: dict[tuple[object, ...], int] = {}
         indexes_by_content: dict[tuple[object, ...], list[int]] = {}
         unique_messages: list[Message] = []
+        updated_polls: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
+            if message.poll_update is not None:
+                updated = MainWindow._apply_poll_update_to_messages(
+                    unique_messages,
+                    message.poll_update,
+                )
+                if updated is not None and all(
+                    existing is not updated for existing in updated_polls
+                ):
+                    updated_polls.append(updated)
+                continue
             if MainWindow._apply_message_correction(unique_messages, message):
                 continue
             key = self._message_merge_key(message)
@@ -4980,7 +5042,27 @@ class MainWindow(wx.Frame):
 
         hydrated_replies = MainWindow._hydrate_reply_quotes(unique_messages)
         self.messages_by_chat[chat_jid] = unique_messages
-        return hydrated_replies
+        return hydrated_replies + updated_polls
+
+    @staticmethod
+    def _apply_poll_update_to_messages(
+        messages: list[Message],
+        update: PollUpdate,
+    ) -> Message | None:
+        target = next(
+            (
+                message
+                for message in reversed(messages)
+                if message.poll is not None and message.poll.poll_id == update.poll_id
+            ),
+            None,
+        )
+        if target is None or target.poll is None:
+            return None
+
+        target.poll = apply_poll_update(target.poll, update)
+        target.body = poll_display_text(target.poll)
+        return target
 
     @staticmethod
     def _hydrate_reply_quotes(messages: list[Message]) -> list[Message]:
@@ -5463,6 +5545,27 @@ class MainWindow(wx.Frame):
             and all(existing is not stored_message for existing in existing_messages)
         )
         return stored_message, added_message, hydrated_replies
+
+    def _handle_poll_update(self, message: Message) -> None:
+        update = message.poll_update
+        if update is None:
+            return
+
+        target = self._apply_poll_update_to_messages(
+            self.messages_by_chat.get(message.chat_jid, []),
+            update,
+        )
+        if target is None:
+            return
+
+        self._persist_messages([target])
+        current_chat = self.conversation.current_chat
+        if current_chat is not None and current_chat.jid == message.chat_jid:
+            self.conversation.refresh_message(target)
+        if update.voter_is_me:
+            self.status_bar.SetStatusText("Voto confirmado por WhatsApp")
+        else:
+            self.status_bar.SetStatusText("Se actualizaron los resultados de la encuesta")
 
     def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
         if not message_id:

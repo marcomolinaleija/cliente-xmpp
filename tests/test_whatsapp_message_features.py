@@ -25,7 +25,15 @@ from cliente_xmpp.media.stickers import (
     looks_like_bridge_sticker,
     looks_like_lottie_sticker_attachment,
 )
-from cliente_xmpp.models.chat import Message, Poll
+from cliente_xmpp.models.chat import (
+    Message,
+    Poll,
+    PollUpdate,
+    apply_poll_update,
+    poll_display_text,
+    poll_option_counts,
+    poll_option_hash,
+)
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
@@ -35,10 +43,11 @@ from cliente_xmpp.xmpp.client import (
     STICKER_NS,
     WHATSAPP_FORWARDED_NS,
     WHATSAPP_POLL_NS,
+    XMPP_HINTS_NS,
     BridgeXmppClient,
     XmppService,
 )
-from cliente_xmpp.xmpp.events import MessageDeliveryUpdated
+from cliente_xmpp.xmpp.events import MessageDeliveryUpdated, MessageReceived
 
 
 class MessageFeatureParsingTests(unittest.TestCase):
@@ -243,7 +252,8 @@ class MessageFeatureParsingTests(unittest.TestCase):
             <message xmlns="jabber:client">
               <poll xmlns="urn:marco-ml:whatsapp:poll:0"
                     id="poll-1" title="¿Café o té?" creator="123@s.whatsapp.net"
-                    creator-lid="456@lid" creator-is-me="false" max-selections="1">
+                    creator-lid="456@lid" creator-is-me="false" max-selections="2"
+                    selection-mode="multiple">
                 <option>Café</option><option>Té</option>
               </poll>
             </message>
@@ -251,17 +261,122 @@ class MessageFeatureParsingTests(unittest.TestCase):
         )
 
         poll = BridgeXmppClient._poll_from_xml(xml)
+        self.assertIsNotNone(poll)
+        assert poll is not None
+        self.assertEqual(poll.poll_id, "poll-1")
+        self.assertEqual(len(poll.options), 2)
+        self.assertEqual(poll.creator_jid, "123@s.whatsapp.net")
+        self.assertEqual(poll.creator_lid, "456@lid")
+        self.assertTrue(poll.allows_multiple)
+        self.assertEqual(poll.selectable_count, 2)
+
+    def test_legacy_poll_without_selection_mode_defaults_to_single_vote(self) -> None:
+        xml = ET.fromstring(
+            """
+            <message xmlns="jabber:client">
+              <poll xmlns="urn:marco-ml:whatsapp:poll:0"
+                    id="poll-legacy" title="Una opción" creator="123@s.whatsapp.net"
+                    max-selections="2">
+                <option>Uno</option><option>Dos</option>
+              </poll>
+            </message>
+            """
+        )
+
+        poll = BridgeXmppClient._poll_from_xml(xml)
+
+        self.assertIsNotNone(poll)
+        assert poll is not None
+        self.assertFalse(poll.allows_multiple)
+        self.assertEqual(poll.selectable_count, 1)
+
+    def test_parses_poll_vote_update_and_replaces_previous_selection(self) -> None:
+        coffee_hash = poll_option_hash("Coffee")
+        tea_hash = poll_option_hash("Tea")
+        xml = ET.fromstring(
+            f"""
+            <message xmlns="jabber:client">
+              <poll-update xmlns="urn:marco-ml:whatsapp:poll:0"
+                    id="poll-1" voter="123@s.whatsapp.net"
+                    voter-lid="456@lid" voter-is-me="true">
+                <option hash="{tea_hash}" />
+              </poll-update>
+            </message>
+            """
+        )
+
+        update = BridgeXmppClient._poll_update_from_xml(xml, voter_name="Marco")
 
         self.assertEqual(
-            poll,
-            Poll(
+            update,
+            PollUpdate(
                 poll_id="poll-1",
-                title="¿Café o té?",
-                options=("Café", "Té"),
-                creator_jid="123@s.whatsapp.net",
-                creator_lid="456@lid",
+                voter_jid="123@s.whatsapp.net",
+                voter_lid="456@lid",
+                voter_name="Marco",
+                voter_is_me=True,
+                option_hashes=(tea_hash,),
             ),
         )
+        assert update is not None
+        poll = Poll(
+            poll_id="poll-1",
+            title="Coffee or tea?",
+            options=("Coffee", "Tea"),
+            creator_jid="789@s.whatsapp.net",
+        )
+        poll = apply_poll_update(poll, update)
+        poll = apply_poll_update(
+            poll,
+            PollUpdate(
+                poll_id="poll-1",
+                voter_jid="123@s.whatsapp.net",
+                voter_lid="456@lid",
+                voter_is_me=True,
+                option_hashes=(coffee_hash,),
+            ),
+        )
+
+        self.assertEqual(poll_option_counts(poll), (1, 0))
+        self.assertEqual(len(poll.votes), 1)
+        self.assertIn("☑ Coffee — 1 voto", poll_display_text(poll))
+
+    def test_poll_update_is_merged_without_creating_a_chat_message(self) -> None:
+        poll = Poll(
+            poll_id="poll-1",
+            title="Choose",
+            options=("One", "Two"),
+            creator_jid="123@s.whatsapp.net",
+        )
+        original = Message(
+            chat_jid="#room@example.test",
+            sender_jid="member@example.test",
+            body=poll_display_text(poll),
+            message_id="poll-message",
+            chat_is_group=True,
+            poll=poll,
+        )
+        update_message = Message(
+            chat_jid=original.chat_jid,
+            sender_jid="voter@example.test",
+            body="",
+            message_id="vote-event",
+            chat_is_group=True,
+            poll_update=PollUpdate(
+                poll_id="poll-1",
+                voter_jid="456@s.whatsapp.net",
+                voter_name="Ana",
+                option_hashes=(poll_option_hash("Two"),),
+            ),
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.messages_by_chat = {original.chat_jid: [original]}
+
+        updated = window._merge_messages(original.chat_jid, [update_message])
+
+        self.assertEqual(window.messages_by_chat[original.chat_jid], [original])
+        self.assertIn(original, updated)
+        self.assertEqual(poll_option_counts(original.poll), (0, 1))
 
     def test_sticker_description_does_not_expose_opaque_filename(self) -> None:
         message = Message(
@@ -555,10 +670,15 @@ class _FakeMessage:
 class _FakeClient:
     def __init__(self) -> None:
         self.message: _FakeMessage | None = None
+        self.raw_stanza: bytes | None = None
+        self._pending_poll_votes: dict[str, object] = {}
 
     def make_message(self, mto: str, mbody: str, mtype: str) -> _FakeMessage:
         self.message = _FakeMessage(mto, mbody, mtype)
         return self.message
+
+    def send_raw(self, data: bytes) -> None:
+        self.raw_stanza = data
 
     @staticmethod
     def _join_group_chat(_jid: str) -> None:
@@ -619,8 +739,74 @@ class ForwardSendContractTests(unittest.TestCase):
             [node.text for node in vote.findall(f"{{{WHATSAPP_POLL_NS}}}option")],
             ["Té"],
         )
-        self.assertEqual(fake_client.message.xml.findtext("body"), "")
-        self.assertTrue(fake_client.message.sent)
+        self.assertEqual(fake_client.message.xml.findtext("body"), " ")
+        self.assertIsNotNone(fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}store"))
+        self.assertIsNotNone(
+            fake_client.message.xml.find("{urn:xmpp:receipts}request")
+        )
+        self.assertTrue(fake_client.message.xml.attrib.get("id"))
+        self.assertEqual(len(fake_client._pending_poll_votes), 1)
+        self.assertIsNotNone(fake_client.raw_stanza)
+
+    def test_poll_vote_changes_locally_only_after_bridge_receipt(self) -> None:
+        service = XmppService(lambda _event: None)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+        poll = Poll(
+            poll_id="poll-confirmed",
+            title="Elige",
+            options=("Uno", "Dos"),
+            creator_jid="123@s.whatsapp.net",
+        )
+        service.send_poll_vote("contact@example.test", poll, ["Dos"])
+        message_id = next(iter(fake_client._pending_poll_votes))
+
+        emitted: list[object] = []
+        client = SimpleNamespace(
+            _pending_poll_votes=fake_client._pending_poll_votes,
+            _emit=emitted.append,
+            _debug_whatsapp=lambda _message: None,
+        )
+
+        self.assertTrue(
+            BridgeXmppClient._confirm_pending_poll_vote(client, message_id)
+        )
+        self.assertEqual(client._pending_poll_votes, {})
+        self.assertEqual(len(emitted), 1)
+        self.assertIsInstance(emitted[0], MessageReceived)
+        event = emitted[0]
+        assert isinstance(event, MessageReceived)
+        update = event.message.poll_update
+        self.assertIsNotNone(update)
+        assert update is not None
+        self.assertTrue(update.voter_is_me)
+        self.assertEqual(update.option_hashes, (poll_option_hash("Dos"),))
+
+    def test_vote_uses_lid_when_own_creator_jid_is_missing(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+        poll = Poll(
+            poll_id="poll-own-group",
+            title="Propia desde otro dispositivo",
+            options=("A", "B"),
+            creator_jid="",
+            creator_lid="456@lid",
+            creator_is_me=True,
+        )
+
+        service.send_poll_vote("#group@example.test", poll, ["A"], is_group=True)
+
+        assert fake_client.message is not None
+        vote = fake_client.message.xml.find(f"{{{WHATSAPP_POLL_NS}}}vote")
+        self.assertIsNotNone(vote)
+        assert vote is not None
+        self.assertEqual(vote.attrib["creator"], "456@lid")
+        self.assertEqual(vote.attrib["creator-lid"], "456@lid")
+        self.assertIsNotNone(fake_client.raw_stanza)
 
     def test_forward_media_reuses_attachment_and_marks_sticker(self) -> None:
         emitted: list[object] = []

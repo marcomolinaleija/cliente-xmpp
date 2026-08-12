@@ -7,7 +7,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cliente_xmpp.models.chat import Chat, Message, Poll
+from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
 from cliente_xmpp.storage.message_store import MessageStore
 
 
@@ -304,6 +304,15 @@ class MessageStoreTests(unittest.TestCase):
                     options=("Café", "Té"),
                     creator_jid="123@s.whatsapp.net",
                     creator_lid="456@lid",
+                    selectable_count=2,
+                    allows_multiple=True,
+                    votes=(
+                        PollVote(
+                            voter_jid="789@s.whatsapp.net",
+                            voter_name="Ana",
+                            option_hashes=("ab" * 32,),
+                        ),
+                    ),
                 ),
             )
 

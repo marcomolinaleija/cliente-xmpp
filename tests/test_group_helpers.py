@@ -1895,6 +1895,50 @@ class GroupMessageParsingTests(unittest.TestCase):
             )
         )
 
+    def test_message_error_callback_accepts_stanza_without_explicit_jid(self) -> None:
+        class FromJid:
+            bare = "contact@whatsapp.example.org"
+
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(
+                    id="cliente-xmpp-vote-1",
+                    **{"from": FromJid()},
+                )
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client" type="error">
+                      <error type="cancel">
+                        <internal-server-error
+                            xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          Poll vote failed
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        emitted = []
+        client = SimpleNamespace(
+            _joined_group_chat_jids=set(),
+            _jid_may_be_group_chat=lambda _jid: False,
+            _schedule_group_rejoin=lambda _jid: None,
+            _message_error_parts=BridgeXmppClient._message_error_parts,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._handle_message_error(client, ErrorMessage())
+
+        self.assertTrue(
+            any(
+                isinstance(event, MessageDeliveryUpdated)
+                and event.chat_jid == "contact@whatsapp.example.org"
+                and event.delivery_state == "failed"
+                for event in emitted
+            )
+        )
+
     def test_group_bad_request_marks_send_failed_without_rejoining_room(self) -> None:
         class ErrorMessage(dict):
             def __init__(self) -> None:

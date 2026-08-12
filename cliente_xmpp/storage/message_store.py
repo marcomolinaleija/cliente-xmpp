@@ -17,7 +17,7 @@ from statistics import median
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
-from cliente_xmpp.models.chat import Chat, Message, Poll
+from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.sentiment import sentiment_weights
@@ -2204,6 +2204,17 @@ def _poll_to_db(poll: Poll | None) -> str:
             "creator_lid": poll.creator_lid,
             "creator_is_me": poll.creator_is_me,
             "max_selections": poll.selectable_count,
+            "selection_mode": "multiple" if poll.allows_multiple else "single",
+            "votes": [
+                {
+                    "voter": vote.voter_jid,
+                    "voter_lid": vote.voter_lid,
+                    "voter_name": vote.voter_name,
+                    "voter_is_me": vote.voter_is_me,
+                    "option_hashes": list(vote.option_hashes),
+                }
+                for vote in poll.votes
+            ],
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -2222,6 +2233,22 @@ def _poll_from_db(raw: str) -> Poll | None:
             str(option).strip() for option in value["options"] if str(option).strip()
         )
         selectable_count = int(value.get("max_selections", 1))
+        allows_multiple = value.get("selection_mode") == "multiple"
+        votes = tuple(
+            PollVote(
+                voter_jid=str(vote.get("voter", "")).strip(),
+                voter_lid=str(vote.get("voter_lid", "")).strip(),
+                voter_name=str(vote.get("voter_name", "")).strip(),
+                voter_is_me=bool(vote.get("voter_is_me", False)),
+                option_hashes=tuple(
+                    str(option_hash).strip().lower()
+                    for option_hash in vote.get("option_hashes", [])
+                    if str(option_hash).strip()
+                ),
+            )
+            for vote in value.get("votes", [])
+            if isinstance(vote, dict)
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
     if not poll_id or not title or not creator_jid or not options:
@@ -2233,7 +2260,11 @@ def _poll_from_db(raw: str) -> Poll | None:
         creator_jid=creator_jid,
         creator_lid=str(value.get("creator_lid", "")).strip(),
         creator_is_me=bool(value.get("creator_is_me", False)),
-        selectable_count=max(1, min(selectable_count, len(options))),
+        selectable_count=(
+            max(1, min(selectable_count, len(options))) if allows_multiple else 1
+        ),
+        allows_multiple=allows_multiple,
+        votes=votes,
     )
 
 

@@ -2,6 +2,18 @@
 
 ## Estado y objetivo de v16
 
+La imagen quedó publicada el 11 de agosto de 2026 como:
+
+```text
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v16@sha256:5c1e27f751218c0e3e06cb611f2b2942c8886a7ee04a744fbd8d4fbbf1cc3dd6
+```
+
+Se reconstruyó desde `main` en `f11c558`, usando la base v15 fijada que se documenta abajo.
+Durante la construcción pasaron las pruebas Go normales y con `-race`, la recompilación del
+binding compartido y el smoke test Python. Después de publicar, la imagen se descargó de GHCR por
+su digest y el smoke test volvió a pasar. Los artefactos críticos coinciden byte por byte con la
+imagen diagnóstica que se probó en `marco-vps`; publicar v16 no requirió reiniciar el servicio.
+
 El cliente reconoce el contrato XMPP privado `urn:marco-ml:whatsapp:poll:0`, conserva encuestas y
 últimos votos conocidos en SQLite, muestra totales en el mensaje y ofrece **Votar en encuesta...**
 y **Ver resultados de encuesta...** en su menú contextual.

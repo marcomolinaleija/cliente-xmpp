@@ -423,6 +423,16 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/smoke_bridge_presence_lifecycle_runtime.py`. La imagen publicada tiene digest
   `sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f`; no vuelvas a
   desplegar una etiqueta mutable sin comprobar ese digest y conservar el respaldo anterior.
+- Desde el 11 de agosto de 2026, la imagen `v16` añade lectura, voto y actualización en tiempo real
+  de encuestas nativas. Está publicada como
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v16@sha256:5c1e27f751218c0e3e06cb611f2b2942c8886a7ee04a744fbd8d4fbbf1cc3dd6`.
+  Parte de `v15` fijada por digest, supera las pruebas Go normales y con detector de carreras y el
+  smoke test de runtime. Los archivos Go, Python y el binding de la imagen publicada coinciden con
+  la candidata diagnóstica validada en `marco-vps`; la publicación en GHCR no reinició el servicio.
+  El parche consolidado, Dockerfile, prueba Go, smoke test y contrato están en
+  `tools/patch_slidge_whatsapp_polls.py`, `tools/Dockerfile.bridge-polls-v16`,
+  `tools/bridge_polls_test.go`, `tools/smoke_bridge_polls_runtime.py` y
+  `docs/ENCUESTAS_WHATSAPP_PARA_MARCO.md`.
 - La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
   `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y la imagen v14
   fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,

@@ -321,6 +321,29 @@ class MessageStoreTests(unittest.TestCase):
             loaded = store.load_recent_messages("me@example.test", message.chat_jid)
             self.assertEqual(loaded[0].poll, message.poll)
 
+    def test_persists_latest_poll_vote_per_voter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            store.upsert_poll_vote(
+                "me@example.test",
+                "contact@example.test",
+                "poll-1",
+                "123@s.whatsapp.net",
+                ("first",),
+            )
+            store.upsert_poll_vote(
+                "me@example.test",
+                "contact@example.test",
+                "poll-1",
+                "123@s.whatsapp.net",
+                ("second", "third"),
+            )
+
+            self.assertEqual(
+                store.load_poll_votes("me@example.test", "contact@example.test"),
+                {("poll-1", "123@s.whatsapp.net"): ("second", "third")},
+            )
+
     def test_edited_message_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

@@ -592,6 +592,33 @@ PATCHERS = {
 }
 
 
+def patch_package(package_root: Path, *, backup: bool) -> bool:
+    """Apply the consolidated poll patch and report whether files changed."""
+    package_root = package_root.resolve()
+    missing = [
+        str(package_root / relative)
+        for relative in PATCHERS
+        if not (package_root / relative).is_file()
+    ]
+    if missing:
+        raise SystemExit("Missing bridge files:\n" + "\n".join(missing))
+
+    changed = False
+    for relative, patcher in PATCHERS.items():
+        target = package_root / relative
+        original = target.read_text(encoding="utf-8")
+        updated = patcher(original)
+        if updated == original:
+            continue
+        if backup:
+            backup_path = target.with_suffix(target.suffix + ".before-polls-v16")
+            if not backup_path.exists():
+                shutil.copy2(target, backup_path)
+        target.write_text(updated, encoding="utf-8", newline="\n")
+        changed = True
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Add the private XMPP contract for native WhatsApp poll voting."
@@ -599,28 +626,12 @@ def main() -> int:
     parser.add_argument("package_root", type=Path)
     parser.add_argument("--no-backup", action="store_true")
     args = parser.parse_args()
-    package_root = args.package_root.resolve()
-
-    changed: list[str] = []
-    for relative, patcher in PATCHERS.items():
-        target = package_root / relative
-        if not target.is_file():
-            raise SystemExit(f"File not found: {target}")
-        original = target.read_text(encoding="utf-8")
-        updated = patcher(original)
-        if updated == original:
-            continue
-        if not args.no_backup:
-            backup = target.with_suffix(target.suffix + ".before-polls-v15")
-            if not backup.exists():
-                shutil.copy2(target, backup)
-        target.write_text(updated, encoding="utf-8", newline="\n")
-        changed.append(str(relative))
-
-    if changed:
-        print("WhatsApp poll patch applied: " + ", ".join(changed))
-    else:
-        print("WhatsApp poll patch already present.")
+    changed = patch_package(args.package_root, backup=not args.no_backup)
+    print(
+        "WhatsApp poll patch applied."
+        if changed
+        else "WhatsApp poll patch already present."
+    )
     return 0
 
 

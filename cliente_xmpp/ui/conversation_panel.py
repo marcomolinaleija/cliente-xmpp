@@ -15,7 +15,7 @@ from cliente_xmpp.media.downloads import (
     media_description,
 )
 from cliente_xmpp.media.links import is_link_preview
-from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.chat import Chat, Message, Poll, poll_display_text
 from cliente_xmpp.models.names import display_label_from_jid
 from cliente_xmpp.ui.theme import (
     INCOMING_MESSAGE_BLUE,
@@ -55,12 +55,14 @@ class ConversationPanel(wx.Panel):
         on_audio_speed_changed: Callable[[float], None] | None = None,
         on_audio_download_requested: Callable[[Message], None] | None = None,
         on_go_to_quoted_message: Callable[[Message], None] | None = None,
+        on_vote_in_poll: Callable[[Message], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
         self.on_audio_speed_changed = on_audio_speed_changed
         self.on_audio_download_requested = on_audio_download_requested
         self.on_go_to_quoted_message = on_go_to_quoted_message
+        self.on_vote_in_poll = on_vote_in_poll
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
@@ -103,6 +105,12 @@ class ConversationPanel(wx.Panel):
         self.go_to_quoted_button = wx.Button(self, label="Ir a mensaje citado")
         self.go_to_quoted_button.SetName("Ir a mensaje citado")
         self.go_to_quoted_button.Hide()
+        self.vote_in_poll_button = wx.Button(self, label="Votar en encuesta")
+        self.vote_in_poll_button.SetName("Votar en encuesta")
+        self.vote_in_poll_button.SetToolTip(
+            "Abre las opciones de la encuesta del mensaje seleccionado."
+        )
+        self.vote_in_poll_button.Hide()
         self.compose: wx.TextCtrl
         self.mention_suggestions: wx.ListBox
         self.attach_button: wx.Button
@@ -133,7 +141,7 @@ class ConversationPanel(wx.Panel):
         self._set_compose_label_for_chat()
         self.set_recording_state(False)
         self.set_remote_actions_enabled(self._remote_actions_enabled)
-        self._update_quoted_message_button()
+        self._update_message_action_buttons()
 
     def set_contact_summary(self, name: str, status: str = "") -> None:
         label = f"{name} | {status}" if status else name
@@ -213,7 +221,7 @@ class ConversationPanel(wx.Panel):
 
         if restore_focused_message:
             wx.CallAfter(self.focus_default_message_item)
-        self._update_quoted_message_button()
+        self._update_message_action_buttons()
 
     def append_message(self, message: Message) -> None:
         follow_new_message = self._should_follow_appended_message()
@@ -261,7 +269,7 @@ class ConversationPanel(wx.Panel):
             wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED,
         )
         self.messages.EnsureVisible(index)
-        self._update_quoted_message_button()
+        self._update_message_action_buttons()
 
     def focus_message(self, message: Message) -> None:
         key = self._message_focus_key(message)
@@ -272,7 +280,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = index
         self.focus_default_message_item()
         self.messages.SetFocus()
-        self._update_quoted_message_button()
+        self._update_message_action_buttons()
 
     def find_message_by_id(self, message_id: str) -> Message | None:
         if not message_id:
@@ -712,6 +720,12 @@ class ConversationPanel(wx.Panel):
             wx.TOP | wx.RIGHT | wx.ALIGN_TOP,
             12,
         )
+        message_area.Add(
+            self.vote_in_poll_button,
+            0,
+            wx.TOP | wx.RIGHT | wx.ALIGN_TOP,
+            12,
+        )
         box.Add(message_area, 1, wx.EXPAND)
         self.messages.InsertColumn(0, "Mensajes", width=820)
         self.messages.AssignImageList(self._thumbnail_images, wx.IMAGE_LIST_SMALL)
@@ -762,6 +776,7 @@ class ConversationPanel(wx.Panel):
         self.messages.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_message_selected)
         self.messages.Bind(wx.EVT_SIZE, self._on_messages_size)
         self.go_to_quoted_button.Bind(wx.EVT_BUTTON, self._on_go_to_quoted_message)
+        self.vote_in_poll_button.Bind(wx.EVT_BUTTON, self._on_vote_in_poll)
         wx.CallAfter(self._fit_message_column)
 
     def _on_messages_size(self, event: wx.SizeEvent) -> None:
@@ -788,25 +803,38 @@ class ConversationPanel(wx.Panel):
         event.Skip()
 
     def _on_message_selected(self, event: wx.ListEvent) -> None:
-        self._update_quoted_message_button()
+        self._update_message_action_buttons()
         event.Skip()
 
     def _on_go_to_quoted_message(self, _event: wx.CommandEvent) -> None:
         message = self.selected_message()
         if message is None or self.find_message_by_id(message.reply_to_id) is None:
-            self._update_quoted_message_button()
+            self._update_message_action_buttons()
             return
         if self.on_go_to_quoted_message is not None:
             self.on_go_to_quoted_message(message)
 
-    def _update_quoted_message_button(self) -> None:
+    def _on_vote_in_poll(self, _event: wx.CommandEvent) -> None:
+        message = self.selected_message()
+        if message is None or message.poll is None or message.retracted:
+            self._update_message_action_buttons()
+            return
+        if self.on_vote_in_poll is not None:
+            self.on_vote_in_poll(message)
+
+    def _update_message_action_buttons(self) -> None:
         message = self.selected_message()
         target = self.find_message_by_id(message.reply_to_id) if message is not None else None
-        should_show = target is not None
-        if self.go_to_quoted_button.IsShown() != should_show:
-            self.go_to_quoted_button.Show(should_show)
+        show_quote = target is not None
+        show_vote = message is not None and message.poll is not None and not message.retracted
+        if self.go_to_quoted_button.IsShown() != show_quote:
+            self.go_to_quoted_button.Show(show_quote)
             self.Layout()
-        self.go_to_quoted_button.Enable(should_show)
+        if self.vote_in_poll_button.IsShown() != show_vote:
+            self.vote_in_poll_button.Show(show_vote)
+            self.Layout()
+        self.go_to_quoted_button.Enable(show_quote)
+        self.vote_in_poll_button.Enable(show_vote)
 
     def _message_at_row(self, index: int) -> Message | None:
         if index < 0 or index >= len(self._message_rows):
@@ -1033,6 +1061,9 @@ class ConversationPanel(wx.Panel):
         if message.retracted:
             return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
 
+        if message.poll is not None:
+            return self._format_poll(message.poll)
+
         if is_link_preview(message):
             return media_description(message)
 
@@ -1050,6 +1081,10 @@ class ConversationPanel(wx.Panel):
             return "Mensaje de voz"
 
         return f"Mensaje de voz, {format_duration(duration)}"
+
+    @staticmethod
+    def _format_poll(poll: Poll) -> str:
+        return poll_display_text(poll)
 
     @staticmethod
     def _body_without_reply_fallback(message: Message) -> str:

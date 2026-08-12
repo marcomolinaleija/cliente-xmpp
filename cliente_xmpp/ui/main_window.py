@@ -411,6 +411,7 @@ class MainWindow(wx.Frame):
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
             on_go_to_quoted_message=self._go_to_quoted_message,
+            on_vote_in_poll=self._vote_in_poll,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
@@ -5559,6 +5560,18 @@ class MainWindow(wx.Frame):
             return
 
         self._persist_messages([target])
+        voter_id = update.voter_lid or update.voter_jid or (
+            "me" if update.voter_is_me else ""
+        )
+        if self.current_jid and voter_id:
+            self._queue_storage_write(
+                self.message_store.upsert_poll_vote,
+                self.current_jid,
+                message.chat_jid,
+                update.poll_id,
+                voter_id,
+                update.option_hashes,
+            )
         current_chat = self.conversation.current_chat
         if current_chat is not None and current_chat.jid == message.chat_jid:
             self.conversation.refresh_message(target)

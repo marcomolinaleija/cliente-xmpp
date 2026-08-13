@@ -164,6 +164,36 @@ class MessageStoreTests(unittest.TestCase):
                 ["matching-message"],
             )
 
+    def test_loads_message_by_remote_or_group_displayed_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            group_jid = "#room@whatsapp.example.test"
+            message = Message(
+                chat_jid=group_jid,
+                sender_jid="+524491234567@whatsapp.example.test",
+                body="Mensaje del grupo",
+                sent_at=datetime(2026, 8, 12, 12, tzinfo=UTC),
+                message_id="remote-message-id",
+                displayed_marker_id="group-stanza-id",
+                chat_is_group=True,
+            )
+            store.upsert_messages(account_jid, [message])
+
+            loaded_by_remote_id = store.load_message_by_id(
+                account_jid,
+                group_jid,
+                message.message_id,
+            )
+            loaded_by_marker = store.load_message_by_id(
+                account_jid,
+                group_jid,
+                message.displayed_marker_id,
+            )
+
+            self.assertEqual(loaded_by_remote_id, message)
+            self.assertEqual(loaded_by_marker, message)
+
     def test_delete_chat_removes_its_messages_and_media_paths_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

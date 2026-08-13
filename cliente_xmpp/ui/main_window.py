@@ -418,6 +418,7 @@ class MainWindow(wx.Frame):
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
             on_go_to_quoted_message=self._go_to_quoted_message,
+            can_go_to_quoted_message=self._can_go_to_quoted_message,
             on_vote_in_poll=self._vote_in_poll,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
@@ -2082,7 +2083,7 @@ class MainWindow(wx.Frame):
         self,
         normalized_phone: NormalizedPhoneNumber,
         component_jid: str = "",
-    ) -> None:
+    ) -> Chat | None:
         try:
             chat_jid_candidates = whatsapp_contact_jid_candidates(
                 normalized_phone.e164,
@@ -2092,21 +2093,23 @@ class MainWindow(wx.Frame):
             message = str(exc)
             self.status_bar.SetStatusText(message)
             self.speaker.speak(message)
-            return
+            return None
 
         for chat_jid in chat_jid_candidates:
             existing_chat = self._chat_by_jid(chat_jid)
             if existing_chat is not None:
                 self._open_chat(existing_chat)
-                return
+                return existing_chat
 
+        chat = Chat(
+            jid=chat_jid_candidates[0],
+            name=normalized_phone.international,
+        )
         self._open_chat(
-            Chat(
-                jid=chat_jid_candidates[0],
-                name=normalized_phone.international,
-            ),
+            chat,
             request_remote_context=False,
         )
+        return chat
 
     def _private_message_recipient(
         self,
@@ -2163,6 +2166,47 @@ class MainWindow(wx.Frame):
         if not self._require_whatsapp_connection():
             return
         self._open_chat_for_phone(normalized_phone, component_jid)
+
+    def _reply_privately_to_group_message(
+        self,
+        message: Message,
+        normalized_phone: NormalizedPhoneNumber,
+        component_jid: str,
+    ) -> None:
+        if not self._require_whatsapp_connection():
+            return
+
+        source_chat = self.conversation.current_chat
+        reply_error = self._reply_target_error(message, source_chat)
+        if reply_error:
+            self.status_bar.SetStatusText(reply_error)
+            return
+        if source_chat is None or not source_chat.is_group:
+            self.status_bar.SetStatusText("El mensaje ya no pertenece al grupo abierto")
+            return
+
+        reply_to_jid = self._reply_target_jid(source_chat, message, self.current_jid)
+        if not reply_to_jid:
+            self.status_bar.SetStatusText(
+                "No se pudo identificar al participante del grupo para responder en privado"
+            )
+            return
+
+        private_chat = self._open_chat_for_phone(normalized_phone, component_jid)
+        if private_chat is None:
+            return
+
+        if self.edit_context is not None:
+            self.edit_context = None
+            self.conversation.clear_editing()
+        self.reply_context = replace(
+            message,
+            chat_jid=private_chat.jid,
+            sender_jid=reply_to_jid,
+            chat_is_group=False,
+        )
+        self.conversation.insert_reply_quote(message)
+        self.status_bar.SetStatusText("Respuesta privada preparada")
 
     def _rename_selected_chat(self) -> None:
         chat = self.chat_list.selected_chat()
@@ -3968,8 +4012,10 @@ class MainWindow(wx.Frame):
         )
         private_recipient = self._private_message_recipient(message)
         private_message_item: wx.MenuItem | None = None
+        private_reply_item: wx.MenuItem | None = None
         if private_recipient is not None:
             private_message_item = menu.Append(wx.ID_ANY, "Enviar mensaje privado")
+            private_reply_item = menu.Append(wx.ID_ANY, "Responder en privado")
         media_item: wx.MenuItem | None = None
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
@@ -4041,6 +4087,16 @@ class MainWindow(wx.Frame):
                 ),
                 private_message_item,
             )
+            if private_reply_item is not None:
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self._reply_privately_to_group_message(
+                        message,
+                        private_recipient_phone,
+                        private_component_jid,
+                    ),
+                    private_reply_item,
+                )
         if edit_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
         if link_item:
@@ -4841,13 +4897,97 @@ class MainWindow(wx.Frame):
             )
 
     def _go_to_quoted_message(self, message: Message) -> None:
-        target = self.conversation.find_message_by_id(message.reply_to_id)
-        if target is None:
-            self.status_bar.SetStatusText("El mensaje citado ya no está disponible en este chat")
+        target = self._quoted_message_navigation_target(message)
+        if target is not None:
+            target_chat, target_message = target
+            current_chat = self.conversation.current_chat
+            if current_chat is not None and current_chat.jid == target_chat.jid:
+                self.conversation.focus_message(target_message)
+            else:
+                self._open_chat(target_chat, target_message=target_message)
+            self.status_bar.SetStatusText("Mensaje citado")
             return
 
-        self.conversation.focus_message(target)
+        source_chat_jid = self._quoted_group_chat_jid(message.reply_to_jid)
+        source_chat = self._chat_by_jid(source_chat_jid) if source_chat_jid else None
+        if source_chat is not None and message.reply_to_id:
+            self.status_bar.SetStatusText("Cargando el mensaje citado del grupo...")
+            self._load_quoted_group_message_async(source_chat, message.reply_to_id)
+            return
+
+        self.status_bar.SetStatusText("El mensaje citado ya no está disponible localmente")
+
+    def _can_go_to_quoted_message(self, message: Message) -> bool:
+        if self._quoted_message_navigation_target(message) is not None:
+            return True
+        source_chat_jid = self._quoted_group_chat_jid(message.reply_to_jid)
+        return bool(source_chat_jid and message.reply_to_id and self._chat_by_jid(source_chat_jid))
+
+    def _load_quoted_group_message_async(self, chat: Chat, message_id: str) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            self.status_bar.SetStatusText("No hay una cuenta activa para cargar el mensaje citado")
+            return
+
+        def worker() -> None:
+            try:
+                message = self.message_store.load_message_by_id(
+                    account_jid,
+                    chat.jid,
+                    message_id,
+                )
+            except Exception:
+                wx.CallAfter(
+                    self.status_bar.SetStatusText,
+                    "No se pudo cargar el mensaje citado del grupo",
+                )
+                return
+            wx.CallAfter(self._finish_loading_quoted_group_message, chat, message)
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            self.status_bar.SetStatusText("La aplicación se está cerrando")
+
+    def _finish_loading_quoted_group_message(
+        self,
+        chat: Chat,
+        message: Message | None,
+    ) -> None:
+        if message is None:
+            self.status_bar.SetStatusText("El mensaje citado ya no está disponible localmente")
+            return
+        self._open_chat(chat, target_message=message)
         self.status_bar.SetStatusText("Mensaje citado")
+
+    def _quoted_message_navigation_target(
+        self,
+        message: Message,
+    ) -> tuple[Chat, Message] | None:
+        source_chat_jid = self._quoted_group_chat_jid(message.reply_to_jid)
+        if source_chat_jid:
+            source_chat = self._chat_by_jid(source_chat_jid)
+            if source_chat is None:
+                return None
+            target = self._message_by_id(source_chat_jid, message.reply_to_id)
+            if target is None:
+                return None
+            return source_chat, target
+
+        current_chat = self.conversation.current_chat
+        if current_chat is None:
+            return None
+        target = self.conversation.find_message_by_id(message.reply_to_id)
+        return (current_chat, target) if target is not None else None
+
+    @staticmethod
+    def _quoted_group_chat_jid(reply_to_jid: str) -> str:
+        bare_jid = reply_to_jid.strip().split("/", 1)[0]
+        return bare_jid if bare_jid.startswith("#") and "@" in bare_jid else ""
 
     def _react_to_message(self, message: Message, reaction: str) -> None:
         if not self._require_whatsapp_connection():

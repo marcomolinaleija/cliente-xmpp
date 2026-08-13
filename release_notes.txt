@@ -1,23 +1,29 @@
 WhatsApp CAN 1.3.0
 
-Puente local opcional para Windows
-- El instalador pregunta cómo quieres usar WhatsApp CAN: con un puente local en WSL2 o con un
-  servidor XMPP/VPS.
-- Si eliges el modo local, descarga el appliance oficial desde una release inmutable, comprueba su
-  SHA-256 y configura Prosody, Slidge WhatsApp v14 y adjuntos exclusivamente en 127.0.0.1.
-- El instalador del cliente sigue siendo ligero: el appliance de aproximadamente 688 MiB sólo se
-  descarga cuando eliges el puente local.
-- La instalación local se puede reanudar de forma segura si Windows o la red interrumpen el proceso.
+Puente local opcional en Windows
+- El instalador permite elegir entre un puente local en WSL2 o un servidor XMPP/VPS.
+- El modo local descarga el appliance oficial desde una release inmutable, valida su SHA-256 y
+  conserva la sesión y los adjuntos dentro del equipo.
+- Los perfiles local y remoto, sus credenciales y su configuración de TLS se mantienen separados
+  para poder cambiar de modo sin perder la conexión ya configurada.
 
-Cliente híbrido
-- Los perfiles local y remoto se guardan por separado. Puedes seguir usando tu VPS y cambiar de
-  perfil desde la pantalla de conexión o desde Configuración.
-- Las credenciales locales pasan al almacén seguro de Windows y la CA privada del appliance se fija
-  para validar STARTTLS sin confiar en certificados de terceros.
-- El cliente inicia y comprueba el puente fuera del hilo de interfaz, muestra estados claros durante
-  el arranque y evita ofrecer el QR antes de que Slidge termine de autenticarse con Prosody.
+Encuestas y stickers nativos
+- Puedes ver encuestas recibidas, consultar sus resultados y votar desde el cliente. Los cambios de
+  votos llegan en tiempo real, incluso si se hicieron desde otro dispositivo.
+- El cliente identifica y muestra stickers correctamente, y permite enviarlos de forma nativa.
 
-Puente WhatsApp v14
-- Corrige la carrera de presencias que podía reiniciar Slidge durante una renovación simultánea.
-- Conserva las mejoras anteriores del puente para menciones, reenvíos, stickers, notas de voz,
-  sincronización de leídos, nombres de contactos y alias mexicanos.
+Mensajes y grupos más completos
+- Los mensajes destacados ya se conservan correctamente después de reiniciar. La lista de
+  destacados se ordena por fecha descendente de forma predeterminada y ofrece un selector accesible
+  para cambiar el orden.
+- En cada chat hay una búsqueda local con el botón Buscar y el atajo Ctrl+Shift+F. Incluye un filtro
+  accesible por día, mes y año, y conserva la navegación hacia cada resultado.
+- Desde el menú contextual de un mensaje de grupo puedes abrir un chat privado con su autor o
+  responderle en privado. Esta última acción conserva la cita del mensaje del grupo y permite volver
+  al original desde el chat privado, también después de reiniciar.
+
+Conexión más confiable
+- Mejora la vinculación por QR o por código telefónico y evita fallos transitorios durante el
+  arranque de WhatsApp.
+- La sincronización de contactos, grupos, encuestas, stickers y respuestas privadas se adapta al
+  puente WhatsApp v18.

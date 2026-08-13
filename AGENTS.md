@@ -443,6 +443,16 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/patch_slidge_whatsapp_polls.py`, `tools/Dockerfile.bridge-polls-v16`,
   `tools/bridge_polls_test.go`, `tools/smoke_bridge_polls_runtime.py` y
   `docs/ENCUESTAS_WHATSAPP_PARA_MARCO.md`.
+- Desde el 13 de agosto de 2026, la imagen
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v18@sha256:d890c2ddc1e71528fe30a9cb400fef81c6e221f882e0625133e1bc454c4ee4dd`
+  preserva las respuestas privadas a mensajes de grupo. Para una respuesta directa que cita un
+  mensaje de MUC, conserva el grupo y participante original en el contexto de WhatsApp y restituye
+  la referencia XEP-0461 al recibirla, de modo que tanto WhatsApp oficial como el cliente puedan
+  abrir el mensaje correcto. El parche, prueba Go, Dockerfile y smoke test están en
+  `tools/patch_slidge_whatsapp_private_replies.py`,
+  `tools/bridge_private_replies_test.go`, `tools/Dockerfile.bridge-private-replies-v18` y
+  `tools/smoke_bridge_private_replies_runtime.py`. No reduzcas estas citas a texto embebido ni
+  reemplaces el JID MUC del `reply@to` por el JID privado del participante.
 - La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
   `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y la imagen v14
   fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,

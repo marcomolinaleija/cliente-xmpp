@@ -55,6 +55,7 @@ class ConversationPanel(wx.Panel):
         on_audio_speed_changed: Callable[[float], None] | None = None,
         on_audio_download_requested: Callable[[Message], None] | None = None,
         on_go_to_quoted_message: Callable[[Message], None] | None = None,
+        can_go_to_quoted_message: Callable[[Message], bool] | None = None,
         on_vote_in_poll: Callable[[Message], None] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -62,6 +63,7 @@ class ConversationPanel(wx.Panel):
         self.on_audio_speed_changed = on_audio_speed_changed
         self.on_audio_download_requested = on_audio_download_requested
         self.on_go_to_quoted_message = on_go_to_quoted_message
+        self.can_go_to_quoted_message = can_go_to_quoted_message
         self.on_vote_in_poll = on_vote_in_poll
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
@@ -814,7 +816,7 @@ class ConversationPanel(wx.Panel):
 
     def _on_go_to_quoted_message(self, _event: wx.CommandEvent) -> None:
         message = self.selected_message()
-        if message is None or self.find_message_by_id(message.reply_to_id) is None:
+        if message is None or not self._can_go_to_quoted_message(message):
             self._update_message_action_buttons()
             return
         if self.on_go_to_quoted_message is not None:
@@ -830,8 +832,7 @@ class ConversationPanel(wx.Panel):
 
     def _update_message_action_buttons(self) -> None:
         message = self.selected_message()
-        target = self.find_message_by_id(message.reply_to_id) if message is not None else None
-        show_quote = target is not None
+        show_quote = message is not None and self._can_go_to_quoted_message(message)
         show_vote = message is not None and message.poll is not None and not message.retracted
         if self.go_to_quoted_button.IsShown() != show_quote:
             self.go_to_quoted_button.Show(show_quote)
@@ -841,6 +842,12 @@ class ConversationPanel(wx.Panel):
             self.Layout()
         self.go_to_quoted_button.Enable(show_quote)
         self.vote_in_poll_button.Enable(show_vote)
+
+    def _can_go_to_quoted_message(self, message: Message) -> bool:
+        callback = getattr(self, "can_go_to_quoted_message", None)
+        if callback is not None:
+            return callback(message)
+        return self.find_message_by_id(message.reply_to_id) is not None
 
     def _message_at_row(self, index: int) -> Message | None:
         if index < 0 or index >= len(self._message_rows):

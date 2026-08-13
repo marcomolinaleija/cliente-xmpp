@@ -215,6 +215,7 @@ class GroupPrivateMessageTests(unittest.TestCase):
         window.messages_by_chat = {group.jid: [message]}
         window._message_can_be_edited = Mock(return_value=False)
         window._send_private_message_to_group_sender = Mock()
+        window._reply_privately_to_group_message = Mock()
 
         with (
             patch("cliente_xmpp.ui.main_window.wx.Menu", self._Menu),
@@ -227,10 +228,17 @@ class GroupPrivateMessageTests(unittest.TestCase):
         private_item = next(
             item for item in shown_menu.items if item.label == "Enviar mensaje privado"
         )
+        private_reply_item = next(
+            item for item in shown_menu.items if item.label == "Responder en privado"
+        )
         private_binding = next(
             call for call in bind.call_args_list if call.args[2] is private_item
         )
         private_binding.args[1](None)
+        private_reply_binding = next(
+            call for call in bind.call_args_list if call.args[2] is private_reply_item
+        )
+        private_reply_binding.args[1](None)
 
         window._send_private_message_to_group_sender.assert_called_once()
         normalized, component_jid = (
@@ -238,6 +246,55 @@ class GroupPrivateMessageTests(unittest.TestCase):
         )
         self.assertEqual(normalized.e164, "+524491234567")
         self.assertEqual(component_jid, "whatsapp.example.org")
+        window._reply_privately_to_group_message.assert_called_once()
+        reply_message, reply_phone, reply_component = (
+            window._reply_privately_to_group_message.call_args.args
+        )
+        self.assertIs(reply_message, message)
+        self.assertEqual(reply_phone.e164, "+524491234567")
+        self.assertEqual(reply_component, "whatsapp.example.org")
+
+    def test_private_reply_keeps_the_group_quote_and_opens_private_chat(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        private_chat = Chat(
+            jid="+524491234567@whatsapp.example.org",
+            name="Rabanita",
+        )
+        message = Message(
+            chat_jid=group.jid,
+            sender_jid="+524491234567@whatsapp.example.org",
+            sender_name="Rabanita",
+            body="Mensaje del grupo",
+            message_id="group-message-id",
+            chat_is_group=True,
+        )
+        window = self._window(group)
+        window.current_jid = "me@example.test"
+        window.reply_context = None
+        window.edit_context = None
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+        window._require_whatsapp_connection = lambda: True
+        window._open_chat_for_phone = Mock(return_value=private_chat)
+        window.conversation = SimpleNamespace(
+            current_chat=group,
+            clear_editing=Mock(),
+            insert_reply_quote=Mock(),
+        )
+
+        MainWindow._reply_privately_to_group_message(
+            window,
+            message,
+            normalize_phone_number("+52 449 123 4567"),
+            "whatsapp.example.org",
+        )
+
+        window._open_chat_for_phone.assert_called_once()
+        self.assertEqual(window.reply_context.chat_jid, private_chat.jid)
+        self.assertEqual(window.reply_context.sender_jid, f"{group.jid}/Rabanita")
+        self.assertFalse(window.reply_context.chat_is_group)
+        self.assertEqual(window.reply_context.message_id, message.message_id)
+        window.conversation.insert_reply_quote.assert_called_once_with(message)
+        window.status_bar.SetStatusText.assert_called_once_with("Respuesta privada preparada")
 
     def test_group_sender_loaded_from_sqlite_is_available_for_private_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

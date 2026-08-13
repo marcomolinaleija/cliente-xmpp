@@ -313,6 +313,30 @@ class MessageStore:
 
         return [_message_from_row(row) for row in reversed(rows)]
 
+    def load_message_by_id(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        message_id: str,
+    ) -> Message | None:
+        if not message_id:
+            return None
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                    AND (message_id = ? OR displayed_marker_id = ?)
+                ORDER BY rowid DESC
+                LIMIT 1
+                """,
+                (account_jid, chat_jid, message_id, message_id),
+            ).fetchone()
+
+        return _message_from_row(row) if row is not None else None
+
     def load_starred_messages(self, account_jid: str, chat_jid: str) -> list[Message]:
         with self._connect() as conn:
             rows = conn.execute(

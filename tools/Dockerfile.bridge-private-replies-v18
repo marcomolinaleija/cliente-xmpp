@@ -1,0 +1,47 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v16@sha256:5c1e27f751218c0e3e06cb611f2b2942c8886a7ee04a744fbd8d4fbbf1cc3dd6
+
+FROM ${BASE_IMAGE} AS patched
+
+USER root
+COPY patch_slidge_whatsapp_private_replies.py /tmp/patch_slidge_whatsapp_private_replies.py
+RUN python -B /tmp/patch_slidge_whatsapp_private_replies.py /venv/lib/python3.13/site-packages \
+        --no-backup && \
+    python -m compileall -q \
+        /venv/lib/python3.13/site-packages/slidge/core/dispatcher/message/message.py \
+        /venv/lib/python3.13/site-packages/slidge_whatsapp/contact.py \
+        /venv/lib/python3.13/site-packages/slidge_whatsapp/session.py && \
+    rm /tmp/patch_slidge_whatsapp_private_replies.py
+
+FROM golang:1.25-trixie AS go_builder
+
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_private_replies_test.go /src/slidge_whatsapp/private_replies_test.go
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go session.go private_replies_test.go && \
+    go test . && \
+    go test -race . && \
+    rm private_replies_test.go && \
+    cd generated && \
+    go build -buildmode=c-shared -tags "mupdf extlib" \
+        -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+        -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+
+COPY --from=go_builder /src/slidge_whatsapp/event.go /venv/lib/python3.13/site-packages/slidge_whatsapp/event.go
+COPY --from=go_builder /src/slidge_whatsapp/session.go /venv/lib/python3.13/site-packages/slidge_whatsapp/session.go
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so
+COPY smoke_bridge_private_replies_runtime.py /tmp/smoke_bridge_private_replies_runtime.py
+RUN python -B /tmp/smoke_bridge_private_replies_runtime.py && rm /tmp/smoke_bridge_private_replies_runtime.py
+
+USER slidge

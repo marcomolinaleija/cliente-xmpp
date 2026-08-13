@@ -74,7 +74,10 @@ class WhatsAppPairingCodeDialog(wx.Dialog):
         box.Add(
             wx.StaticText(
                 self,
-                label="Abre WhatsApp y escribe este codigo para vincular el cliente.",
+                label=(
+                    "Abre WhatsApp y escribe este codigo para vincular el cliente. "
+                    "Usalo de inmediato: WhatsApp no publica una vigencia exacta."
+                ),
             ),
             0,
             wx.ALL | wx.EXPAND,

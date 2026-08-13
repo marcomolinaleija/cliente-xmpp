@@ -210,6 +210,11 @@ El orden en `MainWindow` es deliberado:
    inicial o vencer el fallback de 8 segundos.
 5. Se precargan hasta 20 chats con paginas pequenas y una cola de un chat a la vez.
 
+Aunque se conserven en `pending_chat_activity` para la fusión final autoritativa, sus resúmenes se
+aplican progresivamente a la lista visible. Después de recibir `paired` o `connected`, los estados
+transitorios posteriores `Syncing contacts` y `Syncing groups` no deben volver a ocultar la caché ni
+deshabilitar mensajes: en ese punto el transporte WhatsApp ya está conectado.
+
 No muevas `loading_initial_chat_activity` despues de `monitor_group_chats`: los grupos pueden
 emitir mensajes inmediatamente al unirse y se anunciarian como nuevos. Tampoco conviertas la
 precarga en una carga sin limite ni reemplaces cache visible con una respuesta remota vacia.
@@ -288,9 +293,14 @@ guarda credenciales: reutiliza la sesión de `gh`, exige el árbol limpio y sinc
 rechaza tags/releases existentes y permite publicar sólo ZIP más SHA-256 o añadir instalador más
 su SHA-256. No elimines esas barreras para automatizar una release.
 
-La vinculación de WhatsApp expone únicamente el flujo por QR; el código por teléfono permanece
-como compatibilidad interna del protocolo, pero no se ofrece en la interfaz. Antes de solicitarlo,
-el cliente distingue el estado anunciado por los comandos de Slidge: una cuenta XMPP nueva con
+La vinculación de WhatsApp permite elegir entre QR y código por número de teléfono. El segundo
+flujo inicia primero `re-login` o el registro, espera la primera imagen QR —señal de que WhatsMeow
+ya inicializó su cliente y WebSocket— y sólo entonces ejecuta `wa_pair_phone`; solicitar el código
+antes produce `cannot pair for uninitialized session`. Si WhatsApp cierra el WebSocket entre el QR
+y `wa_pair_phone`, el cliente reconoce
+`websocket not connected`, cancela únicamente el comando fallido, reinicia `re-login` y reintenta
+una sola vez; no muestres el error intermedio ni repitas el ciclo sin límite. Antes de solicitar
+cualquiera de los flujos, el cliente distingue el estado anunciado por los comandos de Slidge: una cuenta XMPP nueva con
 `needs_registration` ejecuta `jabber:iq:register` y completa sus formularios XEP-0050 con los
 valores predeterminados; una cuenta ya registrada pero desconectada usa `re-login`. No envíes
 `re-login` directamente a un usuario que todavía no existe en el gateway. La solicitud abre un

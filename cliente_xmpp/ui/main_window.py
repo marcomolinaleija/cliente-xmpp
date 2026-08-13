@@ -88,6 +88,7 @@ from cliente_xmpp.models.names import (
 )
 from cliente_xmpp.models.phone_numbers import (
     NormalizedPhoneNumber,
+    PhoneNumberError,
     normalize_phone_number,
     whatsapp_contact_jid_candidates,
 )
@@ -284,6 +285,8 @@ class MainWindow(wx.Frame):
         self.whatsapp_verified = False
         self.pending_roster_chats: list[Chat] | None = None
         self.whatsapp_link_session: tuple[str, str, str] | None = None
+        self.whatsapp_link_mode = ""
+        self.whatsapp_pair_phone_pending = ""
         self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_deadline = 0.0
@@ -989,10 +992,21 @@ class MainWindow(wx.Frame):
         self.whatsapp_link_status = status
         self.whatsapp_link_detail = detail
 
+        if status == "connecting" and self.whatsapp_verified:
+            message = "WhatsApp conectado. Sincronizando contactos y grupos..."
+            self.connection_header.set_status(message)
+            self.status_bar.SetStatusText(message)
+            self._set_whatsapp_remote_actions_enabled(True)
+            self._apply_pending_roster_if_ready()
+            self.workspace_panel.Layout()
+            return
+
         if status in {"connected", "paired"}:
             started_at = time.perf_counter()
             self.whatsapp_verified = True
             self.whatsapp_link_session = None
+            self.whatsapp_link_mode = ""
+            self.whatsapp_pair_phone_pending = ""
             self.whatsapp_qr_request_in_flight = False
             self.whatsapp_qr_restart_after_cancel = False
             self.whatsapp_qr_deadline = 0.0
@@ -1100,9 +1114,30 @@ class MainWindow(wx.Frame):
         component_jid: str,
         command_node: str,
         session_id: str,
+        mode: str,
     ) -> None:
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
         self.whatsapp_link_session = (component_jid, command_node, session_id)
+        self.whatsapp_link_mode = mode
+        if mode == "qr" and self.whatsapp_pair_phone_pending:
+            self.whatsapp_qr_request_in_flight = True
+            self.whatsapp_link_panel.set_status(
+                "Preparando la sesión de WhatsApp para generar el código.",
+                action_label="Espera...",
+                can_cancel=True,
+                action_enabled=False,
+            )
+            self.workspace_panel.Layout()
+            return
+        if mode == "code":
+            self.whatsapp_link_panel.set_status(
+                "Solicitando el codigo de vinculacion de WhatsApp.",
+                action_label="Espera...",
+                can_cancel=True,
+                action_enabled=False,
+            )
+            self.workspace_panel.Layout()
+            return
         self.whatsapp_qr_request_in_flight = True
         self.whatsapp_link_panel.set_status(
             "Generando el QR de vinculacion de WhatsApp.",
@@ -1130,6 +1165,7 @@ class MainWindow(wx.Frame):
     ) -> None:
         if self.whatsapp_link_session == (component_jid, command_node, session_id):
             self.whatsapp_link_session = None
+            self.whatsapp_link_mode = ""
         if self.whatsapp_qr_restart_after_cancel:
             self.whatsapp_qr_restart_after_cancel = False
             self.whatsapp_qr_request_in_flight = False
@@ -1256,6 +1292,8 @@ class MainWindow(wx.Frame):
     ) -> None:
         if self.whatsapp_verified:
             return
+        if self._request_pending_whatsapp_pair_code(component_jid):
+            return
         if image_url in self.whatsapp_qr_downloads_in_progress:
             self._focus_whatsapp_qr_dialog()
             return
@@ -1297,6 +1335,8 @@ class MainWindow(wx.Frame):
         filename: str,
     ) -> None:
         if self.whatsapp_verified:
+            return
+        if self._request_pending_whatsapp_pair_code(component_jid):
             return
 
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
@@ -1405,19 +1445,112 @@ class MainWindow(wx.Frame):
             )
             return
 
-        if (
+        method = self._choose_whatsapp_link_method()
+        if method == "phone":
+            self._begin_whatsapp_phone_pairing()
+        elif (
             self.whatsapp_qr_dialog is not None
             or self.whatsapp_qr_path
             or self.whatsapp_qr_request_in_flight
         ):
             self._show_whatsapp_qr_status()
+        elif method == "qr":
+            self._begin_whatsapp_qr_request()
+
+    def _choose_whatsapp_link_method(self) -> str:
+        if self.whatsapp_link_status == "needs_registration":
+            wx.MessageBox(
+                "Primero prepara la cuenta en el bridge. Cuando WhatsApp quede listo "
+                "para vincularse, podrás elegir QR o código por número.",
+                "Vincular WhatsApp",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            return "qr"
+
+        dialog = wx.SingleChoiceDialog(
+            self,
+            "Elige cómo quieres vincular este cliente en WhatsApp.",
+            "Vincular WhatsApp",
+            [
+                "Escanear un código QR",
+                "Usar un código con mi número de teléfono",
+            ],
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return ""
+            return "qr" if dialog.GetSelection() == 0 else "phone"
+        finally:
+            dialog.Destroy()
+
+    def _begin_whatsapp_phone_pairing(self) -> None:
+        phone = self._prompt_whatsapp_pair_phone()
+        if phone is None:
             return
 
-        self._begin_whatsapp_qr_request()
+        self.whatsapp_pair_phone_pending = phone
+        self.whatsapp_link_panel.set_status(
+            "Preparando la sesión para solicitar el código de vinculacion de WhatsApp.",
+            action_label="Espera...",
+            action_enabled=False,
+        )
+        self.workspace_panel.Layout()
+        self.status_bar.SetStatusText("Preparando código de vinculacion...")
+        wx.CallAfter(self.speaker.speak, "Preparando código de vinculacion")
+        if self.whatsapp_qr_path:
+            self._request_pending_whatsapp_pair_code(self.whatsapp_component_jid)
+            return
+        self._request_whatsapp_link_command()
+
+    def _request_pending_whatsapp_pair_code(self, component_jid: str) -> bool:
+        phone = self.whatsapp_pair_phone_pending
+        if not phone:
+            return False
+        expected_component = self.whatsapp_component_jid.split("/", 1)[0]
+        received_component = component_jid.split("/", 1)[0]
+        if expected_component and received_component != expected_component:
+            return False
+
+        self.whatsapp_pair_phone_pending = ""
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_path = ""
+        self.whatsapp_qr_deadline = 0.0
+        self.status_bar.SetStatusText("Solicitando código de vinculacion...")
+        self.whatsapp_link_panel.set_status(
+            "Solicitando el código de vinculacion de WhatsApp.",
+            action_label="Espera...",
+            action_enabled=False,
+        )
+        self.workspace_panel.Layout()
+        self.xmpp.request_whatsapp_pair_code(received_component, phone)
+        return True
+
+    def _prompt_whatsapp_pair_phone(self) -> str | None:
+        while True:
+            dialog = wx.TextEntryDialog(
+                self,
+                "Escribe el número de tu WhatsApp en formato internacional, por ejemplo "
+                "+52 449 123 4567. Después recibirás un código para escribir en WhatsApp.",
+                "Vincular con número de teléfono",
+            )
+            try:
+                if dialog.ShowModal() != wx.ID_OK:
+                    return None
+                value = dialog.GetValue()
+            finally:
+                dialog.Destroy()
+
+            try:
+                return normalize_phone_number(value).e164
+            except PhoneNumberError as exc:
+                wx.MessageBox(str(exc), "Número de teléfono", wx.OK | wx.ICON_WARNING, self)
 
     def _begin_whatsapp_qr_request(self) -> None:
         if not self.whatsapp_component_jid:
             return
+
+        self.whatsapp_pair_phone_pending = ""
 
         if self.whatsapp_link_session is not None:
             self.whatsapp_qr_restart_after_cancel = True
@@ -4665,6 +4798,7 @@ class MainWindow(wx.Frame):
             case XmppDisconnected(reason=reason):
                 self.whatsapp_verified = False
                 self.whatsapp_link_status = "unknown"
+                self.whatsapp_pair_phone_pending = ""
                 self.pending_roster_chats = None
                 self._set_whatsapp_remote_actions_enabled(False)
                 if not getattr(self, "development_mode", False):
@@ -4696,11 +4830,13 @@ class MainWindow(wx.Frame):
                 component_jid=component_jid,
                 command_node=command_node,
                 session_id=session_id,
+                mode=mode,
             ):
                 self._handle_whatsapp_link_session_started(
                     component_jid,
                     command_node,
                     session_id,
+                    mode,
                 )
             case WhatsAppLinkSessionEnded(
                 component_jid=component_jid,
@@ -4875,7 +5011,6 @@ class MainWindow(wx.Frame):
                         self.pending_chat_activity[chat_jid] = event
                         if sent_at:
                             self._update_chat_activity(chat_jid, sent_at.timestamp())
-                        return
 
                     if sent_at:
                         self._update_chat_activity(chat_jid, sent_at.timestamp())

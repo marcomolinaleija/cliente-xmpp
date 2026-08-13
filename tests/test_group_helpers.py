@@ -643,6 +643,33 @@ class DisplayedMarkerTests(unittest.TestCase):
 
 
 class WhatsAppPairingCodeTests(unittest.TestCase):
+    def test_syncing_after_pairing_keeps_whatsapp_verified_and_cache_visible(self) -> None:
+        statuses: list[str] = []
+        remote_actions: list[bool] = []
+        pending_roster_calls: list[bool] = []
+        window = SimpleNamespace(
+            whatsapp_verified=True,
+            whatsapp_link_status="paired",
+            whatsapp_link_detail="",
+            connection_header=SimpleNamespace(set_status=statuses.append),
+            status_bar=SimpleNamespace(SetStatusText=statuses.append),
+            _set_whatsapp_remote_actions_enabled=remote_actions.append,
+            _apply_pending_roster_if_ready=lambda: pending_roster_calls.append(True),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+        )
+
+        MainWindow._handle_whatsapp_bridge_status(
+            window,
+            "connecting",
+            "whatsapp.example.org",
+            "Syncing contacts...",
+        )
+
+        self.assertTrue(window.whatsapp_verified)
+        self.assertEqual(remote_actions, [True])
+        self.assertEqual(pending_roster_calls, [True])
+        self.assertIn("Sincronizando contactos y grupos", statuses[0])
+
     def test_new_account_uses_register_and_known_account_uses_relogin(self) -> None:
         calls: list[tuple[str, str]] = []
         xmpp = SimpleNamespace(
@@ -674,6 +701,74 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         )
 
         self.assertEqual(BridgeXmppClient._pairing_code_from_text(text), "1A2B-3C4D")
+
+    def test_detects_closed_whatsapp_websocket_for_pairing_recovery(self) -> None:
+        self.assertTrue(
+            BridgeXmppClient._means_websocket_not_connected(
+                "failed to pair with phone number: websocket not connected"
+            )
+        )
+        self.assertFalse(
+            BridgeXmppClient._means_websocket_not_connected("not a valid phone number")
+        )
+
+    def test_phone_pairing_session_does_not_start_qr_ui_state(self) -> None:
+        panel_updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        window = SimpleNamespace(
+            whatsapp_component_jid="",
+            whatsapp_link_session=None,
+            whatsapp_link_mode="",
+            whatsapp_qr_request_in_flight=False,
+            whatsapp_link_panel=SimpleNamespace(
+                set_status=lambda *args, **kwargs: panel_updates.append((args, kwargs))
+            ),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+        )
+
+        MainWindow._handle_whatsapp_link_session_started(
+            window,
+            "whatsapp.example.org",
+            "wa_pair_phone",
+            "session-id",
+            "code",
+        )
+
+        self.assertEqual(window.whatsapp_link_mode, "code")
+        self.assertFalse(window.whatsapp_qr_request_in_flight)
+        self.assertEqual(
+            panel_updates[0][0][0],
+            "Solicitando el codigo de vinculacion de WhatsApp.",
+        )
+
+    def test_first_qr_signal_requests_pending_phone_code_instead_of_showing_qr(self) -> None:
+        requests: list[tuple[str, str]] = []
+        panel_updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        window = SimpleNamespace(
+            whatsapp_pair_phone_pending="+524491234567",
+            whatsapp_component_jid="whatsapp.example.org",
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_qr_path="old-path",
+            whatsapp_qr_deadline=10.0,
+            status_bar=SimpleNamespace(SetStatusText=lambda _message: None),
+            whatsapp_link_panel=SimpleNamespace(
+                set_status=lambda *args, **kwargs: panel_updates.append((args, kwargs))
+            ),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+            xmpp=SimpleNamespace(
+                request_whatsapp_pair_code=lambda jid, phone: requests.append((jid, phone))
+            ),
+        )
+
+        handled = MainWindow._request_pending_whatsapp_pair_code(
+            window,
+            "whatsapp.example.org",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(requests, [("whatsapp.example.org", "+524491234567")])
+        self.assertEqual(window.whatsapp_pair_phone_pending, "")
+        self.assertFalse(window.whatsapp_qr_request_in_flight)
+        self.assertEqual(window.whatsapp_qr_path, "")
 
 
     def test_extracts_qr_from_bob_image_data(self) -> None:

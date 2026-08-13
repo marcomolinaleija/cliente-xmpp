@@ -1455,8 +1455,10 @@ class BridgeXmppClient(ClientXMPP):
         component_jid: str,
         *,
         allow_recovery: bool = True,
+        cancel_existing: bool = True,
     ) -> None:
-        await self.cancel_whatsapp_linking(component_jid, silent=True)
+        if cancel_existing:
+            await self.cancel_whatsapp_linking(component_jid, silent=True)
         try:
             command = await self["xep_0050"].send_command(
                 component_jid,
@@ -1714,7 +1716,9 @@ class BridgeXmppClient(ClientXMPP):
         *,
         allow_recovery: bool = True,
     ) -> None:
-        await self.cancel_whatsapp_linking(component_jid, silent=True)
+        existing_session = self._whatsapp_link_sessions.get(component_jid)
+        if existing_session is not None and existing_session[0] == SLIDGE_PAIR_PHONE_COMMAND:
+            await self.cancel_whatsapp_linking(component_jid, silent=True)
         phone = phone.strip()
         if not phone:
             self._emit(XmppError("Escribe el telefono de WhatsApp en formato internacional."))
@@ -1753,6 +1757,20 @@ class BridgeXmppClient(ClientXMPP):
             )
         except Exception as exc:
             error_text = _format_xmpp_error(exc)
+            if allow_recovery and self._means_websocket_not_connected(error_text):
+                await self.cancel_whatsapp_linking(component_jid, silent=True)
+                await self.request_whatsapp_relogin(
+                    component_jid,
+                    allow_recovery=False,
+                    cancel_existing=False,
+                )
+                await asyncio.sleep(2)
+                await self.request_whatsapp_pair_code(
+                    component_jid,
+                    phone,
+                    allow_recovery=False,
+                )
+                return
             if self._means_pairing_command_forbidden(error_text):
                 if self._means_already_connected(error_text):
                     self._emit_whatsapp_status(component_jid, "connected", error_text)
@@ -1854,6 +1872,14 @@ class BridgeXmppClient(ClientXMPP):
             or "already logged" in normalized
             or "already connected" in normalized
             or "refusing to pair for connected session" in normalized
+        )
+
+    @staticmethod
+    def _means_websocket_not_connected(error_text: str) -> bool:
+        normalized = error_text.casefold()
+        return (
+            "websocket not connected" in normalized
+            or "websocket is not connected" in normalized
         )
 
     @staticmethod

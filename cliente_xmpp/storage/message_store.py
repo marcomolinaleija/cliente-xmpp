@@ -432,28 +432,38 @@ class MessageStore:
         account_jid: str,
         query: str,
         limit: int = 200,
+        *,
+        chat_jid: str | None = None,
+        sent_on: date | None = None,
     ) -> list[Message]:
         terms = _search_terms(query)
-        if not terms:
+        if not terms and sent_on is None:
             return []
 
         with self._connect() as conn:
+            where_clauses = ["messages.account_jid = ?"]
+            parameters: list[object] = [account_jid]
+            if chat_jid:
+                where_clauses.append("messages.chat_jid = ?")
+                parameters.append(chat_jid)
             rows = conn.execute(
-                """
+                f"""
                 SELECT messages.*, chats.name AS chat_name, chats.custom_name AS chat_custom_name
                 FROM messages
                 LEFT JOIN chats
                     ON chats.account_jid = messages.account_jid
                     AND chats.jid = messages.chat_jid
-                WHERE messages.account_jid = ?
+                WHERE {' AND '.join(where_clauses)}
                 ORDER BY julianday(messages.sent_at) DESC, messages.rowid DESC
                 """,
-                (account_jid,),
+                parameters,
             ).fetchall()
 
         matches: list[Message] = []
         for row in rows:
             message = _message_from_row(row)
+            if sent_on is not None and message.sent_at.astimezone().date() != sent_on:
+                continue
             haystack = _normalize_search_text(
                 " ".join(
                     (
@@ -469,12 +479,30 @@ class MessageStore:
                     )
                 )
             )
-            if all(term in haystack for term in terms):
+            if not terms or all(term in haystack for term in terms):
                 matches.append(message)
                 if len(matches) >= limit:
                     break
 
         return list(reversed(matches))
+
+    def load_message_dates(self, account_jid: str, chat_jid: str) -> list[date]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT sent_at
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+
+        dates = {
+            sent_at.astimezone().date()
+            for row in rows
+            if (sent_at := _datetime_from_db(row["sent_at"])) is not None
+        }
+        return sorted(dates, reverse=True)
 
     def load_statistics(
         self,

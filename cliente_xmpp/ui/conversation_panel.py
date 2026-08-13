@@ -93,6 +93,11 @@ class ConversationPanel(wx.Panel):
         self.contact_avatar = wx.StaticBitmap(self, bitmap=wx.Bitmap())
         self.contact_avatar.Hide()
         self.contact_info_button = wx.Button(self, label="Información del contacto")
+        self.search_button = wx.Button(self, label="Buscar...")
+        self.search_button.SetName("Buscar mensajes en este chat")
+        self.search_button.SetToolTip(
+            "Busca mensajes solamente en este chat. Atajo: Control+Mayús+F."
+        )
         self.messages = wx.ListCtrl(
             self,
             style=wx.LC_REPORT | wx.LC_NO_HEADER | wx.BORDER_NONE,
@@ -706,6 +711,7 @@ class ConversationPanel(wx.Panel):
         header = wx.BoxSizer(wx.HORIZONTAL)
         header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         header.Add(self.contact_info_button, 1, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 8)
+        header.Add(self.search_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
 
         box = wx.BoxSizer(wx.VERTICAL)

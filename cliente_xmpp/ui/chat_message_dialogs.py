@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import calendar
 from collections.abc import Callable
+from datetime import date
 
 import wx
 
@@ -12,6 +14,9 @@ from cliente_xmpp.ui.theme import apply_theme
 MessagesLoadedCallback = Callable[[list[Message], str], None]
 MessagesLoader = Callable[[MessagesLoadedCallback], None]
 MessageAction = Callable[[Message], None]
+MessageSearchLoader = Callable[[str, date | None, MessagesLoadedCallback], None]
+MessageDatesLoadedCallback = Callable[[list[date], str], None]
+MessageDatesLoader = Callable[[MessageDatesLoadedCallback], None]
 
 
 def _message_description(message: Message) -> str:
@@ -176,6 +181,266 @@ class StarredMessagesDialog(wx.Dialog):
         self.EndModal(wx.ID_OK)
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.EndModal(wx.ID_CANCEL)
+            return
+        event.Skip()
+
+
+class ChatMessageSearchDialog(wx.Dialog):
+    _MONTHS = (
+        "01 - enero",
+        "02 - febrero",
+        "03 - marzo",
+        "04 - abril",
+        "05 - mayo",
+        "06 - junio",
+        "07 - julio",
+        "08 - agosto",
+        "09 - septiembre",
+        "10 - octubre",
+        "11 - noviembre",
+        "12 - diciembre",
+    )
+
+    def __init__(
+        self,
+        parent: wx.Window,
+        chat_name: str,
+        loader: MessageSearchLoader,
+        dates_loader: MessageDatesLoader,
+    ) -> None:
+        super().__init__(
+            parent,
+            title=f"Buscar mensajes en {chat_name}",
+            size=(820, 560),
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self._loader = loader
+        self._dates_loader = dates_loader
+        self._active = True
+        self._search_timer: wx.CallLater | None = None
+        self._search_request_id = 0
+        self._messages: list[Message] = []
+        self.selected_message: Message | None = None
+
+        self.status = wx.StaticText(self, label="Cargando fechas disponibles...")
+        search_label = wx.StaticText(self, label="Buscar:")
+        self.search_ctrl = wx.TextCtrl(self)
+        self.search_ctrl.SetName("Buscar mensajes en este chat")
+        self.search_ctrl.SetToolTip(
+            "Busca solamente en los mensajes guardados de este chat."
+        )
+        self.date_filter = wx.CheckBox(self, label="Filtrar por fecha")
+        self.year_choice = wx.Choice(self)
+        self.year_choice.SetName("Año de la fecha")
+        self.month_choice = wx.Choice(self, choices=self._MONTHS)
+        self.month_choice.SetName("Mes de la fecha")
+        self.day_choice = wx.Choice(self)
+        self.day_choice.SetName("Día de la fecha")
+        self.messages = wx.ListCtrl(
+            self,
+            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
+        )
+        self.messages.SetName("Resultados de búsqueda en este chat")
+        self.messages.InsertColumn(0, "Mensaje", width=560)
+        self.messages.InsertColumn(1, "Fecha", width=190)
+        self.go_button = wx.Button(self, label="Ir al mensaje")
+        close_button = wx.Button(self, wx.ID_CLOSE, "Cerrar")
+
+        search_row = wx.BoxSizer(wx.HORIZONTAL)
+        search_row.Add(search_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        search_row.Add(self.search_ctrl, 1, wx.EXPAND)
+        date_row = wx.BoxSizer(wx.HORIZONTAL)
+        date_row.Add(self.date_filter, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 16)
+        date_row.Add(wx.StaticText(self, label="Año:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        date_row.Add(self.year_choice, 0, wx.RIGHT, 10)
+        date_row.Add(wx.StaticText(self, label="Mes:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        date_row.Add(self.month_choice, 0, wx.RIGHT, 10)
+        date_row.Add(wx.StaticText(self, label="Día:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+        date_row.Add(self.day_choice, 0)
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        buttons.Add(self.go_button, 0, wx.RIGHT, 8)
+        buttons.Add(close_button, 0)
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self.status, 0, wx.ALL | wx.EXPAND, 12)
+        box.Add(search_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+        box.Add(date_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+        box.Add(self.messages, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, 12)
+        box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 12)
+        self.SetSizer(box)
+        self.SetMinSize((620, 420))
+
+        self.go_button.Enable(False)
+        self._set_date_controls_enabled(False)
+        self.search_ctrl.Bind(wx.EVT_TEXT, self._on_search_text_changed)
+        self.date_filter.Bind(wx.EVT_CHECKBOX, self._on_date_filter_changed)
+        self.year_choice.Bind(wx.EVT_CHOICE, self._on_year_or_month_changed)
+        self.month_choice.Bind(wx.EVT_CHOICE, self._on_year_or_month_changed)
+        self.day_choice.Bind(wx.EVT_CHOICE, self._on_date_changed)
+        self.go_button.Bind(wx.EVT_BUTTON, self._on_go_to_message)
+        self.messages.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_go_to_message)
+        self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_CLOSE), close_button)
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
+        apply_theme(self)
+        wx.CallAfter(self._load_dates)
+        wx.CallAfter(self.search_ctrl.SetFocus)
+
+    def deactivate(self) -> None:
+        self._active = False
+        self._cancel_scheduled_search()
+
+    def _load_dates(self) -> None:
+        if not self._active:
+            return
+
+        def loaded(dates: list[date], error: str) -> None:
+            if self._active:
+                self._finish_dates_load(dates, error)
+
+        self._dates_loader(loaded)
+
+    def _finish_dates_load(self, dates: list[date], error: str) -> None:
+        initial_date = dates[0] if dates else date.today()
+        years = sorted({item.year for item in dates} | {initial_date.year}, reverse=True)
+        self.year_choice.Set([str(year) for year in years])
+        self.year_choice.SetSelection(0)
+        self.month_choice.SetSelection(initial_date.month - 1)
+        self._set_day_choices(initial_date.day)
+        self._show_search_prompt(error)
+
+    def _set_day_choices(self, preferred_day: int | None = None) -> None:
+        selected_year = self._selected_choice_number(self.year_choice)
+        selected_month = self.month_choice.GetSelection() + 1
+        if selected_year is None or selected_month <= 0:
+            return
+        last_day = calendar.monthrange(selected_year, selected_month)[1]
+        self.day_choice.Set([str(day) for day in range(1, last_day + 1)])
+        day = min(preferred_day or 1, last_day)
+        self.day_choice.SetSelection(day - 1)
+
+    @staticmethod
+    def _selected_choice_number(control: wx.Choice) -> int | None:
+        selected = control.GetSelection()
+        if selected == wx.NOT_FOUND:
+            return None
+        try:
+            return int(control.GetString(selected).split(" ", 1)[0])
+        except ValueError:
+            return None
+
+    def _set_date_controls_enabled(self, enabled: bool) -> None:
+        for control in (self.year_choice, self.month_choice, self.day_choice):
+            control.Enable(enabled)
+
+    def _selected_date(self) -> date | None:
+        if not self.date_filter.GetValue():
+            return None
+        year = self._selected_choice_number(self.year_choice)
+        month = self.month_choice.GetSelection() + 1
+        day = self._selected_choice_number(self.day_choice)
+        if year is None or month <= 0 or day is None:
+            return None
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    def _on_search_text_changed(self, event: wx.CommandEvent) -> None:
+        self._schedule_search()
+        event.Skip()
+
+    def _on_date_filter_changed(self, _event: wx.CommandEvent) -> None:
+        self._set_date_controls_enabled(self.date_filter.GetValue())
+        self._schedule_search()
+
+    def _on_year_or_month_changed(self, _event: wx.CommandEvent) -> None:
+        current_day = self._selected_choice_number(self.day_choice)
+        self._set_day_choices(current_day)
+        self._schedule_search()
+
+    def _on_date_changed(self, _event: wx.CommandEvent) -> None:
+        self._schedule_search()
+
+    def _schedule_search(self) -> None:
+        self._cancel_scheduled_search()
+        self._search_timer = wx.CallLater(250, self._search)
+
+    def _cancel_scheduled_search(self) -> None:
+        if self._search_timer is not None and self._search_timer.IsRunning():
+            self._search_timer.Stop()
+
+    def _search(self) -> None:
+        if not self._active:
+            return
+        query = self.search_ctrl.GetValue().strip()
+        sent_on = self._selected_date()
+        self._search_request_id += 1
+        request_id = self._search_request_id
+        if not query and sent_on is None:
+            self._show_search_prompt()
+            return
+        self.go_button.Enable(False)
+        self.status.SetLabel("Buscando mensajes locales...")
+
+        def loaded(messages: list[Message], error: str) -> None:
+            if (
+                self._active
+                and request_id == self._search_request_id
+                and self.search_ctrl.GetValue().strip() == query
+                and self._selected_date() == sent_on
+            ):
+                self._finish_search(messages, error)
+
+        self._loader(query, sent_on, loaded)
+
+    def _finish_search(self, messages: list[Message], error: str) -> None:
+        self._messages = messages
+        self.messages.Freeze()
+        try:
+            self.messages.DeleteAllItems()
+            for message in messages:
+                index = self.messages.InsertItem(
+                    self.messages.GetItemCount(),
+                    _message_description(message),
+                )
+                self.messages.SetItem(index, 1, _message_datetime(message))
+            if messages:
+                self.messages.Select(0)
+        finally:
+            self.messages.Thaw()
+
+        if error:
+            self.status.SetLabel(error)
+        elif messages:
+            self.status.SetLabel(f"{len(messages)} mensajes encontrados en este chat.")
+        else:
+            self.status.SetLabel("No se encontraron mensajes en este chat.")
+        self.go_button.Enable(bool(messages) and not error)
+
+    def _show_search_prompt(self, error: str = "") -> None:
+        self._messages = []
+        self.messages.DeleteAllItems()
+        self.go_button.Enable(False)
+        self.status.SetLabel(
+            error or "Escribe texto o activa el filtro por fecha para buscar en este chat."
+        )
+
+    def _on_go_to_message(self, _event: wx.Event) -> None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._messages):
+            return
+        self.selected_message = self._messages[index]
+        self.EndModal(wx.ID_OK)
+
+    def _on_key_down(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            if self.messages.HasFocus() and self.messages.GetFirstSelected() != wx.NOT_FOUND:
+                self._on_go_to_message(event)
+                return
+            self._cancel_scheduled_search()
+            self._search()
+            return
         if event.GetKeyCode() == wx.WXK_ESCAPE:
             self.EndModal(wx.ID_CANCEL)
             return

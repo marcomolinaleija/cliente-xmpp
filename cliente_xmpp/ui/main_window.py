@@ -11,7 +11,7 @@ from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import wx
@@ -97,7 +97,11 @@ from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.manager import StorageCleanupResult, StorageManager, StorageSnapshot
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
-from cliente_xmpp.ui.chat_message_dialogs import ChatFilesDialog, StarredMessagesDialog
+from cliente_xmpp.ui.chat_message_dialogs import (
+    ChatFilesDialog,
+    ChatMessageSearchDialog,
+    StarredMessagesDialog,
+)
 from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
@@ -461,6 +465,7 @@ class MainWindow(wx.Frame):
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
+        self.conversation.search_button.Bind(wx.EVT_BUTTON, self._on_open_chat_message_search)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
         self.conversation.attach_button.Bind(wx.EVT_BUTTON, self._on_attach_file)
         self.conversation.sticker_button.Bind(wx.EVT_BUTTON, self._on_send_sticker)
@@ -2460,6 +2465,55 @@ class MainWindow(wx.Frame):
         )
         return results
 
+    def _chat_message_search_results(
+        self,
+        chat_jid: str,
+        terms: list[str],
+        sent_on: date | None,
+        messages_snapshot: tuple[Message, ...],
+        account_jid: str,
+        chat: Chat | None,
+    ) -> list[Message]:
+        messages_by_key: dict[tuple[object, ...], Message] = {}
+        for message in messages_snapshot:
+            if self._message_matches_chat_search(message, terms, sent_on, chat):
+                messages_by_key[self._message_search_key(message)] = message
+
+        try:
+            cached_messages = self.message_store.search_messages(
+                account_jid,
+                " ".join(terms),
+                limit=SEARCH_RESULT_LIMIT,
+                chat_jid=chat_jid,
+                sent_on=sent_on,
+            )
+        except Exception:
+            cached_messages = []
+        for message in cached_messages:
+            if self._message_matches_chat_search(message, terms, sent_on, chat):
+                messages_by_key.setdefault(self._message_search_key(message), message)
+
+        return sorted(
+            messages_by_key.values(),
+            key=self._message_timestamp,
+            reverse=True,
+        )[:SEARCH_RESULT_LIMIT]
+
+    def _message_matches_chat_search(
+        self,
+        message: Message,
+        terms: list[str],
+        sent_on: date | None,
+        chat: Chat | None,
+    ) -> bool:
+        if sent_on is not None:
+            try:
+                if message.sent_at.astimezone().date() != sent_on:
+                    return False
+            except (AttributeError, OSError, ValueError):
+                return False
+        return not terms or self._message_matches_search(message, terms, chat)
+
     def _message_search_key(self, message: Message) -> tuple[object, ...]:
         return message.chat_jid, *self._message_merge_key(message)
 
@@ -2633,6 +2687,10 @@ class MainWindow(wx.Frame):
             return
         if sound_shortcut == "sent_message":
             self._toggle_sent_message_sound()
+            return
+
+        if self._is_chat_find_shortcut(event) and self.conversation.IsShown():
+            self._open_chat_message_search()
             return
 
         if self._is_find_shortcut(event):
@@ -2984,6 +3042,73 @@ class MainWindow(wx.Frame):
             callback,
             "No se pudieron cargar los mensajes destacados locales.",
         )
+
+    def _load_chat_message_dates_async(
+        self,
+        chat_jid: str,
+        callback: Callable[[list[date], str], None],
+    ) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            wx.CallAfter(callback, [], "No hay una cuenta activa.")
+            return
+
+        def worker() -> None:
+            try:
+                dates = self.message_store.load_message_dates(account_jid, chat_jid)
+            except Exception:
+                wx.CallAfter(callback, [], "No se pudieron cargar las fechas locales.")
+                return
+            wx.CallAfter(callback, dates, "")
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            wx.CallAfter(callback, [], "La aplicación se está cerrando.")
+
+    def _search_chat_messages_async(
+        self,
+        chat_jid: str,
+        query: str,
+        sent_on: date | None,
+        callback: Callable[[list[Message], str], None],
+    ) -> None:
+        account_jid = self.current_jid
+        if not account_jid:
+            wx.CallAfter(callback, [], "No hay una cuenta activa.")
+            return
+
+        terms = self._search_terms(query)
+        messages_snapshot = tuple(self.messages_by_chat.get(chat_jid, []))
+        chat = self._chat_by_jid(chat_jid)
+
+        def worker() -> None:
+            try:
+                messages = self._chat_message_search_results(
+                    chat_jid,
+                    terms,
+                    sent_on,
+                    messages_snapshot,
+                    account_jid,
+                    chat,
+                )
+            except Exception:
+                wx.CallAfter(callback, [], "No se pudieron buscar los mensajes locales.")
+                return
+            wx.CallAfter(callback, messages, "")
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        try:
+            executor.submit(worker)
+        except RuntimeError:
+            wx.CallAfter(callback, [], "La aplicación se está cerrando.")
 
     def _load_media_messages_async(
         self,
@@ -3676,7 +3801,16 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _is_find_shortcut(event: wx.KeyEvent) -> bool:
-        if not event.ControlDown() or event.AltDown():
+        if not event.ControlDown() or event.AltDown() or event.ShiftDown():
+            return False
+
+        key_code = event.GetKeyCode()
+        unicode_key = event.GetUnicodeKey()
+        return key_code in (ord("F"), ord("f")) or unicode_key in (ord("F"), ord("f"))
+
+    @staticmethod
+    def _is_chat_find_shortcut(event: wx.KeyEvent) -> bool:
+        if not event.ControlDown() or not event.ShiftDown() or event.AltDown():
             return False
 
         key_code = event.GetKeyCode()
@@ -7136,6 +7270,37 @@ class MainWindow(wx.Frame):
         if self.contact_info_dialog is not None:
             self.contact_info_dialog.EndModal(wx.ID_CANCEL)
         wx.CallAfter(self._focus_message_from_browser, chat.jid, selected_message)
+
+    def _on_open_chat_message_search(self, _event: wx.CommandEvent) -> None:
+        self._open_chat_message_search()
+
+    def _open_chat_message_search(self) -> None:
+        chat = self.conversation.current_chat
+        if chat is None or not self.conversation.IsShown():
+            self.status_bar.SetStatusText("Abre un chat para buscar sus mensajes")
+            return
+
+        dialog = ChatMessageSearchDialog(
+            self,
+            chat.name,
+            lambda query, sent_on, callback: self._search_chat_messages_async(
+                chat.jid,
+                query,
+                sent_on,
+                callback,
+            ),
+            lambda callback: self._load_chat_message_dates_async(chat.jid, callback),
+        )
+        selected_message: Message | None = None
+        try:
+            if dialog.ShowModal() == wx.ID_OK:
+                selected_message = dialog.selected_message
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+        if selected_message is not None:
+            wx.CallAfter(self._focus_message_from_browser, chat.jid, selected_message)
 
     def _open_chat_files(self, chat: Chat) -> None:
         parent = self.contact_info_dialog or self

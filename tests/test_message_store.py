@@ -108,6 +108,62 @@ class MessageStoreTests(unittest.TestCase):
             store.upsert_messages(account_jid, [reloaded_message])
             self.assertEqual(store.load_starred_messages(account_jid, message.chat_jid), [])
 
+    def test_searches_messages_in_one_chat_and_can_filter_by_local_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "ari@example.test"
+            selected_date = datetime(2026, 8, 11, 12, tzinfo=UTC).astimezone().date()
+            matching_message = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="Plan para comer",
+                sent_at=datetime(2026, 8, 11, 12, tzinfo=UTC),
+                message_id="matching-message",
+            )
+            store.upsert_messages(
+                account_jid,
+                [
+                    matching_message,
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Plan de ayer",
+                        sent_at=datetime(2026, 8, 10, 12, tzinfo=UTC),
+                        message_id="other-date",
+                    ),
+                    Message(
+                        chat_jid="other@example.test",
+                        sender_jid="other@example.test",
+                        body="Plan para comer",
+                        sent_at=datetime(2026, 8, 11, 12, tzinfo=UTC),
+                        message_id="other-chat",
+                    ),
+                ],
+            )
+
+            results = store.search_messages(
+                account_jid,
+                "comer",
+                chat_jid=chat_jid,
+                sent_on=selected_date,
+            )
+
+            self.assertEqual([message.message_id for message in results], ["matching-message"])
+            self.assertEqual(store.load_message_dates(account_jid, chat_jid)[0], selected_date)
+            self.assertEqual(
+                [
+                    message.message_id
+                    for message in store.search_messages(
+                        account_jid,
+                        "",
+                        chat_jid=chat_jid,
+                        sent_on=selected_date,
+                    )
+                ],
+                ["matching-message"],
+            )
+
     def test_delete_chat_removes_its_messages_and_media_paths_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

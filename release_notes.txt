@@ -10,7 +10,7 @@ Puente local opcional en Windows
 Encuestas y stickers nativos
 - Puedes ver encuestas recibidas, consultar sus resultados y votar desde el cliente. Los cambios de
   votos llegan en tiempo real, incluso si se hicieron desde otro dispositivo.
-- El cliente identifica y muestra stickers correctamente, y permite enviarlos de forma nativa.
+- El cliente identifica y muestra stickers correctamente, y permite enviarlos de forma nativa (experimental).
 
 Mensajes y grupos más completos
 - Los mensajes destacados ya se conservan correctamente después de reiniciar. La lista de

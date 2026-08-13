@@ -32,7 +32,21 @@ def _message_datetime(message: Message) -> str:
         return "sin fecha"
 
 
+def _message_sort_timestamp(message: Message) -> float:
+    try:
+        return message.sent_at.timestamp()
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return float("-inf")
+
+
 class StarredMessagesDialog(wx.Dialog):
+    _SORT_OPTIONS = (
+        "Más recientes primero",
+        "Más antiguos primero",
+        "Texto: A a Z",
+        "Texto: Z a A",
+    )
+
     def __init__(
         self,
         parent: wx.Window,
@@ -48,6 +62,7 @@ class StarredMessagesDialog(wx.Dialog):
         self._loader = loader
         self._active = True
         self._messages: list[Message] = []
+        self._visible_messages: list[Message] = []
         self.selected_message: Message | None = None
 
         self.status = wx.StaticText(self, label="Cargando mensajes destacados locales...")
@@ -58,14 +73,22 @@ class StarredMessagesDialog(wx.Dialog):
         self.messages.SetName("Mensajes destacados")
         self.messages.InsertColumn(0, "Mensaje", width=560)
         self.messages.InsertColumn(1, "Fecha", width=190)
+        sort_label = wx.StaticText(self, label="Ordenar:")
+        self.sort_choice = wx.Choice(self, choices=self._SORT_OPTIONS)
+        self.sort_choice.SetName("Orden de mensajes destacados")
+        self.sort_choice.SetSelection(0)
         self.go_button = wx.Button(self, label="Ir al mensaje")
         close_button = wx.Button(self, wx.ID_CLOSE, "Cerrar")
 
+        sort_row = wx.BoxSizer(wx.HORIZONTAL)
+        sort_row.Add(sort_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        sort_row.Add(self.sort_choice, 0)
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self.go_button, 0, wx.RIGHT, 8)
         buttons.Add(close_button, 0)
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.status, 0, wx.ALL | wx.EXPAND, 12)
+        box.Add(sort_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
         box.Add(self.messages, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, 12)
         box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 12)
         self.SetSizer(box)
@@ -73,6 +96,7 @@ class StarredMessagesDialog(wx.Dialog):
 
         self.go_button.Bind(wx.EVT_BUTTON, self._on_go_to_message)
         self.messages.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_go_to_message)
+        self.sort_choice.Bind(wx.EVT_CHOICE, self._on_sort_changed)
         self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_CLOSE), close_button)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         apply_theme(self)
@@ -97,6 +121,19 @@ class StarredMessagesDialog(wx.Dialog):
         if not self._active:
             return
         self._messages = messages
+        self._render_messages()
+
+        if error:
+            self.status.SetLabel(error)
+        elif messages:
+            self.status.SetLabel(f"{len(messages)} mensajes destacados guardados localmente.")
+        else:
+            self.status.SetLabel("No hay mensajes destacados guardados para este chat.")
+        self.go_button.Enable(bool(messages) and not error)
+
+    def _render_messages(self) -> None:
+        messages = self._sorted_messages()
+        self._visible_messages = messages
         self.messages.Freeze()
         try:
             self.messages.DeleteAllItems()
@@ -111,19 +148,31 @@ class StarredMessagesDialog(wx.Dialog):
         finally:
             self.messages.Thaw()
 
-        if error:
-            self.status.SetLabel(error)
-        elif messages:
-            self.status.SetLabel(f"{len(messages)} mensajes destacados guardados localmente.")
-        else:
-            self.status.SetLabel("No hay mensajes destacados guardados para este chat.")
-        self.go_button.Enable(bool(messages) and not error)
+    def _sorted_messages(self) -> list[Message]:
+        selection = self.sort_choice.GetSelection()
+        if selection == 1:
+            return sorted(self._messages, key=_message_sort_timestamp)
+        if selection == 2:
+            return sorted(
+                self._messages,
+                key=lambda message: _message_description(message).casefold(),
+            )
+        if selection == 3:
+            return sorted(
+                self._messages,
+                key=lambda message: _message_description(message).casefold(),
+                reverse=True,
+            )
+        return sorted(self._messages, key=_message_sort_timestamp, reverse=True)
+
+    def _on_sort_changed(self, _event: wx.CommandEvent) -> None:
+        self._render_messages()
 
     def _on_go_to_message(self, _event: wx.Event) -> None:
         index = self.messages.GetFirstSelected()
-        if index == wx.NOT_FOUND or index >= len(self._messages):
+        if index == wx.NOT_FOUND or index >= len(self._visible_messages):
             return
-        self.selected_message = self._messages[index]
+        self.selected_message = self._visible_messages[index]
         self.EndModal(wx.ID_OK)
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:

@@ -1790,7 +1790,12 @@ class MessageStore:
                     WHEN excluded.chat_is_group = 1 OR messages.chat_is_group = 1 THEN 1
                     ELSE 0
                 END,
-                starred = excluded.starred,
+                -- Los destacados son una preferencia local: MAM e inbox no la anuncian.
+                -- Conservarla evita que una sincronización posterior desmarque un mensaje.
+                starred = CASE
+                    WHEN excluded.starred = 1 OR messages.starred = 1 THEN 1
+                    ELSE 0
+                END,
                 reactions_json = excluded.reactions_json,
                 reply_quote = CASE
                     WHEN excluded.retracted = 1 THEN ''

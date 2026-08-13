@@ -71,6 +71,43 @@ class MessageStoreTests(unittest.TestCase):
             store.update_message_starred(account_jid, starred)
             self.assertEqual(store.load_starred_messages(account_jid, chat_jid), [])
 
+    def test_keeps_local_starred_state_when_message_is_reloaded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            message = Message(
+                chat_jid="ari@example.test",
+                sender_jid="ari@example.test",
+                body="Mensaje que vuelve desde MAM",
+                sent_at=datetime(2026, 8, 10, 9, tzinfo=UTC),
+                message_id="ari-message",
+            )
+            store.upsert_messages(account_jid, [message])
+
+            message.starred = True
+            store.update_message_starred(account_jid, message)
+            reloaded_message = Message(
+                chat_jid=message.chat_jid,
+                sender_jid=message.sender_jid,
+                body=message.body,
+                sent_at=message.sent_at,
+                message_id=message.message_id,
+            )
+            store.upsert_messages(account_jid, [reloaded_message])
+
+            self.assertEqual(
+                [
+                    item.message_id
+                    for item in store.load_starred_messages(account_jid, message.chat_jid)
+                ],
+                [message.message_id],
+            )
+
+            message.starred = False
+            store.update_message_starred(account_jid, message)
+            store.upsert_messages(account_jid, [reloaded_message])
+            self.assertEqual(store.load_starred_messages(account_jid, message.chat_jid), [])
+
     def test_delete_chat_removes_its_messages_and_media_paths_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

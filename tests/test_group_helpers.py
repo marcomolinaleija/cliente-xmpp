@@ -5,7 +5,7 @@ import base64
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from xml.etree import ElementTree as ET
 
 import wx
@@ -16,7 +16,7 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
-from cliente_xmpp.ui.main_window import APP_WINDOW_TITLE, MainWindow
+from cliente_xmpp.ui.main_window import APP_WINDOW_TITLE, USER_DOCUMENTATION_PATH, MainWindow
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import (
     ChatDisplayedSynced,
@@ -120,6 +120,31 @@ class HistoryPaginationTests(unittest.TestCase):
         self.assertIsInstance(events[0], MessageHistoryLoaded)
         self.assertEqual(events[0].messages, [older_message])
         self.assertFalse(events[0].complete)
+
+
+class UserDocumentationTests(unittest.TestCase):
+    def test_documentation_html_is_packaged_with_the_client(self) -> None:
+        self.assertTrue(USER_DOCUMENTATION_PATH.is_file())
+
+    @patch("cliente_xmpp.ui.main_window.wx.LaunchDefaultBrowser", return_value=True)
+    def test_opening_documentation_uses_the_default_browser(self, launch: object) -> None:
+        status_bar = SimpleNamespace(SetStatusText=Mock())
+        window = SimpleNamespace(status_bar=status_bar)
+
+        MainWindow._open_user_documentation(window)
+
+        launch.assert_called_once_with(USER_DOCUMENTATION_PATH.as_uri())
+        status_bar.SetStatusText.assert_called_once_with("Abriendo documentación de uso...")
+
+    def test_f1_without_modifiers_is_the_documentation_shortcut(self) -> None:
+        event = SimpleNamespace(
+            GetKeyCode=lambda: wx.WXK_F1,
+            ControlDown=lambda: False,
+            AltDown=lambda: False,
+            ShiftDown=lambda: False,
+        )
+
+        self.assertTrue(MainWindow._is_documentation_shortcut(event))
 
 
 class GroupNameTests(unittest.TestCase):

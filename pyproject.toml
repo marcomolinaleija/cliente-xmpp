@@ -29,7 +29,7 @@ cliente-xmpp = "cliente_xmpp.app.main:main"
 include = ["cliente_xmpp*"]
 
 [tool.setuptools.package-data]
-cliente_xmpp = ["assets/audio/*.mp3", "lib/*.dll"]
+cliente_xmpp = ["assets/audio/*.mp3", "assets/*.html", "lib/*.dll"]
 
 [tool.ruff]
 line-length = 100

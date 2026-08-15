@@ -59,6 +59,10 @@ datas += [
     (str(path), "cliente_xmpp/assets/audio")
     for path in (ROOT / "cliente_xmpp" / "assets" / "audio").glob("*.mp3")
 ]
+datas += [
+    (str(path), "cliente_xmpp/assets")
+    for path in (ROOT / "cliente_xmpp" / "assets").glob("*.html")
+]
 binaries = [
     (str(libmpv), "cliente_xmpp/lib"),
     (str(nvda_controller), "cliente_xmpp/lib"),

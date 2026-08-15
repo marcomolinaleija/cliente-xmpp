@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guía de uso de WhatsApp CAN</title>
+  <style>
+    :root { color-scheme: light dark; font-family: "Segoe UI", Arial, sans-serif; line-height: 1.55; }
+    body { max-width: 920px; margin: 0 auto; padding: 1.5rem; color: #202124; background: #fff; }
+    header { border-bottom: 4px solid #1877b9; margin-bottom: 1.5rem; }
+    h1, h2, h3 { line-height: 1.2; color: #0b4f7d; }
+    h2 { margin-top: 2.2rem; border-bottom: 1px solid #b7c8d5; padding-bottom: .35rem; }
+    a { color: #075a9a; }
+    a:focus, button:focus { outline: 3px solid #e58f00; outline-offset: 3px; }
+    .skip { position: absolute; left: -10000px; top: auto; }
+    .skip:focus { position: static; display: inline-block; padding: .5rem; background: #fff3cd; }
+    .note { background: #edf6fc; border-left: 5px solid #1877b9; padding: .8rem 1rem; }
+    .warning { background: #fff4e5; border-left: 5px solid #c65d00; padding: .8rem 1rem; }
+    kbd { font-family: Consolas, monospace; border: 1px solid #6b7280; border-radius: 4px; padding: .08rem .35rem; background: #f3f4f6; color: #111827; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid #aebbc4; padding: .6rem; text-align: left; vertical-align: top; }
+    th { background: #e7f1f8; }
+    nav ul { columns: 2; padding-left: 1.25rem; }
+    li { margin: .35rem 0; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e8eaed; background: #202124; }
+      h1, h2, h3, a { color: #8ed0ff; }
+      h2 { border-color: #52616b; }
+      .note { background: #17364b; }
+      .warning { background: #442c16; }
+      kbd { background: #343a40; color: #fff; border-color: #9ca3af; }
+      th { background: #263d4e; }
+      th, td { border-color: #637381; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#contenido">Saltar al contenido principal</a>
+  <header>
+    <h1>Guía de uso de WhatsApp CAN</h1>
+    <p>Guía sencilla para usar el cliente de WhatsApp CAN con teclado, lector de pantalla o ratón.</p>
+  </header>
+
+  <nav aria-label="Contenido">
+    <h2>En esta guía</h2>
+    <ul>
+      <li><a href="#empezar">Primeros pasos y conexión</a></li>
+      <li><a href="#chats">Lista de chats y búsqueda</a></li>
+      <li><a href="#conversacion">Leer y escribir mensajes</a></li>
+      <li><a href="#mensajes">Acciones sobre un mensaje</a></li>
+      <li><a href="#grupos">Grupos, menciones y encuestas</a></li>
+      <li><a href="#contacto">Información, destacados y archivos</a></li>
+      <li><a href="#configuracion">Configuración, estadísticas y almacenamiento</a></li>
+      <li><a href="#atajos">Atajos de teclado</a></li>
+      <li><a href="#ayuda">Preguntas frecuentes</a></li>
+    </ul>
+  </nav>
+
+  <main id="contenido">
+    <section id="empezar">
+      <h2>Primeros pasos y conexión</h2>
+      <ol>
+        <li>Elige el <strong>Tipo de conexión</strong>: el puente local instalado en tu equipo o un servidor XMPP.</li>
+        <li>Escribe tu JID y contraseña. El servidor puede quedar vacío si tu JID lo resuelve automáticamente.</li>
+        <li>Usa <strong>Conectar</strong>. Puedes marcar <strong>Recordar contraseña</strong>; entonces también podrás activar <strong>Conectar automáticamente</strong>.</li>
+      </ol>
+      <p>Al conectar por primera vez, el panel de vinculación mostrará <strong>Generar QR</strong>. Abre WhatsApp en tu teléfono, entra a los dispositivos vinculados y escanea el código. Cuando el puente ofrezca vinculación por número, sigue las instrucciones del diálogo y copia el código si lo necesitas.</p>
+      <div class="note"><strong>Consejo:</strong> el QR tiene una cuenta regresiva. Si vence, usa <strong>Generar nuevo QR</strong>. Cerrar el diálogo no borra un QR que aún sea válido.</div>
+      <p>Desde <strong>Cuenta &gt; Conexión &gt; Desconectar esta ventana</strong> puedes cortar la conexión de esta aplicación sin desvincular WhatsApp ni borrar tus chats. <strong>Cuenta &gt; Salir</strong> cierra la aplicación.</p>
+    </section>
+
+    <section id="chats">
+      <h2>Lista de chats y búsqueda</h2>
+      <p>La pantalla principal muestra los chats con actividad. Las conversaciones se ordenan por novedad; los chats fijados quedan arriba.</p>
+      <ul>
+        <li>Escribe en <strong>Buscar</strong> para encontrar contactos, números y mensajes. Pulsa <kbd>Enter</kbd> para abrir el resultado elegido.</li>
+        <li>Usa <strong>Nuevo chat</strong> para escribir un número. Elige el país o pega un número internacional que empiece con <kbd>+</kbd> o <kbd>00</kbd>.</li>
+        <li>Selecciona un chat y pulsa <kbd>Enter</kbd> o haz doble clic para abrirlo.</li>
+        <li>En la lista, pulsa <kbd>F2</kbd> para cambiar el nombre local del chat. No modifica el nombre en WhatsApp.</li>
+        <li>Con el menú contextual del chat puedes silenciarlo, fijarlo o eliminar su contenido local.</li>
+        <li><strong>Marcar todos como leídos</strong> limpia los indicadores de chats no leídos y sincroniza esa lectura en segundo plano.</li>
+      </ul>
+      <div class="warning"><strong>Eliminar chat</strong> borra el historial local y las descargas de ese chat en este equipo. No elimina la conversación de WhatsApp ni mensajes en otros dispositivos.</div>
+    </section>
+
+    <section id="conversacion">
+      <h2>Leer y escribir en una conversación</h2>
+      <h3>Historial</h3>
+      <p>Al abrir un chat se muestra primero la caché local y después se actualiza el historial. Usa <strong>Cargar mensajes anteriores</strong> para recuperar páginas más antiguas. Cada petición manual carga hasta 100 mensajes desde la caché y, si hace falta, desde el servidor.</p>
+      <p>Dentro de la lista de mensajes, <kbd>Inicio</kbd> también va al primer elemento visible y solicita otra página anterior. Repite la tecla o usa el botón hasta llegar a la fecha que buscas. Si el chat tiene muchísimos mensajes de un mismo día, puede seguir anunciando la misma fecha aunque ya haya añadido mensajes más antiguos de ese día.</p>
+      <ul>
+        <li>Pulsa <kbd>Enter</kbd> sobre un mensaje para leerlo completo en una ventana.</li>
+        <li>Si aparece <strong>Ir a mensaje citado</strong>, actívalo para saltar al mensaje original.</li>
+        <li>Pulsa <kbd>Esc</kbd> para volver a la lista de chats. Si estabas respondiendo, editando o grabando, <kbd>Esc</kbd> cancela primero esa acción.</li>
+      </ul>
+
+      <h3>Enviar texto, archivos y audio</h3>
+      <ul>
+        <li>Escribe en el cuadro de mensaje y pulsa <kbd>Enter</kbd> para enviar.</li>
+        <li>Usa <kbd>Mayús</kbd>+<kbd>Enter</kbd> para insertar una nueva línea sin enviar.</li>
+        <li>Con el cuadro vacío, el botón principal se llama <strong>Grabar audio</strong>. Púlsalo para iniciar; después puedes pausar, cancelar o detener y enviar. La casilla <strong>Audio de una sola escucha</strong> se muestra mientras grabas.</li>
+        <li><strong>Adjuntar</strong> permite enviar archivos. También puedes usar <kbd>Ctrl</kbd>+<kbd>V</kbd> para adjuntar archivos o una imagen copiada del portapapeles.</li>
+        <li><strong>Enviar sticker</strong> permite elegir una imagen para mandarla como sticker.</li>
+        <li>Con <kbd>Ctrl</kbd>+<kbd>Flecha arriba</kbd>, en un cuadro de texto vacío, puedes editar tu último mensaje de texto si todavía está dentro del tiempo permitido. Pulsa <kbd>Esc</kbd> para cancelar la edición.</li>
+      </ul>
+    </section>
+
+    <section id="mensajes">
+      <h2>Acciones sobre un mensaje</h2>
+      <p>Selecciona un mensaje y abre su menú contextual con clic derecho o la tecla de menú de tu teclado. Las opciones cambian según el tipo de mensaje y tus permisos.</p>
+      <ul>
+        <li><strong>Responder</strong>: prepara una respuesta con cita. En grupos, también puede aparecer <strong>Responder en privado</strong> o <strong>Enviar mensaje privado</strong> cuando se conoce la identidad del participante.</li>
+        <li><strong>Copiar texto</strong> o <strong>Copiar enlace</strong>: copia el contenido útil al portapapeles.</li>
+        <li><strong>Reenviar</strong>: permite elegir otro chat de destino.</li>
+        <li><strong>Reaccionar</strong>: elige entre 👍, ❤️, 😂, 😮, 😢 o 🙏.</li>
+        <li><strong>Destacar</strong>: guarda el mensaje para localizarlo desde la información del chat.</li>
+        <li><strong>Editar mensaje</strong>: disponible sólo en mensajes de texto tuyos que aún se pueden editar.</li>
+        <li><strong>Eliminar mensaje</strong>: solicita eliminar un mensaje propio para todos; la aplicación pide confirmación.</li>
+        <li>En fotos, videos, stickers y archivos puedes descargar, abrir, copiar el archivo o, cuando corresponda, describirlo con RayoAI. En un álbum completo puede aparecer <strong>Guardar álbum</strong>.</li>
+      </ul>
+      <p>Para audios seleccionados: <kbd>Espacio</kbd> reproduce o pausa, <kbd>S</kbd> cambia la velocidad, y <kbd>Alt</kbd>+<kbd>Flecha izquierda</kbd> / <kbd>Alt</kbd>+<kbd>Flecha derecha</kbd> retrocede o adelanta cinco por ciento. La velocidad elegida se conserva para próximas reproducciones.</p>
+      <p>Para abrir el enlace del mensaje enfocado, pulsa <kbd>L</kbd>. Si hay un mensaje de texto seleccionado, <kbd>Flecha izquierda</kbd> lo lee con el lector integrado.</p>
+    </section>
+
+    <section id="grupos">
+      <h2>Grupos, menciones y encuestas</h2>
+      <h3>Mencionar a una persona</h3>
+      <p>En un grupo escribe <kbd>@</kbd> y parte del nombre. Se abrirá una lista de sugerencias. Usa <kbd>Flecha arriba</kbd> y <kbd>Flecha abajo</kbd> para elegir; confirma con <kbd>Tab</kbd> o <kbd>Enter</kbd>. La aplicación envía una mención real de WhatsApp, no sólo texto.</p>
+      <h3>Encuestas</h3>
+      <p>Al seleccionar una encuesta verás <strong>Votar en encuesta</strong>. El menú contextual también permite votar y ver resultados. Los cambios de voto y resultados se actualizan cuando llegan desde WhatsApp.</p>
+      <p>En la información de un grupo puedes consultar participantes, archivos, mensajes destacados y estadísticas locales. Los nombres mostrados intentan respetar el nombre que tienes guardado para cada persona.</p>
+    </section>
+
+    <section id="contacto">
+      <h2>Información del contacto, destacados y archivos</h2>
+      <p>Dentro de un chat, activa el botón con el nombre del contacto o grupo para abrir su información. Ahí puedes consultar el número, el estado disponible, participantes del grupo y, si existe, la foto de perfil.</p>
+      <ul>
+        <li><strong>Ver mensajes destacados</strong>: muestra los mensajes que marcaste como destacados. Elige uno y usa <strong>Ir al mensaje</strong>.</li>
+        <li><strong>Buscar</strong> o <kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>F</kbd>: busca sólo en ese chat. Puedes combinar texto con un filtro por fecha y saltar al resultado.</li>
+        <li><strong>Ver archivos</strong>: separa todos los elementos en archivos, enlaces, fotos, videos, audios y stickers. Desde ahí puedes abrir, copiar o borrar una descarga local.</li>
+        <li><strong>Estadísticas locales del chat</strong>: muestra actividad, participación, horarios y otros resúmenes basados en los mensajes guardados aquí.</li>
+        <li><strong>Describir foto con RayoAI</strong>: disponible cuando la foto de perfil está descargada y RayoAI está configurado.</li>
+      </ul>
+    </section>
+
+    <section id="configuracion">
+      <h2>Configuración, estadísticas y almacenamiento</h2>
+      <h3>Configuración</h3>
+      <p>Abre <strong>Configuración</strong> desde el encabezado. Puedes elegir el tipo de conexión que se usará en el próximo inicio, controlar notificaciones de Windows, ocultar su vista previa, activar anuncios con NVDA y decidir si suenan los mensajes del chat abierto o los mensajes enviados.</p>
+      <p>También puedes elegir si <kbd>Alt</kbd>+<kbd>F4</kbd> minimiza la aplicación a la bandeja del sistema. Si la minimizas, usa el icono de WhatsApp CAN en la bandeja para mostrarla de nuevo.</p>
+      <p>En la aplicación instalada, la sección de actualizaciones permite elegir la frecuencia de búsqueda, desactivarla o usar <strong>Buscar actualizaciones ahora</strong>.</p>
+
+      <h3>Estadísticas generales</h3>
+      <p>Ve a <strong>Ver &gt; Estadísticas</strong> para consultar resúmenes, actividad diaria, chats y conversaciones sin respuesta. Puedes elegir períodos de 7, 30 o 90 días, o todo el historial local, y filtrar contactos o grupos.</p>
+      <div class="note">Las estadísticas y la tendencia emocional se calculan en este equipo usando los mensajes almacenados. Son una aproximación basada en palabras, emojis, negaciones e intensificadores; no comprende por completo el contexto, la ironía ni el sarcasmo.</div>
+
+      <h3>Gestor de almacenamiento</h3>
+      <p>Abre <strong>Ver &gt; Gestor de almacenamiento</strong> para saber cuánto ocupan descargas, grabaciones, cachés y la base local. Puedes actualizar el cálculo, marcar archivos concretos y borrarlos. En sus listas, <kbd>Espacio</kbd> marca o desmarca el elemento enfocado y <kbd>Ctrl</kbd>+<kbd>A</kbd> marca todos los elementos eliminables.</p>
+      <div class="warning"><strong>Borrar todos los datos</strong> elimina de forma irreversible la configuración, credenciales, base local y archivos de WhatsApp CAN en este equipo; exige dos confirmaciones y cierra la aplicación. Exporta o conserva lo importante antes de usarlo.</div>
+    </section>
+
+    <section id="atajos">
+      <h2>Atajos de teclado</h2>
+      <table>
+        <thead><tr><th>Atajo</th><th>Acción</th></tr></thead>
+        <tbody>
+          <tr><td><kbd>F1</kbd></td><td>Abrir esta documentación.</td></tr>
+          <tr><td><kbd>F5</kbd></td><td>Actualizar la vista actual: el chat abierto o la lista de chats.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Ir a Buscar en la lista de chats.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>F</kbd></td><td>Buscar mensajes sólo en el chat abierto.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>Abrir Nuevo chat.</td></tr>
+          <tr><td><kbd>Alt</kbd>+<kbd>M</kbd></td><td>Marcar todos los chats como leídos.</td></tr>
+          <tr><td><kbd>F2</kbd></td><td>Cambiar el nombre local del chat seleccionado.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>M</kbd></td><td>Silenciar o desilenciar el chat seleccionado.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Adjuntar archivos o una imagen desde el portapapeles cuando sea posible.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Flecha arriba</kbd></td><td>Editar el último mensaje propio elegible.</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td>Enviar desde el cuadro de mensaje; en la lista de mensajes, abrir el lector completo.</td></tr>
+          <tr><td><kbd>Mayús</kbd>+<kbd>Enter</kbd></td><td>Nueva línea en el mensaje.</td></tr>
+          <tr><td><kbd>Inicio</kbd></td><td>Ir al inicio del historial visible y pedir 100 mensajes anteriores.</td></tr>
+          <tr><td><kbd>Espacio</kbd></td><td>Reproducir o pausar el audio o video seleccionado.</td></tr>
+          <tr><td><kbd>S</kbd></td><td>Cambiar velocidad del audio seleccionado.</td></tr>
+          <tr><td><kbd>Alt</kbd>+<kbd>Flecha izquierda/derecha</kbd></td><td>Retroceder o adelantar 5 % en el audio.</td></tr>
+          <tr><td><kbd>L</kbd></td><td>Abrir el enlace del mensaje seleccionado.</td></tr>
+          <tr><td><kbd>F8</kbd></td><td>Activar o desactivar el sonido de mensajes en el chat abierto.</td></tr>
+          <tr><td><kbd>Mayús</kbd>+<kbd>F8</kbd></td><td>Activar o desactivar el sonido al enviar mensajes.</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Cancelar la acción actual, volver a la lista o limpiar una búsqueda, según el contexto.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="ayuda">
+      <h2>Preguntas frecuentes</h2>
+      <h3>¿Por qué no veo mensajes muy antiguos?</h3>
+      <p>El cliente abre primero una cantidad limitada de mensajes para mantenerse ágil. Usa <strong>Cargar mensajes anteriores</strong> o <kbd>Inicio</kbd>. Las páginas locales se muestran primero y luego se pide el resto al servidor.</p>
+      <h3>¿Por qué un archivo dice Descargar?</h3>
+      <p>El mensaje está disponible, pero su copia local todavía no se ha bajado. Activa Descargar o Abrir para obtenerla. Después podrás copiarla o abrirla desde el gestor de archivos del chat.</p>
+      <h3>¿Qué ocurre si leo un chat desde el teléfono?</h3>
+      <p>Cuando WhatsApp y el puente informan la lectura, el cliente actualiza los indicadores. Puede tomar un momento según la conexión.</p>
+      <h3>¿La guía necesita internet?</h3>
+      <p>No. Esta página está incluida en WhatsApp CAN y se abre en tu navegador predeterminado.</p>
+    </section>
+  </main>
+</body>
+</html>

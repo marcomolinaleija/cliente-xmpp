@@ -172,6 +172,7 @@ WHATSAPP_QR_TIMEOUT_SECONDS = 60
 UPDATE_CHECK_INITIAL_DELAY_MS = 2000
 MESSAGE_EDIT_WINDOW = timedelta(minutes=15)
 APP_WINDOW_TITLE = "whatsapp-CAN"
+USER_DOCUMENTATION_PATH = Path(__file__).resolve().parents[1] / "assets" / "GUIA_USO.html"
 PERF_DEBUG_PREFIX = "[cliente-xmpp][perf]"
 PERF_DEBUG_ENABLED = os.environ.get("CLIENTE_XMPP_PERF_DEBUG", "").casefold() in {
     "1",
@@ -392,6 +393,13 @@ class MainWindow(wx.Frame):
             "Muestra y permite administrar el espacio ocupado por los datos locales",
         )
         menu_bar.Append(view_menu, "&Ver")
+        help_menu = wx.Menu()
+        self.documentation_menu_item = help_menu.Append(
+            wx.ID_HELP,
+            "&Ver documentación\tF1",
+            "Abre la guía de uso de WhatsApp CAN",
+        )
+        menu_bar.Append(help_menu, "A&yuda")
         self.SetMenuBar(menu_bar)
 
         self.startup_panel = wx.Panel(self)
@@ -482,6 +490,7 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_MENU, self._on_exit_application, self.exit_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_storage_manager, self.storage_manager_menu_item)
+        self.Bind(wx.EVT_MENU, self._on_open_user_documentation, self.documentation_menu_item)
         self.settings_panel.test_notification_button.Bind(
             wx.EVT_BUTTON,
             self._on_test_windows_notification,
@@ -2729,6 +2738,10 @@ class MainWindow(wx.Frame):
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        if self._is_documentation_shortcut(event):
+            self._open_user_documentation()
+            return
+
         if self._is_alt_f4_shortcut(event) and self.minimize_to_tray_on_alt_f4:
             self._minimize_to_tray()
             return
@@ -2797,6 +2810,28 @@ class MainWindow(wx.Frame):
             return
 
         event.Skip()
+
+    @staticmethod
+    def _is_documentation_shortcut(event: wx.KeyEvent) -> bool:
+        return (
+            event.GetKeyCode() == wx.WXK_F1
+            and not event.ControlDown()
+            and not event.AltDown()
+            and not event.ShiftDown()
+        )
+
+    def _on_open_user_documentation(self, _event: wx.CommandEvent) -> None:
+        self._open_user_documentation()
+
+    def _open_user_documentation(self) -> None:
+        if not USER_DOCUMENTATION_PATH.is_file():
+            self.status_bar.SetStatusText("No se encontró la documentación de uso.")
+            return
+
+        if wx.LaunchDefaultBrowser(USER_DOCUMENTATION_PATH.as_uri()):
+            self.status_bar.SetStatusText("Abriendo documentación de uso...")
+        else:
+            self.status_bar.SetStatusText("No se pudo abrir la documentación de uso.")
 
     @staticmethod
     def _is_alt_f4_shortcut(event: wx.KeyEvent) -> bool:

@@ -42,6 +42,7 @@ from cliente_xmpp.models.names import (
     normalize_chat_name,
     unescape_jid_text,
 )
+from cliente_xmpp.models.reactions import ReactionUpdate, normalized_reactions
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
@@ -55,6 +56,7 @@ from cliente_xmpp.xmpp.events import (
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
+    MessageReactionReceived,
     MessageReceived,
     RosterLoaded,
     WhatsAppBridgeStatus,
@@ -361,6 +363,16 @@ class BridgeXmppClient(ClientXMPP):
             self._emit(MessageReceived(retraction))
             return
 
+        reaction_update = self._reaction_update_from_xml(
+            chat_jid=bare_jid,
+            xml=msg.xml,
+            sender_id=bare_jid,
+            sent_at=self._sent_at_from_stanza_delay(msg),
+        )
+        if reaction_update is not None:
+            self._emit(MessageReactionReceived(reaction_update))
+            return
+
         (
             media_url,
             media_kind,
@@ -448,6 +460,23 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_groupchat_message(self, msg: object) -> None:
         if msg["type"] != "groupchat":
+            return
+
+        chat_jid = str(msg["from"].bare)
+        sender_jid = self._sender_jid_from_stanza(msg, is_group=True)
+        sender_name = self._sender_name_from_stanza(msg, is_group=True)
+        outgoing = self._message_is_outgoing(msg, sender_jid, is_group=True)
+        reaction_update = self._reaction_update_from_xml(
+            chat_jid=chat_jid,
+            xml=msg.xml,
+            sender_id=str(self.boundjid.bare) if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
+            sender_is_me=outgoing,
+            is_group=True,
+            sent_at=self._sent_at_from_stanza_delay(msg),
+        )
+        if reaction_update is not None:
+            self._emit(MessageReactionReceived(reaction_update))
             return
 
         message = self._message_from_groupchat_stanza(msg)
@@ -2918,6 +2947,20 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
+        reaction_update = self._reaction_update_from_xml(
+            chat_jid=message_chat_jid,
+            xml=stanza.xml,
+            sender_id=str(self.boundjid.bare) if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
+            sender_is_me=outgoing,
+            is_group=is_group or message_chat_jid in self._group_chat_jids,
+            sent_at=(
+                self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
+            ),
+        )
+        if reaction_update is not None:
+            self._emit(MessageReactionReceived(reaction_update))
+            return None
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
         if not body and not media_url and poll is None and poll_update is None:
@@ -3005,6 +3048,18 @@ class BridgeXmppClient(ClientXMPP):
             chat_jid = str(stanza["from"].bare)
         sender_jid = "Yo" if outgoing else self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = "" if outgoing else self._sender_name_from_stanza(stanza, is_group=is_group)
+        reaction_update = self._reaction_update_from_xml(
+            chat_jid=chat_jid,
+            xml=stanza.xml,
+            sender_id=str(self.boundjid.bare) if outgoing else sender_jid,
+            sender_name=sender_name,
+            sender_is_me=outgoing,
+            is_group=is_group,
+            sent_at=self._sent_at_from_stanza_delay(stanza),
+        )
+        if reaction_update is not None:
+            self._emit(MessageReactionReceived(reaction_update))
+            return
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
         if not body and not media_url and poll is None and poll_update is None:
@@ -3198,7 +3253,9 @@ class BridgeXmppClient(ClientXMPP):
                         ),
                     )
                 message_model = self._message_from_forwarded_xml(chat_jid, result)
-                if message_model is not None and message_model.retracted:
+                if message.find(f".//{{{REACTIONS_NS}}}reactions") is not None:
+                    preview = ""
+                elif message_model is not None and message_model.retracted:
                     preview = (
                         "Eliminaste este mensaje"
                         if message_model.outgoing
@@ -3236,6 +3293,18 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
         sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        reaction_update = self._reaction_update_from_xml(
+            chat_jid=chat_jid,
+            xml=message,
+            sender_id=str(self.boundjid.bare) if outgoing else sender_jid,
+            sender_name="" if outgoing else sender_name,
+            sender_is_me=outgoing,
+            is_group=is_group or chat_jid in self._group_chat_jids,
+            sent_at=self._forwarded_delay_from_xml(result),
+        )
+        if reaction_update is not None:
+            self._emit(MessageReactionReceived(reaction_update))
+            return None
         poll = self._poll_from_xml(message)
         poll_update = self._poll_update_from_xml(message, voter_name=sender_name)
         if not body and not media_url and poll is None and poll_update is None:
@@ -3491,6 +3560,44 @@ class BridgeXmppClient(ClientXMPP):
     @staticmethod
     def _message_is_forwarded(xml: ET.Element) -> bool:
         return xml.find(f".//{{{WHATSAPP_FORWARDED_NS}}}forwarded") is not None
+
+    @staticmethod
+    def _reaction_update_from_xml(
+        *,
+        chat_jid: str,
+        xml: ET.Element | None,
+        sender_id: str,
+        sender_name: str = "",
+        sender_is_me: bool = False,
+        is_group: bool = False,
+        sent_at: datetime | None = None,
+    ) -> ReactionUpdate | None:
+        if xml is None or not chat_jid or not sender_id:
+            return None
+
+        reactions = xml.find(f".//{{{REACTIONS_NS}}}reactions")
+        if reactions is None:
+            return None
+        target_id = reactions.attrib.get("id", "").strip()
+        if not target_id:
+            return None
+
+        values = normalized_reactions(
+            [
+                reaction.text or ""
+                for reaction in reactions.findall(f"{{{REACTIONS_NS}}}reaction")
+            ]
+        )
+        return ReactionUpdate(
+            chat_jid=chat_jid,
+            target_id=target_id,
+            sender_id=sender_id,
+            reactions=values,
+            sender_name=sender_name,
+            sender_is_me=sender_is_me,
+            is_group=is_group,
+            sent_at=sent_at,
+        )
 
     @staticmethod
     def _poll_from_xml(xml: ET.Element | None) -> Poll | None:

@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from cliente_xmpp.models.reactions import ReactionState
+
 
 @dataclass(frozen=True, slots=True)
 class PollVote:
@@ -166,6 +168,7 @@ class Message:
     chat_is_group: bool = False
     starred: bool = False
     reactions: tuple[str, ...] = ()
+    reaction_states: tuple[ReactionState, ...] = ()
     reply_quote: str = ""
     reply_to_jid: str = ""
     reply_to_id: str = ""

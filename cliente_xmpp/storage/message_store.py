@@ -20,6 +20,7 @@ from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import is_fallback_chat_name
+from cliente_xmpp.models.reactions import ReactionState, flattened_reactions
 from cliente_xmpp.models.sentiment import sentiment_weights
 from cliente_xmpp.models.statistics import (
     ChatMessageStatistics,
@@ -32,7 +33,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -1362,6 +1363,7 @@ class MessageStore:
                     chat_is_group INTEGER NOT NULL DEFAULT 0,
                     starred INTEGER NOT NULL DEFAULT 0,
                     reactions_json TEXT NOT NULL DEFAULT '[]',
+                    reaction_states_json TEXT NOT NULL DEFAULT '[]',
                     reply_quote TEXT NOT NULL DEFAULT '',
                     reply_to_jid TEXT NOT NULL DEFAULT '',
                     reply_to_id TEXT NOT NULL DEFAULT '',
@@ -1566,6 +1568,7 @@ class MessageStore:
             "retracted": "INTEGER NOT NULL DEFAULT 0",
             "edited": "INTEGER NOT NULL DEFAULT 0",
             "delivery_state": "TEXT NOT NULL DEFAULT ''",
+            "reaction_states_json": "TEXT NOT NULL DEFAULT '[]'",
         }
         for column, definition in columns.items():
             if column not in existing_columns:
@@ -1796,12 +1799,12 @@ class MessageStore:
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
                 media_local_path, is_sticker, is_forwarded, poll_json, chat_is_group, starred,
-                reactions_json, reply_quote,
+                reactions_json, reaction_states_json, reply_quote,
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -1881,6 +1884,7 @@ class MessageStore:
                     ELSE 0
                 END,
                 reactions_json = excluded.reactions_json,
+                reaction_states_json = excluded.reaction_states_json,
                 reply_quote = CASE
                     WHEN excluded.retracted = 1 THEN ''
                     ELSE COALESCE(NULLIF(excluded.reply_quote, ''), messages.reply_quote)
@@ -1939,6 +1943,7 @@ class MessageStore:
                 int(message.chat_is_group),
                 int(message.starred),
                 json.dumps(list(message.reactions), ensure_ascii=False),
+                _reaction_states_to_db(message.reaction_states),
                 message.reply_quote,
                 message.reply_to_jid,
                 message.reply_to_id,
@@ -1990,6 +1995,14 @@ class MessageStore:
         )
         group_member_count = int(existing["group_member_count"] or 0) if existing else 0
         is_self_group = bool(existing["is_self_group"]) if existing else False
+        existing_last_message_at = (
+            _datetime_from_db(existing["last_message_at"]) if existing else None
+        )
+        if (
+            existing_last_message_at is not None
+            and latest_message.sent_at < existing_last_message_at
+        ):
+            return
         conn.execute(
             """
             INSERT INTO chats (
@@ -2314,6 +2327,10 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_filename=media_filename,
         media_url=media_url,
     )
+    reaction_states = _reaction_states_from_db(str(row["reaction_states_json"] or ""))
+    reactions = tuple(json.loads(str(row["reactions_json"] or "[]")))
+    if reaction_states:
+        reactions = flattened_reactions(reaction_states)
     return Message(
         chat_jid=str(row["chat_jid"]),
         sender_jid=str(row["sender_jid"]),
@@ -2336,7 +2353,8 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         displayed_marker_id=str(row["displayed_marker_id"] or ""),
         chat_is_group=bool(row["chat_is_group"]),
         starred=bool(row["starred"]),
-        reactions=tuple(json.loads(str(row["reactions_json"] or "[]"))),
+        reactions=reactions,
+        reaction_states=reaction_states,
         reply_quote=str(row["reply_quote"] or ""),
         reply_to_jid=str(row["reply_to_jid"] or ""),
         reply_to_id=str(row["reply_to_id"] or ""),
@@ -2344,6 +2362,41 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         edited=bool(row["edited"]),
         delivery_state=str(row["delivery_state"] or ""),
     )
+
+
+def _reaction_states_to_db(states: tuple[ReactionState, ...]) -> str:
+    return json.dumps(
+        [
+            {"sender": state.sender_id, "reactions": list(state.reactions)}
+            for state in states
+            if state.sender_id
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _reaction_states_from_db(value: str) -> tuple[ReactionState, ...]:
+    try:
+        raw_states = json.loads(value) if value else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ()
+    if not isinstance(raw_states, list):
+        return ()
+
+    states: list[ReactionState] = []
+    for raw_state in raw_states:
+        if not isinstance(raw_state, dict):
+            continue
+        sender_id = str(raw_state.get("sender", "")).strip()
+        raw_reactions = raw_state.get("reactions", [])
+        if not sender_id or not isinstance(raw_reactions, list):
+            continue
+        reactions = tuple(
+            str(reaction).strip() for reaction in raw_reactions if str(reaction).strip()
+        )
+        states.append(ReactionState(sender_id=sender_id, reactions=reactions))
+    return tuple(states)
 
 
 def _poll_to_db(poll: Poll | None) -> str:

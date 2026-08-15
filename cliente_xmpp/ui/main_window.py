@@ -92,6 +92,7 @@ from cliente_xmpp.models.phone_numbers import (
     normalize_phone_number,
     whatsapp_contact_jid_candidates,
 )
+from cliente_xmpp.models.reactions import ReactionState, ReactionUpdate, flattened_reactions
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.manager import StorageCleanupResult, StorageManager, StorageSnapshot
@@ -110,6 +111,7 @@ from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
 from cliente_xmpp.ui.poll_vote_dialog import PollVoteDialog
+from cliente_xmpp.ui.reaction_dialog import EmojiReactionDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
@@ -139,6 +141,7 @@ from cliente_xmpp.xmpp.events import (
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
     MessageHistoryLoaded,
+    MessageReactionReceived,
     MessageReceived,
     RosterLoaded,
     WhatsAppBridgeStatus,
@@ -251,6 +254,7 @@ class MainWindow(wx.Frame):
         self._closing = False
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
+        self.pending_reaction_updates_by_chat: dict[str, list[ReactionUpdate]] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.displayed_marker_ids_by_chat: dict[str, str] = {}
         self.synced_displayed_marker_ids_by_chat: dict[str, str] = {}
@@ -4109,6 +4113,7 @@ class MainWindow(wx.Frame):
         reaction_items: list[tuple[wx.MenuItem, str]] = []
         for reaction in ("👍", "❤️", "😂", "😮", "😢", "🙏"):
             reaction_items.append((reaction_menu.Append(wx.ID_ANY, reaction), reaction))
+        more_reactions_item = reaction_menu.Append(wx.ID_ANY, "Más reacciones...")
         menu.AppendSubMenu(reaction_menu, "Reaccionar")
 
         vote_item: wx.MenuItem | None = None
@@ -4184,6 +4189,11 @@ class MainWindow(wx.Frame):
                 ),
                 item,
             )
+        self.Bind(
+            wx.EVT_MENU,
+            lambda _event: self._choose_more_reaction(message),
+            more_reactions_item,
+        )
         if vote_item is not None:
             self.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
         if poll_results_item is not None:
@@ -5050,19 +5060,39 @@ class MainWindow(wx.Frame):
         if not chat:
             return
 
-        if not message.message_id:
+        target_id = message.displayed_marker_id if chat.is_group else message.message_id
+        if not target_id:
             self.status_bar.SetStatusText("No se puede reaccionar: el mensaje no tiene ID XMPP")
             return
 
-        if reaction not in message.reactions:
-            message.reactions = (*message.reactions, reaction)
+        sender_id = self.current_jid or "__me__"
+        states = list(message.reaction_states)
+        if not states and message.reactions:
+            states.append(ReactionState(sender_id=sender_id, reactions=message.reactions))
+        states = [state for state in states if state.sender_id != sender_id]
+        states.append(ReactionState(sender_id=sender_id, reactions=(reaction,)))
+        message.reaction_states = tuple(states)
+        message.reactions = flattened_reactions(message.reaction_states)
         self.conversation.refresh_message(message)
+        self._persist_messages([message])
         self.xmpp.send_reaction(
             chat.jid,
-            message.message_id,
+            target_id,
             reaction,
             is_group=chat.is_group,
         )
+
+    def _choose_more_reaction(self, message: Message) -> None:
+        dialog = EmojiReactionDialog(self)
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            reaction = dialog.selected_reaction()
+        finally:
+            dialog.Destroy()
+            wx.CallAfter(self.conversation.messages.SetFocus)
+        if reaction:
+            self._react_to_message(message, reaction)
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
         self._handle_xmpp_event(event.event)
@@ -5212,6 +5242,8 @@ class MainWindow(wx.Frame):
                 self._remember_group_participant(participant)
             case GroupParticipantsLoaded(participants=participants):
                 self._remember_group_participants(participants)
+            case MessageReactionReceived(update=update):
+                self._handle_reaction_update(update)
             case MessageReceived(message=message, notify=notify):
                 if self._cleared_chat_blocks_timestamp(
                     message.chat_jid,
@@ -5396,6 +5428,7 @@ class MainWindow(wx.Frame):
 
         self._normalize_audio_metadata_for_messages(messages)
         merged_updates = self._merge_messages(chat_jid, messages)
+        self._flush_pending_reaction_updates(chat_jid)
         regular_messages = [message for message in messages if message.poll_update is None]
         corrections = {message.replaces_id for message in regular_messages if message.replaces_id}
         corrected_messages = [
@@ -5937,6 +5970,7 @@ class MainWindow(wx.Frame):
             ).sent_at
             self._normalize_audio_metadata_for_messages(messages)
             merged_updates = self._merge_messages(chat_jid, messages)
+            self._flush_pending_reaction_updates(chat_jid)
             self._persist_messages(merged_updates)
             current_chat = self.conversation.current_chat
             if current_chat is not None and current_chat.jid == chat_jid:
@@ -6110,6 +6144,7 @@ class MainWindow(wx.Frame):
             None,
         )
         hydrated_replies = self._merge_messages(message.chat_jid, [message])
+        self._flush_pending_reaction_updates(message.chat_jid)
         stored_message = (
             existing_group_echo
             or self._message_by_id(message.chat_jid, message.replaces_id)
@@ -6159,6 +6194,93 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText("Voto confirmado por WhatsApp")
         else:
             self.status_bar.SetStatusText("Se actualizaron los resultados de la encuesta")
+
+    def _handle_reaction_update(self, update: ReactionUpdate) -> None:
+        target = self._apply_reaction_update(update)
+        if target is None:
+            pending = self.pending_reaction_updates_by_chat.setdefault(update.chat_jid, [])
+            pending[:] = [
+                existing
+                for existing in pending
+                if (existing.target_id, existing.sender_id) != (update.target_id, update.sender_id)
+            ]
+            pending.append(update)
+            self._record_reaction_activity(update, None)
+            return
+
+        self._persist_messages([target])
+        self._record_reaction_activity(update, target)
+        current_chat = self.conversation.current_chat
+        if current_chat is not None and current_chat.jid == update.chat_jid:
+            self.conversation.refresh_message(target)
+
+    def _record_reaction_activity(
+        self,
+        update: ReactionUpdate,
+        target: Message | None,
+    ) -> None:
+        sent_at = update.sent_at or datetime.now().astimezone()
+        self._update_chat_activity(update.chat_jid, self._datetime_timestamp(sent_at))
+        self._update_chat_summary(
+            update.chat_jid,
+            preview=self._reaction_preview(update, target),
+            sent_at=sent_at,
+            force_preview=True,
+            is_group=update.is_group,
+        )
+        self._refresh_chat_order(preserve_focused_order=False)
+        if self.chat_list.IsShown() and not self.chat_list.is_searching:
+            selected_chat = self.chat_list.selected_chat()
+            self.chat_list.force_refresh_visible(selected_chat.jid if selected_chat else "")
+
+    def _apply_reaction_update(self, update: ReactionUpdate) -> Message | None:
+        target = next(
+            (
+                message
+                for message in self.messages_by_chat.get(update.chat_jid, [])
+                if update.target_id in {message.message_id, message.displayed_marker_id}
+            ),
+            None,
+        )
+        if target is None:
+            return None
+
+        states = list(target.reaction_states)
+        if not states and target.reactions:
+            states.append(ReactionState(sender_id="__legacy__", reactions=target.reactions))
+        states = [state for state in states if state.sender_id != update.sender_id]
+        if update.reactions:
+            states.append(ReactionState(sender_id=update.sender_id, reactions=update.reactions))
+        target.reaction_states = tuple(states)
+        target.reactions = flattened_reactions(target.reaction_states)
+        return target
+
+    def _flush_pending_reaction_updates(self, chat_jid: str) -> None:
+        pending = self.pending_reaction_updates_by_chat.get(chat_jid, [])
+        if not pending:
+            return
+
+        self.pending_reaction_updates_by_chat.pop(chat_jid, None)
+        for update in pending:
+            self._handle_reaction_update(update)
+
+    def _reaction_preview(self, update: ReactionUpdate, target: Message | None) -> str:
+        actor = "Tú" if update.sender_is_me else (
+            update.sender_name or self._display_name_for_jid(update.sender_id)
+        )
+        if target is not None:
+            body = media_description(target) if has_media(target) else target.body
+        else:
+            chat = self._visible_chat_by_jid(update.chat_jid) or self.searchable_chats_by_jid.get(
+                update.chat_jid
+            )
+            body = chat.last_message_preview if chat is not None else "mensaje"
+        body = " ".join(body.split()) or "mensaje"
+        if len(body) > 80:
+            body = f"{body[:77]}..."
+        if update.reactions:
+            return f"{actor} reaccionó a «{body}» con {' '.join(update.reactions)}"
+        return f"{actor} quitó su reacción de «{body}»"
 
     def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
         if not message_id:

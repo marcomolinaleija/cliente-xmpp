@@ -12,6 +12,33 @@ from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_loads_a_local_history_page_before_the_cached_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "chat@example.test"
+            start = datetime(2026, 7, 5, 8, tzinfo=UTC)
+            messages = [
+                Message(
+                    chat_jid=chat_jid,
+                    sender_jid=chat_jid,
+                    body=f"Mensaje {index}",
+                    sent_at=start + timedelta(minutes=index),
+                    message_id=f"message-{index}",
+                )
+                for index in range(6)
+            ]
+            store.upsert_messages(account_jid, messages)
+
+            page = store.load_messages_before(
+                account_jid,
+                chat_jid,
+                messages[5].sent_at,
+                limit=2,
+            )
+
+            self.assertEqual([message.message_id for message in page], ["message-3", "message-4"])
+
     def test_loads_starred_and_media_messages_for_one_chat(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

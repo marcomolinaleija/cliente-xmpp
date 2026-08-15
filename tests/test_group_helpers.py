@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
+import wx
 from slixmpp.exceptions import IqError, IqTimeout
 
 from cliente_xmpp.config.settings import ConnectionSettings
@@ -22,10 +23,103 @@ from cliente_xmpp.xmpp.events import (
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
+    MessageHistoryLoaded,
     WhatsAppBridgeStatus,
     WhatsAppQrImageDataReceived,
     XmppConnected,
 )
+
+
+class HistoryPaginationTests(unittest.TestCase):
+    def test_manual_page_uses_one_hundred_messages_when_local_cache_is_exhausted(self) -> None:
+        chat_jid = "contact@example.test"
+        requested: list[tuple[str, bool, int]] = []
+        window = SimpleNamespace(
+            history_loading_chats=set(),
+            local_history_before_by_chat={},
+            local_history_exhausted_chats=set(),
+            history_exhausted_chats=set(),
+            current_jid="me@example.test",
+            _request_history_page=lambda jid, *, older, page_size: requested.append(
+                (jid, older, page_size)
+            ),
+        )
+
+        MainWindow._request_older_history_page(window, chat_jid)
+
+        self.assertEqual(requested, [(chat_jid, True, 100)])
+
+    def test_home_in_message_list_requests_another_page_and_keeps_navigation(self) -> None:
+        chat = Chat(jid="contact@example.test", name="Contacto")
+        requested: list[str] = []
+        skipped: list[bool] = []
+        window = SimpleNamespace(
+            whatsapp_verified=True,
+            conversation=SimpleNamespace(current_chat=chat),
+            _request_older_history_page=requested.append,
+        )
+        event = SimpleNamespace(
+            GetKeyCode=lambda: wx.WXK_HOME,
+            AltDown=lambda: False,
+            ControlDown=lambda: False,
+            ShiftDown=lambda: False,
+            Skip=lambda: skipped.append(True),
+        )
+
+        MainWindow._on_messages_key_down(window, event)
+
+        self.assertEqual(requested, [chat.jid])
+        self.assertEqual(skipped, [True])
+
+    def test_older_page_uses_unfiltered_mam_fallback_when_with_filter_is_empty(self) -> None:
+        chat_jid = "contact@example.test"
+        older_message = Message(
+            chat_jid=chat_jid,
+            sender_jid=chat_jid,
+            body="Mensaje del 5 de julio",
+            sent_at=datetime(2026, 7, 5, 9, tzinfo=datetime.now().astimezone().tzinfo),
+            message_id="older-message",
+        )
+        calls: list[bool] = []
+        events: list[object] = []
+
+        async def load_page(
+            _chat_jid: str,
+            *,
+            limit: int | None,
+            before: datetime | None,
+            with_jid_filter: bool,
+        ) -> list[Message]:
+            self.assertEqual(_chat_jid, chat_jid)
+            self.assertEqual(limit, 20)
+            self.assertIsNotNone(before)
+            calls.append(with_jid_filter)
+            return [] if with_jid_filter else [older_message]
+
+        client = SimpleNamespace(
+            _load_history_page=load_page,
+            _history_page_needs_unfiltered_fallback=(
+                BridgeXmppClient._history_page_needs_unfiltered_fallback
+            ),
+            _deduplicate_messages=BridgeXmppClient._deduplicate_messages,
+            _emit=events.append,
+        )
+
+        asyncio.run(
+            BridgeXmppClient.load_history(
+                client,
+                chat_jid,
+                limit=20,
+                before=datetime(2026, 7, 8, 9, tzinfo=older_message.sent_at.tzinfo),
+                older=True,
+            )
+        )
+
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(len(events), 1)
+        self.assertIsInstance(events[0], MessageHistoryLoaded)
+        self.assertEqual(events[0].messages, [older_message])
+        self.assertFalse(events[0].complete)
 
 
 class GroupNameTests(unittest.TestCase):

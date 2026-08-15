@@ -2598,7 +2598,6 @@ class BridgeXmppClient(ClientXMPP):
             )
             if (
                 allow_unfiltered_fallback
-                and not older
                 and self._history_page_needs_unfiltered_fallback(archived_messages, limit)
             ):
                 unfiltered_messages = await self._load_history_page(

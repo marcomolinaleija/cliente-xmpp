@@ -154,6 +154,8 @@ from cliente_xmpp.xmpp.events import (
 )
 
 HISTORY_PAGE_SIZE = 20
+MANUAL_HISTORY_PAGE_SIZE = 100
+CACHED_CONVERSATION_MESSAGE_LIMIT = 5000
 MARK_ALL_READ_DELAY_MS = 750
 MARK_ALL_READ_HISTORY_TIMEOUT_MS = 8000
 PRELOAD_CHAT_LIMIT = 20
@@ -257,6 +259,9 @@ class MainWindow(wx.Frame):
         self.history_loaded_chats: set[str] = set()
         self.history_exhausted_chats: set[str] = set()
         self.history_loading_chats: set[str] = set()
+        self.local_history_loading_chats: set[str] = set()
+        self.local_history_before_by_chat: dict[str, datetime] = {}
+        self.local_history_exhausted_chats: set[str] = set()
         self.background_history_queue: deque[str] = deque()
         self.background_history_queued_chats: set[str] = set()
         self.background_history_loading_chat = ""
@@ -1993,10 +1998,13 @@ class MainWindow(wx.Frame):
             self.history_loaded_chats,
             self.history_exhausted_chats,
             self.history_loading_chats,
+            self.local_history_loading_chats,
+            self.local_history_exhausted_chats,
             self.preloaded_history_chats,
             self.background_history_queued_chats,
         ):
             chat_set.discard(chat_jid)
+        self.local_history_before_by_chat.pop(chat_jid, None)
         self.cached_message_loads = {
             entry for entry in self.cached_message_loads if entry[1] != chat_jid
         }
@@ -3484,11 +3492,7 @@ class MainWindow(wx.Frame):
         if not chat:
             return
 
-        if chat.jid in self.history_exhausted_chats:
-            self.status_bar.SetStatusText("No hay mensajes anteriores")
-            return
-
-        self._request_history_page(chat.jid, older=True)
+        self._request_older_history_page(chat.jid)
 
     def _on_attach_file(self, _event: wx.CommandEvent) -> None:
         if not self._require_whatsapp_connection():
@@ -3925,6 +3929,20 @@ class MainWindow(wx.Frame):
         return key_code in (ord("L"), ord("l")) or unicode_key in (ord("L"), ord("l"))
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        home_keys = (wx.WXK_HOME, getattr(wx, "WXK_NUMPAD_HOME", wx.WXK_HOME))
+        if (
+            event.GetKeyCode() in home_keys
+            and not event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+        ):
+            chat = self.conversation.current_chat
+            if self.whatsapp_verified and chat is not None:
+                self._request_older_history_page(chat.jid)
+            # Preserve the native ListCtrl navigation to the first row.
+            event.Skip()
+            return
+
         if (
             event.GetKeyCode() == wx.WXK_RIGHT
             and not event.AltDown()
@@ -5774,6 +5792,7 @@ class MainWindow(wx.Frame):
         chat_jid: str,
         older: bool = False,
         background: bool = False,
+        page_size: int = HISTORY_PAGE_SIZE,
     ) -> None:
         if not self.whatsapp_verified:
             return
@@ -5794,12 +5813,126 @@ class MainWindow(wx.Frame):
             self._refresh_load_older_button(chat_jid)
         self.xmpp.load_history(
             chat_jid,
-            limit=HISTORY_PAGE_SIZE,
+            limit=page_size,
             before=before,
             older=older,
             allow_unfiltered_fallback=not background,
             background=background,
         )
+
+    def _request_older_history_page(self, chat_jid: str) -> None:
+        """Prefer a bounded local page before querying the remote archive."""
+        if chat_jid in self.history_loading_chats:
+            return
+
+        before = self.local_history_before_by_chat.get(chat_jid)
+        if before is None or chat_jid in self.local_history_exhausted_chats:
+            if chat_jid in self.history_exhausted_chats:
+                self.status_bar.SetStatusText("No hay mensajes anteriores")
+                return
+            self._request_history_page(
+                chat_jid,
+                older=True,
+                page_size=MANUAL_HISTORY_PAGE_SIZE,
+            )
+            return
+
+        if not self.current_jid:
+            self._request_history_page(
+                chat_jid,
+                older=True,
+                page_size=MANUAL_HISTORY_PAGE_SIZE,
+            )
+            return
+
+        account_jid = self.current_jid
+        self.local_history_loading_chats.add(chat_jid)
+        self._refresh_load_older_button(chat_jid)
+        self.status_bar.SetStatusText("Cargando mensajes anteriores de la caché local...")
+
+        def worker() -> None:
+            try:
+                messages = self.message_store.load_messages_before(
+                    account_jid,
+                    chat_jid,
+                    before,
+                    limit=MANUAL_HISTORY_PAGE_SIZE,
+                )
+            except Exception:
+                wx.CallAfter(
+                    self._finish_loading_local_history_page,
+                    account_jid,
+                    chat_jid,
+                    [],
+                    "No se pudo consultar el historial local.",
+                )
+                return
+            wx.CallAfter(
+                self._finish_loading_local_history_page,
+                account_jid,
+                chat_jid,
+                messages,
+                "",
+            )
+
+        # This is a read-only SQLite query.  It must not wait behind the
+        # single serialized writer, which can still be persisting a large MAM
+        # page while the user is asking to see older cached messages.
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="cliente-xmpp-history-cache",
+        ).start()
+
+    def _finish_loading_local_history_page(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        messages: list[Message],
+        error: str,
+    ) -> None:
+        self.local_history_loading_chats.discard(chat_jid)
+        if account_jid != self.current_jid:
+            return
+
+        if messages:
+            self.local_history_before_by_chat[chat_jid] = min(
+                messages,
+                key=self._message_timestamp,
+            ).sent_at
+            self._normalize_audio_metadata_for_messages(messages)
+            merged_updates = self._merge_messages(chat_jid, messages)
+            self._persist_messages(merged_updates)
+            current_chat = self.conversation.current_chat
+            if current_chat is not None and current_chat.jid == chat_jid:
+                self._load_conversation(
+                    current_chat,
+                    unread_count=self.conversation.unread_marker_count(),
+                )
+            self.status_bar.SetStatusText(
+                f"{len(messages)} mensajes anteriores cargados de la caché local"
+            )
+            self._refresh_load_older_button(chat_jid)
+            return
+
+        if error:
+            self.status_bar.SetStatusText(error)
+            self._refresh_load_older_button(chat_jid)
+            self._request_history_page(
+                chat_jid,
+                older=True,
+                page_size=MANUAL_HISTORY_PAGE_SIZE,
+            )
+            return
+
+        self.local_history_exhausted_chats.add(chat_jid)
+        self._refresh_load_older_button(chat_jid)
+        if chat_jid not in self.history_exhausted_chats:
+            self._request_history_page(
+                chat_jid,
+                older=True,
+                page_size=MANUAL_HISTORY_PAGE_SIZE,
+            )
 
     def _chat_has_preview(self, chat_jid: str) -> bool:
         chat = self.chat_list.chat_by_jid(chat_jid)
@@ -5872,7 +6005,10 @@ class MainWindow(wx.Frame):
         return min(messages, key=self._message_timestamp).sent_at
 
     def _refresh_load_older_button(self, chat_jid: str) -> None:
-        loading = chat_jid in self.history_loading_chats
+        loading = (
+            chat_jid in self.history_loading_chats
+            or chat_jid in self.local_history_loading_chats
+        )
         exhausted = chat_jid in self.history_exhausted_chats
         self.conversation.load_older_button.Enable(
             self.whatsapp_verified and not loading and not exhausted
@@ -6581,7 +6717,7 @@ class MainWindow(wx.Frame):
             cached_messages = self.message_store.load_recent_messages(
                 self.current_jid,
                 chat_jid,
-                limit=5000,
+                limit=CACHED_CONVERSATION_MESSAGE_LIMIT,
             )
             self._debug_perf(
                 "_load_cached_messages_for_chat.load_recent_messages",
@@ -6592,6 +6728,16 @@ class MainWindow(wx.Frame):
         except Exception:
             return
         self.cached_message_loads.add(cache_key)
+
+        if len(cached_messages) >= CACHED_CONVERSATION_MESSAGE_LIMIT:
+            self.local_history_before_by_chat[chat_jid] = min(
+                cached_messages,
+                key=self._message_timestamp,
+            ).sent_at
+            self.local_history_exhausted_chats.discard(chat_jid)
+        else:
+            self.local_history_before_by_chat.pop(chat_jid, None)
+            self.local_history_exhausted_chats.add(chat_jid)
 
         if cached_messages:
             merge_started_at = time.perf_counter()

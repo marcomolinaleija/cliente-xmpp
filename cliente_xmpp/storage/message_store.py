@@ -313,6 +313,38 @@ class MessageStore:
 
         return [_message_from_row(row) for row in reversed(rows)]
 
+    def load_messages_before(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        before: datetime,
+        limit: int = 80,
+    ) -> list[Message]:
+        """Load one local history page strictly older than ``before``.
+
+        Conversations intentionally open with a bounded cache.  Keeping this
+        query separate from ``load_recent_messages`` lets the UI reveal the
+        rest of an already-downloaded conversation before asking MAM again.
+        """
+        if limit <= 0:
+            return []
+
+        before_value = _datetime_to_db(before)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE account_jid = ? AND chat_jid = ?
+                    AND julianday(sent_at) < julianday(?)
+                ORDER BY julianday(sent_at) DESC, rowid DESC
+                LIMIT ?
+                """,
+                (account_jid, chat_jid, before_value, limit),
+            ).fetchall()
+
+        return [_message_from_row(row) for row in reversed(rows)]
+
     def load_message_by_id(
         self,
         account_jid: str,

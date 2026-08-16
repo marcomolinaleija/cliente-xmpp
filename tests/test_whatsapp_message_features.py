@@ -681,6 +681,14 @@ class _FakeClient:
         self.raw_stanza = data
 
     @staticmethod
+    def track_transient_message_retry(
+        _chat_jid: str,
+        _message_id: str,
+        _send: object,
+    ) -> None:
+        return None
+
+    @staticmethod
     def _join_group_chat(_jid: str) -> None:
         return None
 

@@ -86,6 +86,14 @@ class _PendingPollVote:
     is_group: bool
 
 
+@dataclass(slots=True)
+class _PendingTransientMessageRetry:
+    chat_jid: str
+    send: Callable[[], None]
+    attempts: int = 0
+    cleanup_handle: asyncio.TimerHandle | None = None
+
+
 INBOX_NS = "urn:xmpp:inbox:1"
 MDS_DISPLAYED_NS = "urn:xmpp:mds:displayed:0"
 MAM_NS = "urn:xmpp:mam:2"
@@ -144,6 +152,8 @@ GROUP_MEMBERSHIP_REFRESH_SECONDS = 10 * 60
 GROUP_MEMBERSHIP_REFRESH_BATCH_DELAY_SECONDS = 0.1
 GROUP_MEMBERSHIP_PING_TIMEOUT_SECONDS = 20
 GROUP_MEMBERSHIP_PING_FAILURES_BEFORE_REJOIN = 2
+LEGACY_SESSION_NOT_READY_TEXT = "legacy session is not fully initialized"
+LEGACY_SESSION_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
 GROUP_MEMBERSHIP_ABSENT_CONDITIONS = frozenset(
     {
         "item-not-found",
@@ -189,6 +199,9 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._session_generation = 0
         self._pending_poll_votes: dict[str, _PendingPollVote] = {}
+        self._pending_transient_message_retries: dict[
+            str, _PendingTransientMessageRetry
+        ] = {}
         self.force_starttls = settings.use_tls
         self.enable_starttls = settings.use_tls
         self.enable_direct_tls = False
@@ -223,6 +236,7 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_roster_chats = None
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
+        self._clear_transient_message_retries()
         self._joined_group_chat_jids.clear()
         self._group_rejoin_scheduled.clear()
         getattr(self, "_group_membership_ping_failures", {}).clear()
@@ -275,6 +289,7 @@ class BridgeXmppClient(ClientXMPP):
     def _on_disconnected(self, _event: object) -> None:
         self._whatsapp_session_ready = False
         getattr(self, "_pending_poll_votes", {}).clear()
+        self._clear_transient_message_retries()
         self._stop_group_membership_watchdog()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
@@ -566,6 +581,9 @@ class BridgeXmppClient(ClientXMPP):
         reason = error_text or condition.replace("-", " ") or "rechazado por el servidor"
         detail = f"No se pudo enviar el mensaje: {reason}."
 
+        if self._retry_legacy_session_message(message_id, error_text):
+            return
+
         normalized_error = error_text.casefold()
         membership_error = condition == "registration-required" or (
             condition == "not-acceptable"
@@ -586,6 +604,99 @@ class BridgeXmppClient(ClientXMPP):
                 )
             )
         self._emit(XmppError(detail))
+
+    def track_transient_message_retry(
+        self,
+        chat_jid: str,
+        message_id: str,
+        send: Callable[[], None],
+    ) -> None:
+        """Remember a user message briefly in case WhatsApp is still starting."""
+        if not message_id:
+            return
+
+        self._clear_transient_message_retry(message_id)
+        pending = _PendingTransientMessageRetry(chat_jid=chat_jid, send=send)
+        self._pending_transient_message_retries[message_id] = pending
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        pending.cleanup_handle = loop.call_later(
+            sum(LEGACY_SESSION_RETRY_DELAYS_SECONDS) + 20,
+            self._clear_transient_message_retry,
+            message_id,
+        )
+
+    def _retry_legacy_session_message(self, message_id: str, error_text: str) -> bool:
+        if (
+            not message_id
+            or LEGACY_SESSION_NOT_READY_TEXT not in error_text.casefold()
+        ):
+            return False
+
+        pending = self._pending_transient_message_retries.get(message_id)
+        if pending is None:
+            return False
+        if pending.attempts >= len(LEGACY_SESSION_RETRY_DELAYS_SECONDS):
+            self._clear_transient_message_retry(message_id)
+            return False
+
+        delay = LEGACY_SESSION_RETRY_DELAYS_SECONDS[pending.attempts]
+        pending.attempts += 1
+        self._emit(
+            MessageDeliveryUpdated(
+                chat_jid=pending.chat_jid,
+                message_id=message_id,
+                delivery_state="sent",
+                detail=(
+                    "WhatsApp local sigue iniciando; reintentando el mensaje "
+                    f"en {int(delay)} segundos ({pending.attempts}/"
+                    f"{len(LEGACY_SESSION_RETRY_DELAYS_SECONDS)})."
+                ),
+            )
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._clear_transient_message_retry(message_id)
+            return False
+        loop.call_later(delay, self._send_transient_message_retry, message_id, pending)
+        return True
+
+    def _send_transient_message_retry(
+        self,
+        message_id: str,
+        pending: _PendingTransientMessageRetry,
+    ) -> None:
+        if self._pending_transient_message_retries.get(message_id) is not pending:
+            return
+        if not self.is_connected():
+            self._clear_transient_message_retry(message_id)
+            return
+        try:
+            pending.send()
+        except Exception as exc:
+            self._clear_transient_message_retry(message_id)
+            detail = f"No se pudo reintentar el mensaje: {exc}"
+            self._emit(
+                MessageDeliveryUpdated(
+                    chat_jid=pending.chat_jid,
+                    message_id=message_id,
+                    delivery_state="failed",
+                    detail=detail,
+                )
+            )
+            self._emit(XmppError(detail))
+
+    def _clear_transient_message_retry(self, message_id: str) -> None:
+        pending = self._pending_transient_message_retries.pop(message_id, None)
+        if pending is not None and pending.cleanup_handle is not None:
+            pending.cleanup_handle.cancel()
+
+    def _clear_transient_message_retries(self) -> None:
+        for message_id in tuple(self._pending_transient_message_retries):
+            self._clear_transient_message_retry(message_id)
 
     @staticmethod
     def _message_error_parts(xml: ET.Element | None) -> tuple[str, str]:
@@ -4484,6 +4595,11 @@ class XmppService:
                         msg["id"] = message_id
                     self._append_mentions(msg, mentions or [])
                     self._request_delivery_updates(msg, message_type)
+                    self._client.track_transient_message_retry(
+                        to_jid,
+                        message_id,
+                        msg.send,
+                    )
                     msg.send()
                     if message_id:
                         self._emit(
@@ -4565,6 +4681,11 @@ class XmppService:
                         {"start": "0", "end": str(fallback_end)},
                     )
                     msg.append(fallback)
+                self._client.track_transient_message_retry(
+                    to_jid,
+                    message_id,
+                    msg.send,
+                )
                 msg.send()
                 if message_id:
                     self._emit(
@@ -4906,6 +5027,11 @@ class XmppService:
                     is_forwarded=True,
                 )
                 self._request_delivery_updates(msg, message_type)
+                self._client.track_transient_message_retry(
+                    to_jid,
+                    message_id,
+                    msg.send,
+                )
                 msg.send()
                 if message_id:
                     self._emit(

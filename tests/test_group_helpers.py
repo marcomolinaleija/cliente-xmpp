@@ -1125,6 +1125,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _whatsapp_session_ready=True,
                 _initial_remote_sync_started=True,
                 _session_generation=0,
+                _pending_transient_message_retries={},
                 _joined_group_chat_jids={"#room@example.org"},
                 _group_rejoin_scheduled={"#room@example.org"},
                 _presence_subscription_jids={"contact@example.org"},
@@ -1133,6 +1134,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _enable_carbons=enable_carbons,
                 _load_initial_roster=load_initial_roster,
                 _configured_local_whatsapp_component=lambda: "",
+                _clear_transient_message_retries=lambda: None,
                 _start_group_membership_watchdog=lambda _generation: calls.append("watchdog"),
             )
 
@@ -2089,6 +2091,7 @@ class GroupMessageParsingTests(unittest.TestCase):
             _joined_group_chat_jids={"#room@whatsapp.example.org"},
             _jid_may_be_group_chat=lambda _jid: True,
             _schedule_group_rejoin=scheduled.append,
+            _retry_legacy_session_message=lambda *_args: False,
             _message_error_parts=BridgeXmppClient._message_error_parts,
             _emit=emitted.append,
         )
@@ -2108,6 +2111,51 @@ class GroupMessageParsingTests(unittest.TestCase):
                 for event in emitted
             )
         )
+
+    def test_legacy_session_message_error_uses_the_tracked_retry(self) -> None:
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(id="cliente-xmpp-retry-1")
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client" type="error">
+                      <error type="wait">
+                        <internal-server-error
+                            xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          Legacy session is not fully initialized, retry later.
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        emitted = []
+        retries = []
+        client = SimpleNamespace(
+            _retry_legacy_session_message=lambda message_id, error: (
+                retries.append((message_id, error)) or True
+            ),
+            _message_error_parts=BridgeXmppClient._message_error_parts,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._handle_message_error(
+            client,
+            ErrorMessage(),
+            "contact@whatsapp.example.org",
+        )
+
+        self.assertEqual(
+            retries,
+            [
+                (
+                    "cliente-xmpp-retry-1",
+                    "Legacy session is not fully initialized, retry later.",
+                )
+            ],
+        )
+        self.assertFalse(emitted)
 
     def test_message_error_callback_accepts_stanza_without_explicit_jid(self) -> None:
         class FromJid:
@@ -2138,6 +2186,7 @@ class GroupMessageParsingTests(unittest.TestCase):
             _joined_group_chat_jids=set(),
             _jid_may_be_group_chat=lambda _jid: False,
             _schedule_group_rejoin=lambda _jid: None,
+            _retry_legacy_session_message=lambda *_args: False,
             _message_error_parts=BridgeXmppClient._message_error_parts,
             _emit=emitted.append,
         )
@@ -2179,6 +2228,7 @@ class GroupMessageParsingTests(unittest.TestCase):
             _joined_group_chat_jids={"#room@whatsapp.example.org"},
             _jid_may_be_group_chat=lambda _jid: True,
             _schedule_group_rejoin=scheduled.append,
+            _retry_legacy_session_message=lambda *_args: False,
             _message_error_parts=BridgeXmppClient._message_error_parts,
             _emit=emitted.append,
         )

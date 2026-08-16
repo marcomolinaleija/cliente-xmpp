@@ -597,6 +597,9 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   propio cuyo ID empiece por `cliente-xmpp-`; después restaura el preview anterior. No borres
   mensajes remotos ni interpretes la ausencia de eco como fallo. En grupos, sólo un error que
   indique pérdida de ocupación programa el reingreso MUC; un `bad-request` no reconecta la sala.
+  La excepción es el error transitorio de WhatsMeow `Legacy session is not fully initialized`:
+  el cliente conserva el mismo ID y lo reintenta con espera progresiva y límite antes de marcarlo
+  como fallido. No generalices ese reintento a otros rechazos de stanza.
   Durante el arranque, reconstruye sólo los previews de los chats donde realmente eliminaste un
   optimista fallido; no recorras todas las conversaciones por un fallo aislado.
 - El preview y la hora de un chat solo avanzan con mensajes mas recientes; una pagina vieja no

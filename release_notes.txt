@@ -1,19 +1,8 @@
-WhatsApp CAN 1.4.0
+WhatsApp CAN 1.4.1
 
-Historial completo y navegación más rápida
-- El historial manual carga 100 mensajes anteriores por página.
-- Al pulsar Inicio dentro de una conversación, el cliente solicita automáticamente la página anterior
-  mientras te lleva al primer mensaje cargado.
-
-Reacciones de WhatsApp
-- Las reacciones recibidas ya se muestran junto al mensaje correcto, incluso cuando llegan desde el
-  historial, otro dispositivo o un grupo; ya no aparecen como un emoji suelto en la conversación.
-- La lista de chats resume la última actividad de reacción, por ejemplo: “0708 reaccionó a «Nos vemos» con ❤️”.
-- El menú Reaccionar incorpora “Más reacciones...”, con búsqueda por nombre y la posibilidad de escribir
-  emojis compatibles con WhatsApp.
-- En grupos, las reacciones usan el identificador de mensaje de la sala para llegar al mensaje correcto.
-
-Guía de uso integrada
-- El menú Ayuda incluye “Ver documentación” y el atajo F1 abre una guía accesible de WhatsApp CAN.
-- La guía explica los atajos de teclado, velocidad de audios, búsqueda, mensajes destacados, grupos,
-  encuestas, adjuntos, almacenamiento y actualizaciones.
+Envío más confiable con el puente local
+- Si WhatsApp todavía está preparando su sesión interna al arrancar, el cliente conserva el mensaje y
+  reintenta automáticamente con pausas progresivas.
+- El error temporal “Legacy session is not fully initialized” ya no descarta inmediatamente el mensaje ni
+  obliga a escribirlo de nuevo.
+- Los demás rechazos XMPP continúan mostrándose normalmente para no ocultar errores reales.

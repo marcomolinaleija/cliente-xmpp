@@ -118,7 +118,7 @@ if ($knownDistros -notcontains $DistroName) {
 if (Test-ModernAppliance -Distribution $DistroName) {
     Write-Host "La distribución $DistroName ya es compatible con actualizaciones del puente y envío de archivos."
     Write-Host "No se realizó ningún cambio."
-    exit 0
+    return
 }
 
 Write-Host ""
@@ -133,9 +133,9 @@ Write-Host "No cierres esta ventana ni apagues el equipo durante el reemplazo."
 Write-Host ""
 if (-not $Si) {
     $confirmation = Read-Host "Escribe ACTUALIZAR para continuar"
-    if ($confirmation -cne "ACTUALIZAR") {
+    if ($confirmation.Trim() -ine "ACTUALIZAR") {
         Write-Host "Actualización cancelada; no se realizó ningún cambio."
-        exit 0
+        return
     }
 }
 

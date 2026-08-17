@@ -509,7 +509,9 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   instalador desde URLs fijadas al tag, verifica ambos SHA-256 y llama a `-InstallOrResume`.
   `build-public-updater.ps1` genera el asset ASCII autocontenido para que `irm URL | iex` decodifique
   internamente la fuente UTF-8 sin corromper BOM ni acentos. `publish-appliance-release.ps1` debe
-  adjuntar ese migrador generado y su checksum además del appliance.
+  adjuntar ese migrador generado y su checksum además del appliance. El migrador no debe usar
+  `exit`, acepta la confirmación sin distinguir mayúsculas y el envoltorio conserva un transcript
+  en `%LOCALAPPDATA%\WhatsAppCAN\logs` para diagnosticar fallos ocurridos en una consola efímera.
 - El cliente es híbrido y guarda perfiles independientes `local` y `remote` junto con
   `connection_mode`. La elección en Configuración se aplica en la siguiente apertura; la pantalla
   de conexión permite cambiar inmediatamente cuando está desconectado. Instalar WSL no puede volver

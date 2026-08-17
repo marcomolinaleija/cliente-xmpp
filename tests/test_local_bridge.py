@@ -128,6 +128,8 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("Invoke-WebRequest", updater)
         self.assertIn("Escribe ACTUALIZAR para continuar", updater)
         self.assertIn("se restaurará automáticamente la anterior", updater)
+        self.assertIn('$confirmation.Trim() -ine "ACTUALIZAR"', updater)
+        self.assertNotIn("exit 0", updater)
         self.assertNotIn("--show-password", updater)
 
         publisher = (appliance_root / "publish-appliance-release.ps1").read_text(
@@ -142,6 +144,8 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("build-public-updater.ps1", publisher)
         self.assertIn("FromBase64String", builder)
         self.assertIn("[Text.ASCIIEncoding]::new()", builder)
+        self.assertIn("Start-Transcript", builder)
+        self.assertIn("actualizacion-puente-{0}.log", builder)
         self.assertIn('[string]$ManifestPath = ""', publisher)
         self.assertIn('[string]$ArtifactDirectory = ""', publisher)
         self.assertLess(

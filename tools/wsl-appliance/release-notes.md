@@ -9,6 +9,7 @@ distribución WSL2.
 - Migra automáticamente la distribución 1.0 conservando sesión, certificados, adjuntos y Prosody.
 - Crea respaldos con SHA-256 antes del reemplazo y restaura la distribución anterior si falla.
 - Incluye `actualizar-puente-local.ps1` para quienes ya tienen la distribución antigua; funciona
-  como archivo descargado y directamente mediante `irm URL | iex` sin corromper los acentos.
+  como archivo descargado y directamente mediante `irm URL | iex` sin corromper los acentos ni
+  cerrar la consola, y conserva un transcript local para diagnóstico.
 
 Requiere Windows x64 y WSL 2.4.4 o posterior.

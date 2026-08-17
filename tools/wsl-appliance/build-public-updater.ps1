@@ -20,8 +20,35 @@ $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $sourceText = $strictUtf8.GetString($sourceBytes, 3, $sourceBytes.Length - 3)
 $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($sourceText))
 $wrapper = @"
-`$codigoActualizador = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payload'))
-& ([ScriptBlock]::Create(`$codigoActualizador)) @args
+`$directorioRegistro = Join-Path `$env:LOCALAPPDATA 'WhatsAppCAN\logs'
+New-Item -ItemType Directory -Path `$directorioRegistro -Force | Out-Null
+`$rutaRegistro = Join-Path `$directorioRegistro ("actualizacion-puente-{0}.log" -f [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
+`$transcriptIniciado = `$false
+`$errorActualizacion = `$null
+try {
+    try {
+        Start-Transcript -Path `$rutaRegistro -Force | Out-Null
+        `$transcriptIniciado = `$true
+    }
+    catch {
+        Write-Warning 'No se pudo iniciar el registro de diagnostico.'
+    }
+    `$codigoActualizador = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payload'))
+    & ([ScriptBlock]::Create(`$codigoActualizador)) @args
+}
+catch {
+    `$errorActualizacion = `$_
+    Write-Host ("No se pudo completar la actualizacion: {0}" -f `$_.Exception.Message) -ForegroundColor Red
+}
+finally {
+    if (`$transcriptIniciado) {
+        Stop-Transcript | Out-Null
+        Write-Host "Registro de diagnostico: `$rutaRegistro"
+    }
+}
+if (`$null -ne `$errorActualizacion) {
+    throw `$errorActualizacion
+}
 "@
 
 if ($wrapper.ToCharArray() | Where-Object { [int]$_ -gt 127 }) {

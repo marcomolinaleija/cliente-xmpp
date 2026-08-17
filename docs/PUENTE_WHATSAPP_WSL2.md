@@ -149,7 +149,9 @@ como archivo descargado como mediante `irm URL | iex` sin convertir el BOM ni lo
 mojibake. Solicita escribir `ACTUALIZAR`, descarga desde GitHub tanto el `.wsl` como el instalador
 fijado al tag 1.1, verifica tamaño y SHA-256 antes de ejecutar y no imprime credenciales. Si ya
 encuentra una distribución 1.1 no cambia nada. En caso de fallo conserva las descargas verificadas
-para reintentar; al tener éxito las elimina salvo que se use `-ConservarDescargas`.
+para reintentar; al tener éxito las elimina salvo que se use `-ConservarDescargas`. La confirmación
+no distingue mayúsculas y nunca usa `exit`, para no cerrar la consola que invocó `iex`. Cada
+ejecución deja un transcript en `%LOCALAPPDATA%\WhatsAppCAN\logs\actualizacion-puente-*.log`.
 
 Los valores no sensibles esperados son:
 

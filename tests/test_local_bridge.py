@@ -100,6 +100,161 @@ class WslApplianceBuildTests(unittest.TestCase):
             self.assertEqual(artifact.stat().st_size, manifest["size_bytes"])
             self.assertEqual(digest, manifest["sha256"])
 
+    def test_public_legacy_updater_is_pinned_and_utf8_bom(self) -> None:
+        appliance_root = self._appliance_root()
+        updater_path = appliance_root / "actualizar-puente-local.ps1"
+        updater_bytes = updater_path.read_bytes()
+        self.assertTrue(updater_bytes.startswith(b"\xef\xbb\xbf"))
+        updater = updater_bytes.decode("utf-8-sig")
+        manifest = json.loads(
+            (appliance_root / "release-manifest.json").read_text(encoding="utf-8")
+        )
+        installer_path = appliance_root / "install-appliance.ps1"
+        installer_hash = hashlib.sha256(installer_path.read_bytes()).hexdigest()
+
+        self.assertEqual(manifest["appliance_version"], "1.1.0")
+        self.assertEqual(
+            manifest["updater_asset_name"],
+            updater_path.name,
+        )
+        self.assertIn(manifest["download_url"], updater)
+        self.assertIn(manifest["sha256"], updater)
+        self.assertIn(str(manifest["size_bytes"]), updater)
+        self.assertIn(installer_hash, updater)
+        self.assertIn("wsl-appliance-v1.1.0", updater)
+        self.assertIn("-InstallOrResume", updater)
+        self.assertIn("Start-BitsTransfer", updater)
+        self.assertIn("Invoke-WebRequest", updater)
+        self.assertIn("Escribe ACTUALIZAR para continuar", updater)
+        self.assertIn("se restaurará automáticamente la anterior", updater)
+        self.assertNotIn("--show-password", updater)
+
+        publisher = (appliance_root / "publish-appliance-release.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("$updaterAssetName", publisher)
+        self.assertIn("$updaterChecksumPath", publisher)
+        self.assertIn("$updaterHash", publisher)
+
+    def test_bridge_updates_are_digest_pinned_and_independent_from_systemd(self) -> None:
+        appliance_root = self._appliance_root()
+        overlay = appliance_root / "rootfs-overlay"
+        update_manifest = json.loads(
+            (appliance_root / "bridge-update-manifest.json").read_text(encoding="utf-8")
+        )
+        version = json.loads(
+            (
+                overlay
+                / "opt"
+                / "whatsapp-can-bridge"
+                / "version.json"
+            ).read_text(encoding="utf-8")
+        )
+        service = (
+            overlay
+            / "etc"
+            / "systemd"
+            / "system"
+            / "whatsapp-can-slidge.service"
+        ).read_text(encoding="utf-8")
+        updater = (
+            overlay
+            / "usr"
+            / "local"
+            / "libexec"
+            / "whatsapp-can-bridge-image"
+        ).read_text(encoding="utf-8")
+        provision = (
+            overlay
+            / "opt"
+            / "whatsapp-can-bridge"
+            / "build"
+            / "provision-rootfs.sh"
+        ).read_text(encoding="utf-8")
+        manager = (appliance_root / "manage-appliance.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertEqual(update_manifest["schema_version"], 1)
+        self.assertRegex(
+            update_manifest["image"],
+            r"^ghcr\.io/marcomolinaleija/cliente-xmpp-bridge:v[1-9][0-9]*$",
+        )
+        self.assertRegex(update_manifest["digest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(version["bridge_image"], update_manifest["image"])
+        self.assertEqual(version["bridge_digest"], update_manifest["digest"])
+        self.assertTrue(version["bridge_updates"])
+
+        self.assertIn("whatsapp-can-bridge-image run", service)
+        self.assertNotIn("ghcr.io/", service)
+        self.assertIn("create_state_backup", updater)
+        self.assertIn("restore_state_backup", updater)
+        self.assertIn("rollback_update", updater)
+        self.assertIn("normalize_image_id", updater)
+        self.assertIn("--proto '=https'", updater)
+        self.assertIn('exec podman run --rm --name whatsapp-can-slidge', updater)
+        self.assertIn('curl \\\n', provision)
+        self.assertIn(
+            f'{update_manifest["image"]}@{update_manifest["digest"]}', provision
+        )
+        self.assertTrue((appliance_root / "test-bridge-image-updater.sh").is_file())
+        self.assertIn('"update" {', manager)
+        self.assertIn('"--manifest-url"', manager)
+        self.assertIn(
+            "chmod 0644 /etc/systemd/system/whatsapp-can-slidge.service",
+            provision,
+        )
+        save_position = provision.index("podman save --format oci-archive")
+        load_position = provision.index('podman load -i "$image_directory/slidge-v19.oci"')
+        inspect_position = provision.index(
+            "podman image inspect \"$bridge_image\" --format '{{.Id}}'"
+        )
+        self.assertLess(save_position, load_position)
+        self.assertLess(load_position, inspect_position)
+
+    def test_local_http_upload_is_loopback_only_and_limited_to_200_mib(self) -> None:
+        appliance_root = self._appliance_root()
+        overlay = appliance_root / "rootfs-overlay"
+        prosody = (
+            overlay
+            / "opt"
+            / "whatsapp-can-bridge"
+            / "templates"
+            / "prosody.cfg.lua.in"
+        ).read_text(encoding="utf-8")
+        control = (
+            overlay / "usr" / "local" / "sbin" / "whatsapp-can-bridge"
+        ).read_text(encoding="utf-8")
+        installer = (appliance_root / "install-appliance.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn('interfaces = { "127.0.0.1", "::1" }', prosody)
+        self.assertIn("http_ports = { 5280 }", prosody)
+        self.assertIn(
+            'http_external_url = "http://127.0.0.1:5280/"',
+            prosody,
+        )
+        self.assertIn(
+            'Component "upload.@@XMPP_DOMAIN@@" "http_file_share"',
+            prosody,
+        )
+        self.assertIn('http_host = "127.0.0.1"', prosody)
+        self.assertIn(
+            "http_file_share_size_limit = 200 * 1024 * 1024",
+            prosody,
+        )
+        self.assertIn("http_file_share_expires_after = 7 * 24 * 60 * 60", prosody)
+        self.assertIn("127\\.0\\.0\\.1:5280", control)
+        self.assertIn("http://127.0.0.1:5280/file_share/", control)
+        self.assertIn("foreach ($requiredPort in 5222, 5280, 8080)", installer)
+        upload_smoke = appliance_root / "smoke_local_upload.py"
+        self.assertTrue(upload_smoke.is_file())
+        upload_smoke_source = upload_smoke.read_text(encoding="utf-8")
+        self.assertIn("MAX_UPLOAD_BYTES = 200 * 1024 * 1024", upload_smoke_source)
+        self.assertIn("MAX_UPLOAD_BYTES + 1", upload_smoke_source)
+        self.assertIn("session.get(get_url", upload_smoke_source)
+
     def test_inno_setup_offers_local_or_remote_and_verifies_download(self) -> None:
         setup_script = (
             Path(__file__).resolve().parents[1] / "installer" / "WhatsApp-CAN.iss"
@@ -121,6 +276,17 @@ class WslApplianceBuildTests(unittest.TestCase):
         ).read_text(encoding="utf-8-sig")
         self.assertRegex(install_script, re.compile(r"\[string\]\$ExpectedPackageSha256"))
         self.assertIn("[switch]$InstallOrResume", install_script)
+        self.assertIn("function Invoke-LegacyMigration", install_script)
+        self.assertIn("function Restore-LegacyBackup", install_script)
+        self.assertIn("function Recover-InterruptedMigration", install_script)
+        self.assertIn('"--export", $Distribution, $fullBackup', install_script)
+        self.assertIn("legacy-upgrade-journal.json", install_script)
+        self.assertIn("etc/whatsapp-can-bridge/credentials", install_script)
+        self.assertIn("var/lib/whatsapp-can-bridge/slidge", install_script)
+        self.assertIn("var/lib/whatsapp-can-bridge/attachments", install_script)
+        self.assertIn("var/lib/prosody", install_script)
+        self.assertIn("Test-ModernAppliance", install_script)
+        self.assertNotIn("Remove-Item -Recurse", install_script)
 
 
 class LocalBridgeServiceTests(unittest.TestCase):

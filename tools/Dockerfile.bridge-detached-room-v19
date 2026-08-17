@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v18@sha256:d890c2ddc1e71528fe30a9cb400fef81c6e221f882e0625133e1bc454c4ee4dd
+
+FROM ${BASE_IMAGE}
+
+USER root
+COPY patch_slidge_detached_room.py /tmp/patch_slidge_detached_room.py
+RUN python -B /tmp/patch_slidge_detached_room.py /venv/lib/python3.13/site-packages \
+        --no-backup && \
+    python -m compileall -q \
+        /venv/lib/python3.13/site-packages/slidge/group/room.py && \
+    rm /tmp/patch_slidge_detached_room.py
+
+COPY smoke_bridge_detached_room_runtime.py /tmp/smoke_bridge_detached_room_runtime.py
+RUN python -B /tmp/smoke_bridge_detached_room_runtime.py && \
+    rm /tmp/smoke_bridge_detached_room_runtime.py
+
+USER slidge

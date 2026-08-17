@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "appliance_version": "1.0.0",
-  "bridge_image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14",
-  "release_tag": "wsl-appliance-v1.0.0",
+  "appliance_version": "1.1.0",
+  "bridge_image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v19",
+  "release_tag": "wsl-appliance-v1.1.0",
   "asset_name": "WhatsAppCAN-Bridge-amd64.wsl",
-  "download_url": "https://github.com/marcomolinaleija/cliente-xmpp/releases/download/wsl-appliance-v1.0.0/WhatsAppCAN-Bridge-amd64.wsl",
-  "sha256": "983e3622d654bb1bed0c523b99621ce239435edf851a9b37be26ab12251ed358",
-  "size_bytes": 721274880
+  "download_url": "https://github.com/marcomolinaleija/cliente-xmpp/releases/download/wsl-appliance-v1.1.0/WhatsAppCAN-Bridge-amd64.wsl",
+  "sha256": "5c9efa86eeefdee1836bb822e277cc4c217b1317fc85f7d53d831929b13a8f74",
+  "size_bytes": 747847680,
+  "updater_asset_name": "actualizar-puente-local.ps1"
 }

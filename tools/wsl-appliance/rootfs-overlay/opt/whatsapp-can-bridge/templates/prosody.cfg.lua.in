@@ -9,7 +9,9 @@ interfaces = { "127.0.0.1", "::1" }
 c2s_ports = { 5222 }
 s2s_ports = { }
 component_ports = { 5347 }
-http_ports = { }
+http_ports = { 5280 }
+http_external_url = "http://127.0.0.1:5280/"
+http_max_content_size = 200 * 1024 * 1024
 
 allow_registration = false
 c2s_require_encryption = true
@@ -63,3 +65,10 @@ VirtualHost "@@XMPP_DOMAIN@@"
 Component "@@COMPONENT_DOMAIN@@"
     component_secret = "@@COMPONENT_SECRET@@"
     modules_enabled = { "privilege" }
+
+Component "upload.@@XMPP_DOMAIN@@" "http_file_share"
+    http_host = "127.0.0.1"
+    http_file_share_access = { "@@XMPP_DOMAIN@@" }
+    http_file_share_size_limit = 200 * 1024 * 1024
+    http_file_share_expires_after = 7 * 24 * 60 * 60
+    http_file_share_daily_quota = 2 * 1024 * 1024 * 1024

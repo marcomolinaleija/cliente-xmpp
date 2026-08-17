@@ -7,7 +7,7 @@ ConditionPathExists=/etc/whatsapp-can-bridge/environment
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/podman rm -f whatsapp-can-slidge
-ExecStart=/usr/bin/podman run --rm --name whatsapp-can-slidge --pull=never --network host --env-file /etc/whatsapp-can-bridge/environment -v /var/lib/whatsapp-can-bridge/slidge:/var/lib/slidge -v /var/lib/whatsapp-can-bridge/attachments:/var/lib/slidge-attachments ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+ExecStart=/usr/local/libexec/whatsapp-can-bridge-image run
 ExecStop=/usr/bin/podman stop --time 30 whatsapp-can-slidge
 Restart=on-failure
 RestartSec=5

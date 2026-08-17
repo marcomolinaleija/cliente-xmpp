@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${WHATSAPP_CAN_STATE_DIR:-/var/lib/whatsapp-can-bridge}"
+config_dir="${WHATSAPP_CAN_CONFIG_DIR:-/etc/whatsapp-can-bridge}"
+bundled_image="ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v19"
+bundled_digest="sha256:9358df63a39b09d39f6d4f0293b07e1271fd13fed026320057ec6b6de627a899"
+bundled_archive="/opt/whatsapp-can-bridge/images/slidge-v19.oci"
+bundled_archive_checksum="$bundled_archive.sha256"
+bundled_image_id_file="/opt/whatsapp-can-bridge/images/slidge-v19.image-id"
+active_image_file="$config_dir/bridge-image.json"
+default_manifest_url="https://raw.githubusercontent.com/marcomolinaleija/cliente-xmpp/main/tools/wsl-appliance/bridge-update-manifest.json"
+allowed_repository="ghcr.io/marcomolinaleija/cliente-xmpp-bridge"
+control_script="/usr/local/sbin/whatsapp-can-bridge"
+service_name="whatsapp-can-slidge.service"
+
+active_image=""
+active_digest=""
+active_image_id=""
+
+require_root() {
+    if [[ "${WHATSAPP_CAN_SKIP_ROOT_CHECK:-false}" == "true" ]]; then
+        return
+    fi
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "Este comando debe ejecutarse como root dentro del appliance." >&2
+        exit 1
+    fi
+}
+
+validate_image_identity() {
+    local image="$1" digest="$2" image_id="${3:-sha256:$(printf '0%.0s' {1..64})}"
+    local tag="${image#"$allowed_repository:"}"
+    if [[ "$image" != "$allowed_repository:$tag" || ! "$tag" =~ ^v[1-9][0-9]*$ ]]; then
+        echo "La actualización apunta a un repositorio o etiqueta no autorizados." >&2
+        return 1
+    fi
+    if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo "El digest de la imagen no tiene un formato SHA-256 válido." >&2
+        return 1
+    fi
+    if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo "El ID local de la imagen no tiene un formato válido." >&2
+        return 1
+    fi
+}
+
+normalize_image_id() {
+    local image_id="$1"
+    image_id="${image_id#sha256:}"
+    if [[ ! "$image_id" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "El ID local de la imagen no tiene un formato válido." >&2
+        return 1
+    fi
+    printf 'sha256:%s\n' "$image_id"
+}
+
+load_active_image() {
+    local schema
+    if [[ ! -s "$active_image_file" ]]; then
+        echo "No existe la configuración de imagen activa." >&2
+        return 1
+    fi
+    schema="$(jq -er '.schema_version | numbers' "$active_image_file")"
+    if [[ "$schema" != "1" ]]; then
+        echo "Versión de configuración de imagen activa no compatible: $schema" >&2
+        return 1
+    fi
+    active_image="$(jq -er '.image | strings' "$active_image_file")"
+    active_digest="$(jq -er '.digest | strings' "$active_image_file")"
+    active_image_id="$(jq -er '.image_id | strings' "$active_image_file")"
+    validate_image_identity "$active_image" "$active_digest" "$active_image_id" || return 1
+}
+
+write_active_image() {
+    local image="$1" digest="$2" image_id="$3" temporary
+    validate_image_identity "$image" "$digest" "$image_id" || return 1
+    install -d -m 0750 "$config_dir"
+    temporary="$(mktemp "$config_dir/.bridge-image.XXXXXX")"
+    jq -n \
+        --arg image "$image" \
+        --arg digest "$digest" \
+        --arg image_id "$image_id" \
+        --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{schema_version:1,image:$image,digest:$digest,image_id:$image_id,updated_at:$updated_at}' \
+        > "$temporary"
+    chmod 0600 "$temporary"
+    mv -f "$temporary" "$active_image_file"
+}
+
+image_exists() {
+    podman image exists "$1"
+}
+
+inspect_image_id() {
+    local image_id
+    image_id="$(podman image inspect "$1" --format '{{.Id}}')" || return 1
+    normalize_image_id "$image_id"
+}
+
+pull_image() {
+    podman pull "$1"
+}
+
+stop_bridge() {
+    systemctl stop "$service_name"
+}
+
+start_bridge() {
+    systemctl start "$service_name"
+}
+
+validate_candidate() {
+    "$control_script" smoke
+}
+
+capture_failed_update_logs() {
+    local destination="$1"
+    journalctl -u "$service_name" -n 300 --no-pager > "$destination" 2>&1 || true
+    chmod 0600 "$destination" 2>/dev/null || true
+}
+
+initialize_image() {
+    require_root
+    if [[ -s "$active_image_file" ]]; then
+        load_active_image
+        if ! image_exists "$active_image_id"; then
+            echo "La imagen activa no está presente en el almacenamiento local." >&2
+            return 1
+        fi
+        return
+    fi
+
+    if ! image_exists "$bundled_image"; then
+        if [[ ! -f "$bundled_archive" || ! -f "$bundled_archive_checksum" ]]; then
+            echo "La imagen inicial v19 no está incluida en este appliance." >&2
+            return 1
+        fi
+        (cd "$(dirname "$bundled_archive")" && sha256sum -c "$(basename "$bundled_archive_checksum")")
+        podman load -i "$bundled_archive"
+    fi
+    if [[ ! -s "$bundled_image_id_file" ]]; then
+        echo "Falta el ID inmutable de la imagen inicial v19." >&2
+        return 1
+    fi
+
+    local actual_image_id expected_image_id
+    actual_image_id="$(inspect_image_id "$bundled_image")"
+    expected_image_id="$(normalize_image_id "$(tr -d '\r\n' < "$bundled_image_id_file")")" || return 1
+    if [[ "$actual_image_id" != "$expected_image_id" ]]; then
+        echo "La imagen inicial no coincide con el ID aprobado de v19." >&2
+        return 1
+    fi
+    write_active_image "$bundled_image" "$bundled_digest" "$actual_image_id"
+}
+
+read_update_manifest() {
+    local manifest="$1"
+    local schema image digest
+    schema="$(jq -er '.schema_version | numbers' "$manifest")"
+    image="$(jq -er '.image | strings' "$manifest")"
+    digest="$(jq -er '.digest | strings' "$manifest")"
+    if [[ "$schema" != "1" ]]; then
+        echo "Versión de manifiesto de actualización no compatible: $schema" >&2
+        return 1
+    fi
+    validate_image_identity "$image" "$digest" || return 1
+    printf '%s\n%s\n' "$image" "$digest"
+}
+
+create_state_backup() {
+    local backup_dir="$1"
+    install -d -m 0700 "$backup_dir"
+    cp -a "$active_image_file" "$backup_dir/bridge-image.json"
+    if [[ ! -d "$state_dir/slidge" || -L "$state_dir/slidge" ]]; then
+        echo "La carpeta persistente de Slidge no es un directorio seguro." >&2
+        return 1
+    fi
+    tar -C "$state_dir" -czf "$backup_dir/slidge.tar.gz" slidge
+    chmod 0600 "$backup_dir/bridge-image.json" "$backup_dir/slidge.tar.gz"
+}
+
+restore_state_backup() {
+    local backup_dir="$1"
+    local failed_state="$backup_dir/failed-slidge"
+    if [[ ! -f "$backup_dir/bridge-image.json" || ! -f "$backup_dir/slidge.tar.gz" ]]; then
+        echo "El respaldo de actualización está incompleto; no se puede hacer rollback." >&2
+        return 1
+    fi
+    if [[ ! -d "$state_dir/slidge" || -L "$state_dir/slidge" ]]; then
+        echo "La carpeta persistente de Slidge no es un directorio seguro." >&2
+        return 1
+    fi
+    if [[ -e "$failed_state" ]]; then
+        echo "Ya existe un estado fallido en $failed_state; se rechazó sobrescribirlo." >&2
+        return 1
+    fi
+    mv "$state_dir/slidge" "$failed_state"
+    tar -C "$state_dir" -xzf "$backup_dir/slidge.tar.gz"
+    cp -a "$backup_dir/bridge-image.json" "$active_image_file"
+    chmod 0600 "$active_image_file"
+}
+
+rollback_update() {
+    local backup_dir="$1"
+    stop_bridge >/dev/null 2>&1 || true
+    capture_failed_update_logs "$backup_dir/failed-update.log"
+    restore_state_backup "$backup_dir"
+    start_bridge
+    if ! validate_candidate; then
+        echo "El rollback restauró los datos, pero la imagen anterior no pasó el smoke test." >&2
+        return 1
+    fi
+    echo "La actualización falló y se restauró automáticamente la imagen anterior." >&2
+}
+
+update_from_manifest() {
+    require_root
+    local manifest="$1" rendered values image digest candidate_ref candidate_id stamp backup_dir
+    local target_version active_version
+    rendered="$(read_update_manifest "$manifest")" || return 1
+    mapfile -t values <<< "$rendered"
+    image="${values[0]}"
+    digest="${values[1]}"
+    initialize_image
+    load_active_image
+    if [[ "$image" == "$active_image" && "$digest" == "$active_digest" ]]; then
+        echo "El puente ya usa la imagen estable aprobada: $image@$digest"
+        return
+    fi
+    target_version="${image##*:v}"
+    active_version="${active_image##*:v}"
+    if (( target_version < active_version )); then
+        echo "Se rechazó volver de v$active_version a v$target_version mediante el canal estable." >&2
+        return 1
+    fi
+    if (( target_version == active_version )); then
+        echo "Se rechazó cambiar el digest de una versión ya instalada." >&2
+        return 1
+    fi
+
+    candidate_ref="$image@$digest"
+    echo "Descargando la imagen aprobada $candidate_ref..."
+    pull_image "$candidate_ref"
+    candidate_id="$(inspect_image_id "$candidate_ref")"
+    validate_image_identity "$image" "$digest" "$candidate_id" || return 1
+
+    stamp="$(date -u +%Y%m%d-%H%M%S)"
+    backup_dir="$state_dir/update-backups/$stamp"
+    if [[ -e "$backup_dir" ]]; then
+        echo "El directorio de respaldo ya existe inesperadamente: $backup_dir" >&2
+        return 1
+    fi
+
+    stop_bridge
+    if ! create_state_backup "$backup_dir"; then
+        start_bridge || true
+        return 1
+    fi
+    if ! write_active_image "$image" "$digest" "$candidate_id" || ! start_bridge; then
+        rollback_update "$backup_dir"
+        return 1
+    fi
+    if ! validate_candidate; then
+        rollback_update "$backup_dir"
+        return 1
+    fi
+
+    echo "Puente actualizado correctamente a $image@$digest"
+    echo "Respaldo de rollback conservado en: $backup_dir"
+}
+
+update_from_url() {
+    local manifest_url="${1:-$default_manifest_url}" temporary result=0
+    if [[ ! "$manifest_url" =~ ^https:// ]]; then
+        echo "El manifiesto de actualización debe descargarse mediante HTTPS." >&2
+        return 1
+    fi
+    temporary="$(mktemp)"
+    if ! curl --fail --location --silent --show-error \
+        --proto '=https' --tlsv1.2 \
+        "$manifest_url" -o "$temporary"; then
+        rm -f "$temporary"
+        return 1
+    fi
+    update_from_manifest "$temporary" || result=$?
+    rm -f "$temporary"
+    return "$result"
+}
+
+print_status() {
+    initialize_image
+    load_active_image
+    jq -n \
+        --arg image "$active_image" \
+        --arg digest "$active_digest" \
+        --arg image_id "$active_image_id" \
+        '{image:$image,digest:$digest,image_id:$image_id}'
+}
+
+run_container() {
+    require_root
+    initialize_image
+    load_active_image
+    if ! image_exists "$active_image_id"; then
+        echo "La imagen activa no está disponible localmente." >&2
+        return 1
+    fi
+    exec podman run --rm --name whatsapp-can-slidge --pull=never --network host \
+        --env-file /etc/whatsapp-can-bridge/environment \
+        -v /var/lib/whatsapp-can-bridge/slidge:/var/lib/slidge \
+        -v /var/lib/whatsapp-can-bridge/attachments:/var/lib/slidge-attachments \
+        "$active_image_id"
+}
+
+main() {
+    local action="${1:-status}"
+    shift || true
+    case "$action" in
+        initialize)
+            [[ $# -eq 0 ]] || return 64
+            initialize_image
+            ;;
+        status)
+            [[ $# -eq 0 ]] || return 64
+            print_status
+            ;;
+        run)
+            [[ $# -eq 0 ]] || return 64
+            run_container
+            ;;
+        update)
+            if [[ "${1:-}" == "--manifest-file" && $# -eq 2 ]]; then
+                update_from_manifest "$2"
+            elif [[ "${1:-}" == "--manifest-url" && $# -eq 2 ]]; then
+                update_from_url "$2"
+            elif [[ $# -eq 0 ]]; then
+                update_from_url
+            else
+                echo "Uso: whatsapp-can-bridge-image update [--manifest-url URL|--manifest-file RUTA]" >&2
+                return 64
+            fi
+            ;;
+        *)
+            echo "Uso: whatsapp-can-bridge-image {initialize|status|run|update}" >&2
+            return 64
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

@@ -1,11 +1,13 @@
-# Appliance local de WhatsApp CAN 1.0.0
+# Appliance local de WhatsApp CAN 1.1.0
 
-Primera distribución pública del puente local para WSL2.
+Esta versión permite actualizar el puente de WhatsApp posteriormente sin reemplazar toda la
+distribución WSL2.
 
-- Incluye Ubuntu 24.04, Prosody, nginx, Podman y el puente de WhatsApp v14.
-- Publica XMPP y adjuntos únicamente en `127.0.0.1`.
-- Genera credenciales, CA y certificado distintos para cada instalación.
-- Conserva la sesión de WhatsApp y los adjuntos dentro de la distribución WSL2.
-- Permite instalación, reanudación, diagnóstico, respaldo y desinstalación segura.
+- Incluye el puente de WhatsApp v19 fijado por digest.
+- Añade envío y descarga XEP-0363 con un máximo de 200 MiB por archivo.
+- Conserva Ubuntu 24.04, Prosody, nginx, Podman y los servicios limitados a `127.0.0.1`.
+- Migra automáticamente la distribución 1.0 conservando sesión, certificados, adjuntos y Prosody.
+- Crea respaldos con SHA-256 antes del reemplazo y restaura la distribución anterior si falla.
+- Incluye `actualizar-puente-local.ps1` para quienes ya tienen la distribución antigua.
 
 Requiere Windows x64 y WSL 2.4.4 o posterior.

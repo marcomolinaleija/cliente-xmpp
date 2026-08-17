@@ -29,6 +29,7 @@ if ($manifest.schema_version -ne 1) {
 }
 $tag = [string]$manifest.release_tag
 $assetName = [string]$manifest.asset_name
+$updaterAssetName = [string]$manifest.updater_asset_name
 $expectedHash = ([string]$manifest.sha256).Trim().ToLowerInvariant()
 $expectedSize = [long]$manifest.size_bytes
 if ($tag -notmatch '^wsl-appliance-v\d+\.\d+\.\d+$') {
@@ -37,6 +38,9 @@ if ($tag -notmatch '^wsl-appliance-v\d+\.\d+\.\d+$') {
 if ($assetName -notmatch '^[A-Za-z0-9._-]+\.wsl$') {
     throw "El nombre del asset WSL no es válido: $assetName."
 }
+if ($updaterAssetName -notmatch '^[A-Za-z0-9._-]+\.ps1$') {
+    throw "El nombre del actualizador no es válido: $updaterAssetName."
+}
 if ($expectedHash -notmatch '^[0-9a-f]{64}$' -or $expectedSize -le 0) {
     throw "El hash o el tamaño del manifiesto no son válidos."
 }
@@ -44,8 +48,10 @@ if ($expectedHash -notmatch '^[0-9a-f]{64}$' -or $expectedSize -le 0) {
 $artifactRoot = (Resolve-Path $ArtifactDirectory).Path
 $artifactPath = Join-Path $artifactRoot $assetName
 $checksumPath = "$artifactPath.sha256"
+$updaterPath = Join-Path $PSScriptRoot $updaterAssetName
+$updaterChecksumPath = Join-Path $artifactRoot "$updaterAssetName.sha256"
 $notesPath = Join-Path $PSScriptRoot "release-notes.md"
-foreach ($requiredFile in $artifactPath, $checksumPath, $notesPath) {
+foreach ($requiredFile in $artifactPath, $checksumPath, $updaterPath, $notesPath) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Falta el archivo requerido: $requiredFile"
     }
@@ -60,6 +66,12 @@ if ($artifact.Length -ne $expectedSize) {
 if ($actualHash -ne $expectedHash -or $checksumHash -ne $expectedHash) {
     throw "El appliance o su archivo .sha256 no coincide con release-manifest.json."
 }
+$updaterHash = (Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText(
+    $updaterChecksumPath,
+    "$updaterHash  $updaterAssetName`n",
+    [Text.UTF8Encoding]::new($false)
+)
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "Git no está disponible en PATH."
@@ -104,6 +116,8 @@ Write-Host "  Tag:      $tag"
 Write-Host "  Asset:    $artifactPath"
 Write-Host "  SHA-256:  $actualHash"
 Write-Host "  Tamaño:   $($artifact.Length) bytes"
+Write-Host "  Migrador: $updaterPath"
+Write-Host "  SHA-256:  $updaterHash"
 if (-not $Yes) {
     $confirmation = Read-Host "Escribe PUBLICAR $tag para continuar"
     if ($confirmation -cne "PUBLICAR $tag") {
@@ -120,7 +134,7 @@ catch {
     throw
 }
 
-& gh release create $tag $artifactPath $checksumPath `
+& gh release create $tag $artifactPath $checksumPath $updaterPath $updaterChecksumPath `
     --repo $Repository `
     --title "WhatsApp CAN - Appliance WSL2 $($manifest.appliance_version)" `
     --notes-file $notesPath `
@@ -130,7 +144,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $publishedAssets = @(gh release view $tag --repo $Repository --json assets --jq ".assets[].name")
-if ($publishedAssets -notcontains $assetName -or $publishedAssets -notcontains "$assetName.sha256") {
+if ($publishedAssets -notcontains $assetName -or
+    $publishedAssets -notcontains "$assetName.sha256" -or
+    $publishedAssets -notcontains $updaterAssetName -or
+    $publishedAssets -notcontains "$updaterAssetName.sha256") {
     throw "La release se creó, pero no contiene todos los assets esperados."
 }
 $releaseUrl = (gh release view $tag --repo $Repository --json url --jq ".url" | Out-String).Trim()

@@ -453,10 +453,20 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/bridge_private_replies_test.go`, `tools/Dockerfile.bridge-private-replies-v18` y
   `tools/smoke_bridge_private_replies_runtime.py`. No reduzcas estas citas a texto embebido ni
   reemplaces el JID MUC del `reply@to` por el JID privado del participante.
+- Desde el 16 de agosto de 2026, el servidor de producción usa
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v19@sha256:9358df63a39b09d39f6d4f0293b07e1271fd13fed026320057ec6b6de627a899`.
+  Parte de `v18` fijada por digest y corrige el `DetachedInstanceError` intermitente durante la
+  carga de grupos. Slidge vinculaba un participante anónimo ya persistido con su contacto mediante
+  una sesión SQLAlchemy que expiraba también el `Room` fusionado al hacer `commit`; el siguiente
+  participante intentaba usar ese cuarto ya separado y podía derribar la sesión del gateway. La
+  sesión de esa rama usa ahora `expire_on_commit=False`. El parche, Dockerfile y prueba que reproduce
+  el fallo exacto en `v18` y pasa en `v19` viven en `tools/patch_slidge_detached_room.py`,
+  `tools/Dockerfile.bridge-detached-room-v19` y
+  `tools/smoke_bridge_detached_room_runtime.py`.
 - La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
-  `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y la imagen v14
+  `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y una imagen inicial
   fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,
-  publica solamente `127.0.0.1:5222` y `127.0.0.1:8080`, y conserva sesión y adjuntos dentro del
+  publica solamente `127.0.0.1:5222`, `127.0.0.1:5280` y `127.0.0.1:8080`, y conserva sesión y adjuntos dentro del
   VHDX. El cliente debe usar `ConnectionSettings.ca_file` para confiar sólo en esa CA. No abras
   esos puertos a la LAN, no permitas dos instancias simultáneas y no desinstales sin exportar un
   respaldo recuperable. `cliente_xmpp/local_bridge.py` detecta y prepara la distribución fuera
@@ -474,6 +484,30 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   reinicio completo de Windows conservaron la sesión. El instalador debe seguir siendo reanudable,
   poder reemplazar su CA previamente protegida y conservar BOM UTF-8 en sus scripts PowerShell para
   que Windows PowerShell 5.1 muestre correctamente los textos en español.
+  Desde la versión 1.1 del appliance, systemd no fija una etiqueta: ejecuta el ID inmutable guardado
+  en `/etc/whatsapp-can-bridge/bridge-image.json`. El comando `whatsapp-can-bridge update` descarga
+  el manifiesto estable HTTPS, sólo acepta el repositorio oficial con etiqueta `vN` y digest
+  SHA-256, respalda la carpeta `slidge`, activa la candidata y hace rollback de imagen y datos si
+  falla el smoke test. Publicar una imagen no basta: actualiza
+  `tools/wsl-appliance/bridge-update-manifest.json` únicamente después de validarla. No vuelvas a
+  fijar la imagen directamente en la unidad systemd ni elimines los respaldos de actualización.
+  Prosody publica XEP-0363 mediante `http_file_share` exclusivamente en
+  `127.0.0.1:5280`, anuncia ese mismo loopback en los slots y acepta archivos de hasta 200 MiB.
+  Los archivos subidos caducan a los siete días y la cuota diaria local es de 2 GiB. Este servicio
+  es para multimedia saliente del cliente; nginx en `127.0.0.1:8080` conserva el flujo distinto de
+  adjuntos entrantes de Slidge. El smoke test debe validar ambos endpoints y el instalador debe
+  rechazar los tres puertos ocupados antes de registrar la distribución.
+  Si `-InstallOrResume` encuentra una distribución anterior sin actualizador o sin
+  `http_file_share`, realiza una migración transaccional antes de configurar: detiene servicios,
+  exporta un respaldo completo con SHA-256, conserva por separado credenciales, CA, sesión,
+  adjuntos y datos de Prosody, instala el nuevo rootfs, restaura esos datos y valida `configure` y
+  `smoke`. El journal protegido permite detectar una interrupción; ante cualquier fallo después
+  del reemplazo se reimporta el respaldo anterior. No conviertas `-Resume` en reemplazo implícito,
+  no desregistres una distro heredada antes de verificar ambos respaldos y no borres los respaldos
+  de migración después del éxito. La release 1.1 publica también
+  `actualizar-puente-local.ps1` con BOM UTF-8 para usuarios de la 1.0: descarga el `.wsl` y el
+  instalador desde URLs fijadas al tag, verifica ambos SHA-256 y llama a `-InstallOrResume`.
+  `publish-appliance-release.ps1` debe adjuntar el migrador y su checksum además del appliance.
 - El cliente es híbrido y guarda perfiles independientes `local` y `remote` junto con
   `connection_mode`. La elección en Configuración se aplica en la siguiente apertura; la pantalla
   de conexión permite cambiar inmediatamente cuando está desconectado. Instalar WSL no puede volver

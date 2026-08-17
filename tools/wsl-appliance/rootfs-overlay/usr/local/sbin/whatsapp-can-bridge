@@ -6,9 +6,7 @@ config_dir="/etc/whatsapp-can-bridge"
 credentials_file="$config_dir/credentials"
 environment_file="$config_dir/environment"
 tls_dir="$config_dir/tls"
-image_archive="/opt/whatsapp-can-bridge/images/slidge-v14.oci"
-image_id_file="/opt/whatsapp-can-bridge/images/slidge-v14.image-id"
-bridge_image="ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14"
+bridge_image_manager="/usr/local/libexec/whatsapp-can-bridge-image"
 xmpp_domain="xmpp.whatsappcan.local"
 component_domain="whatsapp.xmpp.whatsappcan.local"
 xmpp_user="whatsappcan"
@@ -68,28 +66,7 @@ ensure_tls() {
 }
 
 ensure_bridge_image() {
-    if ! podman image exists "$bridge_image"; then
-        if [[ ! -f "$image_archive" ]]; then
-            echo "La imagen v14 no está incluida en este build del appliance." >&2
-            echo "Reconstruye sin --SkipBridgeImage antes de distribuirlo." >&2
-            exit 3
-        fi
-        (cd "$(dirname "$image_archive")" && sha256sum -c "$(basename "$image_archive").sha256")
-        podman load -i "$image_archive"
-    fi
-
-    if [[ ! -s "$image_id_file" ]]; then
-        echo "Falta el ID inmutable de la imagen v14 incluida." >&2
-        exit 4
-    fi
-
-    local actual_image_id expected_image_id
-    actual_image_id="$(podman image inspect "$bridge_image" --format '{{.Id}}')"
-    expected_image_id="$(tr -d '\r\n' < "$image_id_file")"
-    if [[ "$actual_image_id" != "$expected_image_id" ]]; then
-        echo "La imagen local de Slidge no coincide con el ID aprobado de v14." >&2
-        exit 4
-    fi
+    "$bridge_image_manager" initialize
 }
 
 configure_bridge() {
@@ -183,16 +160,18 @@ print_connection() {
 }
 
 print_status() {
-    local configured=false image_present=false
+    local configured=false image_present=false bridge_status
     [[ -f "$configured_marker" ]] && configured=true
-    podman image exists "$bridge_image" >/dev/null 2>&1 && image_present=true
+    bridge_status="$($bridge_image_manager status)"
+    podman image exists "$(jq -r '.image_id' <<< "$bridge_status")" >/dev/null 2>&1 && image_present=true
     jq -n \
         --argjson configured "$configured" \
         --arg prosody "$(service_state prosody.service)" \
         --arg attachments "$(service_state nginx.service)" \
         --arg slidge "$(service_state whatsapp-can-slidge.service)" \
         --argjson image_present "$image_present" \
-        '{configured:$configured,services:{prosody:$prosody,attachments:$attachments,slidge:$slidge},bridge_image_present:$image_present}'
+        --argjson bridge "$bridge_status" \
+        '{configured:$configured,services:{prosody:$prosody,attachments:$attachments,slidge:$slidge},bridge_image_present:$image_present,bridge:$bridge}'
 }
 
 smoke_test() {
@@ -206,7 +185,9 @@ smoke_test() {
             && systemctl is-active --quiet nginx.service \
             && systemctl is-active --quiet whatsapp-can-slidge.service \
             && ss -ltn | grep -qE '127\.0\.0\.1:5222\b' \
+            && ss -ltn | grep -qE '127\.0\.0\.1:5280\b' \
             && ss -ltn | grep -qE '127\.0\.0\.1:8080\b' \
+            && curl --fail --silent --show-error http://127.0.0.1:5280/file_share/ >/dev/null \
             && [[ "$(podman inspect whatsapp-can-slidge --format '{{.State.Running}}' 2>/dev/null || true)" == "true" ]] \
             && podman logs whatsapp-can-slidge 2>&1 \
                 | grep 'Slidge has successfully started' >/dev/null; then
@@ -226,6 +207,13 @@ smoke_test() {
     fi
     if ! ss -ltn | grep -qE '127\.0\.0\.1:8080\b'; then
         echo "FALLO: nginx no escucha en 127.0.0.1:8080." >&2
+        failed=true
+    fi
+    if ! ss -ltn | grep -qE '127\.0\.0\.1:5280\b'; then
+        echo "FALLO: Prosody HTTP Upload no escucha en 127.0.0.1:5280." >&2
+        failed=true
+    elif ! curl --fail --silent --show-error http://127.0.0.1:5280/file_share/ >/dev/null; then
+        echo "FALLO: el endpoint local XEP-0363 no responde." >&2
         failed=true
     fi
     if [[ "$(podman inspect whatsapp-can-slidge --format '{{.State.Running}}' 2>/dev/null || true)" != "true" ]]; then
@@ -278,6 +266,10 @@ case "$action" in
     smoke)
         smoke_test
         ;;
+    update)
+        require_root
+        "$bridge_image_manager" update "$@"
+        ;;
     keepalive)
         require_root
         cat >/dev/null
@@ -289,7 +281,7 @@ case "$action" in
         cat "$tls_dir/ca.crt"
         ;;
     *)
-        echo "Uso: whatsapp-can-bridge {configure|connection|status|start|stop|restart|logs|smoke|keepalive|version|ca-certificate}" >&2
+        echo "Uso: whatsapp-can-bridge {configure|connection|status|start|stop|restart|logs|smoke|update|keepalive|version|ca-certificate}" >&2
         exit 64
         ;;
 esac

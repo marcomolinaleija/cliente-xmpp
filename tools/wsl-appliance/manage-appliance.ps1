@@ -1,10 +1,11 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Position = 0)][ValidateSet("status", "start", "stop", "restart", "logs", "smoke", "connection", "backup", "uninstall")]
+    [Parameter(Position = 0)][ValidateSet("status", "start", "stop", "restart", "logs", "smoke", "update", "connection", "backup", "uninstall")]
     [string]$Action = "status",
     [string]$DistroName = "WhatsAppCAN-Bridge",
     [string]$BackupPath,
-    [string]$ConfirmDistroName
+    [string]$ConfirmDistroName,
+    [string]$ManifestUrl
 )
 
 Set-StrictMode -Version Latest
@@ -76,6 +77,20 @@ switch ($Action) {
     }
     "connection" {
         Invoke-Native wsl.exe @("-d", $DistroName, "-u", "root", "--", "/usr/local/sbin/whatsapp-can-bridge", "connection")
+    }
+    "update" {
+        $arguments = @(
+            "-d", $DistroName, "-u", "root", "--",
+            "/usr/local/sbin/whatsapp-can-bridge", "update"
+        )
+        if ($ManifestUrl) {
+            $manifestUri = [Uri]$ManifestUrl
+            if (-not $manifestUri.IsAbsoluteUri -or $manifestUri.Scheme -ne "https") {
+                throw "El manifiesto de actualización debe usar una URL HTTPS absoluta."
+            }
+            $arguments += @("--manifest-url", $manifestUri.AbsoluteUri)
+        }
+        Invoke-Native wsl.exe $arguments
     }
     default {
         Invoke-Native wsl.exe @("-d", $DistroName, "-u", "root", "--", "/usr/local/sbin/whatsapp-can-bridge", $Action)

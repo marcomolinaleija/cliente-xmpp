@@ -60,10 +60,12 @@ if ($expectedHash -notmatch '^[0-9a-f]{64}$' -or $expectedSize -le 0) {
 $artifactRoot = (Resolve-Path $ArtifactDirectory).Path
 $artifactPath = Join-Path $artifactRoot $assetName
 $checksumPath = "$artifactPath.sha256"
-$updaterPath = Join-Path $PSScriptRoot $updaterAssetName
+$updaterSourcePath = Join-Path $PSScriptRoot $updaterAssetName
+$updaterBuilderPath = Join-Path $PSScriptRoot "build-public-updater.ps1"
+$updaterPath = Join-Path $artifactRoot $updaterAssetName
 $updaterChecksumPath = Join-Path $artifactRoot "$updaterAssetName.sha256"
 $notesPath = Join-Path $PSScriptRoot "release-notes.md"
-foreach ($requiredFile in $artifactPath, $checksumPath, $updaterPath, $notesPath) {
+foreach ($requiredFile in $artifactPath, $checksumPath, $updaterSourcePath, $updaterBuilderPath, $notesPath) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Falta el archivo requerido: $requiredFile"
     }
@@ -78,6 +80,7 @@ if ($artifact.Length -ne $expectedSize) {
 if ($actualHash -ne $expectedHash -or $checksumHash -ne $expectedHash) {
     throw "El appliance o su archivo .sha256 no coincide con release-manifest.json."
 }
+& $updaterBuilderPath -SourcePath $updaterSourcePath -DestinationPath $updaterPath
 $updaterHash = (Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText(
     $updaterChecksumPath,

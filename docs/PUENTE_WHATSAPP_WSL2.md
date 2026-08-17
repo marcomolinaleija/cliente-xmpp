@@ -143,11 +143,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\actualizar-puente-local.ps1
 ```
 
-El script usa mensajes en español y UTF-8 con BOM para Windows PowerShell 5.1. Solicita escribir
-`ACTUALIZAR`, descarga desde GitHub tanto el `.wsl` como el instalador fijado al tag 1.1, verifica
-tamaño y SHA-256 antes de ejecutar y no imprime credenciales. Si ya encuentra una distribución
-1.1 no cambia nada. En caso de fallo conserva las descargas verificadas para reintentar; al tener
-éxito las elimina salvo que se use `-ConservarDescargas`.
+La fuente usa mensajes en español y UTF-8 con BOM para Windows PowerShell 5.1. El asset público es
+un envoltorio ASCII autocontenido que decodifica esa fuente internamente, por lo que funciona tanto
+como archivo descargado como mediante `irm URL | iex` sin convertir el BOM ni los acentos en
+mojibake. Solicita escribir `ACTUALIZAR`, descarga desde GitHub tanto el `.wsl` como el instalador
+fijado al tag 1.1, verifica tamaño y SHA-256 antes de ejecutar y no imprime credenciales. Si ya
+encuentra una distribución 1.1 no cambia nada. En caso de fallo conserva las descargas verificadas
+para reintentar; al tener éxito las elimina salvo que se use `-ConservarDescargas`.
 
 Los valores no sensibles esperados son:
 

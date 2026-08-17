@@ -8,6 +8,7 @@ distribución WSL2.
 - Conserva Ubuntu 24.04, Prosody, nginx, Podman y los servicios limitados a `127.0.0.1`.
 - Migra automáticamente la distribución 1.0 conservando sesión, certificados, adjuntos y Prosody.
 - Crea respaldos con SHA-256 antes del reemplazo y restaura la distribución anterior si falla.
-- Incluye `actualizar-puente-local.ps1` para quienes ya tienen la distribución antigua.
+- Incluye `actualizar-puente-local.ps1` para quienes ya tienen la distribución antigua; funciona
+  como archivo descargado y directamente mediante `irm URL | iex` sin corromper los acentos.
 
 Requiere Windows x64 y WSL 2.4.4 o posterior.

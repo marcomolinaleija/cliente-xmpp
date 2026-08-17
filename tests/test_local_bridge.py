@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -132,15 +133,51 @@ class WslApplianceBuildTests(unittest.TestCase):
         publisher = (appliance_root / "publish-appliance-release.ps1").read_text(
             encoding="utf-8-sig"
         )
+        builder = (appliance_root / "build-public-updater.ps1").read_text(
+            encoding="utf-8-sig"
+        )
         self.assertIn("$updaterAssetName", publisher)
         self.assertIn("$updaterChecksumPath", publisher)
         self.assertIn("$updaterHash", publisher)
+        self.assertIn("build-public-updater.ps1", publisher)
+        self.assertIn("FromBase64String", builder)
+        self.assertIn("[Text.ASCIIEncoding]::new()", builder)
         self.assertIn('[string]$ManifestPath = ""', publisher)
         self.assertIn('[string]$ArtifactDirectory = ""', publisher)
         self.assertLess(
             publisher.index("Set-StrictMode"),
             publisher.index("$ManifestPath = if ($ManifestPath)"),
         )
+
+        with tempfile.TemporaryDirectory() as directory:
+            public_updater = Path(directory) / updater_path.name
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(appliance_root / "build-public-updater.ps1"),
+                    "-SourcePath",
+                    str(updater_path),
+                    "-DestinationPath",
+                    str(public_updater),
+                ],
+                check=False,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            public_bytes = public_updater.read_bytes()
+            self.assertTrue(public_bytes)
+            self.assertTrue(all(byte < 128 for byte in public_bytes))
+            encoded = re.search(
+                rb"FromBase64String\('([A-Za-z0-9+/=]+)'\)",
+                public_bytes,
+            )
+            self.assertIsNotNone(encoded)
+            decoded = base64.b64decode(encoded.group(1))
+            self.assertEqual(decoded, updater_bytes[3:])
 
     def test_bridge_updates_are_digest_pinned_and_independent_from_systemd(self) -> None:
         appliance_root = self._appliance_root()

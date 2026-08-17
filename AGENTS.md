@@ -507,7 +507,9 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   de migración después del éxito. La release 1.1 publica también
   `actualizar-puente-local.ps1` con BOM UTF-8 para usuarios de la 1.0: descarga el `.wsl` y el
   instalador desde URLs fijadas al tag, verifica ambos SHA-256 y llama a `-InstallOrResume`.
-  `publish-appliance-release.ps1` debe adjuntar el migrador y su checksum además del appliance.
+  `build-public-updater.ps1` genera el asset ASCII autocontenido para que `irm URL | iex` decodifique
+  internamente la fuente UTF-8 sin corromper BOM ni acentos. `publish-appliance-release.ps1` debe
+  adjuntar ese migrador generado y su checksum además del appliance.
 - El cliente es híbrido y guarda perfiles independientes `local` y `remote` junto con
   `connection_mode`. La elección en Configuración se aplica en la siguiente apertura; la pantalla
   de conexión permite cambiar inmediatamente cuando está desconectado. Instalar WSL no puede volver

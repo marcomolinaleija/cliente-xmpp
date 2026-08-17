@@ -135,6 +135,12 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("$updaterAssetName", publisher)
         self.assertIn("$updaterChecksumPath", publisher)
         self.assertIn("$updaterHash", publisher)
+        self.assertIn('[string]$ManifestPath = ""', publisher)
+        self.assertIn('[string]$ArtifactDirectory = ""', publisher)
+        self.assertLess(
+            publisher.index("Set-StrictMode"),
+            publisher.index("$ManifestPath = if ($ManifestPath)"),
+        )
 
     def test_bridge_updates_are_digest_pinned_and_independent_from_systemd(self) -> None:
         appliance_root = self._appliance_root()

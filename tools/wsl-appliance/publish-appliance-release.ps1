@@ -2,12 +2,24 @@
 param(
     [switch]$Yes,
     [string]$Repository = "marcomolinaleija/cliente-xmpp",
-    [string]$ManifestPath = (Join-Path $PSScriptRoot "release-manifest.json"),
-    [string]$ArtifactDirectory = (Join-Path $PSScriptRoot "..\..\dist\wsl")
+    [string]$ManifestPath = "",
+    [string]$ArtifactDirectory = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ManifestPath = if ($ManifestPath) {
+    $ManifestPath
+}
+else {
+    Join-Path $PSScriptRoot "release-manifest.json"
+}
+$ArtifactDirectory = if ($ArtifactDirectory) {
+    $ArtifactDirectory
+}
+else {
+    Join-Path $PSScriptRoot "..\..\dist\wsl"
+}
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $projectRoot
 

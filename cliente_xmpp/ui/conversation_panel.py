@@ -86,6 +86,7 @@ class ConversationPanel(wx.Panel):
         self._current_audio_row_index: int | None = None
         self._current_audio_source = ""
         self._pending_audio_message: Message | None = None
+        self._pending_audio_row_index: int | None = None
         self._contact_avatar_bitmap: wx.Bitmap | None = None
 
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -142,6 +143,7 @@ class ConversationPanel(wx.Panel):
         self._unread_marker_index = None
         self._focus_target_index = None
         self._pending_audio_message = None
+        self._pending_audio_row_index = None
         self._replying = False
         self._editing = False
         self.hide_mention_suggestions()
@@ -432,6 +434,9 @@ class ConversationPanel(wx.Panel):
         if message is None:
             return False
 
+        return self.open_message_reader(message)
+
+    def open_message_reader(self, message: Message) -> bool:
         dialog = MessageReaderDialog(
             self,
             title="Mensaje",
@@ -486,6 +491,9 @@ class ConversationPanel(wx.Panel):
         if message is None:
             return False
 
+        return self.speak_text_message(message)
+
+    def speak_text_message(self, message: Message) -> bool:
         if message.audio_url or message.media_url:
             return False
 
@@ -505,10 +513,20 @@ class ConversationPanel(wx.Panel):
         ):
             return False
 
+        return self._play_audio_message(message, index)
+
+    def play_audio_message(self, message: Message) -> bool:
+        return self._play_audio_message(message, None)
+
+    def _play_audio_message(self, message: Message, row_index: int | None) -> bool:
+        if message.retracted or not (message.audio_url or message.media_kind == "audio"):
+            return False
+
         audio_source = self._audio_source(message)
         if not audio_source:
             if message.audio_url and self.on_audio_download_requested is not None:
                 self._pending_audio_message = message
+                self._pending_audio_row_index = row_index
                 self.on_audio_download_requested(message)
                 self._speaker.speak("Descargando audio")
                 return True
@@ -520,12 +538,14 @@ class ConversationPanel(wx.Panel):
             wx.MessageBox(str(exc), "Audio")
         else:
             self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
-            self._schedule_audio_duration_update(index, audio_source)
-            if status == "playing":
-                self._current_audio_row_index = index
-                self._current_audio_source = audio_source
+            self._current_audio_source = audio_source
+            if row_index is not None:
+                self._schedule_audio_duration_update(row_index, audio_source)
+            if status == "playing" and row_index is not None:
+                self._current_audio_row_index = row_index
                 self._audio_autoplay_timer.Start(500)
             else:
+                self._current_audio_row_index = None
                 self._audio_autoplay_timer.Stop()
 
         return True
@@ -534,14 +554,20 @@ class ConversationPanel(wx.Panel):
         if self._pending_audio_message is not message:
             return
 
+        row_index = self._pending_audio_row_index
         self._pending_audio_message = None
-        if self.selected_message() is message:
-            self.play_selected_audio()
+        self._pending_audio_row_index = None
+        if row_index is not None:
+            if self.selected_message() is message:
+                self._play_audio_message(message, row_index)
+            return
+        self.play_audio_message(message)
 
     def discard_message_media(self, message: Message, local_path: str = "") -> None:
         """Stop players that may still have a soon-to-be-deleted file open."""
         if self._pending_audio_message is message:
             self._pending_audio_message = None
+            self._pending_audio_row_index = None
 
         source = local_path or self._audio_source(message)
         if source and source == self._current_audio_source:

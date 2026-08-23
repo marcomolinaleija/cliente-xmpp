@@ -17,6 +17,7 @@ MessageAction = Callable[[Message], None]
 MessageSearchLoader = Callable[[str, date | None, MessagesLoadedCallback], None]
 MessageDatesLoadedCallback = Callable[[list[date], str], None]
 MessageDatesLoader = Callable[[MessageDatesLoadedCallback], None]
+MessageKeyAction = Callable[[Message], bool]
 
 
 def _message_description(message: Message) -> str:
@@ -57,6 +58,9 @@ class StarredMessagesDialog(wx.Dialog):
         parent: wx.Window,
         chat_name: str,
         loader: MessagesLoader,
+        on_open_message: MessageKeyAction | None = None,
+        on_speak_message: MessageKeyAction | None = None,
+        on_play_audio: MessageKeyAction | None = None,
     ) -> None:
         super().__init__(
             parent,
@@ -65,6 +69,9 @@ class StarredMessagesDialog(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
         self._loader = loader
+        self._on_open_message = on_open_message
+        self._on_speak_message = on_speak_message
+        self._on_play_audio = on_play_audio
         self._active = True
         self._messages: list[Message] = []
         self._visible_messages: list[Message] = []
@@ -76,6 +83,10 @@ class StarredMessagesDialog(wx.Dialog):
             style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
         )
         self.messages.SetName("Mensajes destacados")
+        self.messages.SetToolTip(
+            "Enter: ir al mensaje. Espacio: leer el texto completo o reproducir el audio. "
+            "Flecha izquierda: leer el texto con NVDA."
+        )
         self.messages.InsertColumn(0, "Mensaje", width=560)
         self.messages.InsertColumn(1, "Fecha", width=190)
         sort_label = wx.StaticText(self, label="Ordenar:")
@@ -174,16 +185,44 @@ class StarredMessagesDialog(wx.Dialog):
         self._render_messages()
 
     def _on_go_to_message(self, _event: wx.Event) -> None:
-        index = self.messages.GetFirstSelected()
-        if index == wx.NOT_FOUND or index >= len(self._visible_messages):
+        message = self._selected_message()
+        if message is None:
             return
-        self.selected_message = self._visible_messages[index]
+        self.selected_message = message
         self.EndModal(wx.ID_OK)
 
+    def _selected_message(self) -> Message | None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._visible_messages):
+            return None
+        return self._visible_messages[index]
+
     def _on_key_down(self, event: wx.KeyEvent) -> None:
-        if event.GetKeyCode() == wx.WXK_ESCAPE:
+        key_code = event.GetKeyCode()
+        if key_code == wx.WXK_ESCAPE:
             self.EndModal(wx.ID_CANCEL)
             return
+
+        message = self._selected_message()
+        if message is not None and key_code == wx.WXK_SPACE:
+            is_audio = bool(message.audio_url or message.media_kind == "audio")
+            if is_audio:
+                action = self._on_play_audio
+            elif not has_media(message):
+                action = self._on_open_message
+            else:
+                action = None
+            if action is not None and action(message):
+                return
+
+        if (
+            message is not None
+            and key_code == wx.WXK_LEFT
+            and self._on_speak_message is not None
+            and self._on_speak_message(message)
+        ):
+            return
+
         event.Skip()
 
 

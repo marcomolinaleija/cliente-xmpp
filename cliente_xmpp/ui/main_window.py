@@ -7769,6 +7769,9 @@ class MainWindow(wx.Frame):
             parent,
             chat.name,
             lambda callback: self._load_starred_messages_async(chat.jid, callback),
+            on_open_message=self.conversation.open_message_reader,
+            on_speak_message=self.conversation.speak_text_message,
+            on_play_audio=self.conversation.play_audio_message,
         )
         selected_message: Message | None = None
         try:

@@ -1045,10 +1045,13 @@ class ConversationPanel(wx.Panel):
         return f"{metadata}\n\n{body}"
 
     def _format_reply_summary(self, message: Message) -> str:
-        if not message.reply_quote:
+        quote = message.reply_quote.strip()
+        if not quote and message.reply_to_id:
+            quote = "mensaje citado"
+        if not quote:
             return ""
 
-        return f"respondiendo a: {' '.join(message.reply_quote.split())}"
+        return f"respondiendo a: {' '.join(quote.split())}"
 
     def _sender_label(self, message: Message) -> str:
         if message.chat_is_group and message.sender_jid and "/" not in message.sender_jid:

@@ -3563,6 +3563,10 @@ class MainWindow(wx.Frame):
         chat = self.conversation.current_chat
         if not chat:
             return
+        reply_data = self._reply_metadata_for_attachment(chat)
+        if reply_data is None:
+            return
+        reply_context, reply_to_jid, reply_to_id, reply_quote = reply_data
 
         dialog = wx.FileDialog(
             self,
@@ -3581,7 +3585,17 @@ class MainWindow(wx.Frame):
             dialog.Destroy()
 
         self.status_bar.SetStatusText(f"Subiendo sticker: {path.name}")
-        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, as_sticker=True)
+        self.xmpp.send_file(
+            chat.jid,
+            str(path),
+            is_group=chat.is_group,
+            as_sticker=True,
+            reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id,
+            reply_quote=reply_quote,
+        )
+        if reply_context is not None:
+            self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
 
     def _attach_clipboard_files(self, report_empty: bool = False) -> bool:
@@ -3615,6 +3629,10 @@ class MainWindow(wx.Frame):
         if not files:
             self._set_clipboard_status("No se pudo adjuntar: no hay archivos válidos")
             return
+        reply_data = self._reply_metadata_for_attachment(chat)
+        if reply_data is None:
+            return
+        reply_context, reply_to_jid, reply_to_id, reply_quote = reply_data
 
         if len(files) == 1:
             self._set_clipboard_status(f"Subiendo {source_label}: {files[0].name}")
@@ -3622,8 +3640,45 @@ class MainWindow(wx.Frame):
             self._set_clipboard_status(f"Subiendo {len(files)} archivos...")
 
         for path in files:
-            self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group)
+            self.xmpp.send_file(
+                chat.jid,
+                str(path),
+                is_group=chat.is_group,
+                reply_to_jid=reply_to_jid,
+                reply_to_id=reply_to_id,
+                reply_quote=reply_quote,
+            )
+        if reply_context is not None:
+            self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
+
+    def _reply_metadata_for_attachment(
+        self,
+        chat: Chat,
+    ) -> tuple[Message | None, str, str, str] | None:
+        reply_context = self.reply_context
+        if self.conversation.has_reply_context() and reply_context is None:
+            self.status_bar.SetStatusText(
+                "No se pudo conservar el mensaje que ibas a responder; vuelve a seleccionarlo"
+            )
+            self.conversation.clear_reply_quote()
+            self.conversation.focus_composer()
+            return None
+        if reply_context is not None:
+            reply_error = self._reply_target_error(reply_context, chat)
+            if reply_error:
+                self.status_bar.SetStatusText(reply_error)
+                self.conversation.focus_composer()
+                return None
+
+        return (
+            reply_context,
+            self._reply_target_jid(chat, reply_context, self.current_jid)
+            if reply_context is not None
+            else "",
+            reply_context.message_id if reply_context is not None else "",
+            reply_context.body if reply_context is not None else "",
+        )
 
     def _set_clipboard_status(self, message: str) -> None:
         self.status_bar.SetStatusText(message)
@@ -3745,6 +3800,11 @@ class MainWindow(wx.Frame):
         if not chat:
             return
 
+        reply_data = self._reply_metadata_for_attachment(chat)
+        if reply_data is None:
+            return
+        reply_context, reply_to_jid, reply_to_id, reply_quote = reply_data
+
         try:
             path = self.audio_recorder.stop_and_save()
         except AudioRecordingError as exc:
@@ -3756,7 +3816,17 @@ class MainWindow(wx.Frame):
         self.conversation.set_recording_state(False)
         self.xmpp.send_chat_state(chat.jid, "paused", is_group=chat.is_group)
         self.status_bar.SetStatusText("Subiendo audio...")
-        self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group, view_once=view_once)
+        self.xmpp.send_file(
+            chat.jid,
+            str(path),
+            is_group=chat.is_group,
+            view_once=view_once,
+            reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id,
+            reply_quote=reply_quote,
+        )
+        if reply_context is not None:
+            self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
 
     def _on_composer_paste(self, event: wx.CommandEvent) -> None:

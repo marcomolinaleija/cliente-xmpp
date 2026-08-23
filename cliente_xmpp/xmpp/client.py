@@ -4323,6 +4323,9 @@ class BridgeXmppClient(ClientXMPP):
         is_group: bool = False,
         view_once: bool = False,
         as_sticker: bool = False,
+        reply_to_jid: str = "",
+        reply_to_id: str = "",
+        reply_quote: str = "",
     ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
@@ -4369,6 +4372,12 @@ class BridgeXmppClient(ClientXMPP):
             media_kind=media_kind,
             duration=duration,
         )
+        self._append_reply_metadata(
+            message,
+            reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id,
+            reply_quote=reply_quote,
+        )
         message.send()
         body = self._message_body_for_display(
             "",
@@ -4395,8 +4404,54 @@ class BridgeXmppClient(ClientXMPP):
             is_sticker=as_sticker,
             message_id=message_id,
             chat_is_group=is_group,
+            reply_quote=reply_quote,
+            reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id,
             delivery_state="sent",
         )
+
+    @staticmethod
+    def _append_reply_metadata(
+        message: object,
+        *,
+        reply_to_jid: str,
+        reply_to_id: str,
+        reply_quote: str,
+    ) -> None:
+        if not reply_to_id:
+            return
+
+        message.append(
+            ET.Element(
+                f"{{{REPLY_NS}}}reply",
+                {
+                    "to": reply_to_jid,
+                    "id": reply_to_id,
+                },
+            )
+        )
+        if not reply_quote:
+            return
+
+        quoted = "\n".join(
+            f"> {line.strip()}"
+            for line in reply_quote.splitlines()
+            if line.strip()
+        )
+        if not quoted:
+            return
+        quoted = f"{quoted}\n"
+        message["body"] = quoted + str(message["body"] or "")
+        fallback = ET.Element(
+            f"{{{FALLBACK_NS}}}fallback",
+            {"for": REPLY_NS},
+        )
+        ET.SubElement(
+            fallback,
+            f"{{{FALLBACK_NS}}}body",
+            {"start": "0", "end": str(len(quoted))},
+        )
+        message.append(fallback)
 
     async def send_audio_file(self, to_jid: str, path: str, is_group: bool = False) -> Message:
         return await self.send_file(to_jid, path, is_group=is_group)
@@ -4942,6 +4997,9 @@ class XmppService:
         is_group: bool = False,
         view_once: bool = False,
         as_sticker: bool = False,
+        reply_to_jid: str = "",
+        reply_to_id: str = "",
+        reply_quote: str = "",
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
@@ -4958,6 +5016,9 @@ class XmppService:
                     is_group=is_group,
                     view_once=view_once,
                     as_sticker=as_sticker,
+                    reply_to_jid=reply_to_jid,
+                    reply_to_id=reply_to_id,
+                    reply_quote=reply_quote,
                 )
             except Exception as exc:
                 delete_temporary_voice_note(path)

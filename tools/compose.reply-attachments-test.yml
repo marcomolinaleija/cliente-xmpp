@@ -1,0 +1,3 @@
+services:
+  slidge-whatsapp:
+    image: cliente-xmpp-bridge:reply-attachments-test-incoming-v2

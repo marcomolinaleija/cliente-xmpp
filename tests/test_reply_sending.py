@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -64,6 +66,82 @@ class ReplySendingTests(unittest.TestCase):
         self.assertEqual(pending_messages[0].reply_to_id, target.message_id)
         self.assertEqual(pending_messages[0].reply_quote, target.body)
         self.assertFalse(reply_visible)
+
+    def test_recorded_audio_keeps_reply_target_and_quote(self) -> None:
+        chat = Chat(jid="contact@example.test", name="Contacto")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="mensaje original",
+            message_id="whatsapp-message-id",
+        )
+        window = MainWindow.__new__(MainWindow)
+        reply_visible = True
+        window.reply_context = target
+        window.current_jid = "me@example.test"
+        window.conversation = SimpleNamespace(
+            current_chat=chat,
+            has_reply_context=lambda: reply_visible,
+            view_once_audio=SimpleNamespace(GetValue=lambda: False),
+            set_recording_state=Mock(),
+            focus_composer=Mock(),
+        )
+        window.audio_recorder = SimpleNamespace(stop_and_save=lambda: "ptt.ogg")
+        window.status_bar = self._status_bar()
+        window.xmpp = SimpleNamespace(send_chat_state=Mock(), send_file=Mock())
+        window._mark_current_chat_displayed = Mock()
+        window._cancel_reply = Mock()
+
+        MainWindow._stop_recording_and_send(window)
+
+        window.xmpp.send_file.assert_called_once_with(
+            chat.jid,
+            "ptt.ogg",
+            is_group=False,
+            view_once=False,
+            reply_to_jid=target.sender_jid,
+            reply_to_id=target.message_id,
+            reply_quote=target.body,
+        )
+        window._cancel_reply.assert_called_once_with()
+
+    def test_file_attachment_keeps_reply_target_and_quote(self) -> None:
+        chat = Chat(jid="contact@example.test", name="Contacto")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="mensaje original",
+            message_id="whatsapp-message-id",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.reply_context = target
+        window.current_jid = "me@example.test"
+        window.conversation = SimpleNamespace(
+            has_reply_context=lambda: True,
+            clear_reply_quote=Mock(),
+            focus_composer=Mock(),
+        )
+        window.status_bar = self._status_bar()
+        window.xmpp = SimpleNamespace(send_file=Mock())
+        window._require_whatsapp_connection = lambda: True
+        window._set_clipboard_status = Mock()
+        window._mark_current_chat_displayed = Mock()
+        window._cancel_reply = Mock()
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "foto.jpg"
+            path.write_bytes(b"image")
+            MainWindow._send_files_to_chat(window, chat, [path], source_label="imagen")
+
+        window.xmpp.send_file.assert_called_once_with(
+            chat.jid,
+            str(path),
+            is_group=False,
+            reply_to_jid=target.sender_jid,
+            reply_to_id=target.message_id,
+            reply_quote=target.body,
+        )
+        window._cancel_reply.assert_called_once_with()
 
     def test_group_reply_targets_room_occupant_instead_of_private_contact(self) -> None:
         chat = Chat(

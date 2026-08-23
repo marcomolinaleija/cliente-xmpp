@@ -2535,6 +2535,36 @@ class GroupMessageParsingTests(unittest.TestCase):
         self.assertEqual(reply.reply_quote, "mensaje original")
         self.assertEqual(hydrated, [reply])
 
+    def test_reply_quote_is_hydrated_from_referenced_audio(self) -> None:
+        sent_at = datetime.now().astimezone()
+        quoted = Message(
+            chat_jid="contact@example.org",
+            sender_jid="me",
+            body="Mensaje de voz",
+            sent_at=sent_at,
+            outgoing=True,
+            audio_url="https://example.org/quoted.ogg",
+            media_url="https://example.org/quoted.ogg",
+            media_kind="audio",
+            message_id="quoted-audio-id",
+        )
+        reply = Message(
+            chat_jid=quoted.chat_jid,
+            sender_jid="contact@example.org",
+            body="Mensaje de voz",
+            sent_at=sent_at + timedelta(seconds=1),
+            audio_url="https://example.org/reply.ogg",
+            media_url="https://example.org/reply.ogg",
+            media_kind="audio",
+            message_id="reply-audio-id",
+            reply_to_id="quoted-audio-id",
+        )
+
+        hydrated = MainWindow._hydrate_reply_quotes([quoted, reply])
+
+        self.assertEqual(reply.reply_quote, "Mensaje de voz")
+        self.assertEqual(hydrated, [reply])
+
     def test_reply_quote_is_hydrated_when_older_target_arrives_later(self) -> None:
         sent_at = datetime.now().astimezone()
         reply = Message(

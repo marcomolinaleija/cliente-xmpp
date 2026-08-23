@@ -38,6 +38,7 @@ from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.xmpp.client import (
+    FALLBACK_NS,
     OOB_NS,
     REPLY_NS,
     STICKER_NS,
@@ -653,9 +654,18 @@ class _FakeMessage:
         ET.SubElement(self.xml, "body").text = body
         self.sent = False
 
+    def __getitem__(self, key: str) -> str:
+        if key == "body":
+            return self.xml.findtext("body") or ""
+        raise KeyError(key)
+
     def __setitem__(self, key: str, value: object) -> None:
         if key == "id":
             self.xml.set("id", str(value))
+        elif key == "body":
+            body = self.xml.find("body")
+            if body is not None:
+                body.text = str(value)
 
     def append(self, node: ET.Element) -> None:
         self.xml.append(node)
@@ -697,6 +707,27 @@ class _FakeClient:
 
 
 class ForwardSendContractTests(unittest.TestCase):
+    def test_audio_upload_reply_metadata_uses_xep_0461_and_fallback(self) -> None:
+        message = _FakeMessage("contact@example.test", "audio.ogg", "chat")
+
+        BridgeXmppClient._append_reply_metadata(
+            message,
+            reply_to_jid="contact@example.test",
+            reply_to_id="quoted-audio-id",
+            reply_quote="audio citado",
+        )
+
+        reply = message.xml.find(f"{{{REPLY_NS}}}reply")
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertEqual(reply.attrib["to"], "contact@example.test")
+        self.assertEqual(reply.attrib["id"], "quoted-audio-id")
+        fallback = message.xml.find(f"{{{FALLBACK_NS}}}fallback")
+        self.assertIsNotNone(fallback)
+        assert fallback is not None
+        self.assertEqual(fallback.attrib["for"], REPLY_NS)
+        self.assertEqual(message.xml.findtext("body"), "> audio citado\n" + "audio.ogg")
+
     def test_reply_sends_xep_0461_target_with_remote_id(self) -> None:
         emitted: list[object] = []
         service = XmppService(emitted.append)

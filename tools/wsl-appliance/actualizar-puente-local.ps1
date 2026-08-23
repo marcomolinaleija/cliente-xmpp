@@ -5,7 +5,7 @@ param(
     [string]$PackageSha256 = "5c9efa86eeefdee1836bb822e277cc4c217b1317fc85f7d53d831929b13a8f74",
     [long]$PackageSizeBytes = 747847680,
     [string]$InstallerUrl = "https://raw.githubusercontent.com/marcomolinaleija/cliente-xmpp/wsl-appliance-v1.1.0/tools/wsl-appliance/install-appliance.ps1",
-    [string]$InstallerSha256 = "c9af53fc4fe5f4018393fb8d46f5116967f3fcaebb75c521738195a68d508eec",
+    [string]$InstallerSha256 = "181d39c8021b24acccfafc068d8fcf5468e5e1801ed01564bf69327261e8a802",
     [string]$DownloadDirectory = (Join-Path $env:LOCALAPPDATA "WhatsAppCAN\downloads\wsl-appliance-v1.1.0"),
     [switch]$Si,
     [switch]$ConservarDescargas

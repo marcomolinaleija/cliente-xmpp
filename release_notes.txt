@@ -1,8 +1,18 @@
-WhatsApp CAN 1.4.1
+WhatsApp CAN 1.4.2
 
-Envío más confiable con el puente local
-- Si WhatsApp todavía está preparando su sesión interna al arrancar, el cliente conserva el mensaje y
-  reintenta automáticamente con pausas progresivas.
-- El error temporal “Legacy session is not fully initialized” ya no descarta inmediatamente el mensaje ni
-  obliga a escribirlo de nuevo.
-- Los demás rechazos XMPP continúan mostrándose normalmente para no ocultar errores reales.
+Respuestas con contenido multimedia
+- Puedes responder a mensajes enviando notas de voz, stickers y archivos, conservando la referencia al
+  mensaje original.
+- Las citas de respuestas multimedia se mantienen tanto en chats individuales como en grupos.
+
+Mensajes destacados más accesibles
+- En el diálogo de mensajes destacados, Espacio abre el texto completo en una vista cómoda para leerlo
+  por líneas.
+- Flecha izquierda lee el mensaje completo mediante NVDA.
+- Si el mensaje destacado es un audio, Espacio lo reproduce como en la conversación normal.
+
+Puente local más fácil de actualizar
+- Las instalaciones anteriores del puente pueden migrarse de forma segura conservando la sesión de
+  WhatsApp, los certificados, las conversaciones locales y los archivos adjuntos.
+- El actualizador del puente funciona también en Windows PowerShell 5.1 y verifica las descargas antes de
+  aplicar cualquier cambio.

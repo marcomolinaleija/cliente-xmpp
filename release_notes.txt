@@ -1,3 +1,13 @@
+WhatsApp CAN 1.4.3
+
+Reconexiones XMPP más tolerantes
+- El cliente conserva el ping XMPP cada 60 segundos, pero espera hasta 45 segundos por la respuesta antes de forzar una reconexión.
+- Esto reduce reconexiones provocadas por retrasos breves de red, Prosody o carga temporal, sin desactivar la detección de conexiones realmente caídas.
+- WhatsApp, el puente, los mensajes y las sesiones vinculadas no cambian.
+
+Compatibilidad de actualización
+- La versión se incrementa a 1.4.3 para que el actualizador la reconozca como una release nueva.
+
 WhatsApp CAN 1.4.2
 
 Respuestas con contenido multimedia

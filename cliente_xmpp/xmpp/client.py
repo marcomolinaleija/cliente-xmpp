@@ -152,6 +152,8 @@ GROUP_MEMBERSHIP_REFRESH_SECONDS = 10 * 60
 GROUP_MEMBERSHIP_REFRESH_BATCH_DELAY_SECONDS = 0.1
 GROUP_MEMBERSHIP_PING_TIMEOUT_SECONDS = 20
 GROUP_MEMBERSHIP_PING_FAILURES_BEFORE_REJOIN = 2
+XMPP_KEEPALIVE_INTERVAL_SECONDS = 60
+XMPP_KEEPALIVE_TIMEOUT_SECONDS = 45
 LEGACY_SESSION_NOT_READY_TEXT = "legacy session is not fully initialized"
 LEGACY_SESSION_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
 GROUP_MEMBERSHIP_ABSENT_CONDITIONS = frozenset(
@@ -5371,7 +5373,11 @@ class XmppService:
                 if plugin == "xep_0199":
                     self._client.register_plugin(
                         plugin,
-                        {"keepalive": True, "interval": 60, "timeout": 20},
+                        {
+                            "keepalive": True,
+                            "interval": XMPP_KEEPALIVE_INTERVAL_SECONDS,
+                            "timeout": XMPP_KEEPALIVE_TIMEOUT_SECONDS,
+                        },
                     )
                 else:
                     self._client.register_plugin(plugin)

@@ -2,15 +2,15 @@
 
 ## Estado actual: modificaciones del puente completadas
 
-Desde el 9 de agosto de 2026, las modificaciones del puente están construidas, publicadas y
-activas en `marco-vps`. La imagen vigente es:
+Desde el 29 de agosto de 2026, las modificaciones estables del puente están construidas,
+publicadas y activas en `marco-vps`. La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
-sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23
+sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
-La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
+La imagen parte de `v22` fijada por digest, conserva todos los cambios anteriores e incluye:
 
 - Las extensiones anteriores de visualización única y grabación de audio.
 - El parche de Slidge core para menciones nativas XEP-0372.
@@ -39,9 +39,21 @@ La imagen parte de `v11`, conserva todos los cambios anteriores e incluye:
   añadía pérdida y artefactos audibles en pausas.
 - Ciclo de vida seguro para la renovación periódica de presencias: el timer ya no puede usar un
   cliente limpiado concurrentemente ni sobrevivir al teardown de su sesión.
+- Resolución PN/LID acotada y colas separadas para que presencia y escritura nunca bloqueen los
+  mensajes ni consuman la capacidad reservada a eventos fiables.
+- Poda correcta del roster administrado por Slidge al desaparecer contactos o cambiar la
+  preferencia `roster_add_non_friends`, sin modificar grupos de roster ajenos.
+- Presencia pasiva de WhatsMeow para que el teléfono oficial conserve sus notificaciones con
+  sonido mientras el bridge permanece conectado y entrega mensajes al cliente XMPP.
+- Transcripción opcional de audios entrantes en español mediante Deepgram, enviada sólo al cliente
+  XMPP. Sin API key el puente conserva el comportamiento anterior.
+- Comandos locales `/transcribe on`, `/transcribe off`, `/status` y `/stats`, con límites,
+  reintentos, deduplicación persistente y claves separadas para transcripción y consulta de saldo.
 
-El colaborador **no necesita volver a aplicar los parches ni reconstruir la imagen del puente**.
-Si trabaja en otra instalación, debe configurar esa etiqueta y seguir la guía independiente
+Para operación normal no es necesario volver a aplicar los parches ni reconstruir la imagen del
+puente. Los experimentos deben partir siempre del digest de `v22`, usar una etiqueta candidata no
+publicada y conservar ese digest como rollback. En otra instalación se debe configurar la etiqueta
+estable y seguir la guía independiente
 `docs/PUENTE_WHATSAPP_OTROS_SERVIDORES.md` para conceder los privilegios y validar el despliegue
 antes de recrear el servicio:
 
@@ -248,7 +260,7 @@ cp -p compose.yml compose.yml.before-cliente-xmpp-bridge
 En el servicio `slidge-whatsapp` de `compose.yml`, usa la imagen vigente:
 
 ```yaml
-image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
 El servicio debe incluir:
@@ -265,12 +277,12 @@ Para instalaciones que ya tengan duplicados mexicanos, detén sólo `slidge-what
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f \
   /tmp/migrate.py /var/lib/slidge/slidge.sqlite
 docker run --rm \
   -v /opt/xmpp/slidge:/var/lib/slidge \
   -v RUTA_REPO/tools/migrate_slidge_mexico_aliases.py:/tmp/migrate.py:ro \
-  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14 \
+  --entrypoint python ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f \
   /tmp/migrate.py --apply /var/lib/slidge/slidge.sqlite
 ```
 

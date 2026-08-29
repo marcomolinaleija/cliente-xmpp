@@ -8,10 +8,11 @@ secretos de ejemplo: no copies ninguno de otra instalación.
 La imagen soportada actualmente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
-`v14` parte de `v13`, corrige el ciclo de vida de la renovación periódica de presencias y conserva
+`v23` conserva la corrección del ciclo de vida de la renovación periódica de presencias, añade
+presencia pasiva para no silenciar el teléfono oficial y
 las mejoras que usa el cliente:
 sincronización de roster y leídos, menciones nativas, reenvíos, stickers,
 presencia, adjuntos de audio sin recodificación adicional y enrutamiento saliente mediante el
@@ -160,7 +161,7 @@ services:
       - ./prosody-data:/var/lib/prosody
 
   slidge-whatsapp:
-    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
     restart: unless-stopped
     depends_on:
       - prosody

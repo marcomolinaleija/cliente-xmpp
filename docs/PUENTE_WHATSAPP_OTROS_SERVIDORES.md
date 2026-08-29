@@ -15,8 +15,8 @@ privilegios permiten:
 La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
-sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23
+sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
 ## Requisito fundamental
@@ -189,13 +189,13 @@ Validar el archivo con las herramientas de la versión de ejabberd instalada ant
 
 ## Configuración del puente
 
-En el servicio `slidge-whatsapp` de `compose.yml`, seleccionar la imagen v14 y activar la
+En el servicio `slidge-whatsapp` de `compose.yml`, seleccionar la imagen v23 fijada por digest y activar la
 sincronización automática:
 
 ```yaml
 services:
   slidge-whatsapp:
-    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+    image: ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
     environment:
       SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER: "true"
 ```

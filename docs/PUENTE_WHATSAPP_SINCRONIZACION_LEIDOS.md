@@ -11,11 +11,11 @@ escritorio consume:
 La imagen vigente es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
-sha256:3efeae0eb471bf131fc6af388569ecbd052c14012f6fb963e043a2d1b0760f8f
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23
+sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
-`v14` parte de `v13`, corrige el ciclo de vida del refresco periódico de presencias y conserva el
+`v23` conserva el ciclo de vida seguro del refresco periódico de presencias y el
 JID mexicano moderno en XMPP mientras usa el alias legado para
 enviar cuando WhatsApp mantiene ambas variantes. `v12` conserva además los nombres guardados de
 contactos de `v11` y entrega las notas de voz PTT entrantes como OGG/Opus, sin recodificarlas a
@@ -270,7 +270,7 @@ docker run --rm --entrypoint python \
 La versión publicada es:
 
 ```text
-ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
 ```
 
 En la VPS:
@@ -280,7 +280,7 @@ cd /opt/xmpp
 cp -p compose.yml compose.yml.before-read-sync
 # Seleccionar Prosody 0.12 y la imagen publicada del puente.
 python RUTA_REPO/tools/patch_marco_vps_compose_read_sync.py \
-  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v14 \
+  --bridge-image ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f \
   --automatic-roster-sync \
   compose.yml
 docker compose config -q

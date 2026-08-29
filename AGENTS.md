@@ -453,16 +453,60 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/bridge_private_replies_test.go`, `tools/Dockerfile.bridge-private-replies-v18` y
   `tools/smoke_bridge_private_replies_runtime.py`. No reduzcas estas citas a texto embebido ni
   reemplaces el JID MUC del `reply@to` por el JID privado del participante.
-- Desde el 16 de agosto de 2026, el servidor de producción usa
-  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v19@sha256:9358df63a39b09d39f6d4f0293b07e1271fd13fed026320057ec6b6de627a899`.
-  Parte de `v18` fijada por digest y corrige el `DetachedInstanceError` intermitente durante la
-  carga de grupos. Slidge vinculaba un participante anónimo ya persistido con su contacto mediante
+- Desde el 16 de agosto de 2026, `v19` parte de `v18` fijada por digest y corrige el
+  `DetachedInstanceError` intermitente durante la
+  carga de grupos.
+  Slidge vinculaba un participante anónimo ya persistido con su contacto mediante
   una sesión SQLAlchemy que expiraba también el `Room` fusionado al hacer `commit`; el siguiente
   participante intentaba usar ese cuarto ya separado y podía derribar la sesión del gateway. La
   sesión de esa rama usa ahora `expire_on_commit=False`. El parche, Dockerfile y prueba que reproduce
   el fallo exacto en `v18` y pasa en `v19` viven en `tools/patch_slidge_detached_room.py`,
   `tools/Dockerfile.bridge-detached-room-v19` y
   `tools/smoke_bridge_detached_room_runtime.py`.
+- Desde el 22 de agosto de 2026, `v20` parte de
+  `v19@sha256:9358df63a39b09d39f6d4f0293b07e1271fd13fed026320057ec6b6de627a899`
+  y evita que eventos de presencia o escritura con JID anónimo bloqueen la entrega de mensajes.
+  Acota a 750 ms la resolución PN/LID, descarta sólo eventos transitorios incompletos y separa las
+  colas de callbacks fiables y transitorios, manteniendo los fiables en FIFO y sin descarte. Está
+  publicada como `v20@sha256:414996b88fba50478053288b160b53159f333bb9f17d27ade6542165335dd776`.
+- Desde el 24 de agosto de 2026, `v21` parte de ese digest de `v20` y corrige la poda del roster
+  XMPP. Al sincronizar, elimina del grupo administrado por Slidge los contactos que ya no existen
+  o que no deben conservarse según `roster_add_non_friends`, sin tocar grupos de roster ajenos.
+  Está publicada como
+  `v21@sha256:688dbe86ab6d07f7f99b1901ea58744f6488cbfa76f4e4e2c005ad7a86a14248`
+  y es el rollback inmediato de `v22`. Para cambios que partan de esa versión, usa ese digest como
+  base, construye una etiqueta candidata no publicada y conserva
+  `v21@sha256:688dbe...` como rollback; no reconstruyas desde `v19` ni despliegues una etiqueta
+  mutable.
+- El 24 de agosto de 2026 se confirmó que anunciar permanentemente
+  `types.PresenceAvailable` desde WhatsMeow suprime el sonido de las notificaciones en el teléfono
+  oficial. La corrección traduce tanto el arranque como la
+  presencia solicitada por XMPP a `types.PresenceUnavailable`, sin alterar la conexión ni
+  `MarkRead`. Se validaron sonido en el teléfono y recepción/notificación en segundo plano del
+  cliente XMPP; una primera demora tras recrear el bridge fue transitoria y SQLite confirmó luego
+  entregas en tiempo real sin enfocar la ventana.
+- El 25 de agosto de 2026 se publicó
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v22@sha256:b86a537631557da55f221262e7c5e6579ea805d1747a44c6730f526b4042ce19`.
+  La imagen publicada resuelve al mismo ID local validado
+  `sha256:294211184acab58951608bc1078a4343aa7ad12e8f2c2d0c9f3fff97dc1efc02`,
+  parte del digest fijado de `v21` y contiene la corrección de presencia pasiva descrita arriba.
+  El build superó `go test .`, `go test -race .` y el smoke test del binding recompilado. El
+  respaldo previo está en `/opt/xmpp/backups/slidge-pre-v22-20260825-163354.tar.zst` y su Compose
+  en `/opt/xmpp/backups/compose-pre-v22-20260825-163354.yml`; `v21` es el rollback inmediato.
+  Aún falta comprobar presencia de contactos y estados de escritura/grabación. El contrato
+  reproducible está en
+  `docs/PUENTE_WHATSAPP_NOTIFICACIONES_DISPOSITIVOS.md`.
+- Desde el 29 de agosto de 2026, el servidor de producción usa
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f`.
+  Parte del digest fijado de `v22` y añade transcripción opcional de audios entrantes mediante
+  Deepgram, sólo hacia XMPP. Sin `DEEPGRAM_API_KEY` conserva el comportamiento de `v22` y no hace
+  llamadas externas. Incluye límites configurables, filtro MIME, duración con `ffprobe`, reintentos,
+  deduplicación persistente y los comandos locales `/transcribe on`, `/transcribe off`, `/status`
+  y `/stats`. La clave de transcripción y la clave administrativa de saldo se cargan sólo en
+  runtime y nunca forman parte de la imagen. La implementación reproducible está en
+  `tools/Dockerfile.bridge-transcription-v23`, `tools/deepgram_transcription.py`,
+  `tools/patch_slidge_whatsapp_transcription.py` y
+  `docs/PUENTE_WHATSAPP_TRANSCRIPCION_DEEPGRAM.md`; `v22` es el rollback inmediato.
 - La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
   `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y una imagen inicial
   fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,

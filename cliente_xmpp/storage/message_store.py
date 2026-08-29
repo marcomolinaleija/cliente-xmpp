@@ -1152,7 +1152,8 @@ class MessageStore:
             conn.execute(
                 """
                 UPDATE messages
-                SET media_local_path = ?, media_size = ?,
+                SET body = CASE WHEN ? != '' THEN ? ELSE body END,
+                    media_local_path = ?, media_size = ?,
                     media_duration_seconds = COALESCE(
                         NULLIF(?, 0),
                         media_duration_seconds
@@ -1173,6 +1174,8 @@ class MessageStore:
                     )
                 """,
                 (
+                    message.body,
+                    message.body,
                     message.media_local_path,
                     message.media_size,
                     message.media_duration_seconds,

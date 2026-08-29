@@ -138,6 +138,9 @@ def media_description(message: Message) -> str:
         return link_description(message)
 
     if message.is_sticker:
+        body = message.body.strip()
+        if body.casefold().startswith("sticker: "):
+            return body
         return "Sticker"
 
     if message.media_kind == "audio":

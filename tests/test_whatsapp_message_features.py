@@ -24,6 +24,8 @@ from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_bridge_sticker,
     looks_like_lottie_sticker_attachment,
+    lottie_sticker_description,
+    sticker_display_text,
 )
 from cliente_xmpp.models.chat import (
     Message,
@@ -236,6 +238,54 @@ class MessageFeatureParsingTests(unittest.TestCase):
                 is_sticker=True,
             ),
             "Sticker",
+        )
+        self.assertEqual(
+            BridgeXmppClient._message_body_for_display(
+                "Una tortuga levanta el pulgar.",
+                "https://upload.example/sticker.webp",
+                "image",
+                "hash.webp",
+                1024,
+                is_sticker=True,
+            ),
+            "Sticker: Una tortuga levanta el pulgar.",
+        )
+
+        accessible_xml = ET.fromstring(
+            """
+            <message xmlns="jabber:client">
+              <sticker xmlns="urn:xmpp:stickers:0" />
+              <file-sharing xmlns="urn:xmpp:sfs:0">
+                <file xmlns="urn:xmpp:file:metadata:0">
+                  <desc>Una tortuga levanta el pulgar.</desc>
+                </file>
+              </file-sharing>
+            </message>
+            """
+        )
+        display, reply = BridgeXmppClient._message_display_parts(
+            "https://upload.example/sticker.webp",
+            "https://upload.example/sticker.webp",
+            "image",
+            "hash.webp",
+            1024,
+            accessible_xml,
+            is_sticker=True,
+        )
+        self.assertEqual(display, "Sticker: Una tortuga levanta el pulgar.")
+        self.assertEqual(reply, "")
+        self.assertEqual(
+            media_description(
+                Message(
+                    chat_jid="chat@example.test",
+                    sender_jid="contact@example.test",
+                    body=display,
+                    media_url="https://upload.example/sticker.webp",
+                    media_kind="image",
+                    is_sticker=True,
+                )
+            ),
+            display,
         )
 
     def test_appends_private_forwarded_flag_without_xep_0297(self) -> None:
@@ -485,6 +535,56 @@ class MessageFeatureParsingTests(unittest.TestCase):
             self.assertEqual(payload[:4], b"RIFF")
             self.assertEqual(payload[8:12], b"WEBP")
 
+    def test_reads_lottie_accessibility_description_and_emoji_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / ("a" * 64 + ".bin")
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr(
+                    "animation/animation.json.overridden_metadata",
+                    json.dumps(
+                        {
+                            "sticker-pack-id": "IntrovertLife",
+                            "accessibility-text": (
+                                "Una tortuga se esconde en su caparazón y levanta el pulgar."
+                            ),
+                            "emojis": ["🫣", "🐢", "👍"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+
+            self.assertEqual(
+                lottie_sticker_description(source),
+                "Una tortuga se esconde en su caparazón y levanta el pulgar.",
+            )
+            self.assertEqual(
+                sticker_display_text(lottie_sticker_description(source)),
+                "Sticker: Una tortuga se esconde en su caparazón y levanta el pulgar.",
+            )
+
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr(
+                    "animation/animation.json.overridden_metadata",
+                    json.dumps({"emojis": ["🫣", "🐢", "👍"]}, ensure_ascii=False),
+                )
+            self.assertEqual(lottie_sticker_description(source), "🫣 🐢 👍")
+
+    def test_reads_description_from_original_package_beside_cached_webp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package = Path(temp_dir) / ("b" * 64 + ".bin")
+            preview = package.with_suffix(".webp")
+            preview.write_bytes(b"RIFF\x00\x00\x00\x00WEBP")
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr(
+                    "animation/animation.json.overridden_metadata",
+                    json.dumps({"accessibility-text": "Descripción recuperada"}),
+                )
+
+            self.assertEqual(
+                lottie_sticker_description(preview),
+                "Descripción recuperada",
+            )
+
     def test_does_not_convert_an_arbitrary_bin_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / ("b" * 64 + ".bin")
@@ -510,6 +610,7 @@ class MessageFeatureStoreTests(unittest.TestCase):
             store.upsert_messages("me@example.test", [message])
             message.media_local_path = str(Path(temp_dir) / "preview.webp")
             message.is_sticker = True
+            message.body = "Sticker: Una tortuga levanta el pulgar."
 
             store.update_message_media_local_path("me@example.test", message)
 
@@ -520,6 +621,7 @@ class MessageFeatureStoreTests(unittest.TestCase):
             self.assertEqual(loaded[0].media_mime, "application/octet-stream")
             self.assertEqual(loaded[0].media_filename, "raw.bin")
             self.assertEqual(loaded[0].media_local_path, message.media_local_path)
+            self.assertEqual(loaded[0].body, message.body)
 
     def test_persists_enriched_flags_without_later_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -17,8 +17,10 @@ _BRIDGE_LOTTIE_FILENAME = re.compile(
     re.IGNORECASE,
 )
 LOTTIE_JSON_PATH = "animation/animation.json"
+LOTTIE_METADATA_PATH = "animation/animation.json.overridden_metadata"
 MAX_LOTTIE_PACKAGE_BYTES = 5 * 1024 * 1024
 MAX_LOTTIE_JSON_BYTES = 5 * 1024 * 1024
+MAX_LOTTIE_METADATA_BYTES = 64 * 1024
 MAX_LOTTIE_ARCHIVE_ENTRIES = 32
 MAX_STICKER_DIMENSION = 512
 REPRESENTATIVE_FRAME_POSITIONS = (0.1, 0.25, 0.5, 0.75, 0.9)
@@ -79,11 +81,12 @@ def looks_like_lottie_sticker_attachment(
 def convert_lottie_sticker_package(source: Path) -> Path | None:
     """Render a representative WebP frame from a bridge Lottie ZIP without extracting it."""
     try:
-        lottie_json = _lottie_json_from_package(source)
+        package_source = _lottie_package_source(source)
+        lottie_json = _lottie_json_from_package(package_source)
         if lottie_json is None:
             return None
 
-        destination = _webp_destination(source)
+        destination = source if _is_webp(source) else _webp_destination(package_source)
         if destination.exists() and _is_webp(destination):
             return destination
 
@@ -120,6 +123,69 @@ def convert_lottie_sticker_package(source: Path) -> Path | None:
         return destination if _is_webp(destination) else None
     except (OSError, RuntimeError, TypeError, ValueError, zipfile.BadZipFile):
         return None
+
+
+def lottie_sticker_description(source: Path) -> str:
+    """Read WhatsApp's bounded accessibility metadata from a Lottie sticker package."""
+    try:
+        package_source = _lottie_package_source(source)
+        if (
+            not package_source.is_file()
+            or package_source.stat().st_size > MAX_LOTTIE_PACKAGE_BYTES
+            or not zipfile.is_zipfile(package_source)
+        ):
+            return ""
+
+        with zipfile.ZipFile(package_source) as archive:
+            if len(archive.infolist()) > MAX_LOTTIE_ARCHIVE_ENTRIES:
+                return ""
+            try:
+                info = archive.getinfo(LOTTIE_METADATA_PATH)
+            except KeyError:
+                return ""
+            if info.file_size <= 0 or info.file_size > MAX_LOTTIE_METADATA_BYTES:
+                return ""
+            with archive.open(info) as metadata_file:
+                payload = metadata_file.read(MAX_LOTTIE_METADATA_BYTES + 1)
+            if len(payload) > MAX_LOTTIE_METADATA_BYTES:
+                return ""
+
+        metadata = json.loads(payload.decode("utf-8"))
+        if not isinstance(metadata, dict):
+            return ""
+        accessibility_text = metadata.get("accessibility-text")
+        if isinstance(accessibility_text, str) and accessibility_text.strip():
+            return accessibility_text.strip()
+        emojis = metadata.get("emojis")
+        if isinstance(emojis, list):
+            return " ".join(
+                emoji.strip()
+                for emoji in emojis
+                if isinstance(emoji, str) and emoji.strip()
+            )
+    except (OSError, TypeError, ValueError, UnicodeDecodeError, zipfile.BadZipFile):
+        return ""
+    return ""
+
+
+def sticker_display_text(description: str = "") -> str:
+    """Return the accessible message text used for a sticker in conversation views."""
+    description = description.strip()
+    if not description:
+        return "Sticker"
+    if description.casefold() == "sticker":
+        return "Sticker"
+    if description.casefold().startswith("sticker: "):
+        return description
+    return f"Sticker: {description}"
+
+
+def _lottie_package_source(source: Path) -> Path:
+    if _is_webp(source):
+        sibling = source.with_suffix(".bin")
+        if sibling.is_file():
+            return sibling
+    return source
 
 
 def _lottie_json_from_package(source: Path) -> str | None:

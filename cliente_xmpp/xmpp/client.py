@@ -27,7 +27,7 @@ from cliente_xmpp.audio.opus import (
     delete_temporary_voice_note,
 )
 from cliente_xmpp.config.settings import ConnectionSettings
-from cliente_xmpp.media.stickers import looks_like_bridge_sticker
+from cliente_xmpp.media.stickers import looks_like_bridge_sticker, sticker_display_text
 from cliente_xmpp.models.chat import (
     Chat,
     Message,
@@ -4059,7 +4059,8 @@ class BridgeXmppClient(ClientXMPP):
             return body
 
         if is_sticker:
-            return "Sticker"
+            description = "" if body == media_url else body
+            return sticker_display_text(description)
 
         # A message may contain prose followed by a URL. It is not an
         # attachment just because the URL has no familiar file extension.
@@ -4110,6 +4111,9 @@ class BridgeXmppClient(ClientXMPP):
             if quoted_body is not None:
                 display_body, reply_quote = quoted_body
 
+        if is_sticker and (not display_body or display_body == media_url):
+            display_body = cls._file_description_from_xml(xml)
+
         return cls._message_body_for_display(
             display_body,
             media_url,
@@ -4118,6 +4122,16 @@ class BridgeXmppClient(ClientXMPP):
             media_size,
             is_sticker=is_sticker,
         ), reply_quote
+
+    @staticmethod
+    def _file_description_from_xml(xml: ET.Element) -> str:
+        for namespace in (FILE_METADATA_NS, JINGLE_FILE_TRANSFER_NS):
+            node = xml.find(f".//{{{namespace}}}desc")
+            if node is not None and node.text:
+                description = node.text.strip()
+                if description:
+                    return description[:1000]
+        return ""
 
     @staticmethod
     def _reply_fallback_bounds_from_xml(xml: ET.Element) -> tuple[int, int] | None:

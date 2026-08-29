@@ -62,6 +62,8 @@ from cliente_xmpp.media.links import (
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_lottie_sticker_attachment,
+    lottie_sticker_description,
+    sticker_display_text,
 )
 from cliente_xmpp.models.chat import (
     Chat,
@@ -4815,7 +4817,9 @@ class MainWindow(wx.Frame):
             try:
                 downloaded = download_media(message, self.current_jid)
                 lottie_sticker_path = None
+                lottie_description = ""
                 if self._message_may_be_lottie_sticker(message):
+                    lottie_description = lottie_sticker_description(downloaded.path)
                     lottie_sticker_path = convert_lottie_sticker_package(downloaded.path)
                     if lottie_sticker_path is not None:
                         downloaded = DownloadedMedia(
@@ -4847,6 +4851,7 @@ class MainWindow(wx.Frame):
                 silent,
                 duration,
                 lottie_sticker_path is not None,
+                lottie_description,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -4859,10 +4864,12 @@ class MainWindow(wx.Frame):
         silent: bool = False,
         duration_seconds: float = 0.0,
         normalized_lottie_sticker: bool = False,
+        lottie_description: str = "",
     ) -> None:
         message.media_local_path = str(downloaded.path)
         if normalized_lottie_sticker:
             message.is_sticker = True
+            message.body = self._lottie_sticker_display_text(message, lottie_description)
         else:
             message.media_size = downloaded.size
             message.media_mime = downloaded.mime or message.media_mime
@@ -4940,11 +4947,13 @@ class MainWindow(wx.Frame):
         self.auto_downloading_media_keys.add(key)
 
         def worker() -> None:
+            description = lottie_sticker_description(source)
             destination = convert_lottie_sticker_package(source)
             wx.CallAfter(
                 self._finish_cached_lottie_sticker_normalization,
                 message,
                 destination,
+                description,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -4953,6 +4962,7 @@ class MainWindow(wx.Frame):
         self,
         message: Message,
         destination: Path | None,
+        description: str = "",
     ) -> None:
         self._discard_auto_media_download(message)
         if destination is None:
@@ -4960,10 +4970,24 @@ class MainWindow(wx.Frame):
 
         message.media_local_path = str(destination)
         message.is_sticker = True
+        message.body = self._lottie_sticker_display_text(message, description)
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
+
+    @staticmethod
+    def _lottie_sticker_display_text(message: Message, description: str) -> str:
+        description = description.strip()
+        if not description:
+            current = message.body.strip()
+            if (
+                current
+                and current != message.media_url
+                and not current.casefold().startswith("archivo")
+            ):
+                description = current
+        return sticker_display_text(description)
 
     def _request_audio_download_for_playback(self, message: Message) -> None:
         if local_media_path(message) is not None:

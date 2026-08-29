@@ -1,0 +1,16 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
+
+FROM ${BASE_IMAGE}
+
+USER root
+COPY deepgram_transcription.py /venv/lib/python3.13/site-packages/slidge_whatsapp/deepgram_transcription.py
+COPY patch_slidge_whatsapp_admin_commands.py /tmp/patch_slidge_whatsapp_admin_commands.py
+RUN python -B /tmp/patch_slidge_whatsapp_admin_commands.py \
+        /venv/lib/python3.13/site-packages --no-backup && \
+    rm /tmp/patch_slidge_whatsapp_admin_commands.py
+
+COPY smoke_bridge_admin_commands_runtime.py /tmp/smoke_bridge_admin_commands_runtime.py
+RUN python -B /tmp/smoke_bridge_admin_commands_runtime.py && \
+    rm /tmp/smoke_bridge_admin_commands_runtime.py
+
+USER slidge

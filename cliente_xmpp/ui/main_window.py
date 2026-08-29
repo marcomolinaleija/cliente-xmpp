@@ -73,6 +73,7 @@ from cliente_xmpp.models.chat import (
     poll_option_hash,
     poll_selected_options,
 )
+from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.models.mentions import (
     GroupParticipant,
     MentionCandidate,
@@ -3458,6 +3459,18 @@ class MainWindow(wx.Frame):
             self._send_message_correction(self.edit_context, body)
             return
 
+        if is_local_bridge_command(body):
+            if reply_context:
+                self._cancel_reply()
+            self.status_bar.SetStatusText("Ejecutando comando local...")
+            self.xmpp.send_message(
+                chat.jid,
+                body,
+                is_group=chat.is_group,
+                ephemeral=True,
+            )
+            return
+
         message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
         mentions = self._mention_references_for_message(chat, body)
         message = Message(
@@ -5315,6 +5328,8 @@ class MainWindow(wx.Frame):
             case MessageReactionReceived(update=update):
                 self._handle_reaction_update(update)
             case MessageReceived(message=message, notify=notify):
+                if message.outgoing and is_local_bridge_command(message.body):
+                    return
                 if self._cleared_chat_blocks_timestamp(
                     message.chat_jid,
                     self._message_timestamp(message),
@@ -5391,6 +5406,13 @@ class MainWindow(wx.Frame):
             ):
                 if not self.whatsapp_verified:
                     return
+                messages = [
+                    message
+                    for message in messages
+                    if not (
+                        message.outgoing and is_local_bridge_command(message.body)
+                    )
+                ]
                 messages = self._messages_after_chat_clear(chat_jid, messages)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case MessageDeliveryUpdated(

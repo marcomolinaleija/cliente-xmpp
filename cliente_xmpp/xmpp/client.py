@@ -36,6 +36,7 @@ from cliente_xmpp.models.chat import (
     poll_display_text,
     poll_option_hash,
 )
+from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.models.mentions import GroupParticipant, MentionReference
 from cliente_xmpp.models.names import (
     display_label_from_jid,
@@ -2898,6 +2899,8 @@ class BridgeXmppClient(ClientXMPP):
 
             mam = self["xep_0313"]
             async for result in mam.iterate(reverse=True, rsm={"max": 50}, total=limit):
+                if self._mam_result_is_outgoing_local_bridge_command(result):
+                    continue
                 chat_jid = self._chat_jid_from_mam_result(result)
                 if not chat_jid:
                     continue
@@ -3060,6 +3063,8 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
         sender_name = self._sender_name_from_stanza(stanza, is_group=is_group)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
+        if outgoing and is_local_bridge_command(body):
+            return None
         reaction_update = self._reaction_update_from_xml(
             chat_jid=message_chat_jid,
             xml=stanza.xml,
@@ -3142,6 +3147,8 @@ class BridgeXmppClient(ClientXMPP):
 
         is_group = self._stanza_is_groupchat(stanza)
         body = str(stanza["body"] or "").strip()
+        if outgoing and is_local_bridge_command(body):
+            return
         (
             media_url,
             media_kind,
@@ -3248,6 +3255,8 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_stanza(stanza, is_group=True)
         sender_name = self._sender_name_from_stanza(stanza, is_group=True)
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
+        if outgoing and is_local_bridge_command(body):
+            return None
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
         if not body and not media_url and poll is None and poll_update is None:
@@ -3345,6 +3354,15 @@ class BridgeXmppClient(ClientXMPP):
         if result is not None:
             message = self._forwarded_message_from_xml(result)
             if message is not None:
+                is_group = (
+                    message.attrib.get("type", "") == "groupchat"
+                    or self._xml_message_addresses_groupchat(message)
+                )
+                if self._message_xml_is_outgoing(
+                    message,
+                    is_group=is_group,
+                ) and is_local_bridge_command(self._body_from_message_xml(message)):
+                    return None
                 body = message.find(f"{{{CLIENT_NS}}}body")
                 preview = (body.text or "").strip() if body is not None else ""
                 media_url, media_kind, media_mime, media_filename, media_size, _ = (
@@ -3406,6 +3424,8 @@ class BridgeXmppClient(ClientXMPP):
         sender_jid = self._sender_jid_from_message_xml(message, is_group=is_group)
         sender_name = self._sender_name_from_message_xml(message, is_group=is_group)
         outgoing = self._message_xml_is_outgoing(message, is_group=is_group)
+        if outgoing and is_local_bridge_command(body):
+            return None
         reaction_update = self._reaction_update_from_xml(
             chat_jid=chat_jid,
             xml=message,
@@ -3603,6 +3623,21 @@ class BridgeXmppClient(ClientXMPP):
             return False
 
         return self._bare_jid(from_jid) == str(self.boundjid.bare)
+
+    @staticmethod
+    def _body_from_message_xml(message: ET.Element) -> str:
+        body = message.find(f"{{{CLIENT_NS}}}body")
+        return (body.text or "").strip() if body is not None else ""
+
+    def _mam_result_is_outgoing_local_bridge_command(self, result: object) -> bool:
+        forwarded = result["mam_result"]["forwarded"]
+        stanza = forwarded["stanza"]
+        body = str(stanza["body"] or "").strip()
+        if not is_local_bridge_command(body):
+            return False
+        is_group = self._stanza_is_groupchat(stanza)
+        sender_jid = self._sender_jid_from_stanza(stanza, is_group=is_group)
+        return self._message_is_outgoing(stanza, sender_jid, is_group=is_group)
 
     @classmethod
     def _sender_jid_from_message_xml(cls, message: ET.Element, is_group: bool = False) -> str:
@@ -4627,6 +4662,7 @@ class XmppService:
         is_group: bool = False,
         message_id: str = "",
         mentions: list[MentionReference] | None = None,
+        ephemeral: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             if message_id:
@@ -4650,13 +4686,17 @@ class XmppService:
                     msg = self._client.make_message(mto=to_jid, mbody=body, mtype=message_type)
                     if message_id:
                         msg["id"] = message_id
-                    self._append_mentions(msg, mentions or [])
-                    self._request_delivery_updates(msg, message_type)
-                    self._client.track_transient_message_retry(
-                        to_jid,
-                        message_id,
-                        msg.send,
-                    )
+                    if ephemeral:
+                        msg.append(ET.Element(f"{{{XMPP_HINTS_NS}}}no-store"))
+                        msg.append(ET.Element(f"{{{XMPP_HINTS_NS}}}no-copy"))
+                    else:
+                        self._append_mentions(msg, mentions or [])
+                        self._request_delivery_updates(msg, message_type)
+                        self._client.track_transient_message_retry(
+                            to_jid,
+                            message_id,
+                            msg.send,
+                        )
                     msg.send()
                     if message_id:
                         self._emit(

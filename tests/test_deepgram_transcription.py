@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from tools.deepgram_transcription import (
     build_audio_dedup_key,
+    chat_transcription_override,
     claim_audio,
     complete_audio,
     format_audio_duration,
@@ -18,6 +19,8 @@ from tools.deepgram_transcription import (
     handle_transcription_command,
     inspect_audio,
     release_audio,
+    set_chat_transcription_override,
+    set_transcription_enabled,
     transcribe_audio,
     transcription_enabled,
 )
@@ -111,6 +114,57 @@ class DeepgramTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(claim_audio(account, "abc:1"))
         complete_audio(account, "abc:1")
         self.assertFalse(claim_audio(account, "abc:1"))
+
+    def test_chat_override_has_priority_over_global_state(self) -> None:
+        account = "Marco@Example.test"
+        direct_chat = "+5215550000000@whatsapp.example.test"
+        group_chat = "group-123@groups.whatsapp.example.test"
+
+        self.assertTrue(transcription_enabled(account, direct_chat))
+        self.assertTrue(transcription_enabled(account, group_chat))
+
+        set_chat_transcription_override(account, direct_chat, False)
+        self.assertFalse(transcription_enabled(account, direct_chat))
+        self.assertTrue(transcription_enabled(account, group_chat))
+        self.assertFalse(chat_transcription_override(account, direct_chat))
+
+        set_transcription_enabled(account, False)
+        set_chat_transcription_override(account, group_chat, True)
+        self.assertFalse(transcription_enabled(account, direct_chat))
+        self.assertTrue(transcription_enabled(account, group_chat))
+
+        set_chat_transcription_override(account, group_chat, None)
+        self.assertIsNone(chat_transcription_override(account, group_chat))
+        self.assertFalse(transcription_enabled(account, group_chat))
+
+    async def test_here_commands_manage_only_the_current_chat(self) -> None:
+        account = "marco@example.test"
+        chat = "room@groups.whatsapp.example.test"
+        other_chat = "friend@whatsapp.example.test"
+
+        response = await handle_transcription_command(  # type: ignore[arg-type]
+            FakeSession(), account, "/transcribe here off", chat=chat
+        )
+        self.assertEqual(response, "Transcripción desactivada para este chat.")
+        self.assertFalse(transcription_enabled(account, chat))
+        self.assertTrue(transcription_enabled(account, other_chat))
+
+        response = await handle_transcription_command(  # type: ignore[arg-type]
+            FakeSession(), account, "/transcribe here", chat=chat
+        )
+        self.assertEqual(
+            response,
+            "Este chat tiene una excepción: transcripción desactivada.",
+        )
+
+        response = await handle_transcription_command(  # type: ignore[arg-type]
+            FakeSession(), account, "/transcribe here default", chat=chat
+        )
+        self.assertEqual(
+            response,
+            "Este chat vuelve a usar el ajuste global. Estado efectivo: activada.",
+        )
+        self.assertTrue(transcription_enabled(account, chat))
 
     async def test_commands_never_need_whatsapp_and_stats_formats_balance(self) -> None:
         session = FakeSession(

@@ -707,6 +707,30 @@ class _FakeClient:
 
 
 class ForwardSendContractTests(unittest.TestCase):
+    def test_ephemeral_message_requests_no_storage_or_carbon_copy(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        fake_client = _FakeClient()
+        service._client = fake_client
+        service._loop = _ImmediateLoop()
+
+        service.send_message(
+            "contact@example.test",
+            "/stats",
+            ephemeral=True,
+        )
+
+        assert fake_client.message is not None
+        self.assertIsNotNone(
+            fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}no-store")
+        )
+        self.assertIsNotNone(
+            fake_client.message.xml.find(f"{{{XMPP_HINTS_NS}}}no-copy")
+        )
+        self.assertIsNone(fake_client.message.xml.find("{urn:xmpp:receipts}request"))
+        self.assertTrue(fake_client.message.sent)
+        self.assertEqual(emitted, [])
+
     def test_audio_upload_reply_metadata_uses_xep_0461_and_fallback(self) -> None:
         message = _FakeMessage("contact@example.test", "audio.ogg", "chat")
 

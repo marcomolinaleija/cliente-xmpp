@@ -6,13 +6,14 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 import aiohttp
-
 
 DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen"
 DEEPGRAM_PROJECTS_URL = "https://api.deepgram.com/v1/projects"
@@ -92,36 +93,58 @@ def _state_path() -> Path:
     return slidge_home / "deepgram-transcription.sqlite3"
 
 
-def _connect_state() -> sqlite3.Connection:
+@contextmanager
+def _connect_state() -> Iterator[sqlite3.Connection]:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     database = sqlite3.connect(path, timeout=5)
-    database.execute("PRAGMA journal_mode = WAL")
-    database.execute(
-        """
-        CREATE TABLE IF NOT EXISTS account_state (
-            account TEXT PRIMARY KEY,
-            enabled INTEGER NOT NULL,
-            last_success_at REAL
+    try:
+        database.execute("PRAGMA journal_mode = WAL")
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_state (
+                account TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                last_success_at REAL
+            )
+            """
         )
-        """
-    )
-    database.execute(
-        """
-        CREATE TABLE IF NOT EXISTS processed_audio (
-            account TEXT NOT NULL,
-            dedupe_key TEXT NOT NULL,
-            status TEXT NOT NULL,
-            updated_at REAL NOT NULL,
-            PRIMARY KEY (account, dedupe_key)
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_audio (
+                account TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (account, dedupe_key)
+            )
+            """
         )
-        """
-    )
-    return database
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_state (
+                account TEXT NOT NULL,
+                chat TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                PRIMARY KEY (account, chat)
+            )
+            """
+        )
+        yield database
+        database.commit()
+    except Exception:
+        database.rollback()
+        raise
+    finally:
+        database.close()
 
 
 def _account_key(account: str) -> str:
     return account.strip().casefold()
+
+
+def _chat_key(chat: str) -> str:
+    return chat.strip().casefold()
 
 
 def _jid_allowed(account: str, variable: str) -> bool:
@@ -133,9 +156,7 @@ def _jid_allowed(account: str, variable: str) -> bool:
     return not allowed or _account_key(account) in allowed
 
 
-def transcription_enabled(account: str) -> bool:
-    if not _configured_api_key() or not _jid_allowed(account, "DEEPGRAM_ALLOWED_JIDS"):
-        return False
+def _global_transcription_enabled(account: str) -> bool:
     account = _account_key(account)
     with _connect_state() as database:
         row = database.execute(
@@ -144,6 +165,28 @@ def transcription_enabled(account: str) -> bool:
     if row is not None:
         return bool(row[0])
     return _env_bool("DEEPGRAM_TRANSCRIPTION_ENABLED", True)
+
+
+def chat_transcription_override(account: str, chat: str) -> bool | None:
+    account = _account_key(account)
+    chat = _chat_key(chat)
+    if not chat:
+        return None
+    with _connect_state() as database:
+        row = database.execute(
+            "SELECT enabled FROM chat_state WHERE account = ? AND chat = ?",
+            (account, chat),
+        ).fetchone()
+    return None if row is None else bool(row[0])
+
+
+def transcription_enabled(account: str, chat: str = "") -> bool:
+    if not _configured_api_key() or not _jid_allowed(account, "DEEPGRAM_ALLOWED_JIDS"):
+        return False
+    override = chat_transcription_override(account, chat)
+    if override is not None:
+        return override
+    return _global_transcription_enabled(account)
 
 
 def set_transcription_enabled(account: str, enabled: bool) -> None:
@@ -156,6 +199,32 @@ def set_transcription_enabled(account: str, enabled: bool) -> None:
             ON CONFLICT(account) DO UPDATE SET enabled = excluded.enabled
             """,
             (account, int(enabled)),
+        )
+
+
+def set_chat_transcription_override(
+    account: str,
+    chat: str,
+    enabled: bool | None,
+) -> None:
+    account = _account_key(account)
+    chat = _chat_key(chat)
+    if not chat:
+        raise ValueError("chat must not be empty")
+    with _connect_state() as database:
+        if enabled is None:
+            database.execute(
+                "DELETE FROM chat_state WHERE account = ? AND chat = ?",
+                (account, chat),
+            )
+            return
+        database.execute(
+            """
+            INSERT INTO chat_state(account, chat, enabled)
+            VALUES (?, ?, ?)
+            ON CONFLICT(account, chat) DO UPDATE SET enabled = excluded.enabled
+            """,
+            (account, chat, int(enabled)),
         )
 
 
@@ -527,6 +596,7 @@ async def handle_transcription_command(
     http: aiohttp.ClientSession,
     account: str,
     body: str,
+    chat: str = "",
 ) -> str | None:
     parts = body.strip().casefold().split()
     if not parts or parts[0] not in {"/transcribe", "/stats", "/status"}:
@@ -536,13 +606,54 @@ async def handle_transcription_command(
 
     command = parts[0]
     if command == "/transcribe":
-        if len(parts) != 2 or parts[1] not in {"on", "off", "of"}:
-            return "Uso: /transcribe on o /transcribe off."
-        enabled = parts[1] == "on"
-        if enabled and not _configured_api_key():
-            return "No se puede activar: el servicio de transcripción no está configurado."
-        set_transcription_enabled(account, enabled)
-        return f"Transcripción {'activada' if enabled else 'desactivada'}."
+        if len(parts) == 2 and parts[1] in {"on", "off", "of"}:
+            enabled = parts[1] == "on"
+            if enabled and not _configured_api_key():
+                return (
+                    "No se puede activar: el servicio de transcripción no está "
+                    "configurado."
+                )
+            set_transcription_enabled(account, enabled)
+            return f"Transcripción {'activada' if enabled else 'desactivada'}."
+
+        if len(parts) >= 2 and parts[1] == "here":
+            if not chat:
+                return "Este comando debe usarse dentro de un chat o grupo."
+            if len(parts) == 2:
+                override = chat_transcription_override(account, chat)
+                effective = "activada" if transcription_enabled(account, chat) else "desactivada"
+                if override is None:
+                    return (
+                        "Este chat hereda el ajuste global. "
+                        f"Estado efectivo: {effective}."
+                    )
+                return f"Este chat tiene una excepción: transcripción {effective}."
+            if len(parts) == 3 and parts[2] in {"on", "off", "of", "default"}:
+                if parts[2] == "default":
+                    set_chat_transcription_override(account, chat, None)
+                    effective = (
+                        "activada" if transcription_enabled(account, chat) else "desactivada"
+                    )
+                    return (
+                        "Este chat vuelve a usar el ajuste global. "
+                        f"Estado efectivo: {effective}."
+                    )
+                enabled = parts[2] == "on"
+                if enabled and not _configured_api_key():
+                    return (
+                        "No se puede activar: el servicio de transcripción no está "
+                        "configurado."
+                    )
+                set_chat_transcription_override(account, chat, enabled)
+                return (
+                    f"Transcripción {'activada' if enabled else 'desactivada'} "
+                    "para este chat."
+                )
+
+        return (
+            "Uso: /transcribe on|off o "
+            "/transcribe here [on|off|default]."
+        )
 
     if command == "/status":
         if not _configured_api_key():

@@ -12,6 +12,82 @@ from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_local_bridge_commands_are_never_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "chat@example.test"
+            now = datetime(2026, 8, 29, 10, tzinfo=UTC)
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid="me",
+                        body="/stats",
+                        sent_at=now,
+                        outgoing=True,
+                        message_id="command",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid="me",
+                        body="/statistics",
+                        sent_at=now + timedelta(seconds=1),
+                        outgoing=True,
+                        message_id="regular-slash-message",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="/status",
+                        sent_at=now + timedelta(seconds=2),
+                        outgoing=False,
+                        message_id="incoming-command-text",
+                    ),
+                ],
+            )
+
+            loaded = store.load_recent_messages(account_jid, chat_jid)
+            self.assertEqual(
+                [message.message_id for message in loaded],
+                ["regular-slash-message", "incoming-command-text"],
+            )
+
+    def test_startup_removes_old_commands_and_rebuilds_chat_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            store = MessageStore(path)
+            account_jid = "me@example.test"
+            chat_jid = "chat@example.test"
+            normal = Message(
+                chat_jid=chat_jid,
+                sender_jid=chat_jid,
+                body="Mensaje anterior",
+                sent_at=datetime(2026, 8, 29, 9, tzinfo=UTC),
+                message_id="normal",
+            )
+            command = Message(
+                chat_jid=chat_jid,
+                sender_jid="me",
+                body="/transcribe here off",
+                sent_at=datetime(2026, 8, 29, 10, tzinfo=UTC),
+                outgoing=True,
+                message_id="archived-command",
+            )
+            store.upsert_messages(account_jid, [normal])
+            with store._connect() as conn:
+                store._upsert_message(conn, account_jid, command)
+                store._upsert_message_chat_summary(conn, account_jid, command)
+
+            reopened = MessageStore(path)
+
+            loaded = reopened.load_recent_messages(account_jid, chat_jid)
+            self.assertEqual([message.message_id for message in loaded], ["normal"])
+            chats = reopened.load_chats(account_jid)
+            self.assertEqual(len(chats), 1)
+            self.assertEqual(chats[0].last_message_preview, normal.body)
+
     def test_loads_a_local_history_page_before_the_cached_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

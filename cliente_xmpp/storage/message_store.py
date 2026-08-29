@@ -18,6 +18,7 @@ from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
+from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.reactions import ReactionState, flattened_reactions
@@ -1234,6 +1235,11 @@ class MessageStore:
             )
 
     def upsert_messages(self, account_jid: str, messages: list[Message]) -> None:
+        messages = [
+            message
+            for message in messages
+            if not (message.outgoing and is_local_bridge_command(message.body))
+        ]
         if not messages:
             return
 
@@ -1411,6 +1417,8 @@ class MessageStore:
                 self._compact_duplicate_messages(conn)
             for account_jid, chat_jid in self._delete_failed_local_messages(conn):
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
+            for account_jid, chat_jid in self._delete_local_bridge_commands(conn):
+                self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
     @staticmethod
     def _delete_failed_local_messages(
@@ -1441,6 +1449,32 @@ class MessageStore:
             """
         )
         return affected_chats
+
+    @staticmethod
+    def _delete_local_bridge_commands(
+        conn: sqlite3.Connection,
+    ) -> list[tuple[str, str]]:
+        rows = conn.execute(
+            """
+            SELECT rowid, account_jid, chat_jid, body
+            FROM messages
+            WHERE outgoing = 1 AND LTRIM(body) LIKE '/%'
+            """
+        ).fetchall()
+        command_rows = [row for row in rows if is_local_bridge_command(str(row["body"]))]
+        if not command_rows:
+            return []
+
+        conn.executemany(
+            "DELETE FROM messages WHERE rowid = ?",
+            [(int(row["rowid"]),) for row in command_rows],
+        )
+        return sorted(
+            {
+                (str(row["account_jid"]), str(row["chat_jid"]))
+                for row in command_rows
+            }
+        )
 
     def _normalize_datetime_columns(self, conn: sqlite3.Connection) -> None:
         for table, column in (

@@ -4891,13 +4891,19 @@ class MainWindow(wx.Frame):
     def _discard_auto_media_download(self, message: Message) -> None:
         self.auto_downloading_media_keys.discard(self._auto_media_download_key(message))
 
-    def _persist_message_media_path(self, message: Message) -> None:
-        if not self.current_jid:
+    def _persist_message_media_path(
+        self,
+        message: Message,
+        *,
+        account_jid: str | None = None,
+    ) -> None:
+        account_jid = account_jid or self.current_jid
+        if not account_jid:
             return
 
         self._queue_storage_write(
             self.message_store.update_message_media_local_path,
-            self.current_jid,
+            account_jid,
             replace(message),
         )
 
@@ -5031,24 +5037,41 @@ class MainWindow(wx.Frame):
 
     def _send_media_to_rayoai(self, message: Message) -> None:
         path = local_media_path(message)
-        if path is None:
+        account_jid = self.current_jid
+        if path is None or not account_jid:
             self.status_bar.SetStatusText("Descarga el archivo antes de enviarlo a RayoAI")
             return
 
-        self.status_bar.SetStatusText("Enviando a RayoAI...")
+        self.status_bar.SetStatusText("Enviando a RayoAI para describir...")
 
         def worker() -> None:
-            sent = rayoai.send_open_path(path)
-            wx.CallAfter(self._finish_send_media_to_rayoai, sent)
+            description = rayoai.request_description(path)
+            wx.CallAfter(
+                self._finish_send_media_to_rayoai,
+                message,
+                description,
+                account_jid,
+            )
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _finish_send_media_to_rayoai(self, sent: bool) -> None:
-        if sent:
-            self.status_bar.SetStatusText("Imagen enviada a RayoAI para describir")
+    def _finish_send_media_to_rayoai(
+        self,
+        message: Message,
+        description: str | None,
+        account_jid: str,
+    ) -> None:
+        if description:
+            message.media_alt_text = description
+            self._persist_message_media_path(message, account_jid=account_jid)
+            if self.current_jid == account_jid:
+                self.conversation.refresh_message(message)
+            self.status_bar.SetStatusText("Descripción guardada desde RayoAI")
             return
 
-        self.status_bar.SetStatusText("No se pudo enviar a RayoAI. Verifica que esté abierto.")
+        self.status_bar.SetStatusText(
+            "RayoAI no devolvió una descripción. Verifica que esté abierto y actualizado."
+        )
 
     def _open_media_path(self, path: object) -> None:
         try:

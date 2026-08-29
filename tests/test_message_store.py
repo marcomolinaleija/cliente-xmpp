@@ -12,6 +12,61 @@ from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_rayoai_description_survives_message_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            message = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="",
+                media_url="https://example.test/photo.jpg",
+                media_kind="image",
+                media_alt_text="Una bicicleta junto a un árbol.",
+                message_id="photo-1",
+            )
+
+            store.upsert_messages("me@example.test", [message])
+            loaded = store.load_recent_messages("me@example.test", message.chat_jid)
+
+        self.assertEqual(loaded[0].media_alt_text, message.media_alt_text)
+
+    def test_remote_refresh_does_not_erase_saved_rayoai_description(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            original = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="",
+                media_url="https://example.test/photo.jpg",
+                media_kind="image",
+                media_alt_text="Un perro junto a una ventana.",
+                message_id="photo-2",
+            )
+            refreshed = Message(
+                chat_jid=original.chat_jid,
+                sender_jid=original.sender_jid,
+                body="",
+                media_url=original.media_url,
+                media_kind=original.media_kind,
+                message_id=original.message_id,
+            )
+
+            store.upsert_messages("me@example.test", [original, refreshed])
+            loaded = store.load_recent_messages("me@example.test", original.chat_jid)
+
+        self.assertEqual(loaded[0].media_alt_text, original.media_alt_text)
+
+    def test_existing_database_gets_rayoai_description_column(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            MessageStore(path)
+            with closing(sqlite3.connect(path)) as conn:
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+                }
+
+        self.assertIn("media_alt_text", columns)
+
     def test_local_bridge_commands_are_never_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")
@@ -421,6 +476,7 @@ class MessageStoreTests(unittest.TestCase):
                 media_size=123,
                 media_duration_seconds=5,
                 media_local_path=str(Path(temp_dir) / "voice.ogg"),
+                media_alt_text="Una nota de voz.",
                 message_id="wa-id-media",
             )
             store.upsert_messages("me@example.test", [original])
@@ -441,6 +497,7 @@ class MessageStoreTests(unittest.TestCase):
             self.assertEqual(loaded.media_url, "")
             self.assertEqual(loaded.media_kind, "")
             self.assertEqual(loaded.media_local_path, "")
+            self.assertEqual(loaded.media_alt_text, "")
 
             store.upsert_messages("me@example.test", [original])
             loaded_again = store.load_recent_messages(

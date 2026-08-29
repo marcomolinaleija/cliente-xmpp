@@ -1154,6 +1154,7 @@ class MessageStore:
                 UPDATE messages
                 SET body = CASE WHEN ? != '' THEN ? ELSE body END,
                     media_local_path = ?, media_size = ?,
+                    media_alt_text = COALESCE(NULLIF(?, ''), media_alt_text),
                     media_duration_seconds = COALESCE(
                         NULLIF(?, 0),
                         media_duration_seconds
@@ -1178,6 +1179,7 @@ class MessageStore:
                     message.body,
                     message.media_local_path,
                     message.media_size,
+                    message.media_alt_text,
                     message.media_duration_seconds,
                     message.media_mime,
                     message.media_filename,
@@ -1366,6 +1368,7 @@ class MessageStore:
                     media_size INTEGER NOT NULL DEFAULT 0,
                     media_duration_seconds REAL NOT NULL DEFAULT 0,
                     media_local_path TEXT NOT NULL DEFAULT '',
+                    media_alt_text TEXT NOT NULL DEFAULT '',
                     is_sticker INTEGER NOT NULL DEFAULT 0,
                     is_forwarded INTEGER NOT NULL DEFAULT 0,
                     poll_json TEXT NOT NULL DEFAULT '',
@@ -1594,6 +1597,7 @@ class MessageStore:
             "media_size": "INTEGER NOT NULL DEFAULT 0",
             "media_duration_seconds": "REAL NOT NULL DEFAULT 0",
             "media_local_path": "TEXT NOT NULL DEFAULT ''",
+            "media_alt_text": "TEXT NOT NULL DEFAULT ''",
             "is_sticker": "INTEGER NOT NULL DEFAULT 0",
             "is_forwarded": "INTEGER NOT NULL DEFAULT 0",
             "poll_json": "TEXT NOT NULL DEFAULT ''",
@@ -1687,6 +1691,7 @@ class MessageStore:
                 media_size = COALESCE(NULLIF(media_size, 0), ?),
                 media_duration_seconds = COALESCE(NULLIF(media_duration_seconds, 0), ?),
                 media_local_path = COALESCE(NULLIF(media_local_path, ''), ?),
+                media_alt_text = COALESCE(NULLIF(media_alt_text, ''), ?),
                 is_sticker = CASE WHEN is_sticker = 1 OR ? = 1 THEN 1 ELSE 0 END,
                 is_forwarded = CASE WHEN is_forwarded = 1 OR ? = 1 THEN 1 ELSE 0 END,
                 reply_quote = COALESCE(NULLIF(reply_quote, ''), ?),
@@ -1709,6 +1714,7 @@ class MessageStore:
                 duplicate["media_size"],
                 duplicate["media_duration_seconds"],
                 duplicate["media_local_path"],
+                duplicate["media_alt_text"],
                 duplicate["is_sticker"],
                 duplicate["is_forwarded"],
                 duplicate["reply_quote"],
@@ -1835,13 +1841,15 @@ class MessageStore:
                 account_jid, chat_jid, message_key, message_id, displayed_marker_id, sender_jid,
                 sender_name, body, sent_at, outgoing, audio_url, media_url, media_kind,
                 media_mime, media_filename, media_size, media_duration_seconds,
-                media_local_path, is_sticker, is_forwarded, poll_json, chat_is_group, starred,
+                media_local_path, media_alt_text, is_sticker, is_forwarded, poll_json,
+                chat_is_group, starred,
                 reactions_json, reaction_states_json, reply_quote,
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -1900,6 +1908,10 @@ class MessageStore:
                         NULLIF(excluded.media_local_path, ''),
                         messages.media_local_path
                     )
+                END,
+                media_alt_text = CASE
+                    WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
+                    ELSE COALESCE(NULLIF(excluded.media_alt_text, ''), messages.media_alt_text)
                 END,
                 is_sticker = CASE
                     WHEN excluded.is_sticker = 1 OR messages.is_sticker = 1 THEN 1
@@ -1974,6 +1986,7 @@ class MessageStore:
                 message.media_size,
                 message.media_duration_seconds,
                 message.media_local_path,
+                message.media_alt_text,
                 int(message.is_sticker),
                 int(message.is_forwarded),
                 _poll_to_db(message.poll),
@@ -2383,6 +2396,7 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         media_size=int(row["media_size"] or 0),
         media_duration_seconds=float(row["media_duration_seconds"] or 0),
         media_local_path=str(row["media_local_path"] or ""),
+        media_alt_text=str(row["media_alt_text"] or ""),
         is_sticker=is_sticker,
         is_forwarded=bool(row["is_forwarded"]),
         poll=_poll_from_db(str(row["poll_json"] or "")),

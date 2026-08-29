@@ -159,6 +159,7 @@ class Message:
     media_size: int = 0
     media_duration_seconds: float = 0.0
     media_local_path: str = ""
+    media_alt_text: str = ""
     is_sticker: bool = False
     is_forwarded: bool = False
     poll: Poll | None = None

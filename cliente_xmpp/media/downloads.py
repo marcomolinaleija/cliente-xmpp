@@ -137,6 +137,11 @@ def media_description(message: Message) -> str:
     if is_link_preview(message):
         return link_description(message)
 
+    alt_text = message.media_alt_text.strip()
+    if alt_text and (message.is_sticker or message.media_kind == "image"):
+        label = "Sticker" if message.is_sticker else "Foto"
+        return f"{label}: {alt_text}"
+
     if message.is_sticker:
         body = message.body.strip()
         if body.casefold().startswith("sticker: "):

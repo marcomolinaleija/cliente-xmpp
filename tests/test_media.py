@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -34,6 +35,21 @@ class MediaDescriptionTests(unittest.TestCase):
         )
 
         self.assertEqual(media_description(message), "foto, 2.0 KB")
+
+    def test_uses_saved_rayoai_description_for_image(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://example.test/photo.jpg",
+            media_kind="image",
+            media_alt_text="Una persona sostiene un paraguas rojo.",
+        )
+
+        self.assertEqual(
+            media_description(message),
+            "Foto: Una persona sostiene un paraguas rojo.",
+        )
 
     def test_collects_all_photos_announced_by_album_marker(self) -> None:
         sent_at = datetime(2026, 7, 22, 18, 1)
@@ -234,6 +250,64 @@ class RayoAiMediaTests(unittest.TestCase):
             send_payload.call_args.args[0],
             {"cmd": "open", "path": str(source.resolve())},
         )
+
+    def test_requests_and_validates_description_response(self) -> None:
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.sent: dict[str, object] | None = None
+
+            def __enter__(self) -> FakeConnection:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def sendall(self, payload: bytes) -> None:
+                self.sent = json.loads(payload.decode("utf-8"))
+
+            def recv(self, _size: int) -> bytes:
+                assert self.sent is not None
+                return (
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "request_id": self.sent["request_id"],
+                            "description": "  Una taza azul sobre una mesa.\n",
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+
+        connection = FakeConnection()
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch.object(rayoai.socket, "create_connection", return_value=connection),
+        ):
+            source = Path(temp_dir) / "photo.jpg"
+            source.write_bytes(b"image")
+            description = rayoai.request_description(source)
+
+        self.assertEqual(description, "Una taza azul sobre una mesa.")
+        self.assertEqual(connection.sent["cmd"], "describe")
+        self.assertEqual(connection.sent["path"], str(source.resolve()))
+        self.assertTrue(connection.sent["instruction"])
+
+    def test_rejects_description_response_for_another_request(self) -> None:
+        class FakeConnection:
+            def __enter__(self) -> FakeConnection:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def sendall(self, _payload: bytes) -> None:
+                return None
+
+            def recv(self, _size: int) -> bytes:
+                return b'{"ok": true, "request_id": "wrong", "description": "texto"}\n'
+
+        with patch.object(rayoai.socket, "create_connection", return_value=FakeConnection()):
+            self.assertIsNone(rayoai.request_description("photo.jpg"))
 
 
 class _FakeListItem:

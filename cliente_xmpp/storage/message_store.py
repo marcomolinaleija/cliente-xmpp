@@ -1149,7 +1149,7 @@ class MessageStore:
         message: Message,
     ) -> None:
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE messages
                 SET body = CASE WHEN ? != '' THEN ? ELSE body END,
@@ -1171,6 +1171,7 @@ class MessageStore:
                 WHERE account_jid = ? AND chat_jid = ?
                     AND (
                         message_key = ?
+                        OR (? != '' AND message_id = ?)
                         OR (? != '' AND media_url = ?)
                     )
                 """,
@@ -1187,10 +1188,14 @@ class MessageStore:
                     account_jid,
                     message.chat_jid,
                     _message_key(message),
+                    message.message_id,
+                    message.message_id,
                     message.media_url,
                     message.media_url,
                 ),
             )
+            if cursor.rowcount == 0:
+                self._upsert_message(conn, account_jid, message)
             self._upsert_message_chat_summary(conn, account_jid, message)
 
     def clear_missing_media_local_paths(self) -> int:

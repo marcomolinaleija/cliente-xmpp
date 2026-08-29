@@ -1,3 +1,21 @@
+WhatsApp CAN 1.4.4
+
+Descripciones accesibles con RayoAI
+- Puedes enviar manualmente una foto, video o sticker a RayoAI desde la conversación, los archivos del chat o los mensajes destacados.
+- La descripción devuelta se guarda como texto alternativo local y permanece disponible al reiniciar el cliente.
+- Flecha izquierda lee con NVDA la descripción completa, aunque el resumen visible esté abreviado.
+- Las descripciones nunca se solicitan automáticamente; solo se generan cuando el usuario elige la acción.
+
+Accesibilidad y gestión de multimedia
+- Las descripciones de stickers se conservan y se muestran sin exponer nombres técnicos o rutas locales.
+- El menú contextual de archivos y mensajes destacados ofrece las acciones correspondientes solo para multimedia compatible.
+- La persistencia de archivos y descripciones tolera actualizaciones remotas, mensajes duplicados y cambios de identificador.
+
+Transcripción y comandos del puente
+- Se incorpora la transcripción opcional de notas de voz mediante Deepgram, con controles y comandos administrativos locales.
+- El cliente conserva una presencia pasiva de WhatsApp para evitar alterar las notificaciones del teléfono oficial. Esto por ahora solo en el cliente remoto (servidores).
+
+
 WhatsApp CAN 1.4.3
 
 Reconexiones XMPP más tolerantes

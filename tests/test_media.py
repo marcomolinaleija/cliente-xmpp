@@ -292,6 +292,37 @@ class RayoAiMediaTests(unittest.TestCase):
         self.assertEqual(connection.sent["path"], str(source.resolve()))
         self.assertTrue(connection.sent["instruction"])
 
+    def test_keeps_long_description_for_the_full_reader(self) -> None:
+        long_description = "Una descripción detallada. " * 500
+
+        class FakeConnection:
+            def __enter__(self) -> FakeConnection:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def sendall(self, payload: bytes) -> None:
+                self.request = json.loads(payload.decode("utf-8"))
+
+            def recv(self, _size: int) -> bytes:
+                return (
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "request_id": self.request["request_id"],
+                            "description": long_description,
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+
+        with patch.object(rayoai.socket, "create_connection", return_value=FakeConnection()):
+            description = rayoai.request_description("photo.jpg")
+
+        self.assertEqual(description, long_description.strip())
+
     def test_rejects_description_response_for_another_request(self) -> None:
         class FakeConnection:
             def __enter__(self) -> FakeConnection:

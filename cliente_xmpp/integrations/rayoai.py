@@ -9,7 +9,6 @@ RAYOAI_HOST = "127.0.0.1"
 RAYOAI_PORT = 16180
 RAYOAI_TIMEOUT_SECONDS = 1.5
 RAYOAI_DESCRIPTION_TIMEOUT_SECONDS = 60.0
-MAX_DESCRIPTION_LENGTH = 4000
 MAX_RESPONSE_BYTES = 64 * 1024
 DESCRIPTION_INSTRUCTION = (
     "Describe correctamente el contenido visible para una persona ciega. "
@@ -46,7 +45,7 @@ def request_description(path: str | Path) -> str | None:
     description = response.get("description")
     if not isinstance(description, str):
         return None
-    description = " ".join(description.split())[:MAX_DESCRIPTION_LENGTH].strip()
+    description = " ".join(description.split()).strip()
     return description or None
 
 

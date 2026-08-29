@@ -6,7 +6,12 @@ from datetime import date
 
 import wx
 
-from cliente_xmpp.media.downloads import has_media, local_media_path, media_description
+from cliente_xmpp.media.downloads import (
+    can_describe_with_rayoai,
+    has_media,
+    local_media_path,
+    media_description,
+)
 from cliente_xmpp.media.links import is_link_preview, message_links
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.ui.theme import apply_theme
@@ -14,6 +19,7 @@ from cliente_xmpp.ui.theme import apply_theme
 MessagesLoadedCallback = Callable[[list[Message], str], None]
 MessagesLoader = Callable[[MessagesLoadedCallback], None]
 MessageAction = Callable[[Message], None]
+MessageDescribeAction = Callable[[Message], Message | None]
 MessageSearchLoader = Callable[[str, date | None, MessagesLoadedCallback], None]
 MessageDatesLoadedCallback = Callable[[list[date], str], None]
 MessageDatesLoader = Callable[[MessageDatesLoadedCallback], None]
@@ -61,6 +67,7 @@ class StarredMessagesDialog(wx.Dialog):
         on_open_message: MessageKeyAction | None = None,
         on_speak_message: MessageKeyAction | None = None,
         on_play_audio: MessageKeyAction | None = None,
+        on_describe: MessageDescribeAction | None = None,
     ) -> None:
         super().__init__(
             parent,
@@ -72,6 +79,7 @@ class StarredMessagesDialog(wx.Dialog):
         self._on_open_message = on_open_message
         self._on_speak_message = on_speak_message
         self._on_play_audio = on_play_audio
+        self._on_describe = on_describe
         self._active = True
         self._messages: list[Message] = []
         self._visible_messages: list[Message] = []
@@ -112,6 +120,8 @@ class StarredMessagesDialog(wx.Dialog):
 
         self.go_button.Bind(wx.EVT_BUTTON, self._on_go_to_message)
         self.messages.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_go_to_message)
+        self.messages.Bind(wx.EVT_CONTEXT_MENU, self._show_menu)
+        self.messages.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_right_click)
         self.sort_choice.Bind(wx.EVT_CHOICE, self._on_sort_changed)
         self.Bind(wx.EVT_BUTTON, lambda _event: self.EndModal(wx.ID_CLOSE), close_button)
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
@@ -191,11 +201,44 @@ class StarredMessagesDialog(wx.Dialog):
         self.selected_message = message
         self.EndModal(wx.ID_OK)
 
+    def _on_right_click(self, event: wx.ListEvent) -> None:
+        self.messages.Select(event.GetIndex())
+        self._show_menu(event)
+
+    def _show_menu(self, _event: wx.Event) -> None:
+        message = self._selected_message()
+        if message is None:
+            return
+
+        menu = wx.Menu()
+        go_item = menu.Append(wx.ID_ANY, "Ir al mensaje")
+        self.Bind(wx.EVT_MENU, self._on_go_to_message, go_item)
+        if self._on_describe is not None and can_describe_with_rayoai(message):
+            describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _menu_event: self._describe(message),
+                describe_item,
+            )
+        self.PopupMenu(menu)
+        menu.Destroy()
+
     def _selected_message(self) -> Message | None:
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._visible_messages):
             return None
         return self._visible_messages[index]
+
+    def _describe(self, message: Message) -> None:
+        if self._on_describe is None:
+            return
+        described_message = self._on_describe(message)
+        if described_message is None or described_message is message:
+            return
+        for messages in (self._messages, self._visible_messages):
+            for index, current in enumerate(messages):
+                if current is message:
+                    messages[index] = described_message
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
@@ -510,6 +553,8 @@ class ChatFilesDialog(wx.Dialog):
         on_open: MessageAction,
         on_copy: MessageAction,
         on_delete: MessageAction,
+        on_describe: MessageDescribeAction | None = None,
+        on_speak_message: MessageKeyAction | None = None,
     ) -> None:
         super().__init__(
             parent,
@@ -521,6 +566,8 @@ class ChatFilesDialog(wx.Dialog):
         self._on_open = on_open
         self._on_copy = on_copy
         self._on_delete = on_delete
+        self._on_describe = on_describe
+        self._on_speak_message = on_speak_message
         self._active = True
         self._messages: list[Message] = []
         self._messages_by_list: dict[int, list[Message]] = {}
@@ -565,6 +612,7 @@ class ChatFilesDialog(wx.Dialog):
             style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN,
         )
         messages.SetName(f"{label} de este chat")
+        messages.SetToolTip("Flecha izquierda: leer el texto alternativo completo con NVDA.")
         messages.InsertColumn(0, "Elemento", width=600)
         messages.InsertColumn(1, "Fecha", width=190)
         box = wx.BoxSizer(wx.VERTICAL)
@@ -629,11 +677,20 @@ class ChatFilesDialog(wx.Dialog):
         open_item = menu.Append(wx.ID_ANY, "Abrir")
         copy_item = menu.Append(wx.ID_ANY, "Copiar")
         delete_item = menu.Append(wx.ID_ANY, "Eliminar")
+        describe_item: wx.MenuItem | None = None
+        if self._on_describe is not None and can_describe_with_rayoai(message):
+            describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
         copy_item.Enable(local_media_path(message) is not None or bool(message_links(message)))
         delete_item.Enable(local_media_path(message) is not None)
         self.Bind(wx.EVT_MENU, lambda _event: self._open(control), open_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._copy(control), copy_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._delete(control), delete_item)
+        if describe_item is not None:
+            self.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._describe(control),
+                describe_item,
+            )
         self.PopupMenu(menu)
         menu.Destroy()
 
@@ -653,8 +710,28 @@ class ChatFilesDialog(wx.Dialog):
             self._on_delete(message)
             self._finish_load(self._messages, "")
 
+    def _describe(self, control: wx.ListCtrl) -> None:
+        message = self._selected_message(control)
+        if message is not None and self._on_describe is not None:
+            described_message = self._on_describe(message)
+            if described_message is None or described_message is message:
+                return
+            for index, current in enumerate(self._messages):
+                if current is message:
+                    self._messages[index] = described_message
+            messages = self._messages_by_list.get(id(control), [])
+            for index, current in enumerate(messages):
+                if current is message:
+                    messages[index] = described_message
+
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         if event.GetKeyCode() == wx.WXK_ESCAPE:
             self.EndModal(wx.ID_CANCEL)
             return
+
+        if event.GetKeyCode() == wx.WXK_LEFT and self._on_speak_message is not None:
+            control = self.notebook.GetCurrentPage().GetChildren()[0]
+            message = self._selected_message(control)
+            if message is not None and self._on_speak_message(message):
+                return
         event.Skip()

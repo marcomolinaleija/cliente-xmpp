@@ -34,6 +34,14 @@ def has_media(message: Message) -> bool:
     return bool(message.media_url or message.audio_url)
 
 
+def can_describe_with_rayoai(message: Message) -> bool:
+    return (
+        has_media(message)
+        and not is_link_preview(message)
+        and (message.media_kind in {"image", "video"} or message.is_sticker)
+    )
+
+
 def album_photo_count(message: Message) -> int:
     match = ALBUM_PHOTO_PATTERN.fullmatch(message.body)
     if match is None:

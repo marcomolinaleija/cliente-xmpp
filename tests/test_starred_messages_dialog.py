@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import wx
 
 from cliente_xmpp.models.chat import Message
-from cliente_xmpp.ui.chat_message_dialogs import StarredMessagesDialog
+from cliente_xmpp.ui.chat_message_dialogs import ChatFilesDialog, StarredMessagesDialog
 
 
 class _KeyEvent:
@@ -27,7 +28,24 @@ def _dialog_for(message: Message, **actions: object) -> SimpleNamespace:
         _on_open_message=actions.get("open"),
         _on_speak_message=actions.get("speak"),
         _on_play_audio=actions.get("play"),
+        _on_describe=actions.get("describe"),
     )
+
+
+class _MenuItem:
+    def Enable(self, _enabled: bool) -> None:
+        return None
+
+
+class _Menu:
+    labels: list[str] = []
+
+    def Append(self, _item_id: int, label: str) -> _MenuItem:
+        self.labels.append(label)
+        return _MenuItem()
+
+    def Destroy(self) -> None:
+        return None
 
 
 class StarredMessagesDialogKeyboardTests(unittest.TestCase):
@@ -86,6 +104,73 @@ class StarredMessagesDialogKeyboardTests(unittest.TestCase):
         StarredMessagesDialog._on_key_down(dialog, event)  # type: ignore[arg-type]
 
         self.assertEqual(actions, ["speak"])
+        self.assertFalse(event.skipped)
+
+    def test_context_menu_offers_rayoai_for_supported_media(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="sender@example.test",
+            body="",
+            media_url="https://example.test/photo.jpg",
+            media_kind="image",
+        )
+        dialog = _dialog_for(message, describe=lambda _message: None)
+        dialog._on_go_to_message = lambda _event: None
+        dialog.Bind = lambda *_args: None
+        dialog.PopupMenu = lambda _menu: None
+
+        with patch("cliente_xmpp.ui.chat_message_dialogs.wx.Menu", _Menu):
+            _Menu.labels = []
+            StarredMessagesDialog._show_menu(dialog, None)  # type: ignore[arg-type]
+
+        self.assertIn("Describir con RayoAI", _Menu.labels)
+
+    def test_files_context_menu_offers_rayoai_for_supported_media(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="sender@example.test",
+            body="",
+            media_url="https://example.test/photo.jpg",
+            media_kind="image",
+        )
+        control = SimpleNamespace(GetFirstSelected=lambda: 0)
+        dialog = SimpleNamespace(
+            _messages_by_list={id(control): [message]},
+            _on_describe=lambda _message: None,
+            _selected_message=lambda selected_control: message,
+            Bind=lambda *_args: None,
+            PopupMenu=lambda _menu: None,
+        )
+
+        with patch("cliente_xmpp.ui.chat_message_dialogs.wx.Menu", _Menu):
+            _Menu.labels = []
+            ChatFilesDialog._show_menu(dialog, control)  # type: ignore[arg-type]
+
+        self.assertIn("Describir con RayoAI", _Menu.labels)
+
+    def test_files_left_arrow_reads_saved_alt_text(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="sender@example.test",
+            body="",
+            media_url="https://example.test/photo.jpg",
+            media_kind="image",
+            media_alt_text="Descripción completa de la foto.",
+        )
+        control = SimpleNamespace(GetFirstSelected=lambda: 0)
+        page = SimpleNamespace(GetChildren=lambda: [control])
+        spoken: list[Message] = []
+        dialog = SimpleNamespace(
+            notebook=SimpleNamespace(GetCurrentPage=lambda: page),
+            _messages_by_list={id(control): [message]},
+            _selected_message=lambda selected_control: message,
+            _on_speak_message=lambda selected_message: spoken.append(selected_message) or True,
+        )
+        event = _KeyEvent(wx.WXK_LEFT)
+
+        ChatFilesDialog._on_key_down(dialog, event)  # type: ignore[arg-type]
+
+        self.assertEqual(spoken, [message])
         self.assertFalse(event.skipped)
 
 

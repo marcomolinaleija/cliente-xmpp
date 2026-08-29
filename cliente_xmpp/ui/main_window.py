@@ -45,6 +45,7 @@ from cliente_xmpp.media.downloads import (
     DownloadedMedia,
     album_photo_count,
     album_photo_messages,
+    can_describe_with_rayoai,
     delete_local_media_file,
     download_media,
     has_media,
@@ -4191,7 +4192,7 @@ class MainWindow(wx.Frame):
                     media_item = menu.Append(wx.ID_ANY, media_label)
                 copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
                 copy_file_item.Enable(local_media_path(message) is not None)
-                if message.media_kind in {"image", "video"} or message.is_sticker:
+                if can_describe_with_rayoai(message):
                     describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
 
         reaction_menu = wx.Menu()
@@ -5917,6 +5918,7 @@ class MainWindow(wx.Frame):
             target.media_size = 0
             target.media_duration_seconds = 0
             target.media_local_path = ""
+            target.media_alt_text = ""
             target.reply_quote = ""
             return
         if target.retracted:
@@ -5964,6 +5966,8 @@ class MainWindow(wx.Frame):
             target.poll = incoming.poll
         if not target.media_local_path and incoming.media_local_path:
             target.media_local_path = incoming.media_local_path
+        if not target.media_alt_text and incoming.media_alt_text:
+            target.media_alt_text = incoming.media_alt_text
         target.is_sticker = target.is_sticker or incoming.is_sticker
         target.is_forwarded = target.is_forwarded or incoming.is_forwarded
         target.chat_is_group = target.chat_is_group or incoming.chat_is_group
@@ -7841,6 +7845,7 @@ class MainWindow(wx.Frame):
             on_open_message=self.conversation.open_message_reader,
             on_speak_message=self.conversation.speak_text_message,
             on_play_audio=self.conversation.play_audio_message,
+            on_describe=self._describe_browser_item,
         )
         selected_message: Message | None = None
         try:
@@ -7896,6 +7901,8 @@ class MainWindow(wx.Frame):
             on_open=self._open_browser_item,
             on_copy=self._copy_browser_item,
             on_delete=self._delete_browser_item,
+            on_describe=self._describe_browser_item,
+            on_speak_message=self.conversation.speak_text_message,
         )
         try:
             dialog.ShowModal()
@@ -7928,6 +7935,11 @@ class MainWindow(wx.Frame):
             self._copy_media_file(message)
             return
         self._copy_message_text(message)
+
+    def _describe_browser_item(self, message: Message) -> Message:
+        message = self._browser_message_in_memory(message)
+        self._describe_media_with_rayoai(message)
+        return message
 
     def _delete_browser_item(self, message: Message) -> None:
         message = self._browser_message_in_memory(message)

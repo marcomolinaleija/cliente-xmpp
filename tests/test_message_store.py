@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -55,6 +56,35 @@ class MessageStoreTests(unittest.TestCase):
             loaded = store.load_recent_messages("me@example.test", original.chat_jid)
 
         self.assertEqual(loaded[0].media_alt_text, original.media_alt_text)
+
+    def test_media_update_matches_message_id_and_persists_alt_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            store = MessageStore(path)
+            original = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="",
+                media_url="https://example.test/photo.jpg",
+                media_kind="image",
+                message_id="photo-3",
+            )
+            store.upsert_messages("me@example.test", [original])
+            with closing(sqlite3.connect(path)) as conn:
+                conn.execute(
+                    "UPDATE messages SET message_key = 'legacy-key' WHERE message_id = ?",
+                    (original.message_id,),
+                )
+
+            updated = replace(
+                original,
+                media_local_path=str(Path(temp_dir) / "photo.jpg"),
+                media_alt_text="Una foto descrita por RayoAI.",
+            )
+            store.update_message_media_local_path("me@example.test", updated)
+            loaded = store.load_recent_messages("me@example.test", original.chat_jid)
+
+        self.assertEqual(loaded[0].media_alt_text, updated.media_alt_text)
 
     def test_existing_database_gets_rayoai_description_column(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

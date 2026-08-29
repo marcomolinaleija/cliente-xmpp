@@ -494,7 +494,10 @@ class ConversationPanel(wx.Panel):
         return self.speak_text_message(message)
 
     def speak_text_message(self, message: Message) -> bool:
-        if message.audio_url or message.media_url:
+        has_readable_alt_text = bool(
+            message.media_alt_text.strip() and (message.media_kind == "image" or message.is_sticker)
+        )
+        if message.audio_url or (message.media_url and not has_readable_alt_text):
             return False
 
         self._speaker.speak(self._format_message_for_reader(message))

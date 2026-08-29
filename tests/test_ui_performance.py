@@ -68,6 +68,48 @@ class ConversationPerformanceTests(unittest.TestCase):
         self.assertLess(spoken.index("respuesta nueva"), spoken.index("10:30"))
         self.assertLess(spoken.index("10:30"), spoken.index("respondiendo a: mensaje citado"))
 
+    def test_left_arrow_reader_accepts_saved_media_alt_text(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            sender_name="Contacto",
+            body="",
+            media_url="https://upload.example/photo.jpg",
+            media_kind="image",
+            media_alt_text="Una descripción muy larga que debe leerse completa.",
+        )
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel.resolve_display_name = lambda _jid: "Contacto"
+        panel._audio_durations_by_url = {}
+        panel._speaker = SimpleNamespace(spoken=[])
+        panel._speaker.speak = lambda text: panel._speaker.spoken.append(text)
+
+        self.assertTrue(panel.speak_text_message(message))
+        self.assertIn(message.media_alt_text, panel._speaker.spoken[0])
+
+    def test_message_merge_preserves_rayoai_alt_text(self) -> None:
+        target = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://upload.example/photo.jpg",
+            media_kind="image",
+            message_id="photo-4",
+        )
+        incoming = Message(
+            chat_jid=target.chat_jid,
+            sender_jid=target.sender_jid,
+            body=target.body,
+            media_url=target.media_url,
+            media_kind=target.media_kind,
+            message_id=target.message_id,
+            media_alt_text="Descripción conservada.",
+        )
+
+        MainWindow._merge_message_metadata(target, incoming)
+
+        self.assertEqual(target.media_alt_text, incoming.media_alt_text)
+
 
 class ChatListPerformanceTests(unittest.TestCase):
     def test_chat_index_supports_constant_time_lookup(self) -> None:

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from tools.patch_slidge_whatsapp_transcription import patch_package
 
-
 SESSION_SOURCE = '''from .group import MUC, Bookmarks, Participant
 
 class Session:

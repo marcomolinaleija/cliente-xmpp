@@ -329,6 +329,62 @@ class MessageStatisticsTests(unittest.TestCase):
             self.assertIn("planeamos viaje", phrases)
             self.assertFalse(any("zapia" in phrase for phrase in phrases))
 
+    def test_statistics_exclude_deepgram_and_zapia_transcription_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "friend@example.test"
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Audio original",
+                        media_kind="audio",
+                        sent_at=datetime(2026, 7, 19, 8, tzinfo=UTC),
+                        message_id="audio-1",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body=(
+                            "Transcripción: Para disfrutar al máximo de su evento. "
+                            "Transcrito en 0.2 s."
+                        ),
+                        sent_at=datetime(2026, 7, 19, 9, tzinfo=UTC),
+                        message_id="deepgram-1",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body=(
+                            "*Esta es una diferencia de boca.*\n\n"
+                            "-- *Transcrito gratis por zapia.com/app*"
+                        ),
+                        sent_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+                        message_id="zapia-1",
+                    ),
+                ],
+            )
+
+            statistics = store.load_statistics(
+                account_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+            )
+            self.assertEqual(statistics.total, 1)
+            self.assertEqual(statistics.audio_messages, 1)
+
+            chat_statistics = store.load_chat_statistics(
+                account_jid,
+                chat_jid,
+                7,
+                now=datetime(2026, 7, 19, 18, tzinfo=UTC),
+            )
+            self.assertEqual(chat_statistics.overview.total, 1)  # type: ignore[union-attr]
+            self.assertEqual(chat_statistics.participants[0].messages, 1)
+
     @staticmethod
     def _message(
         chat_jid: str,

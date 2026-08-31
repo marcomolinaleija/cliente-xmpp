@@ -45,6 +45,11 @@ PHRASE_STOPWORDS = {
     "una", "y", "ya", "yo",
 }
 ZAPIA_TRANSCRIPTION_MARKER = "transcrito gratis por zapia.com/app"
+DEEPGRAM_TRANSCRIPTION_RE = re.compile(
+    r"^\s*transcripci[oó]n\s*:.*\btranscrito\s+en\s+"
+    r"\d+(?:[.,]\d+)?\s*s(?:egundos?)?\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,6 +668,10 @@ class MessageStore:
             if local_sent_at > reference_now:
                 continue
 
+            body = str(row["body"] or "")
+            if _is_transcription_message(body):
+                continue
+
             outgoing = bool(row["outgoing"])
             chat_jid = str(row["chat_jid"])
             if chat_jid in gateway_component_jids:
@@ -688,7 +697,7 @@ class MessageStore:
             elif media_kind == "file":
                 file_messages += 1
 
-            message_sentiment = sentiment_weights(str(row["body"] or ""))
+            message_sentiment = sentiment_weights(body)
             positive_weight += message_sentiment.positive
             negative_weight += message_sentiment.negative
             if message_sentiment.indicators > 0:
@@ -907,6 +916,10 @@ class MessageStore:
             if local_sent_at > reference_now:
                 continue
 
+            body = "" if bool(row["retracted"]) else str(row["body"] or "")
+            if _is_transcription_message(body):
+                continue
+
             outgoing = bool(row["outgoing"])
             sender_jid = str(row["sender_jid"] or "")
             sender_name = str(row["sender_name"] or "")
@@ -920,8 +933,6 @@ class MessageStore:
                 participant_id = chat_jid
                 participant_name = chat_name
 
-            retracted = bool(row["retracted"])
-            body = "" if retracted else str(row["body"] or "")
             message_sentiment = sentiment_weights(body)
             accumulator = participant_accumulators.get(participant_id)
             if accumulator is None:
@@ -942,7 +953,7 @@ class MessageStore:
             if (
                 body
                 and not str(row["media_kind"] or "")
-                and not _is_zapia_transcription(body)
+                and not _is_transcription_message(body)
             ):
                 phrase_bodies.append(body)
 
@@ -2620,6 +2631,11 @@ def _recurrent_phrases(
 
 def _is_zapia_transcription(body: str) -> bool:
     return ZAPIA_TRANSCRIPTION_MARKER in body.casefold()
+
+
+def _is_transcription_message(body: str) -> bool:
+    normalized = body.casefold()
+    return _is_zapia_transcription(normalized) or bool(DEEPGRAM_TRANSCRIPTION_RE.match(body))
 
 
 def _median_or_none(values: list[float]) -> float | None:

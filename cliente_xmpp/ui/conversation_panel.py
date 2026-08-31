@@ -587,7 +587,13 @@ class ConversationPanel(wx.Panel):
             return False
 
         message = self._message_at_row(index)
-        if message is None or message.media_kind != "video":
+        if message is None:
+            return False
+
+        return self.play_video_message(message)
+
+    def play_video_message(self, message: Message) -> bool:
+        if message.retracted or message.media_kind != "video":
             return False
 
         source = str(local_media_path(message) or message.media_url)

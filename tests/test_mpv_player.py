@@ -40,6 +40,7 @@ class MpvVideoInputTests(unittest.TestCase):
 
         self.assertIn((b"video", b"no"), dll.options)
         self.assertIn((b"ad", b"libopus"), dll.options)
+        self.assertIn((b"volume", b"50"), dll.options)
 
     def test_video_player_enables_native_default_keyboard_bindings(self) -> None:
         dll = _FakeMpvDll()
@@ -50,6 +51,7 @@ class MpvVideoInputTests(unittest.TestCase):
 
         self.assertIn((b"input-default-bindings", b"yes"), dll.options)
         self.assertIn((b"input-vo-keyboard", b"yes"), dll.options)
+        self.assertIn((b"volume", b"50"), dll.options)
 
         self.assertEqual(
             dll.commands,

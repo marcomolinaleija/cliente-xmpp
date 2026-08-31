@@ -20,6 +20,7 @@ MessagesLoadedCallback = Callable[[list[Message], str], None]
 MessagesLoader = Callable[[MessagesLoadedCallback], None]
 MessageAction = Callable[[Message], None]
 MessageDescribeAction = Callable[[Message], Message | None]
+MessageContextMenuAction = Callable[[Message, wx.Window], None]
 MessageSearchLoader = Callable[[str, date | None, MessagesLoadedCallback], None]
 MessageDatesLoadedCallback = Callable[[list[date], str], None]
 MessageDatesLoader = Callable[[MessageDatesLoadedCallback], None]
@@ -68,6 +69,7 @@ class StarredMessagesDialog(wx.Dialog):
         on_speak_message: MessageKeyAction | None = None,
         on_play_audio: MessageKeyAction | None = None,
         on_describe: MessageDescribeAction | None = None,
+        on_context_menu: MessageContextMenuAction | None = None,
     ) -> None:
         super().__init__(
             parent,
@@ -80,6 +82,7 @@ class StarredMessagesDialog(wx.Dialog):
         self._on_speak_message = on_speak_message
         self._on_play_audio = on_play_audio
         self._on_describe = on_describe
+        self._on_context_menu = on_context_menu
         self._active = True
         self._messages: list[Message] = []
         self._visible_messages: list[Message] = []
@@ -208,6 +211,10 @@ class StarredMessagesDialog(wx.Dialog):
     def _show_menu(self, _event: wx.Event) -> None:
         message = self._selected_message()
         if message is None:
+            return
+        on_context_menu = getattr(self, "_on_context_menu", None)
+        if on_context_menu is not None:
+            on_context_menu(message, self)
             return
 
         menu = wx.Menu()
@@ -555,6 +562,10 @@ class ChatFilesDialog(wx.Dialog):
         on_delete: MessageAction,
         on_describe: MessageDescribeAction | None = None,
         on_speak_message: MessageKeyAction | None = None,
+        on_open_message: MessageKeyAction | None = None,
+        on_play_audio: MessageKeyAction | None = None,
+        on_play_video: MessageKeyAction | None = None,
+        on_context_menu: MessageContextMenuAction | None = None,
     ) -> None:
         super().__init__(
             parent,
@@ -568,9 +579,14 @@ class ChatFilesDialog(wx.Dialog):
         self._on_delete = on_delete
         self._on_describe = on_describe
         self._on_speak_message = on_speak_message
+        self._on_open_message = on_open_message
+        self._on_play_audio = on_play_audio
+        self._on_play_video = on_play_video
+        self._on_context_menu = on_context_menu
         self._active = True
         self._messages: list[Message] = []
         self._messages_by_list: dict[int, list[Message]] = {}
+        self.selected_message: Message | None = None
 
         self.status = wx.StaticText(self, label="Cargando archivos y enlaces locales...")
         self.notebook = wx.Notebook(self)
@@ -622,7 +638,7 @@ class ChatFilesDialog(wx.Dialog):
         self._messages_by_list[id(messages)] = []
         messages.Bind(
             wx.EVT_LIST_ITEM_ACTIVATED,
-            lambda _event, control=messages: self._open(control),
+            lambda _event, control=messages: self._go_to_message(control),
         )
         messages.Bind(
             wx.EVT_CONTEXT_MENU,
@@ -673,6 +689,10 @@ class ChatFilesDialog(wx.Dialog):
         message = self._selected_message(control)
         if message is None:
             return
+        on_context_menu = getattr(self, "_on_context_menu", None)
+        if on_context_menu is not None:
+            on_context_menu(message, self)
+            return
         menu = wx.Menu()
         open_item = menu.Append(wx.ID_ANY, "Abrir")
         copy_item = menu.Append(wx.ID_ANY, "Copiar")
@@ -698,6 +718,13 @@ class ChatFilesDialog(wx.Dialog):
         message = self._selected_message(control)
         if message is not None:
             self._on_open(message)
+
+    def _go_to_message(self, control: wx.ListCtrl) -> None:
+        message = self._selected_message(control)
+        if message is None:
+            return
+        self.selected_message = message
+        self.EndModal(wx.ID_OK)
 
     def _copy(self, control: wx.ListCtrl) -> None:
         message = self._selected_message(control)
@@ -729,9 +756,25 @@ class ChatFilesDialog(wx.Dialog):
             self.EndModal(wx.ID_CANCEL)
             return
 
-        if event.GetKeyCode() == wx.WXK_LEFT and self._on_speak_message is not None:
-            control = self.notebook.GetCurrentPage().GetChildren()[0]
-            message = self._selected_message(control)
-            if message is not None and self._on_speak_message(message):
+        control = self.notebook.GetCurrentPage().GetChildren()[0]
+        message = self._selected_message(control)
+        if message is not None and event.GetKeyCode() == wx.WXK_SPACE:
+            if message.audio_url or message.media_kind == "audio":
+                action = self._on_play_audio
+            elif message.media_kind == "video":
+                action = self._on_play_video
+            elif self._on_open_message is not None:
+                action = self._on_open_message
+            else:
+                action = None
+            if action is not None and action(message):
                 return
+
+        if (
+            message is not None
+            and event.GetKeyCode() == wx.WXK_LEFT
+            and self._on_speak_message is not None
+            and self._on_speak_message(message)
+        ):
+            return
         event.Skip()

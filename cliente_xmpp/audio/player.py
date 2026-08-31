@@ -12,6 +12,7 @@ MPV_FORMAT_FLAG = 3
 MPV_FORMAT_DOUBLE = 5
 MPV_EVENT_SHUTDOWN = 1
 AUDIO_SPEEDS = (1.0, 1.5, 2.0)
+DEFAULT_VOLUME = 50
 VIDEO_KEY_BINDINGS = (
     ("SPACE", "cycle pause"),
     ("UP", "add volume 5"),
@@ -156,6 +157,9 @@ class MpvAudioPlayer:
             dll.mpv_set_option_string(handle, b"input-default-bindings", b"yes")
         )
         self._check_error(dll.mpv_set_option_string(handle, b"input-vo-keyboard", b"yes"))
+        self._check_error(
+            dll.mpv_set_option_string(handle, b"volume", str(DEFAULT_VOLUME).encode("ascii"))
+        )
         self._check_error(dll.mpv_initialize(handle))
         if self._video:
             self._configure_video_key_bindings(handle)

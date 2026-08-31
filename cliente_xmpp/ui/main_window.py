@@ -4138,8 +4138,13 @@ class MainWindow(wx.Frame):
         self.conversation.messages.Select(event.GetIndex())
         self._show_message_context_menu()
 
-    def _show_message_context_menu(self) -> None:
-        message = self.conversation.selected_message()
+    def _show_message_context_menu(
+        self,
+        message: Message | None = None,
+        *,
+        popup_parent: wx.Window | None = None,
+    ) -> None:
+        message = message or self.conversation.selected_message()
         if not message:
             return
 
@@ -4188,7 +4193,9 @@ class MainWindow(wx.Frame):
             if message.is_sticker:
                 media_label = "Abrir sticker" if local_media_path(message) else "Descargar sticker"
             if not is_link_preview(message):
-                if message.media_kind != "audio":
+                if message.media_kind == "audio":
+                    media_item = menu.Append(wx.ID_ANY, "Reproducir audio")
+                else:
                     media_item = menu.Append(wx.ID_ANY, media_label)
                 copy_file_item = menu.Append(wx.ID_ANY, "Copiar archivo")
                 copy_file_item.Enable(local_media_path(message) is not None)
@@ -4246,11 +4253,24 @@ class MainWindow(wx.Frame):
         if link_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._open_message_link(message), link_item)
         if media_item:
-            self.Bind(
-                wx.EVT_MENU,
-                lambda _event: self._open_or_download_media(message),
-                media_item,
-            )
+            if message.media_kind == "audio":
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self.conversation.play_audio_message(message),
+                    media_item,
+                )
+            elif message.media_kind == "video":
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self.conversation.play_video_message(message),
+                    media_item,
+                )
+            else:
+                self.Bind(
+                    wx.EVT_MENU,
+                    lambda _event: self._open_or_download_media(message),
+                    media_item,
+                )
         if copy_file_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._copy_media_file(message), copy_file_item)
         if describe_item:
@@ -4291,8 +4311,18 @@ class MainWindow(wx.Frame):
         if delete_item:
             self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
-        self.PopupMenu(menu)
+        (popup_parent or self).PopupMenu(menu)
         menu.Destroy()
+
+    def _show_browser_message_context_menu(
+        self,
+        message: Message,
+        popup_parent: wx.Window,
+    ) -> None:
+        self._show_message_context_menu(
+            self._browser_message_in_memory(message),
+            popup_parent=popup_parent,
+        )
 
     def _vote_in_poll(self, message: Message) -> None:
         if not self._require_whatsapp_connection():
@@ -7846,6 +7876,7 @@ class MainWindow(wx.Frame):
             on_speak_message=self.conversation.speak_text_message,
             on_play_audio=self.conversation.play_audio_message,
             on_describe=self._describe_browser_item,
+            on_context_menu=self._show_browser_message_context_menu,
         )
         selected_message: Message | None = None
         try:
@@ -7903,12 +7934,24 @@ class MainWindow(wx.Frame):
             on_delete=self._delete_browser_item,
             on_describe=self._describe_browser_item,
             on_speak_message=self.conversation.speak_text_message,
+            on_open_message=self.conversation.open_message_reader,
+            on_play_audio=self.conversation.play_audio_message,
+            on_play_video=self.conversation.play_video_message,
+            on_context_menu=self._show_browser_message_context_menu,
         )
+        selected_message: Message | None = None
         try:
-            dialog.ShowModal()
+            if dialog.ShowModal() == wx.ID_OK:
+                selected_message = dialog.selected_message
         finally:
             dialog.deactivate()
             dialog.Destroy()
+
+        if selected_message is None:
+            return
+        if self.contact_info_dialog is not None:
+            self.contact_info_dialog.EndModal(wx.ID_CANCEL)
+        wx.CallAfter(self._focus_message_from_browser, chat.jid, selected_message)
 
     def _focus_message_from_browser(self, chat_jid: str, message: Message) -> None:
         chat = self.conversation.current_chat
@@ -7925,6 +7968,12 @@ class MainWindow(wx.Frame):
     def _open_browser_item(self, message: Message) -> None:
         message = self._browser_message_in_memory(message)
         if has_media(message) and not is_link_preview(message):
+            if message.media_kind == "audio":
+                self.conversation.play_audio_message(message)
+                return
+            if message.media_kind == "video":
+                self.conversation.play_video_message(message)
+                return
             self._open_or_download_media(message)
             return
         self._open_message_link(message)

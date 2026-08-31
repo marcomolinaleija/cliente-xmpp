@@ -1,3 +1,15 @@
+WhatsApp CAN 1.4.5
+
+Archivos y mensajes
+- En el diálogo de archivos, Enter lleva directamente al mensaje original dentro del chat.
+- Las fotos mantienen su apertura con la aplicación predeterminada; los videos y audios usan el visor integrado de WhatsApp CAN.
+- Mensajes destacados y archivos comparten el menú contextual completo, incluido reenviar multimedia, reacciones, encuestas y acciones de gestión.
+
+Reproducción y estadísticas
+- El reproductor integrado inicia con el volumen al 50%; el usuario puede ajustarlo con los controles existentes.
+- Las estadísticas ya no cuentan como mensajes duplicados las transcripciones automáticas de Deepgram ni las generadas por Zapia.
+
+
 WhatsApp CAN 1.4.4
 
 Descripciones accesibles con RayoAI

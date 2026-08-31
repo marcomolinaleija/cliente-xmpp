@@ -228,8 +228,20 @@ class WslApplianceBuildTests(unittest.TestCase):
             r"^ghcr\.io/marcomolinaleija/cliente-xmpp-bridge:v[1-9][0-9]*$",
         )
         self.assertRegex(update_manifest["digest"], r"^sha256:[0-9a-f]{64}$")
-        self.assertEqual(version["bridge_image"], update_manifest["image"])
-        self.assertEqual(version["bridge_digest"], update_manifest["digest"])
+        self.assertEqual(update_manifest["channel"], "stable")
+        self.assertEqual(
+            update_manifest["bridge_version"],
+            int(update_manifest["image"].rsplit(":v", 1)[1]),
+        )
+        self.assertRegex(
+            version["bridge_image"],
+            r"^ghcr\.io/marcomolinaleija/cliente-xmpp-bridge:v[1-9][0-9]*$",
+        )
+        self.assertRegex(version["bridge_digest"], r"^sha256:[0-9a-f]{64}$")
+        bundled_bridge_version = int(version["bridge_image"].rsplit(":v", 1)[1])
+        self.assertGreaterEqual(
+            update_manifest["bridge_version"], bundled_bridge_version
+        )
         self.assertTrue(version["bridge_updates"])
 
         self.assertIn("whatsapp-can-bridge-image run", service)
@@ -242,7 +254,7 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn('exec podman run --rm --name whatsapp-can-slidge', updater)
         self.assertIn('curl \\\n', provision)
         self.assertIn(
-            f'{update_manifest["image"]}@{update_manifest["digest"]}', provision
+            f'{version["bridge_image"]}@{version["bridge_digest"]}', provision
         )
         self.assertTrue((appliance_root / "test-bridge-image-updater.sh").is_file())
         self.assertIn('"update" {', manager)

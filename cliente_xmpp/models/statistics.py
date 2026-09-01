@@ -1,7 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CallStatistics:
+    total: int = 0
+    answered: int = 0
+    missed: int = 0
+    rejected: int = 0
+    failed: int = 0
+    incoming: int = 0
+    outgoing: int = 0
+    voice: int = 0
+    video: int = 0
+    duration_total_seconds: float = 0.0
+    duration_count: int = 0
+    median_duration_seconds: float | None = None
+
+    @property
+    def calls_without_duration(self) -> int:
+        return max(0, self.answered - self.duration_count)
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +36,7 @@ class DailyChatMessageStatistics:
     image_messages: int
     video_messages: int
     file_messages: int
+    calls: CallStatistics = field(default_factory=CallStatistics)
 
     @property
     def total(self) -> int:
@@ -28,6 +49,7 @@ class DailyMessageStatistics:
     sent: int
     received: int
     chats: tuple[DailyChatMessageStatistics, ...] = ()
+    calls: CallStatistics = field(default_factory=CallStatistics)
 
     @property
     def total(self) -> int:
@@ -78,6 +100,7 @@ class ChatMessageStatistics:
     positive_weight: float
     negative_weight: float
     sentiment_messages: int
+    calls: CallStatistics = field(default_factory=CallStatistics)
 
     @property
     def total(self) -> int:
@@ -119,6 +142,7 @@ class MessageStatistics:
     sentiment_messages: int
     daily: tuple[DailyMessageStatistics, ...]
     chats: tuple[ChatMessageStatistics, ...]
+    calls: CallStatistics = field(default_factory=CallStatistics)
 
     @property
     def total(self) -> int:

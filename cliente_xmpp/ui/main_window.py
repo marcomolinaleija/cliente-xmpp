@@ -5853,6 +5853,8 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _message_merge_key(message: Message) -> tuple[object, ...]:
+        if message.call is not None:
+            return "call", message.call.call_id, message.call.sequence
         if message.message_id:
             return "id", message.message_id
 
@@ -6001,6 +6003,8 @@ class MainWindow(wx.Frame):
         target.is_sticker = target.is_sticker or incoming.is_sticker
         target.is_forwarded = target.is_forwarded or incoming.is_forwarded
         target.chat_is_group = target.chat_is_group or incoming.chat_is_group
+        if target.call is None and incoming.call is not None:
+            target.call = incoming.call
 
     @staticmethod
     def _generated_file_label_hides_link_text(target: Message, incoming: Message) -> bool:

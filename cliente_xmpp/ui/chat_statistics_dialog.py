@@ -5,6 +5,7 @@ from collections.abc import Callable
 import wx
 
 from cliente_xmpp.models.statistics import (
+    CallStatistics,
     LocalChatStatistics,
     ParticipantChatStatistics,
 )
@@ -47,6 +48,7 @@ class ChatStatisticsDialog(wx.Dialog):
         self.notebook = wx.Notebook(self)
         self.notebook.SetName("Secciones de estadísticas locales del chat")
         self.summary = self._create_summary_page()
+        self.calls = self._create_calls_page()
         self.participants = self._create_participants_page()
         self.phrases = self._create_phrases_page()
         close_button = wx.Button(self, wx.ID_CLOSE, "&Cerrar")
@@ -104,6 +106,19 @@ class ChatStatisticsDialog(wx.Dialog):
         page.SetSizer(box)
         self.notebook.AddPage(page, "Resumen")
         return summary
+
+    def _create_calls_page(self) -> wx.TextCtrl:
+        page = wx.Panel(self.notebook)
+        calls = wx.TextCtrl(
+            page,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE,
+        )
+        calls.SetName("Resumen de llamadas del chat")
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(calls, 1, wx.ALL | wx.EXPAND, 12)
+        page.SetSizer(box)
+        self.notebook.AddPage(page, "Llamadas")
+        return calls
 
     def _create_participants_page(self) -> wx.ListCtrl:
         page = wx.Panel(self.notebook)
@@ -192,6 +207,8 @@ class ChatStatisticsDialog(wx.Dialog):
         self._statistics = statistics
         self.summary.ChangeValue(self._format_summary(statistics))
         self.summary.SetInsertionPoint(0)
+        self.calls.ChangeValue(self._format_calls(statistics))
+        self.calls.SetInsertionPoint(0)
 
         self.participants.Freeze()
         self.phrases.Freeze()
@@ -301,7 +318,6 @@ class ChatStatisticsDialog(wx.Dialog):
                 f"videos: {chat.video_messages}; archivos: {chat.file_messages}; "
                 f"stickers: {chat.stickers}"
             ),
-            "",
             "Tendencia aproximada del lenguaje",
             f"Lectura general: {emotional_reading}",
             StatisticsDialog._emotional_meaning(
@@ -315,6 +331,12 @@ class ChatStatisticsDialog(wx.Dialog):
             ),
         ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_calls(statistics: LocalChatStatistics) -> str:
+        if statistics.overview is None:
+            return StatisticsDialog._format_calls(CallStatistics())
+        return StatisticsDialog._format_calls(statistics.overview.calls)
 
     @classmethod
     def _format_participant_detail(cls, participant: ParticipantChatStatistics) -> str:

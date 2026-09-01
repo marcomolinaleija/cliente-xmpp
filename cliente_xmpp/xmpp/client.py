@@ -44,6 +44,7 @@ from cliente_xmpp.models.names import (
     unescape_jid_text,
 )
 from cliente_xmpp.models.reactions import ReactionUpdate, normalized_reactions
+from cliente_xmpp.xmpp.calls import call_event_from_xml, routed_chat_jid
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
@@ -426,7 +427,9 @@ class BridgeXmppClient(ClientXMPP):
             )
         elif self._is_whatsapp_qr_candidate_message(bare_jid, body, msg.xml, media_url, media_kind):
             self._debug_whatsapp_qr_candidate(bare_jid, body, msg.xml, media_url, media_kind)
-        if is_whatsapp_admin_message:
+        call = call_event_from_xml(msg.xml)
+        message_chat_jid = routed_chat_jid(bare_jid, call)
+        if is_whatsapp_admin_message and call is None:
             return
         poll = self._poll_from_xml(msg.xml)
         poll_update = self._poll_update_from_xml(msg.xml)
@@ -436,7 +439,7 @@ class BridgeXmppClient(ClientXMPP):
                 f"poll={poll_update.poll_id} own={poll_update.voter_is_me} "
                 f"from={bare_jid}"
             )
-        if not body and not media_url and poll is None and poll_update is None:
+        if not body and not media_url and poll is None and poll_update is None and call is None:
             return
 
         if poll is not None:
@@ -453,7 +456,7 @@ class BridgeXmppClient(ClientXMPP):
         self._emit(
             MessageReceived(
                 Message(
-                    chat_jid=bare_jid,
+                    chat_jid=message_chat_jid,
                     sender_jid=bare_jid,
                     body=display_body,
                     sent_at=self._sent_at_from_stanza_delay(msg) or datetime.now().astimezone(),
@@ -472,6 +475,7 @@ class BridgeXmppClient(ClientXMPP):
                     reply_to_jid=self._reply_to_jid_from_xml(msg.xml),
                     reply_to_id=self._reply_to_id_from_xml(msg.xml),
                     replaces_id=self._message_correction_id_from_xml(msg.xml),
+                    call=call,
                 )
             )
         )
@@ -3079,9 +3083,11 @@ class BridgeXmppClient(ClientXMPP):
         if reaction_update is not None:
             self._emit(MessageReactionReceived(reaction_update))
             return None
+        call = call_event_from_xml(stanza.xml)
+        message_chat_jid = routed_chat_jid(message_chat_jid, call)
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
-        if not body and not media_url and poll is None and poll_update is None:
+        if not body and not media_url and poll is None and poll_update is None and call is None:
             return None
         is_sticker = self._message_is_sticker(
             stanza.xml,
@@ -3134,6 +3140,7 @@ class BridgeXmppClient(ClientXMPP):
             reply_to_id=self._reply_to_id_from_xml(stanza.xml),
             replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
+            call=call,
         )
 
     def _emit_message_from_stanza(self, stanza: object, outgoing: bool) -> None:
@@ -3180,9 +3187,11 @@ class BridgeXmppClient(ClientXMPP):
         if reaction_update is not None:
             self._emit(MessageReactionReceived(reaction_update))
             return
+        call = call_event_from_xml(stanza.xml)
+        chat_jid = routed_chat_jid(chat_jid, call)
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
-        if not body and not media_url and poll is None and poll_update is None:
+        if not body and not media_url and poll is None and poll_update is None and call is None:
             return
         is_sticker = self._message_is_sticker(
             stanza.xml,
@@ -3233,6 +3242,7 @@ class BridgeXmppClient(ClientXMPP):
                     reply_to_id=self._reply_to_id_from_xml(stanza.xml),
                     replaces_id=self._message_correction_id_from_xml(stanza.xml),
                     delivery_state="sent" if outgoing else "",
+                    call=call,
                 )
             )
         )
@@ -3257,9 +3267,11 @@ class BridgeXmppClient(ClientXMPP):
         outgoing = self._message_is_outgoing(stanza, sender_jid, is_group=True)
         if outgoing and is_local_bridge_command(body):
             return None
+        call = call_event_from_xml(stanza.xml)
+        message_chat_jid = routed_chat_jid(str(stanza["from"].bare), call)
         poll = self._poll_from_xml(stanza.xml)
         poll_update = self._poll_update_from_xml(stanza.xml, voter_name=sender_name)
-        if not body and not media_url and poll is None and poll_update is None:
+        if not body and not media_url and poll is None and poll_update is None and call is None:
             return None
         is_sticker = self._message_is_sticker(
             stanza.xml,
@@ -3281,7 +3293,7 @@ class BridgeXmppClient(ClientXMPP):
                 is_sticker=is_sticker,
             )
         return Message(
-            chat_jid=str(stanza["from"].bare),
+            chat_jid=message_chat_jid,
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
@@ -3309,6 +3321,7 @@ class BridgeXmppClient(ClientXMPP):
             reply_to_id=self._reply_to_id_from_xml(stanza.xml),
             replaces_id=self._message_correction_id_from_xml(stanza.xml),
             delivery_state="sent" if outgoing else "",
+            call=call,
         )
 
     def _emit_inbox_entry(self, msg: object) -> None:
@@ -3438,9 +3451,11 @@ class BridgeXmppClient(ClientXMPP):
         if reaction_update is not None:
             self._emit(MessageReactionReceived(reaction_update))
             return None
+        call = call_event_from_xml(message)
+        chat_jid = routed_chat_jid(chat_jid, call)
         poll = self._poll_from_xml(message)
         poll_update = self._poll_update_from_xml(message, voter_name=sender_name)
-        if not body and not media_url and poll is None and poll_update is None:
+        if not body and not media_url and poll is None and poll_update is None and call is None:
             return None
         is_sticker = self._message_is_sticker(
             message,
@@ -3486,6 +3501,7 @@ class BridgeXmppClient(ClientXMPP):
             reply_to_id=self._reply_to_id_from_xml(message),
             replaces_id=self._message_correction_id_from_xml(message),
             delivery_state="sent" if outgoing else "",
+            call=call,
         )
 
     def _message_retraction_from_mam_result(

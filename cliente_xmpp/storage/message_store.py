@@ -8,7 +8,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
@@ -17,6 +17,7 @@ from statistics import median
 from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
+from cliente_xmpp.models.calls import CallEvent, CallSummary, aggregate_call_events
 from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
 from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.models.mentions import GroupParticipant
@@ -24,6 +25,7 @@ from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.reactions import ReactionState, flattened_reactions
 from cliente_xmpp.models.sentiment import sentiment_weights
 from cliente_xmpp.models.statistics import (
+    CallStatistics,
     ChatMessageStatistics,
     DailyChatMessageStatistics,
     DailyMessageStatistics,
@@ -34,7 +36,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -249,6 +251,34 @@ class _ParticipantStatisticsAccumulator:
             negative_weight=self.negative_weight,
             sentiment_messages=self.sentiment_messages,
         )
+
+
+def _call_statistics_from_summaries(
+    summaries: list[CallSummary] | tuple[CallSummary, ...],
+) -> CallStatistics:
+    durations = [
+        duration
+        for summary in summaries
+        if summary.answered and (duration := summary.duration_seconds) is not None
+    ]
+    failed_reasons = {"failed", "failure", "error"}
+    return CallStatistics(
+        total=len(summaries),
+        answered=sum(summary.answered for summary in summaries),
+        missed=sum(summary.state == "missed" for summary in summaries),
+        rejected=sum(summary.state == "rejected" for summary in summaries),
+        failed=sum(
+            summary.terminal_reason.casefold() in failed_reasons
+            for summary in summaries
+        ),
+        incoming=sum(summary.direction == "incoming" for summary in summaries),
+        outgoing=sum(summary.direction == "outgoing" for summary in summaries),
+        voice=sum(summary.kind == "voice" for summary in summaries),
+        video=sum(summary.kind == "video" for summary in summaries),
+        duration_total_seconds=sum(durations),
+        duration_count=len(durations),
+        median_duration_seconds=_median_or_none(durations),
+    )
 
 
 def _build_daily_chats(
@@ -602,6 +632,19 @@ class MessageStore:
                 messages.body,
                 messages.media_kind,
                 messages.is_sticker,
+                messages.call_id,
+                messages.call_sequence,
+                messages.call_peer_jid,
+                messages.call_chat_jid,
+                messages.call_group_jid,
+                messages.call_direction,
+                messages.call_kind,
+                messages.call_state,
+                messages.call_event_at,
+                messages.call_answered_at,
+                messages.call_ended_at,
+                messages.call_terminal_reason,
+                messages.call_contract_version,
                 COALESCE(
                     NULLIF(chats.custom_name, ''),
                     NULLIF(chats.name, ''),
@@ -657,6 +700,8 @@ class MessageStore:
         sentiment_messages = 0
         first_message_at: datetime | None = None
         last_message_at: datetime | None = None
+        call_events: list[tuple[str, CallEvent]] = []
+        call_chat_metadata: dict[str, tuple[str, bool]] = {}
 
         for row in rows:
             sent_at = _datetime_from_db(row["sent_at"])
@@ -666,6 +711,23 @@ class MessageStore:
             if start_local is not None and local_sent_at < start_local:
                 continue
             if local_sent_at > reference_now:
+                continue
+
+            call_event = _call_event_from_row(row)
+            if call_event is not None:
+                call_local_at = call_event.event_timestamp.astimezone(reference_now.tzinfo)
+                if (
+                    (start_local is None or call_local_at >= start_local)
+                    and call_local_at <= reference_now
+                ):
+                    call_chat_jid = str(row["chat_jid"])
+                    call_events.append((call_chat_jid, call_event))
+                    call_chat_metadata.setdefault(
+                        call_chat_jid,
+                        (str(row["chat_name"] or call_chat_jid), bool(row["is_group"])),
+                    )
+                # The fallback remains visible in conversation history but structured call
+                # phases never contribute to message totals, streaks, response times or sentiment.
                 continue
 
             body = str(row["body"] or "")
@@ -741,6 +803,21 @@ class MessageStore:
             if last_message_at is None or sent_at > last_message_at:
                 last_message_at = sent_at
 
+        call_summaries = aggregate_call_events(event for _chat_jid, event in call_events)
+        call_statistics = _call_statistics_from_summaries(call_summaries)
+        calls_by_day: defaultdict[date, list[CallSummary]] = defaultdict(list)
+        call_summaries_by_chat: defaultdict[str, list[CallSummary]] = defaultdict(list)
+        chat_by_call: dict[str, str] = {}
+        for chat_jid, event in call_events:
+            if chat_jid not in gateway_component_jids:
+                chat_by_call.setdefault(event.call_id, chat_jid)
+        for summary in call_summaries:
+            local_call_at = summary.event_timestamp.astimezone(reference_now.tzinfo)
+            calls_by_day[local_call_at.date()].append(summary)
+            chat_jid = chat_by_call.get(summary.call_id)
+            if chat_jid:
+                call_summaries_by_chat[chat_jid].append(summary)
+
         if from_date is not None:
             daily = tuple(
                 DailyMessageStatistics(
@@ -750,18 +827,22 @@ class MessageStore:
                     chats=_build_daily_chats(
                         daily_chat_accumulators[from_date + timedelta(days=offset)]
                     ),
+                    calls=_call_statistics_from_summaries(
+                        calls_by_day[from_date + timedelta(days=offset)]
+                    ),
                 )
                 for offset in range(period_days or 0)
             )
             calendar_days = period_days or 0
         else:
-            active_dates = sorted(daily_counts)
+            active_dates = sorted(set(daily_counts) | set(calls_by_day))
             daily = tuple(
                 DailyMessageStatistics(
                     day=day,
                     sent=daily_counts[day][0],
                     received=daily_counts[day][1],
                     chats=_build_daily_chats(daily_chat_accumulators[day]),
+                    calls=_call_statistics_from_summaries(calls_by_day[day]),
                 )
                 for day in active_dates
             )
@@ -770,6 +851,19 @@ class MessageStore:
                 (to_date - from_date).days + 1
                 if from_date is not None
                 else 0
+            )
+
+        for chat_jid, summaries in call_summaries_by_chat.items():
+            if chat_jid in chat_accumulators:
+                continue
+            name, is_group = call_chat_metadata.get(chat_jid, (chat_jid, False))
+            call_times = [summary.event_timestamp for summary in summaries]
+            chat_accumulators[chat_jid] = _ChatStatisticsAccumulator(
+                chat_jid=chat_jid,
+                name=name,
+                is_group=is_group,
+                first_message_at=min(call_times),
+                last_message_at=max(call_times),
             )
 
         chats = tuple(
@@ -809,6 +903,9 @@ class MessageStore:
                         positive_weight=accumulator.positive_weight,
                         negative_weight=accumulator.negative_weight,
                         sentiment_messages=accumulator.sentiment_messages,
+                        calls=_call_statistics_from_summaries(
+                            call_summaries_by_chat[accumulator.chat_jid]
+                        ),
                     )
                     for accumulator in chat_accumulators.values()
                 ),
@@ -856,6 +953,7 @@ class MessageStore:
             sentiment_messages=sentiment_messages,
             daily=daily,
             chats=chats,
+            calls=call_statistics,
         )
 
     def load_chat_statistics(
@@ -889,7 +987,7 @@ class MessageStore:
         query = """
             SELECT sent_at, outgoing, sender_jid, sender_name, body, media_kind, retracted
             FROM messages
-            WHERE account_jid = ? AND chat_jid = ?
+            WHERE account_jid = ? AND chat_jid = ? AND call_id = ''
         """
         parameters: list[object] = [account_jid, chat_jid]
         if start_local is not None:
@@ -897,7 +995,10 @@ class MessageStore:
             parameters.append(_datetime_to_db(start_local))
         query += " ORDER BY sent_at, rowid"
         with self._connect() as conn:
+            gateway_component_jids = self._load_gateway_component_jids(conn, account_jid)
             rows = conn.execute(query, parameters).fetchall()
+        if chat_jid in gateway_component_jids:
+            rows = []
 
         participant_accumulators: dict[str, _ParticipantStatisticsAccumulator] = {}
         hourly_activity: Counter[int] = Counter()
@@ -1398,6 +1499,19 @@ class MessageStore:
                     retracted INTEGER NOT NULL DEFAULT 0,
                     edited INTEGER NOT NULL DEFAULT 0,
                     delivery_state TEXT NOT NULL DEFAULT '',
+                    call_id TEXT NOT NULL DEFAULT '',
+                    call_sequence INTEGER NOT NULL DEFAULT 0,
+                    call_peer_jid TEXT NOT NULL DEFAULT '',
+                    call_chat_jid TEXT NOT NULL DEFAULT '',
+                    call_group_jid TEXT NOT NULL DEFAULT '',
+                    call_direction TEXT NOT NULL DEFAULT '',
+                    call_kind TEXT NOT NULL DEFAULT '',
+                    call_state TEXT NOT NULL DEFAULT '',
+                    call_event_at TEXT,
+                    call_answered_at TEXT,
+                    call_ended_at TEXT,
+                    call_terminal_reason TEXT NOT NULL DEFAULT '',
+                    call_contract_version INTEGER NOT NULL DEFAULT 0,
                     received_at TEXT NOT NULL,
                     PRIMARY KEY (account_jid, chat_jid, message_key)
                 );
@@ -1626,10 +1740,28 @@ class MessageStore:
             "edited": "INTEGER NOT NULL DEFAULT 0",
             "delivery_state": "TEXT NOT NULL DEFAULT ''",
             "reaction_states_json": "TEXT NOT NULL DEFAULT '[]'",
+            "call_id": "TEXT NOT NULL DEFAULT ''",
+            "call_sequence": "INTEGER NOT NULL DEFAULT 0",
+            "call_peer_jid": "TEXT NOT NULL DEFAULT ''",
+            "call_chat_jid": "TEXT NOT NULL DEFAULT ''",
+            "call_group_jid": "TEXT NOT NULL DEFAULT ''",
+            "call_direction": "TEXT NOT NULL DEFAULT ''",
+            "call_kind": "TEXT NOT NULL DEFAULT ''",
+            "call_state": "TEXT NOT NULL DEFAULT ''",
+            "call_event_at": "TEXT",
+            "call_answered_at": "TEXT",
+            "call_ended_at": "TEXT",
+            "call_terminal_reason": "TEXT NOT NULL DEFAULT ''",
+            "call_contract_version": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, definition in columns.items():
             if column not in existing_columns:
                 conn.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_call_identity "
+            "ON messages (account_jid, call_id, call_sequence) "
+            "WHERE call_id != '' AND call_sequence > 0"
+        )
 
     def _ensure_chat_columns(self, conn: sqlite3.Connection) -> None:
         existing_columns = {
@@ -1660,7 +1792,7 @@ class MessageStore:
             """
             SELECT rowid AS db_rowid, *
             FROM messages
-            WHERE outgoing = 1
+            WHERE outgoing = 1 AND call_id = ''
             ORDER BY account_jid, chat_jid, sent_at, rowid
             """
         ).fetchall()
@@ -1849,6 +1981,14 @@ class MessageStore:
         account_jid: str,
         message: Message,
     ) -> None:
+        if message.call is not None:
+            existing_call = conn.execute(
+                "SELECT chat_jid FROM messages WHERE account_jid = ? "
+                "AND call_id = ? AND call_sequence = ? LIMIT 1",
+                (account_jid, message.call.call_id, message.call.sequence),
+            ).fetchone()
+            if existing_call is not None and existing_call["chat_jid"] != message.chat_jid:
+                message = replace(message, chat_jid=str(existing_call["chat_jid"]))
         now = _datetime_to_db(datetime.now())
         message_key = _message_key_for_upsert(conn, account_jid, message)
         conn.execute(
@@ -1860,12 +2000,18 @@ class MessageStore:
                 media_local_path, media_alt_text, is_sticker, is_forwarded, poll_json,
                 chat_is_group, starred,
                 reactions_json, reaction_states_json, reply_quote,
-                reply_to_jid, reply_to_id, retracted, edited, delivery_state, received_at
+                reply_to_jid, reply_to_id, retracted, edited, delivery_state,
+                call_id, call_sequence, call_peer_jid, call_chat_jid, call_group_jid,
+                call_direction, call_kind, call_state, call_event_at, call_answered_at,
+                call_ended_at,
+                call_terminal_reason, call_contract_version, received_at
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -1981,7 +2127,39 @@ class MessageStore:
                     WHEN COALESCE(messages.delivery_state, '') = ''
                         THEN excluded.delivery_state
                     ELSE messages.delivery_state
-                END
+                END,
+                call_id = COALESCE(NULLIF(excluded.call_id, ''), messages.call_id),
+                call_sequence = CASE
+                    WHEN excluded.call_sequence > 0 THEN excluded.call_sequence
+                    ELSE messages.call_sequence
+                END,
+                call_peer_jid = COALESCE(
+                    NULLIF(excluded.call_peer_jid, ''), messages.call_peer_jid
+                ),
+                call_chat_jid = COALESCE(
+                    NULLIF(excluded.call_chat_jid, ''), messages.call_chat_jid
+                ),
+                call_group_jid = COALESCE(
+                    NULLIF(excluded.call_group_jid, ''), messages.call_group_jid
+                ),
+                call_direction = CASE
+                    WHEN excluded.call_direction != '' AND excluded.call_direction != 'unknown'
+                        THEN excluded.call_direction ELSE messages.call_direction END,
+                call_kind = CASE
+                    WHEN excluded.call_kind != '' AND excluded.call_kind != 'unknown'
+                        THEN excluded.call_kind ELSE messages.call_kind END,
+                call_state = CASE
+                    WHEN excluded.call_state != '' AND excluded.call_state != 'unknown'
+                        THEN excluded.call_state ELSE messages.call_state END,
+                call_event_at = COALESCE(excluded.call_event_at, messages.call_event_at),
+                call_answered_at = COALESCE(excluded.call_answered_at, messages.call_answered_at),
+                call_ended_at = COALESCE(excluded.call_ended_at, messages.call_ended_at),
+                call_terminal_reason = COALESCE(
+                    NULLIF(excluded.call_terminal_reason, ''), messages.call_terminal_reason
+                ),
+                call_contract_version = MAX(
+                    excluded.call_contract_version, messages.call_contract_version
+                )
             """,
             (
                 account_jid,
@@ -2016,6 +2194,19 @@ class MessageStore:
                 int(message.retracted),
                 int(message.edited),
                 message.delivery_state,
+                message.call.call_id if message.call else "",
+                message.call.sequence if message.call else 0,
+                message.call.peer_jid if message.call else "",
+                message.call.chat_jid if message.call else "",
+                message.call.group_jid if message.call else "",
+                message.call.direction if message.call else "",
+                message.call.kind if message.call else "",
+                message.call.state if message.call else "",
+                _datetime_to_db(message.call.event_timestamp) if message.call else None,
+                _datetime_to_db(message.call.answered_at) if message.call else None,
+                _datetime_to_db(message.call.ended_at) if message.call else None,
+                message.call.terminal_reason if message.call else "",
+                message.call.contract_version if message.call else 0,
                 now,
             ),
         )
@@ -2114,6 +2305,15 @@ def _message_key_for_upsert(
     account_jid: str,
     message: Message,
 ) -> str:
+    if message.call is not None:
+        existing = conn.execute(
+            "SELECT message_key FROM messages "
+            "WHERE account_jid = ? AND call_id = ? AND call_sequence = ? LIMIT 1",
+            (account_jid, message.call.call_id, message.call.sequence),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["message_key"])
+        return f"call:{message.call.call_id}:{message.call.sequence}"
     if message.message_id:
         existing = conn.execute(
             """
@@ -2428,7 +2628,36 @@ def _message_from_row(row: sqlite3.Row) -> Message:
         retracted=bool(row["retracted"]),
         edited=bool(row["edited"]),
         delivery_state=str(row["delivery_state"] or ""),
+        call=_call_event_from_row(row),
     )
+
+
+def _call_event_from_row(row: sqlite3.Row) -> CallEvent | None:
+    call_id = str(row["call_id"] or "")
+    sequence = int(row["call_sequence"] or 0)
+    if not call_id or sequence < 1:
+        return None
+    event_at = _datetime_from_db(row["call_event_at"])
+    if event_at is None:
+        return None
+    try:
+        return CallEvent(
+            call_id=call_id,
+            peer_jid=str(row["call_peer_jid"] or ""),
+            chat_jid=str(row["call_chat_jid"] or ""),
+            group_jid=str(row["call_group_jid"] or ""),
+            direction=str(row["call_direction"] or ""),
+            kind=str(row["call_kind"] or ""),
+            state=str(row["call_state"] or ""),
+            event_timestamp=event_at,
+            answered_at=_datetime_from_db(row["call_answered_at"]),
+            ended_at=_datetime_from_db(row["call_ended_at"]),
+            terminal_reason=str(row["call_terminal_reason"] or ""),
+            sequence=sequence,
+            contract_version=int(row["call_contract_version"] or 0),
+        )
+    except ValueError:
+        return None
 
 
 def _reaction_states_to_db(states: tuple[ReactionState, ...]) -> str:

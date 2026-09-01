@@ -5,6 +5,7 @@ from collections.abc import Callable
 import wx
 
 from cliente_xmpp.models.statistics import (
+    CallStatistics,
     ChatMessageStatistics,
     DailyMessageStatistics,
     MessageStatistics,
@@ -72,6 +73,7 @@ class StatisticsDialog(wx.Dialog):
         self.daily = self._create_daily_page()
         self.chats = self._create_chats_page()
         self.unanswered = self._create_unanswered_page()
+        self.calls = self._create_calls_page()
 
         close_button = wx.Button(self, wx.ID_CLOSE, "&Cerrar")
 
@@ -144,7 +146,13 @@ class StatisticsDialog(wx.Dialog):
         )
         daily = self._create_list(page, "Mensajes por día")
         for index, (label, width) in enumerate(
-            (("Fecha", 180), ("Enviados", 140), ("Recibidos", 140), ("Total", 140))
+            (
+                ("Fecha", 160),
+                ("Enviados", 120),
+                ("Recibidos", 120),
+                ("Total", 120),
+                ("Llamadas", 120),
+            )
         ):
             daily.InsertColumn(index, label, width=width)
 
@@ -248,6 +256,24 @@ class StatisticsDialog(wx.Dialog):
         self.notebook.AddPage(page, "Sin respuesta")
         return unanswered
 
+    def _create_calls_page(self) -> wx.TextCtrl:
+        page = wx.Panel(self.notebook)
+        note = wx.StaticText(
+            page,
+            label=(
+                "Aquí aparecen las llamadas guardadas con información suficiente para "
+                "identificarlas. Los avisos antiguos siguen visibles como mensajes."
+            ),
+        )
+        calls = wx.TextCtrl(page, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_NONE)
+        calls.SetName("Resumen accesible de llamadas")
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(note, 0, wx.ALL | wx.EXPAND, 12)
+        box.Add(calls, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 12)
+        page.SetSizer(box)
+        self.notebook.AddPage(page, "Llamadas")
+        return calls
+
     @staticmethod
     def _create_list(parent: wx.Window, name: str) -> wx.ListCtrl:
         control = wx.ListCtrl(
@@ -282,6 +308,7 @@ class StatisticsDialog(wx.Dialog):
         self.chats.Freeze()
         self.chat_detail.Freeze()
         self.unanswered.Freeze()
+        self.calls.Freeze()
         try:
             self.summary.ChangeValue(self._format_summary(statistics))
             self.summary.SetInsertionPoint(0)
@@ -296,6 +323,7 @@ class StatisticsDialog(wx.Dialog):
                 self.daily.SetItem(index, 1, str(item.sent))
                 self.daily.SetItem(index, 2, str(item.received))
                 self.daily.SetItem(index, 3, str(item.total))
+                self.daily.SetItem(index, 4, str(item.calls.total))
             if self._visible_days:
                 self.daily.Select(0)
                 self.daily.Focus(0)
@@ -305,6 +333,8 @@ class StatisticsDialog(wx.Dialog):
                 self.daily_detail.SetInsertionPoint(0)
 
             self._statistics = statistics
+            self.calls.ChangeValue(self._format_calls(statistics.calls))
+            self.calls.SetInsertionPoint(0)
             self._render_chat_rows()
 
             self.unanswered.DeleteAllItems()
@@ -330,10 +360,11 @@ class StatisticsDialog(wx.Dialog):
             self.chats.Thaw()
             self.chat_detail.Thaw()
             self.unanswered.Thaw()
+            self.calls.Thaw()
 
         chat_filter_label = CHAT_FILTERS[self.chat_filter_choice.GetSelection()][0]
         self.status.SetLabel(
-            f"{statistics.total} mensajes en {len(statistics.chats)} conversaciones. "
+            f"{statistics.total} mensajes y {statistics.calls.total} llamadas. "
             f"Filtro: {chat_filter_label}."
         )
 
@@ -462,8 +493,10 @@ class StatisticsDialog(wx.Dialog):
     @staticmethod
     def _format_day_detail(day: DailyMessageStatistics) -> str:
         date_label = day.day.strftime("%d/%m/%Y")
+        if day.total == 0 and day.calls.total == 0:
+            return f"Fecha: {date_label}\n\nNo hubo actividad guardada durante este día."
         if day.total == 0 or not day.chats:
-            return f"Fecha: {date_label}\n\nNo hubo mensajes guardados durante este día."
+            return f"Fecha: {date_label}\n\n" + StatisticsDialog._format_calls(day.calls)
 
         most_active = max(day.chats, key=lambda chat: chat.total)
         least_active = min(day.chats, key=lambda chat: chat.total)
@@ -490,6 +523,8 @@ class StatisticsDialog(wx.Dialog):
             f"Archivos: {day.file_messages}",
             f"Stickers: {day.stickers}",
             "",
+            StatisticsDialog._format_calls(day.calls),
+            "",
             "Desglose por conversación",
         ]
         for chat in day.chats:
@@ -506,6 +541,54 @@ class StatisticsDialog(wx.Dialog):
                 )
             )
         return "\n".join(lines)
+
+    @classmethod
+    def _format_calls(cls, calls: CallStatistics) -> str:
+        if calls.total == 0:
+            return "\n\n".join(
+                (
+                    "No hay datos de llamadas para este período.",
+                    (
+                        "Las llamadas sin información completa se cuentan, pero no se incluyen "
+                        "en los tiempos."
+                    ),
+                )
+            )
+
+        duration_total = (
+            cls._format_duration(calls.duration_total_seconds)
+            if calls.duration_count
+            else "No hay tiempo registrado"
+        )
+        usual_duration = (
+            cls._format_duration(calls.median_duration_seconds)
+            if calls.duration_count
+            else "No hay tiempo registrado"
+        )
+        return "\n".join(
+            (
+                "Llamadas",
+                f"Total de llamadas: {calls.total}",
+                f"Llamadas contestadas: {calls.answered}",
+                f"Llamadas perdidas: {calls.missed}",
+                f"Llamadas rechazadas: {calls.rejected}",
+                f"Llamadas con error: {calls.failed}",
+                f"Llamadas entrantes: {calls.incoming}",
+                f"Llamadas salientes: {calls.outgoing}",
+                f"Llamadas de voz: {calls.voice}",
+                f"Videollamadas: {calls.video}",
+                f"Tiempo total hablando: {duration_total}",
+                f"Duración habitual: {usual_duration}",
+                (
+                    "Los tiempos sólo se calculan cuando se conoce cuándo empezó la conversación "
+                    "y cuándo terminó."
+                ),
+                (
+                    "Las llamadas sin información completa se cuentan, pero no se incluyen "
+                    "en los tiempos."
+                ),
+            )
+        )
 
     @staticmethod
     def _format_emotional_load(chat: ChatMessageStatistics) -> str:
@@ -591,6 +674,11 @@ class StatisticsDialog(wx.Dialog):
     @classmethod
     def _format_summary(cls, statistics: MessageStatistics) -> str:
         if statistics.total == 0:
+            if statistics.calls.total:
+                return (
+                    "No hay mensajes contables para este período.\n\n"
+                    + cls._format_calls(statistics.calls)
+                )
             return (
                 "No hay mensajes guardados para este período.\n\n"
                 "Las estadísticas usan la caché local; un historial remoto que todavía no se "
@@ -725,6 +813,8 @@ class StatisticsDialog(wx.Dialog):
                 f"Archivos: {statistics.file_messages}",
                 f"Stickers: {statistics.stickers}",
                 "",
+                cls._format_calls(statistics.calls),
+                "",
                 "Tendencia aproximada del lenguaje",
                 f"Tendencia general: {overall_emotional_reading}",
                 cls._emotional_meaning(
@@ -741,10 +831,7 @@ class StatisticsDialog(wx.Dialog):
                     "Nota: se usa el historial guardado localmente. Los grupos se muestran como "
                     "conversaciones y sus rachas pueden incluir mensajes de varios participantes."
                 ),
-                (
-                    "Los mensajes administrativos enviados por el componente del puente, como "
-                    "los avisos de llamadas, no se incluyen."
-                ),
+                "Las llamadas aparecen en la pestaña Llamadas cuando hay información guardada.",
             )
         )
         return "\n".join(lines)

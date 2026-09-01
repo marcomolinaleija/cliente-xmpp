@@ -7,10 +7,13 @@ from types import SimpleNamespace
 import wx
 
 from cliente_xmpp.models.statistics import (
+    CallStatistics,
     ChatMessageStatistics,
     DailyChatMessageStatistics,
     DailyMessageStatistics,
+    LocalChatStatistics,
 )
+from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 
 
@@ -70,6 +73,101 @@ class StatisticsDialogFormattingTests(unittest.TestCase):
         self.assertIn("mayoría clara", negative)
         self.assertIn("tristeza, enojo, preocupación", negative)
         self.assertIn("sin un predominio claro", balanced)
+
+    def test_call_summary_uses_everyday_language_and_explains_time_limit(self) -> None:
+        detail = StatisticsDialog._format_calls(
+            CallStatistics(
+                total=5,
+                answered=2,
+                missed=1,
+                rejected=1,
+                failed=1,
+                incoming=3,
+                outgoing=2,
+                voice=4,
+                video=1,
+                duration_total_seconds=180,
+                duration_count=2,
+                median_duration_seconds=90,
+            )
+        )
+
+        self.assertIn("Llamadas contestadas: 2", detail)
+        self.assertIn("Llamadas perdidas: 1", detail)
+        self.assertIn("Llamadas rechazadas: 1", detail)
+        self.assertIn("Llamadas con error: 1", detail)
+        self.assertIn("Tiempo total hablando: 3 minutos", detail)
+        self.assertIn("Duración habitual: 2 minutos", detail)
+        self.assertIn(
+            (
+                "Los tiempos sólo se calculan cuando se conoce cuándo empezó la conversación "
+                "y cuándo terminó."
+            ),
+            detail,
+        )
+        self.assertIn(
+            "Las llamadas sin información completa se cuentan, pero no se incluyen en los tiempos.",
+            detail,
+        )
+        self.assertNotIn("envelope", detail.casefold())
+        self.assertNotIn("timestamp", detail.casefold())
+        self.assertNotIn("mediana", detail.casefold())
+
+    def test_call_summary_explains_when_there_are_no_calls(self) -> None:
+        detail = StatisticsDialog._format_calls(CallStatistics())
+
+        self.assertIn("No hay datos de llamadas para este período.", detail)
+        self.assertIn(
+            "Las llamadas sin información completa se cuentan, pero no se incluyen en los tiempos.",
+            detail,
+        )
+
+    def test_individual_chat_keeps_calls_out_of_the_summary(self) -> None:
+        chat = ChatMessageStatistics(
+            chat_jid="friend@example.test",
+            name="Amistad",
+            is_group=False,
+            sent=1,
+            received=1,
+            current_received_streak=0,
+            maximum_received_streak=0,
+            current_sent_streak=0,
+            median_my_response_seconds=None,
+            median_their_response_seconds=None,
+            active_days=1,
+            first_message_at=datetime(2026, 7, 19, 12, tzinfo=UTC),
+            last_message_at=datetime(2026, 7, 19, 13, tzinfo=UTC),
+            busiest_hour=12,
+            stickers=0,
+            audio_messages=0,
+            image_messages=0,
+            video_messages=0,
+            file_messages=0,
+            positive_weight=0.0,
+            negative_weight=0.0,
+            sentiment_messages=0,
+            calls=CallStatistics(total=1, answered=1),
+        )
+        statistics = LocalChatStatistics(
+            period_days=7,
+            from_date=date(2026, 7, 13),
+            to_date=date(2026, 7, 19),
+            chat_jid=chat.chat_jid,
+            name=chat.name,
+            is_group=False,
+            overview=chat,
+            median_message_interval_seconds=None,
+            longest_message_interval_seconds=None,
+            hourly_activity=(),
+            participants=(),
+            recurrent_phrases=(),
+        )
+
+        summary = ChatStatisticsDialog._format_summary(statistics)
+        calls = ChatStatisticsDialog._format_calls(statistics)
+
+        self.assertNotIn("Llamadas", summary)
+        self.assertIn("Llamadas contestadas: 1", calls)
 
     def test_escape_deactivates_and_closes_statistics_dialog(self) -> None:
         calls: list[object] = []

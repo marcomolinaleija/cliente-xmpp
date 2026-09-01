@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from cliente_xmpp.models.calls import CallEvent
 from cliente_xmpp.models.reactions import ReactionState
 
 
@@ -177,3 +178,4 @@ class Message:
     retracted: bool = False
     edited: bool = False
     replaces_id: str = ""
+    call: CallEvent | None = None

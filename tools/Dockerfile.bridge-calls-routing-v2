@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=cliente-xmpp-bridge:rayos-calls-v1-local
+
+FROM ${BASE_IMAGE}
+
+USER root
+COPY patch_slidge_whatsapp_call_routing_v2.py /tmp/patch_call_routing_v2.py
+RUN python -B /tmp/patch_call_routing_v2.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp/session.py && \
+    rm /tmp/patch_call_routing_v2.py
+
+COPY bridge_calls_routing_contract_test.py /tmp/bridge_calls_routing_contract_test.py
+COPY smoke_bridge_calls_routing_runtime.py /tmp/smoke_bridge_calls_routing_runtime.py
+RUN python -B /tmp/bridge_calls_routing_contract_test.py && \
+    python -B /tmp/smoke_bridge_calls_routing_runtime.py && \
+    rm /tmp/bridge_calls_routing_contract_test.py /tmp/smoke_bridge_calls_routing_runtime.py
+
+USER slidge

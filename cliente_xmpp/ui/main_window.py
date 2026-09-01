@@ -4090,6 +4090,18 @@ class MainWindow(wx.Frame):
                 return
 
         if (
+            event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+            and event.GetKeyCode() in (wx.WXK_UP, wx.WXK_DOWN)
+        ):
+            delta = 5 if event.GetKeyCode() == wx.WXK_UP else -5
+            volume = self.conversation.adjust_selected_media_volume(delta)
+            if volume is not None:
+                self.status_bar.SetStatusText(f"Volumen: {volume} %")
+                return
+
+        if (
             event.GetKeyCode() == wx.WXK_LEFT
             and not event.AltDown()
             and self.conversation.speak_selected_text_message()

@@ -667,6 +667,37 @@ class ConversationPanel(wx.Panel):
         self._speaker.speak(f"{percent} por ciento")
         return percent
 
+    def adjust_selected_media_volume(self, delta: int) -> int | None:
+        index = self.messages.GetFirstSelected()
+        if index == wx.NOT_FOUND or index >= len(self._message_rows):
+            return None
+
+        message = self._message_at_row(index)
+        if message is None or message.retracted:
+            return None
+
+        if message.media_kind == "audio":
+            source = self._audio_source(message)
+            player = self._audio_player
+        elif message.media_kind == "video":
+            source = str(local_media_path(message) or message.media_url)
+            player = self._video_player
+        else:
+            return None
+        if not source:
+            return None
+        if not player.has_current_source(source):
+            return None
+
+        try:
+            volume = player.adjust_volume(source, delta)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Volumen")
+            return None
+
+        self._speaker.speak(f"Volumen {volume} por ciento")
+        return volume
+
     def _on_audio_autoplay_timer(self, _event: wx.TimerEvent) -> None:
         index = self._current_audio_row_index
         if index is None or index >= len(self._message_rows):

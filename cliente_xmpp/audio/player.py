@@ -12,11 +12,14 @@ MPV_FORMAT_FLAG = 3
 MPV_FORMAT_DOUBLE = 5
 MPV_EVENT_SHUTDOWN = 1
 AUDIO_SPEEDS = (1.0, 1.5, 2.0)
-DEFAULT_VOLUME = 50
+DEFAULT_AUDIO_VOLUME = 100
+DEFAULT_VIDEO_VOLUME = 50
 VIDEO_KEY_BINDINGS = (
     ("SPACE", "cycle pause"),
     ("UP", "add volume 5"),
     ("DOWN", "add volume -5"),
+    ("Alt+UP", "add volume 5"),
+    ("Alt+DOWN", "add volume -5"),
     ("LEFT", "seek -5"),
     ("RIGHT", "seek 5"),
     ("Alt+F4", "quit"),
@@ -108,6 +111,25 @@ class MpvAudioPlayer:
         if self._handle:
             self._set_double_property(self._handle, "speed", self._speed)
 
+    def adjust_volume(self, url: str, delta: int) -> int:
+        if not url:
+            raise MpvPlaybackError("No hay contenido para cambiar el volumen.")
+        if not self._handle or url != self._current_url:
+            raise MpvPlaybackError("No hay contenido activo para cambiar el volumen.")
+        if delta == 0:
+            raise ValueError("delta must not be zero")
+
+        current_volume = self._get_double_property(
+            self._handle,
+            "volume",
+            allow_zero=True,
+        )
+        if current_volume is None:
+            current_volume = self._default_volume
+        target_volume = max(0, min(100, round(current_volume + delta)))
+        self._set_double_property(self._handle, "volume", target_volume)
+        return target_volume
+
     @property
     def speed(self) -> float:
         return self._speed
@@ -117,6 +139,9 @@ class MpvAudioPlayer:
             return False
 
         return self._playback_finished(self._handle)
+
+    def has_current_source(self, url: str) -> bool:
+        return bool(self._handle and url and url == self._current_url)
 
     def stop(self) -> None:
         if self._handle:
@@ -158,7 +183,11 @@ class MpvAudioPlayer:
         )
         self._check_error(dll.mpv_set_option_string(handle, b"input-vo-keyboard", b"yes"))
         self._check_error(
-            dll.mpv_set_option_string(handle, b"volume", str(DEFAULT_VOLUME).encode("ascii"))
+            dll.mpv_set_option_string(
+                handle,
+                b"volume",
+                str(self._default_volume).encode("ascii"),
+            )
         )
         self._check_error(dll.mpv_initialize(handle))
         if self._video:
@@ -306,7 +335,17 @@ class MpvAudioPlayer:
 
         return bool(value.value)
 
-    def _get_double_property(self, handle: ctypes.c_void_p, name: str) -> float | None:
+    @property
+    def _default_volume(self) -> int:
+        return DEFAULT_VIDEO_VOLUME if self._video else DEFAULT_AUDIO_VOLUME
+
+    def _get_double_property(
+        self,
+        handle: ctypes.c_void_p,
+        name: str,
+        *,
+        allow_zero: bool = False,
+    ) -> float | None:
         value = ctypes.c_double()
         code = self._ensure_dll().mpv_get_property(
             handle,
@@ -314,7 +353,7 @@ class MpvAudioPlayer:
             MPV_FORMAT_DOUBLE,
             ctypes.byref(value),
         )
-        if code < 0 or value.value <= 0:
+        if code < 0 or (not allow_zero and value.value <= 0):
             return None
 
         return float(value.value)

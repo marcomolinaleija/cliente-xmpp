@@ -40,7 +40,7 @@ class MpvVideoInputTests(unittest.TestCase):
 
         self.assertIn((b"video", b"no"), dll.options)
         self.assertIn((b"ad", b"libopus"), dll.options)
-        self.assertIn((b"volume", b"50"), dll.options)
+        self.assertIn((b"volume", b"100"), dll.options)
 
     def test_video_player_enables_native_default_keyboard_bindings(self) -> None:
         dll = _FakeMpvDll()
@@ -59,6 +59,8 @@ class MpvVideoInputTests(unittest.TestCase):
                 [b"keybind", b"SPACE", b"cycle pause"],
                 [b"keybind", b"UP", b"add volume 5"],
                 [b"keybind", b"DOWN", b"add volume -5"],
+                [b"keybind", b"Alt+UP", b"add volume 5"],
+                [b"keybind", b"Alt+DOWN", b"add volume -5"],
                 [b"keybind", b"LEFT", b"seek -5"],
                 [b"keybind", b"RIGHT", b"seek 5"],
                 [b"keybind", b"Alt+F4", b"quit"],
@@ -97,3 +99,19 @@ class MpvVideoInputTests(unittest.TestCase):
             dll.commands[-1],
             [b"seek", b"10", b"absolute-percent", b"exact"],
         )
+
+    def test_volume_adjustment_is_clamped_and_uses_five_percent_steps(self) -> None:
+        dll = _FakeMpvDll()
+        player = MpvAudioPlayer()
+        player._dll = dll  # type: ignore[assignment]
+        player._handle = 1  # type: ignore[assignment]
+        player._current_url = "voice.ogg"
+
+        with (
+            patch.object(player, "_get_double_property", return_value=98.0),
+            patch.object(player, "_set_double_property") as set_property,
+        ):
+            volume = player.adjust_volume("voice.ogg", 5)
+
+        self.assertEqual(volume, 100)
+        set_property.assert_called_once_with(1, "volume", 100)

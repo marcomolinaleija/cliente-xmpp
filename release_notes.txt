@@ -1,3 +1,16 @@
+WhatsApp CAN 1.4.6
+
+Estadísticas experimentales de llamadas
+- Se integra de forma experimental el registro y resumen de llamadas en las estadísticas generales y de cada chat.
+- Las llamadas conservan la información disponible sin inventar datos cuando el evento está incompleto.
+
+Reproducción
+- El reproductor integrado inicia el audio al 100 % y el video al 50 %.
+- Puedes ajustar en pasos de 5 % el volumen del audio o video que se está reproduciendo con Alt+Flecha arriba y Alt+Flecha abajo.
+
+Puente local
+- El puente local se actualiza a v26 para transportar la información estructurada de llamadas y asociarla al chat cuando está disponible.
+
 WhatsApp CAN 1.4.5
 
 Archivos y mensajes

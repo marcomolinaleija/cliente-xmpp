@@ -16,6 +16,10 @@ dist/
 release/
 *.egg-info/
 
+# Local generated Gentle AI metadata
+.atl/.skill-registry.cache.json
+.atl/skill-registry.md
+
 # Editor
 .vscode/
 .idea/

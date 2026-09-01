@@ -14,7 +14,9 @@ def replace_once(text: str, old: str, new: str, description: str) -> str:
     return text.replace(old, new, 1)
 
 
-def replace_region(text: str, start_marker: str, end_marker: str, new: str, description: str) -> str:
+def replace_region(
+    text: str, start_marker: str, end_marker: str, new: str, description: str
+) -> str:
     start = text.find(start_marker)
     end = text.find(end_marker, start)
     if start < 0 or end < 0 or text.find(start_marker, start + 1) >= 0:
@@ -188,7 +190,9 @@ func newCallEvent(
 	meta types.BasicCallMeta,
 ) (EventKind, *EventPayload) {
 	actor := newActor(ctx, client, meta.From, meta.CallCreator, meta.CallCreatorAlt)
-	if transport := callContractTransport(newCallContract(state, direction, kind, sequence, terminalReason, meta)); transport != "" {
+    if transport := callContractTransport(
+        newCallContract(state, direction, kind, sequence, terminalReason, meta),
+    ); transport != "" {
 		// Actor.LID already crosses the generated v25 gopy ABI as an owned string.
 		// Call events do not consume it in Python; retain contract metadata there rather
 		// than adding a manually maintained C getter for a new Go field.
@@ -221,30 +225,68 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
         return False
     source = replace_once(
         source,
-        '''\tcase *events.CallOffer:
-\t\ts.propagateEvent(newCallEvent(s.ctx, client, CallIncoming, evt.BasicCallMeta))
-\tcase *events.CallTerminate:
-\t\ts.propagateEvent(newCallEvent(s.ctx, client, callStateFromReason(evt.Reason), evt.BasicCallMeta))
-''',
+        (
+            "\\tcase *events.CallOffer:\n"
+            "\\t\\ts.propagateEvent(newCallEvent(s.ctx, client, CallIncoming, evt.BasicCallMeta))\n"
+            "\\tcase *events.CallTerminate:\n"
+            "\\t\\ts.propagateEvent("
+            "newCallEvent(s.ctx, client, callStateFromReason(evt.Reason), evt.BasicCallMeta)"
+            ")\n"
+        ),
         '''\tcase *events.CallOffer:
 \t\ts.propagateEvent(newCallEvent(
-\t\t\ts.ctx, client, callStateOffered, callDirectionIncoming, callKindUnknown, 1, "", evt.BasicCallMeta,
+\t\t\ts.ctx,
+\t\t\tclient,
+\t\t\tcallStateOffered,
+\t\t\tcallDirectionIncoming,
+\t\t\tcallKindUnknown,
+\t\t\t1,
+\t\t\t"",
+\t\t\tevt.BasicCallMeta,
 \t\t))
 \tcase *events.CallOfferNotice:
 \t\ts.propagateEvent(newCallEvent(
-\t\t\ts.ctx, client, callStateOffered, callDirectionIncoming, callKindFromMedia(evt.Media), 1, "", evt.BasicCallMeta,
+\t\t\ts.ctx,
+\t\t\tclient,
+\t\t\tcallStateOffered,
+\t\t\tcallDirectionIncoming,
+\t\t\tcallKindFromMedia(evt.Media),
+\t\t\t1,
+\t\t\t"",
+\t\t\tevt.BasicCallMeta,
 \t\t))
 \tcase *events.CallAccept:
 \t\ts.propagateEvent(newCallEvent(
-\t\t\ts.ctx, client, callStateAccepted, callDirectionFromMeta(client, evt.BasicCallMeta), callKindUnknown, 2, "", evt.BasicCallMeta,
+\t\t\ts.ctx,
+\t\t\tclient,
+\t\t\tcallStateAccepted,
+\t\t\tcallDirectionFromMeta(client, evt.BasicCallMeta),
+\t\t\tcallKindUnknown,
+\t\t\t2,
+\t\t\t"",
+\t\t\tevt.BasicCallMeta,
 \t\t))
 \tcase *events.CallReject:
 \t\ts.propagateEvent(newCallEvent(
-\t\t\ts.ctx, client, callStateRejected, callDirectionOutgoing, callKindUnknown, 3, "", evt.BasicCallMeta,
+\t\t\ts.ctx,
+\t\t\tclient,
+\t\t\tcallStateRejected,
+\t\t\tcallDirectionOutgoing,
+\t\t\tcallKindUnknown,
+\t\t\t3,
+\t\t\t"",
+\t\t\tevt.BasicCallMeta,
 \t\t))
 \tcase *events.CallTerminate:
 \t\ts.propagateEvent(newCallEvent(
-\t\t\ts.ctx, client, callStateFromTerminateReason(evt.Reason), callDirectionFromMeta(client, evt.BasicCallMeta), callKindUnknown, 3, evt.Reason, evt.BasicCallMeta,
+\t\t\ts.ctx,
+\t\t\tclient,
+\t\t\tcallStateFromTerminateReason(evt.Reason),
+\t\t\tcallDirectionFromMeta(client, evt.BasicCallMeta),
+\t\t\tcallKindUnknown,
+\t\t\t3,
+\t\t\tevt.Reason,
+\t\t\tevt.BasicCallMeta,
 \t\t))
 ''',
         "call event dispatch",

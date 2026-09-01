@@ -7,14 +7,19 @@ def checkpoint(name: str) -> None:
     print(f"calls contract smoke: {name}", flush=True)
 
 checkpoint("before session import")
-from slidge_whatsapp import session as session_module
+from slidge_whatsapp import session as session_module  # noqa: E402, I001
 checkpoint("after session import")
-from slidge_whatsapp.generated import whatsapp
+from slidge_whatsapp.generated import whatsapp  # noqa: E402, I001
 checkpoint("after generated import")
 
 package_dir = __import__("pathlib").Path(session_module.__file__).parent
 for source_name, required in {
-    "event.go": ("CallContract", "callContractTransportPrefix", "callContractTransport", "actor.LID = transport"),
+    "event.go": (
+        "CallContract",
+        "callContractTransportPrefix",
+        "callContractTransport",
+        "actor.LID = transport",
+    ),
     "session.go": ("*events.CallOfferNotice", "*events.CallAccept", "*events.CallReject"),
     "session.py": ("CALL_TRANSPORT_PREFIX", "parse_call_metadata(call.Actor.LID)"),
 }.items():

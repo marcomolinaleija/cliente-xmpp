@@ -252,6 +252,35 @@ class StarredMessagesDialogKeyboardTests(unittest.TestCase):
         self.assertIs(dialog.selected_message, message)
         self.assertEqual(closed_with, [wx.ID_OK])
 
+    def test_files_enter_plays_video_instead_of_opening_text_reader(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="sender@example.test",
+            body="",
+            media_url="https://example.test/video.mp4",
+            media_kind="video",
+        )
+        control = SimpleNamespace(GetFirstSelected=lambda: 0)
+        played: list[Message] = []
+        closed_with: list[int] = []
+        dialog = SimpleNamespace(
+            _messages_by_list={id(control): [message]},
+            _selected_message=lambda selected_control: message,
+            _on_play_media_from_server=lambda selected_message: played.append(
+                selected_message
+            )
+            or True,
+            _on_play_audio=None,
+            selected_message=None,
+            EndModal=lambda result: closed_with.append(result),
+        )
+
+        ChatFilesDialog._go_to_message(dialog, control)  # type: ignore[arg-type]
+
+        self.assertEqual(played, [message])
+        self.assertEqual(closed_with, [])
+        self.assertIsNone(dialog.selected_message)
+
 
 if __name__ == "__main__":
     unittest.main()

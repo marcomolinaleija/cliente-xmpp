@@ -569,6 +569,7 @@ class ChatFilesDialog(wx.Dialog):
         on_open_message: MessageKeyAction | None = None,
         on_play_audio: MessageKeyAction | None = None,
         on_play_video: MessageKeyAction | None = None,
+        on_play_media_from_server: MessageKeyAction | None = None,
         on_context_menu: MessageContextMenuAction | None = None,
     ) -> None:
         super().__init__(
@@ -586,6 +587,7 @@ class ChatFilesDialog(wx.Dialog):
         self._on_open_message = on_open_message
         self._on_play_audio = on_play_audio
         self._on_play_video = on_play_video
+        self._on_play_media_from_server = on_play_media_from_server
         self._on_context_menu = on_context_menu
         self._active = True
         self._messages: list[Message] = []
@@ -727,6 +729,16 @@ class ChatFilesDialog(wx.Dialog):
         message = self._selected_message(control)
         if message is None:
             return
+        if message.media_kind in {"audio", "video"} or message.audio_url:
+            action = self._on_play_media_from_server
+            if action is None:
+                action = (
+                    self._on_play_audio
+                    if message.audio_url or message.media_kind == "audio"
+                    else self._on_play_video
+                )
+            if action is not None and action(message):
+                return
         self.selected_message = message
         self.EndModal(wx.ID_OK)
 

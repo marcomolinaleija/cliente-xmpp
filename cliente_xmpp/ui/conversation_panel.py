@@ -548,11 +548,16 @@ class ConversationPanel(wx.Panel):
     def play_audio_message(self, message: Message) -> bool:
         return self._play_audio_message(message, None)
 
-    def _play_audio_message(self, message: Message, row_index: int | None) -> bool:
+    def _play_audio_message(
+        self,
+        message: Message,
+        row_index: int | None,
+        source_override: str = "",
+    ) -> bool:
         if message.retracted or not (message.audio_url or message.media_kind == "audio"):
             return False
 
-        audio_source = self._audio_source(message)
+        audio_source = source_override or self._audio_source(message)
         if not audio_source:
             if message.audio_url and self.on_audio_download_requested is not None:
                 self._pending_audio_message = message
@@ -592,6 +597,18 @@ class ConversationPanel(wx.Panel):
                 self._play_audio_message(message, row_index)
             return
         self.play_audio_message(message)
+
+    def play_media_from_server(self, message: Message) -> bool:
+        if message.retracted:
+            return False
+        if message.audio_url or message.media_kind == "audio":
+            source = message.audio_url or message.media_url
+            if not source:
+                return False
+            return self._play_audio_message(message, None, source_override=source)
+        if message.media_kind == "video":
+            return self.play_video_from_server(message)
+        return False
 
     def video_download_completed(self, message: Message) -> None:
         if self._pending_video_message is not message:
@@ -654,6 +671,19 @@ class ConversationPanel(wx.Panel):
 
         if self._pending_video_message is message:
             self._pending_video_message = None
+        self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
+        return True
+
+    def play_video_from_server(self, message: Message) -> bool:
+        if message.retracted or message.media_kind != "video" or not message.media_url:
+            return False
+
+        try:
+            status = self._video_player.play(message.media_url)
+        except MpvPlaybackError as exc:
+            wx.MessageBox(str(exc), "Video")
+            return True
+
         self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
         return True
 

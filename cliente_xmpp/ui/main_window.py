@@ -8065,6 +8065,7 @@ class MainWindow(wx.Frame):
             on_open_message=self.conversation.open_message_reader,
             on_play_audio=self.conversation.play_audio_message,
             on_play_video=self.conversation.play_video_message,
+            on_play_media_from_server=self.conversation.play_media_from_server,
             on_context_menu=self._show_browser_message_context_menu,
         )
         selected_message: Message | None = None

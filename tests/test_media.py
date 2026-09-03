@@ -198,6 +198,27 @@ class MediaDescriptionTests(unittest.TestCase):
 
         self.assertEqual(played, [])
 
+    def test_play_video_from_server_ignores_existing_local_copy(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://upload.example.test/video.mp4",
+            media_kind="video",
+            media_local_path="C:/already-downloaded/video.mp4",
+        )
+        played: list[str] = []
+        panel = SimpleNamespace(
+            _speaker=SimpleNamespace(speak=lambda _text: None),
+            _video_player=SimpleNamespace(
+                play=lambda source: played.append(source) or "playing"
+            ),
+        )
+
+        self.assertTrue(ConversationPanel.play_video_from_server(panel, message))
+
+        self.assertEqual(played, [message.media_url])
+
     def test_percent_seek_ignores_a_focused_text_message(self) -> None:
         message = Message(
             chat_jid="contact@example.test",

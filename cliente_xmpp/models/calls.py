@@ -79,6 +79,17 @@ class CallEvent:
         if self.answered_at and self.ended_at and self.ended_at < self.answered_at:
             raise ValueError("call ended before it was answered")
 
+    @property
+    def effective_duration_seconds(self) -> float | None:
+        """Return WhatsApp's duration, or derive it from answer/end timestamps."""
+
+        if self.duration_seconds is not None:
+            return self.duration_seconds
+        if self.answered_at is None or self.ended_at is None:
+            return None
+        duration = (self.ended_at - self.answered_at).total_seconds()
+        return duration if duration >= 0 else None
+
 
 @dataclass(frozen=True, slots=True)
 class CallSummary:

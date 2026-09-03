@@ -1565,6 +1565,7 @@ class MessageStore:
             )
             self._ensure_message_columns(conn)
             self._ensure_chat_columns(conn)
+            collapsed_call_chats = self._compact_duplicate_call_messages(conn)
             if previous_version < SCHEMA_VERSION:
                 self._normalize_datetime_columns(conn)
                 self._backfill_sticker_flags(conn)
@@ -1573,6 +1574,8 @@ class MessageStore:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             if previous_version >= SCHEMA_VERSION:
                 self._compact_duplicate_messages(conn)
+            for account_jid, chat_jid in collapsed_call_chats:
+                self._rebuild_chat_summary(conn, account_jid, chat_jid)
             for account_jid, chat_jid in self._delete_failed_local_messages(conn):
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
             for account_jid, chat_jid in self._delete_local_bridge_commands(conn):
@@ -1901,6 +1904,60 @@ class MessageStore:
             conn.execute("DELETE FROM messages WHERE rowid = ?", (rowid,))
 
     @staticmethod
+    def _compact_duplicate_call_messages(
+        conn: sqlite3.Connection,
+    ) -> set[tuple[str, str]]:
+        """Collapse old per-sequence call rows into one row per call ID."""
+
+        rows = conn.execute(
+            """
+            SELECT rowid AS db_rowid, *
+            FROM messages
+            WHERE call_id != '' AND call_sequence > 0
+            ORDER BY account_jid, call_id, call_sequence DESC, rowid DESC
+            """
+        ).fetchall()
+        survivors: dict[tuple[str, str], sqlite3.Row] = {}
+        affected_chats: set[tuple[str, str]] = set()
+        for row in rows:
+            identity = (str(row["account_jid"]), str(row["call_id"]))
+            survivor = survivors.get(identity)
+            if survivor is None:
+                survivors[identity] = row
+                continue
+            survivor_rowid = int(survivor["db_rowid"])
+            duplicate_rowid = int(row["db_rowid"])
+            conn.execute(
+                """
+                UPDATE messages
+                SET message_id = COALESCE(NULLIF(message_id, ''), ?),
+                    sender_name = COALESCE(NULLIF(sender_name, ''), ?),
+                    call_peer_jid = COALESCE(NULLIF(call_peer_jid, ''), ?),
+                    call_chat_jid = COALESCE(NULLIF(call_chat_jid, ''), ?),
+                    call_group_jid = COALESCE(NULLIF(call_group_jid, ''), ?),
+                    call_answered_at = COALESCE(call_answered_at, ?),
+                    call_ended_at = COALESCE(call_ended_at, ?),
+                    call_duration_seconds = COALESCE(call_duration_seconds, ?)
+                WHERE rowid = ?
+                """,
+                (
+                    row["message_id"],
+                    row["sender_name"],
+                    row["call_peer_jid"],
+                    row["call_chat_jid"],
+                    row["call_group_jid"],
+                    row["call_answered_at"],
+                    row["call_ended_at"],
+                    row["call_duration_seconds"],
+                    survivor_rowid,
+                ),
+            )
+            conn.execute("DELETE FROM messages WHERE rowid = ?", (duplicate_rowid,))
+            affected_chats.add((str(survivor["account_jid"]), str(survivor["chat_jid"])))
+            affected_chats.add((str(row["account_jid"]), str(row["chat_jid"])))
+        return affected_chats
+
+    @staticmethod
     def _merge_duplicate_message_rows(
         conn: sqlite3.Connection,
         survivor: sqlite3.Row,
@@ -2065,8 +2122,8 @@ class MessageStore:
         if message.call is not None:
             existing_call = conn.execute(
                 "SELECT chat_jid FROM messages WHERE account_jid = ? "
-                "AND call_id = ? AND call_sequence = ? LIMIT 1",
-                (account_jid, message.call.call_id, message.call.sequence),
+                "AND call_id = ? ORDER BY call_sequence DESC, rowid DESC LIMIT 1",
+                (account_jid, message.call.call_id),
             ).fetchone()
             if existing_call is not None and existing_call["chat_jid"] != message.chat_jid:
                 message = replace(message, chat_jid=str(existing_call["chat_jid"]))
@@ -2430,12 +2487,13 @@ def _message_key_for_upsert(
     if message.call is not None:
         existing = conn.execute(
             "SELECT message_key FROM messages "
-            "WHERE account_jid = ? AND call_id = ? AND call_sequence = ? LIMIT 1",
-            (account_jid, message.call.call_id, message.call.sequence),
+            "WHERE account_jid = ? AND call_id = ? "
+            "ORDER BY call_sequence DESC, rowid DESC LIMIT 1",
+            (account_jid, message.call.call_id),
         ).fetchone()
         if existing is not None:
             return str(existing["message_key"])
-        return f"call:{message.call.call_id}:{message.call.sequence}"
+        return f"call:{message.call.call_id}"
     if message.message_id:
         existing = conn.execute(
             """
@@ -2641,7 +2699,7 @@ def _message_preview(message: Message) -> str:
         if message.call is not None:
             preview = format_call_body(
                 preview,
-                duration_seconds=message.call.duration_seconds,
+                duration_seconds=message.call.effective_duration_seconds,
                 event_timestamp=message.call.event_timestamp,
             )
     elif is_link_preview(message):

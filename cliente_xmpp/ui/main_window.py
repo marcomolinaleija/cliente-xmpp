@@ -67,6 +67,7 @@ from cliente_xmpp.media.stickers import (
     lottie_sticker_description,
     sticker_display_text,
 )
+from cliente_xmpp.models.calls import CallEvent
 from cliente_xmpp.models.chat import (
     Chat,
     Message,
@@ -5867,11 +5868,32 @@ class MainWindow(wx.Frame):
     @staticmethod
     def _message_merge_key(message: Message) -> tuple[object, ...]:
         if message.call is not None:
-            return "call", message.call.call_id, message.call.sequence
+            # Signaling, accepted and authoritative phases represent one row.
+            return "call", message.call.call_id
         if message.message_id:
             return "id", message.message_id
 
         return "payload", message.sent_at.isoformat(), *MainWindow._message_content_key(message)
+
+    @staticmethod
+    def _call_phase_preference(event: CallEvent) -> tuple[int, int, int, int]:
+        source_rank = {
+            "": 0,
+            "signaling": 1,
+            "message": 2,
+            "history_sync": 3,
+            "app_state": 4,
+        }.get(event.source, 0)
+        terminal_rank = int(
+            event.state in {"missed", "rejected", "ended", "failed"}
+            or event.outcome not in {"", "ongoing", "upcoming"}
+        )
+        return (
+            event.sequence,
+            source_rank,
+            terminal_rank,
+            int(event.duration_seconds is not None),
+        )
 
     @staticmethod
     def _message_content_key(message: Message) -> tuple[object, ...]:
@@ -5952,6 +5974,35 @@ class MainWindow(wx.Frame):
 
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
+        if target.call is not None and incoming.call is not None:
+            if target.call.call_id == incoming.call.call_id:
+                incoming_preference = MainWindow._call_phase_preference(incoming.call)
+                target_preference = MainWindow._call_phase_preference(target.call)
+                if incoming_preference >= target_preference:
+                    target.call = replace(
+                        incoming.call,
+                        answered_at=incoming.call.answered_at or target.call.answered_at,
+                        ended_at=incoming.call.ended_at or target.call.ended_at,
+                        duration_seconds=(
+                            incoming.call.duration_seconds
+                            if incoming.call.duration_seconds is not None
+                            else target.call.duration_seconds
+                        ),
+                    )
+                    target.sent_at = incoming.sent_at
+                    if incoming.body:
+                        target.body = incoming.body
+                    if incoming.sender_name:
+                        target.sender_name = incoming.sender_name
+                elif (
+                    target.call.duration_seconds is None
+                    and incoming.call.duration_seconds is not None
+                ):
+                    target.call = replace(
+                        target.call,
+                        duration_seconds=incoming.call.duration_seconds,
+                    )
+                return
         if incoming.retracted:
             target.retracted = True
             target.body = ""
@@ -7400,7 +7451,7 @@ class MainWindow(wx.Frame):
         if message.call is not None and not has_media(message):
             preview = format_call_body(
                 preview,
-                duration_seconds=message.call.duration_seconds,
+                duration_seconds=message.call.effective_duration_seconds,
                 event_timestamp=message.call.event_timestamp,
             )
         return preview

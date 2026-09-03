@@ -107,12 +107,15 @@ cuenta como llamadas perdidas sin borrar la causa.
 ## Cliente
 
 SQLite agrega tres columnas compatibles hacia adelante: duración explícita, resultado y fuente.
-El registro autoritativo se fusiona por `account_jid + call_id + sequence`, conserva la actualización
-de `AppState` frente a un `HistorySync` tardío y evita volver una llamada terminada al estado
-`ongoing`. Las estadísticas separan contestadas, perdidas, rechazadas, canceladas, no disponibles,
-fallidas, en curso/programadas, entrantes, salientes, voz y vídeo. El tiempo total y la duración
-habitual prefieren la duración explícita de WhatsApp y mantienen el cálculo antiguo sólo como
-compatibilidad.
+Todas las fases de una llamada se fusionan por `account_jid + call_id` en una sola fila; la
+`sequence` selecciona el estado más avanzado y la fuente autoritativa. Así una oferta, aceptación y
+fin actualizan la misma fila, conserva la actualización de `AppState` frente a un `HistorySync`
+tardío y evita volver una llamada terminada al estado `ongoing`. SQLite conserva esos campos,
+prioriza `app_state` frente a un historial tardío y no infiere la duración a partir de la hora
+inicial; si WhatsApp sólo entrega answer/end, el cliente calcula la duración efectiva para mostrarla.
+Las estadísticas separan contestadas, perdidas, rechazadas, canceladas, no disponibles, fallidas,
+en curso/programadas, entrantes, salientes, voz y vídeo. El tiempo total y la duración habitual
+prefieren la duración explícita de WhatsApp y mantienen el cálculo antiguo sólo como compatibilidad.
 
 ## Construcción reproducible
 

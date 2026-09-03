@@ -38,7 +38,7 @@ def _message_description(message: Message) -> str:
         if message.call is not None:
             description = format_call_body(
                 description,
-                duration_seconds=message.call.duration_seconds,
+                duration_seconds=message.call.effective_duration_seconds,
                 event_timestamp=message.call.event_timestamp,
             )
     description = " ".join(description.split()) or "Mensaje sin texto"

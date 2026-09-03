@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -313,6 +313,79 @@ class CallContractTests(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0].sent_at, event_at)
         self.assertEqual(chats[0].last_message_at, event_at)
+
+    def test_call_phases_replace_one_storage_row_and_refresh_duration(self) -> None:
+        started_at = datetime(2026, 9, 2, 21, 19, tzinfo=UTC)
+        accepted_at = started_at + timedelta(minutes=1)
+        ended_at = accepted_at + timedelta(seconds=6)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.sqlite3"
+            store = MessageStore(path)
+            phases = (
+                self._event("one-call", 1, "offered", at=started_at, direction="incoming"),
+                self._event(
+                    "one-call",
+                    2,
+                    "accepted",
+                    at=accepted_at,
+                    answered_at=accepted_at,
+                    direction="incoming",
+                    outcome="connected",
+                ),
+                self._event(
+                    "one-call",
+                    4,
+                    "ended",
+                    at=accepted_at,
+                    ended_at=ended_at,
+                    direction="incoming",
+                    duration_seconds=6,
+                    outcome="connected",
+                    source="app_state",
+                ),
+            )
+            bodies = (
+                "Incoming voice call: offered with Contacto de prueba",
+                "Incoming voice call: connected with Contacto de prueba",
+                "Incoming voice call: connected with Contacto de prueba, 6 seconds",
+            )
+            for phase, body in zip(phases, bodies):
+                store.upsert_messages(
+                    self.account_jid,
+                    [
+                        Message(
+                            chat_jid=self.contact_jid,
+                            sender_jid=self.component_jid,
+                            body=body,
+                            sent_at=phase.event_timestamp,
+                            message_id=f"phase-{phase.sequence}",
+                            call=phase,
+                        )
+                    ],
+                )
+            loaded = MessageStore(path).load_recent_messages(
+                self.account_jid, self.contact_jid
+            )
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].body, bodies[-1])
+        self.assertIsNotNone(loaded[0].call)
+        assert loaded[0].call is not None
+        self.assertEqual(loaded[0].call.sequence, 4)
+        self.assertEqual(loaded[0].call.duration_seconds, 6)
+
+    def test_call_effective_duration_uses_answer_and_end_when_bridge_has_no_total(self) -> None:
+        answered_at = datetime(2026, 9, 2, 21, 20, tzinfo=UTC)
+        event = self._event(
+            "derived-duration",
+            3,
+            "ended",
+            at=answered_at,
+            answered_at=answered_at,
+            ended_at=answered_at + timedelta(seconds=4),
+        )
+        self.assertIsNone(event.duration_seconds)
+        self.assertEqual(event.effective_duration_seconds, 4)
 
     def test_statistics_merge_phases_without_counting_messages_or_invalid_durations(self) -> None:
         at = datetime(2026, 8, 31, 12, tzinfo=UTC)

@@ -533,8 +533,10 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `accepted_elsewhere` tras `v27-callfix2`.
   Las llamadas recuperadas llegan durante la conexión, pero su orden cronológico es
   `call_event_at`, no la hora de recepción XMPP. El cliente usa ese timestamp como `Message.sent_at`,
-  reordena una inserción histórica antes de pintarla y la migración de SQLite corrige filas v27
-  antiguas y el resumen del chat.
+  reordena una inserción histórica antes de pintarla y fusiona todas las fases de un `call_id` en
+  una sola fila. La migración de SQLite corrige filas v27 antiguas y el resumen del chat; si sólo
+  llegan `answered_at` y `ended_at`, la UI calcula la duración efectiva mientras llega el registro
+  autoritativo.
   El parche, Dockerfile, pruebas y protocolo de validación están en
   `tools/patch_slidge_whatsapp_call_records_v27.py`, `tools/Dockerfile.bridge-calls-v27`,
   `tools/bridge_call_records_v27_test.go`, `tools/bridge_calls_v27_contract_test.py`,

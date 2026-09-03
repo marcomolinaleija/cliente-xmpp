@@ -3616,13 +3616,12 @@ class MainWindow(wx.Frame):
             self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
 
-    def _attach_clipboard_files(self, report_empty: bool = False) -> bool:
+    def _attach_clipboard_files(self) -> bool:
         result = self._clipboard_attachment_paths()
         if not result.paths:
-            if result.message or report_empty:
+            if result.message:
                 self._set_clipboard_status(
-                    result.message
-                    or "El portapapeles no contiene archivos ni una imagen adjuntable",
+                    result.message,
                 )
             return False
 
@@ -3855,7 +3854,7 @@ class MainWindow(wx.Frame):
 
     def _on_composer_key_down(self, event: wx.KeyEvent) -> None:
         if self._is_paste_shortcut(event):
-            if self._attach_clipboard_files(report_empty=True):
+            if self._attach_clipboard_files():
                 return
             event.Skip()
             return

@@ -2931,7 +2931,11 @@ class BridgeXmppClient(ClientXMPP):
                 if not preview and not media_url:
                     continue
 
-                sent_at = self._sent_at_from_mam_result(result)
+                sent_at = (
+                    message.sent_at
+                    if message is not None
+                    else self._sent_at_from_mam_result(result)
+                )
                 if not sent_at:
                     continue
 
@@ -3115,7 +3119,12 @@ class BridgeXmppClient(ClientXMPP):
                 stanza.xml,
                 is_sticker=is_sticker,
             )
-        sent_at = self._sent_at_from_mam_result(result) or self._sent_at_from_stanza_delay(stanza)
+        sent_at = (
+            call.event_timestamp
+            if call is not None
+            else self._sent_at_from_mam_result(result)
+            or self._sent_at_from_stanza_delay(stanza)
+        )
         if sent_at is None:
             return None
 
@@ -3226,7 +3235,12 @@ class BridgeXmppClient(ClientXMPP):
                     sender_jid=sender_jid,
                     sender_name=sender_name,
                     body=display_body,
-                    sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone(),
+                    sent_at=(
+                        call.event_timestamp
+                        if call is not None
+                        else self._sent_at_from_stanza_delay(stanza)
+                        or datetime.now().astimezone()
+                    ),
                     outgoing=outgoing,
                     audio_url=audio_url,
                     media_url=media_url,
@@ -3304,7 +3318,11 @@ class BridgeXmppClient(ClientXMPP):
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
-            sent_at=self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone(),
+            sent_at=(
+                call.event_timestamp
+                if call is not None
+                else self._sent_at_from_stanza_delay(stanza) or datetime.now().astimezone()
+            ),
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,
@@ -3414,7 +3432,11 @@ class BridgeXmppClient(ClientXMPP):
                     )
                 elif message_model is not None and not preview:
                     preview = message_model.body
-            sent_at = self._forwarded_delay_from_xml(result)
+            sent_at = (
+                message_model.sent_at
+                if message_model is not None
+                else self._forwarded_delay_from_xml(result)
+            )
 
         return chat_jid, unread_count, preview, sent_at, message_model
 
@@ -3488,7 +3510,11 @@ class BridgeXmppClient(ClientXMPP):
             sender_jid="Yo" if outgoing else sender_jid,
             sender_name="" if outgoing else sender_name,
             body=display_body,
-            sent_at=self._forwarded_delay_from_xml(result) or datetime.now().astimezone(),
+            sent_at=(
+                call.event_timestamp
+                if call is not None
+                else self._forwarded_delay_from_xml(result) or datetime.now().astimezone()
+            ),
             outgoing=outgoing,
             audio_url=audio_url,
             media_url=media_url,

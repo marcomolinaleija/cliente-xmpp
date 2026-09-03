@@ -100,8 +100,8 @@ class StatisticsDialogFormattingTests(unittest.TestCase):
         self.assertIn("Duración habitual: 2 minutos", detail)
         self.assertIn(
             (
-                "Los tiempos sólo se calculan cuando se conoce cuándo empezó la conversación "
-                "y cuándo terminó."
+                "Los tiempos se calculan con la duración que informa WhatsApp o, para datos "
+                "anteriores, cuando se conocen la aceptación y el final."
             ),
             detail,
         )

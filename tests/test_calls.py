@@ -32,6 +32,9 @@ class CallContractTests(unittest.TestCase):
         ended_at: datetime | None = None,
         terminal_reason: str = "",
         chat_jid: str = "",
+        duration_seconds: float | None = None,
+        outcome: str = "",
+        source: str = "",
     ) -> CallEvent:
         return CallEvent(
             call_id=call_id,
@@ -45,6 +48,9 @@ class CallContractTests(unittest.TestCase):
             ended_at=ended_at,
             terminal_reason=terminal_reason,
             sequence=sequence,
+            duration_seconds=duration_seconds,
+            outcome=outcome,
+            source=source,
         )
 
     def _message(
@@ -65,7 +71,8 @@ class CallContractTests(unittest.TestCase):
             <call xmlns="{CALL_NAMESPACE}" contract-version="1" call-id="fixture-call"
             peer-jid="peer-lid@lid" chat-jid="contact@whatsapp.example.test"
             direction="unknown" kind="unknown" state="unknown"
-            event-timestamp="2026-08-31T12:00:00Z" sequence="1" /></message>'''
+            event-timestamp="2026-08-31T12:00:00Z" sequence="4"
+            duration-seconds="42" outcome="connected" source="app_state" /></message>'''
         )
         event = call_event_from_xml(stanza)
 
@@ -79,6 +86,9 @@ class CallContractTests(unittest.TestCase):
         self.assertEqual(event.event_timestamp.tzinfo, UTC)
         self.assertEqual(event.peer_jid, "peer-lid@lid")
         self.assertEqual(event.chat_jid, self.contact_jid)
+        self.assertEqual(event.duration_seconds, 42)
+        self.assertEqual(event.outcome, "connected")
+        self.assertEqual(event.source, "app_state")
 
         invalid_namespace = ET.fromstring(
             "<message><call contract-version='1' call-id='x' peer-jid='peer@example.test' "
@@ -95,9 +105,23 @@ class CallContractTests(unittest.TestCase):
             "peer-jid='peer@example.test' direction='incoming' kind='voice' state='offered' "
             "event-timestamp='2026-08-31T12:00:00' sequence='1' /></message>"
         )
+        invalid_duration = ET.fromstring(
+            f"<message><call xmlns='{CALL_NAMESPACE}' contract-version='1' call-id='x' "
+            "peer-jid='peer@example.test' direction='incoming' kind='voice' state='ended' "
+            "event-timestamp='2026-08-31T12:00:00Z' sequence='4' "
+            "duration-seconds='-1' outcome='connected' source='app_state' /></message>"
+        )
+        invalid_outcome = ET.fromstring(
+            f"<message><call xmlns='{CALL_NAMESPACE}' contract-version='1' call-id='x' "
+            "peer-jid='peer@example.test' direction='incoming' kind='voice' state='ended' "
+            "event-timestamp='2026-08-31T12:00:00Z' sequence='4' "
+            "outcome='invented' source='app_state' /></message>"
+        )
         self.assertIsNone(call_event_from_xml(invalid_namespace))
         self.assertIsNone(call_event_from_xml(invalid_state))
         self.assertIsNone(call_event_from_xml(invalid_timestamp))
+        self.assertIsNone(call_event_from_xml(invalid_duration))
+        self.assertIsNone(call_event_from_xml(invalid_outcome))
 
         failed = ET.fromstring(
             f"<message><call xmlns='{CALL_NAMESPACE}' contract-version='1' call-id='x' "
@@ -202,9 +226,93 @@ class CallContractTests(unittest.TestCase):
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
                 indexes = {row[1] for row in conn.execute("PRAGMA index_list(messages)")}
             self.assertTrue(
-                {"call_id", "call_sequence", "call_event_at", "call_ended_at"} <= columns
+                {
+                    "call_id",
+                    "call_sequence",
+                    "call_event_at",
+                    "call_ended_at",
+                    "call_duration_seconds",
+                    "call_outcome",
+                    "call_source",
+                }
+                <= columns
             )
             self.assertIn("idx_messages_call_identity", indexes)
+
+    def test_migration_repairs_accepted_elsewhere_without_inventing_duration(self) -> None:
+        at = datetime(2026, 9, 2, 19, 34, 23, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.sqlite3"
+            store = MessageStore(path)
+            event = self._event(
+                "accepted-elsewhere",
+                3,
+                "ended",
+                at=at,
+                ended_at=at,
+                terminal_reason="accepted_elsewhere",
+            )
+            store.upsert_messages(
+                self.account_jid,
+                [
+                    Message(
+                        chat_jid=self.contact_jid,
+                        sender_jid=self.component_jid,
+                        body="Call ended with Contacto de prueba at 2026-09-02 19:34:23+00:00",
+                        sent_at=at,
+                        message_id="accepted-elsewhere",
+                        call=event,
+                    )
+                ],
+            )
+            repaired = MessageStore(path).load_recent_messages(
+                self.account_jid, self.contact_jid
+            )
+        self.assertEqual(len(repaired), 1)
+        self.assertIsNotNone(repaired[0].call)
+        assert repaired[0].call is not None
+        self.assertEqual(repaired[0].call.state, "accepted")
+        self.assertIsNone(repaired[0].call.ended_at)
+        self.assertIsNone(repaired[0].call.duration_seconds)
+        self.assertEqual(
+            repaired[0].body,
+            "Call accepted with Contacto de prueba at 2026-09-02 19:34:23+00:00",
+        )
+
+    def test_migration_reorders_recovered_calls_by_event_time(self) -> None:
+        event_at = datetime(2026, 6, 23, 20, 1, 2, tzinfo=UTC)
+        arrival_at = datetime(2026, 9, 3, 2, 36, 27, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.sqlite3"
+            store = MessageStore(path)
+            event = self._event(
+                "recovered-order",
+                4,
+                "ended",
+                at=event_at,
+                direction="incoming",
+                source="app_state",
+            )
+            store.upsert_messages(
+                self.account_jid,
+                [
+                    Message(
+                        chat_jid=self.contact_jid,
+                        sender_jid=self.component_jid,
+                        body="Incoming voice call: missed with Contacto de prueba",
+                        sent_at=arrival_at,
+                        message_id="recovered-order",
+                        call=event,
+                    )
+                ],
+            )
+            reopened = MessageStore(path)
+            loaded = reopened.load_recent_messages(self.account_jid, self.contact_jid)
+            chats = reopened.load_chats(self.account_jid)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].sent_at, event_at)
+        self.assertEqual(chats[0].last_message_at, event_at)
 
     def test_statistics_merge_phases_without_counting_messages_or_invalid_durations(self) -> None:
         at = datetime(2026, 8, 31, 12, tzinfo=UTC)
@@ -267,6 +375,108 @@ class CallContractTests(unittest.TestCase):
             )
             self.assertEqual(statistics.daily[-1].calls.total, 4)
             self.assertEqual(statistics.chats[0].calls.total, 4)
+
+    def test_authoritative_record_replaces_ongoing_record_and_keeps_exact_duration(self) -> None:
+        at = datetime(2026, 8, 31, 12, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as directory:
+            store = MessageStore(Path(directory) / "fixture.sqlite3")
+            store.upsert_chats(
+                self.account_jid, [Chat(jid=self.contact_jid, name="Fixture contact")]
+            )
+            ongoing = self._event(
+                "recorded",
+                4,
+                "unknown",
+                at=at,
+                direction="outgoing",
+                kind="video",
+                outcome="ongoing",
+                source="history_sync",
+            )
+            completed = self._event(
+                "recorded",
+                4,
+                "ended",
+                at=at,
+                direction="outgoing",
+                kind="video",
+                duration_seconds=37,
+                outcome="connected",
+                source="app_state",
+            )
+            store.upsert_messages(
+                self.account_jid, [self._message(ongoing, message_id="history-record")]
+            )
+            store.upsert_messages(
+                self.account_jid, [self._message(completed, message_id="app-state-record")]
+            )
+            # A delayed initial sync must not roll a final real-time record back to ongoing.
+            store.upsert_messages(
+                self.account_jid, [self._message(ongoing, message_id="late-history-record")]
+            )
+
+            loaded = store.load_recent_messages(self.account_jid, self.contact_jid)
+            self.assertEqual(len(loaded), 1)
+            self.assertIsNotNone(loaded[0].call)
+            assert loaded[0].call is not None
+            self.assertEqual(loaded[0].call.duration_seconds, 37)
+            self.assertEqual(loaded[0].call.outcome, "connected")
+            self.assertEqual(loaded[0].call.source, "app_state")
+
+            calls = store.load_statistics(
+                self.account_jid,
+                7,
+                now=datetime(2026, 8, 31, 23, tzinfo=UTC),
+            ).calls
+            self.assertEqual(
+                (calls.total, calls.answered, calls.outgoing, calls.video),
+                (1, 1, 1, 1),
+            )
+            self.assertEqual((calls.duration_total_seconds, calls.duration_count), (37, 1))
+
+    def test_authoritative_outcomes_keep_cancellation_failure_and_ongoing_distinct(self) -> None:
+        at = datetime(2026, 8, 31, 12, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as directory:
+            store = MessageStore(Path(directory) / "fixture.sqlite3")
+            store.upsert_chats(
+                self.account_jid, [Chat(jid=self.contact_jid, name="Fixture contact")]
+            )
+            outcomes = (
+                "cancelled",
+                "unavailable",
+                "invalid",
+                "ongoing",
+                "silenced_by_dnd",
+                "silenced_unknown_caller",
+            )
+            store.upsert_messages(
+                self.account_jid,
+                [
+                    self._message(
+                        self._event(
+                            f"outcome-{outcome}",
+                            4,
+                            "unknown" if outcome == "ongoing" else "ended",
+                            at=at,
+                            outcome=outcome,
+                            source="history_sync",
+                        ),
+                        message_id=f"record-{outcome}",
+                    )
+                    for outcome in outcomes
+                ],
+            )
+            calls = store.load_statistics(
+                self.account_jid,
+                7,
+                now=datetime(2026, 8, 31, 23, tzinfo=UTC),
+            ).calls
+
+        self.assertEqual(calls.total, 6)
+        self.assertEqual(
+            (calls.cancelled, calls.unavailable, calls.failed, calls.ongoing, calls.missed),
+            (1, 1, 1, 1, 2),
+        )
 
     def test_component_chat_has_no_local_chat_participants(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

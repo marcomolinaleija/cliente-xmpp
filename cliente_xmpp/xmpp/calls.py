@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from xml.etree import ElementTree as ET
 
 from cliente_xmpp.models.calls import (
     CALL_DIRECTIONS,
     CALL_KINDS,
+    CALL_OUTCOMES,
+    CALL_SOURCES,
     CALL_STATES,
     CallEvent,
 )
@@ -46,11 +49,18 @@ def call_event_from_xml(xml: ET.Element | None) -> CallEvent | None:
     event_timestamp = _parse_utc_timestamp(attributes.get("event-timestamp"))
     answered_at = _parse_utc_timestamp(attributes.get("answered-at"), optional=True)
     ended_at = _parse_utc_timestamp(attributes.get("ended-at"), optional=True)
+    duration_seconds = _parse_duration(attributes.get("duration-seconds"))
     if event_timestamp is None:
         return None
     if attributes.get("answered-at") is not None and answered_at is None:
         return None
     if attributes.get("ended-at") is not None and ended_at is None:
+        return None
+    if attributes.get("duration-seconds") is not None and duration_seconds is None:
+        return None
+    outcome = attributes.get("outcome", "")
+    source = attributes.get("source", "")
+    if outcome not in CALL_OUTCOMES or source not in CALL_SOURCES:
         return None
     try:
         return CallEvent(
@@ -64,6 +74,9 @@ def call_event_from_xml(xml: ET.Element | None) -> CallEvent | None:
             event_timestamp=event_timestamp,
             answered_at=answered_at,
             ended_at=ended_at,
+            duration_seconds=duration_seconds,
+            outcome=outcome,
+            source=source,
             terminal_reason=attributes.get("terminal-reason", "").strip(),
             sequence=sequence,
             contract_version=version,
@@ -90,3 +103,15 @@ def _parse_utc_timestamp(value: str | None, *, optional: bool = False) -> dateti
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
     return parsed.astimezone(UTC)
+
+
+def _parse_duration(value: str | None) -> float | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        duration = float(value)
+    except ValueError:
+        return None
+    if duration < 0 or not isfinite(duration):
+        return None
+    return duration

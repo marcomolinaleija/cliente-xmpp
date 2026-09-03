@@ -8,6 +8,7 @@ import wx
 
 from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.audio.player import MpvAudioPlayer, MpvPlaybackError
+from cliente_xmpp.formatting import format_call_body
 from cliente_xmpp.media.downloads import (
     audio_description,
     format_duration,
@@ -241,6 +242,28 @@ class ConversationPanel(wx.Panel):
             self._focus_target_index = index
         if follow_new_message:
             self.messages.EnsureVisible(index)
+
+    def insert_message_sorted(self, message: Message) -> None:
+        """Add a message without putting a historical recovery at the end."""
+
+        if not self._messages or self._message_order_key(message) >= self._message_order_key(
+            self._messages[-1]
+        ):
+            self.append_message(message)
+            return
+
+        messages = sorted(
+            [*self._messages, message],
+            key=self._message_order_key,
+        )
+        self.set_messages(messages, unread_count=self._unread_marker_count)
+
+    @staticmethod
+    def _message_order_key(message: Message) -> float:
+        try:
+            return message.sent_at.timestamp()
+        except (AttributeError, OSError, OverflowError, ValueError):
+            return 0.0
 
     def focus_composer(self) -> None:
         self.compose.SetFocus()
@@ -1034,7 +1057,7 @@ class ConversationPanel(wx.Panel):
         return max(0, message_count - unread_count)
 
     def _format_message_row(self, message: Message) -> str:
-        timestamp = self._format_message_time(message)
+        timestamp = "" if message.call is not None else self._format_message_time(message)
         body = self._truncate_row_text(self._format_message_body(message))
         starred = "Destacado. " if message.starred else ""
         edited = "Editado. " if message.edited else ""
@@ -1047,20 +1070,28 @@ class ConversationPanel(wx.Panel):
         if message.outgoing:
             delivery = self._format_delivery_state(message)
             if reply:
-                return (
-                    f"{starred}{edited}{forwarded}Tú, {body}, {reply}, "
-                    f"{timestamp} {delivery}.{reactions}"
-                )
-            return f"{starred}{edited}{forwarded}Tú {body} {timestamp} {delivery}.{reactions}"
+                if timestamp:
+                    return (
+                        f"{starred}{edited}{forwarded}Tú, {body}, {reply}, "
+                        f"{timestamp} {delivery}.{reactions}"
+                    )
+                return f"{starred}{edited}{forwarded}Tú, {body}, {reply}, {delivery}.{reactions}"
+            if timestamp:
+                return f"{starred}{edited}{forwarded}Tú {body} {timestamp} {delivery}.{reactions}"
+            return f"{starred}{edited}{forwarded}Tú {body} {delivery}.{reactions}"
 
         sender = self._sender_label(message)
         if reply:
-            return (
-                f"{starred}{edited}{forwarded}{sender}, {body}, {reply}, "
-                f"{timestamp}.{reactions}"
-            )
+            if timestamp:
+                return (
+                    f"{starred}{edited}{forwarded}{sender}, {body}, {reply}, "
+                    f"{timestamp}.{reactions}"
+                )
+            return f"{starred}{edited}{forwarded}{sender}, {body}, {reply}.{reactions}"
 
-        return f"{starred}{edited}{forwarded}{sender} {body} {timestamp}.{reactions}"
+        if timestamp:
+            return f"{starred}{edited}{forwarded}{sender} {body} {timestamp}.{reactions}"
+        return f"{starred}{edited}{forwarded}{sender} {body}.{reactions}"
 
     @staticmethod
     def _truncate_row_text(text: str, max_length: int = MESSAGE_ROW_TEXT_LIMIT) -> str:
@@ -1086,7 +1117,7 @@ class ConversationPanel(wx.Panel):
 
     def _format_message_for_reader(self, message: Message) -> str:
         sender = "Tú" if message.outgoing else self._sender_label(message)
-        timestamp = self._format_message_time(message)
+        timestamp = "" if message.call is not None else self._format_message_time(message)
         body = self._format_message_body(message)
         metadata = sender
         if message.starred:
@@ -1120,13 +1151,25 @@ class ConversationPanel(wx.Panel):
         return f"respondiendo a: {' '.join(quote.split())}"
 
     def _sender_label(self, message: Message) -> str:
-        if message.chat_is_group and message.sender_jid and "/" not in message.sender_jid:
-            resolved = self.resolve_display_name(message.sender_jid)
-            fallback = display_label_from_jid(message.sender_jid)
-            if resolved and resolved not in {message.sender_jid, fallback}:
+        sender_jid = message.sender_jid
+        if message.call is not None and not message.outgoing and message.call.peer_jid:
+            sender_jid = message.call.peer_jid
+
+        if message.chat_is_group and sender_jid and "/" not in sender_jid:
+            resolved = self.resolve_display_name(sender_jid)
+            fallback = display_label_from_jid(sender_jid)
+            if resolved and resolved not in {sender_jid, fallback}:
                 return resolved
 
-        return message.sender_name or self.resolve_display_name(message.sender_jid)
+        if message.call is not None and not message.outgoing:
+            if not message.chat_is_group and self.current_chat is not None:
+                chat_name = self.current_chat.name.strip()
+                chat_fallback = display_label_from_jid(self.current_chat.jid)
+                if chat_name and chat_name not in {self.current_chat.jid, chat_fallback}:
+                    return chat_name
+            resolved = self.resolve_display_name(sender_jid)
+            return resolved or message.sender_name or display_label_from_jid(sender_jid)
+        return message.sender_name or self.resolve_display_name(sender_jid)
 
     def _format_row_for_tooltip(self, index: int) -> str:
         row = self._message_rows[index]
@@ -1145,6 +1188,13 @@ class ConversationPanel(wx.Panel):
 
         if message.poll is not None:
             return self._format_poll(message.poll)
+
+        if message.call is not None:
+            return format_call_body(
+                message.body,
+                duration_seconds=message.call.duration_seconds,
+                event_timestamp=message.call.event_timestamp,
+            )
 
         if is_link_preview(message):
             return media_description(message)

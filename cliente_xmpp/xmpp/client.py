@@ -453,32 +453,39 @@ class BridgeXmppClient(ClientXMPP):
                 media_size,
                 msg.xml,
             )
-        self._emit(
-            MessageReceived(
-                Message(
-                    chat_jid=message_chat_jid,
-                    sender_jid=bare_jid,
-                    body=display_body,
-                    sent_at=self._sent_at_from_stanza_delay(msg) or datetime.now().astimezone(),
-                    outgoing=False,
-                    audio_url=audio_url,
-                    media_url=media_url,
-                    media_kind=media_kind,
-                    media_mime=media_mime,
-                    media_filename=media_filename,
-                    media_size=media_size,
-                    media_duration_seconds=media_duration,
-                    poll=poll,
-                    poll_update=poll_update,
-                    message_id=str(msg["id"] or ""),
-                    reply_quote=reply_quote,
-                    reply_to_jid=self._reply_to_jid_from_xml(msg.xml),
-                    reply_to_id=self._reply_to_id_from_xml(msg.xml),
-                    replaces_id=self._message_correction_id_from_xml(msg.xml),
-                    call=call,
-                )
-            )
+        message = Message(
+            chat_jid=message_chat_jid,
+            sender_jid=bare_jid,
+            body=display_body,
+            # Call-log backfills are delivered now but describe a historical
+            # WhatsApp event. Use the event timestamp so recovered calls sort
+            # alongside the real conversation chronology.
+            sent_at=(
+                call.event_timestamp
+                if call is not None
+                else self._sent_at_from_stanza_delay(msg) or datetime.now().astimezone()
+            ),
+            outgoing=False,
+            audio_url=audio_url,
+            media_url=media_url,
+            media_kind=media_kind,
+            media_mime=media_mime,
+            media_filename=media_filename,
+            media_size=media_size,
+            media_duration_seconds=media_duration,
+            poll=poll,
+            poll_update=poll_update,
+            message_id=str(msg["id"] or ""),
+            reply_quote=reply_quote,
+            reply_to_jid=self._reply_to_jid_from_xml(msg.xml),
+            reply_to_id=self._reply_to_id_from_xml(msg.xml),
+            replaces_id=self._message_correction_id_from_xml(msg.xml),
+            call=call,
         )
+        notify = True
+        if call is not None:
+            notify = call.source != "history_sync" and not self._message_predates_session(message)
+        self._emit(MessageReceived(message, notify=notify))
 
     def _on_groupchat_message(self, msg: object) -> None:
         if msg["type"] != "groupchat":

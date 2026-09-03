@@ -507,6 +507,38 @@ número nuevo ni cambies la normalización moderna de `phonenumbers` para otros 
   `tools/Dockerfile.bridge-transcription-v23`, `tools/deepgram_transcription.py`,
   `tools/patch_slidge_whatsapp_transcription.py` y
   `docs/PUENTE_WHATSAPP_TRANSCRIPCION_DEEPGRAM.md`; `v22` es el rollback inmediato.
+- Desde el 2 de septiembre de 2026 existe la imagen `v27` para obtener registros completos de
+  llamadas, basada exclusivamente en el digest publicado de `v26`. Fue validada primero como
+  `v27-callfix2` local y ya está publicada en GHCR como
+  `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v27@sha256:b292de2e52cb7ceed08ab0f5784a47eaad1362e4cc0040c2bbdc13bd6cea561c`.
+  Su ID local validado en `marco-vps` es
+  `sha256:e3ea425c70d35a046562ae8c60ce45060a4eb8f6713fc35b06f29f6f731172c3`.
+  Está activa temporalmente en el servicio productivo para una prueba controlada; Compose apunta a
+  la etiqueta local para conservar un rollback exacto. Antes de activarla se guardaron
+  `/opt/xmpp/backups/compose-pre-v27-test-20260902-132457.yml` y
+  `/opt/xmpp/backups/slidge-pre-v27-test-20260902-132457.tar.zst`, ambos con SHA-256 documentado en
+  `docs/PUENTE_WHATSAPP_LLAMADAS_V27.md`; v26 permanece disponible como rollback inmediato.
+  Conserva la señalización de v26 y añade `HistorySync.callLogRecords`, `events.AppState` y
+  `waE2E.CallLogMessage`; la fase autoritativa usa `sequence=4` y transporta dirección, voz/vídeo,
+  resultado, duración explícita y origen. El historial siempre debe entrar con `notify=False`.
+  SQLite conserva esos campos, prioriza `app_state` frente a un historial tardío y no infiere la
+  duración a partir de la hora inicial. `SupportCallLogHistory` sólo se anuncia al vincular un
+  dispositivo nuevo, por lo que el backfill histórico completo requiere una cuenta o vinculación de
+  prueba. Las sesiones ya vinculadas fuerzan un snapshot de `appstate.WAPatchRegular`, que contiene
+  el índice `call_log`. La señal `accepted_elsewhere` se trata como aceptación en otro dispositivo,
+  no como fin. La publicación queda acompañada por el manifiesto estable de puente local, pero no
+  cambia por sí sola el Compose productivo que sigue usando la imagen local validada.
+  La caché local ya contiene 116 registros autoritativos `sequence=4` de `app_state`, incluidas
+  duraciones explícitas en llamadas entrantes y salientes; queda repetir el caso específico
+  `accepted_elsewhere` tras `v27-callfix2`.
+  Las llamadas recuperadas llegan durante la conexión, pero su orden cronológico es
+  `call_event_at`, no la hora de recepción XMPP. El cliente usa ese timestamp como `Message.sent_at`,
+  reordena una inserción histórica antes de pintarla y la migración de SQLite corrige filas v27
+  antiguas y el resumen del chat.
+  El parche, Dockerfile, pruebas y protocolo de validación están en
+  `tools/patch_slidge_whatsapp_call_records_v27.py`, `tools/Dockerfile.bridge-calls-v27`,
+  `tools/bridge_call_records_v27_test.go`, `tools/bridge_calls_v27_contract_test.py`,
+  `tools/smoke_bridge_calls_v27_runtime.py` y `docs/PUENTE_WHATSAPP_LLAMADAS_V27.md`.
 - La distribución local de WSL2 vive en `tools/wsl-appliance/` y se documenta en
   `docs/PUENTE_WHATSAPP_WSL2.md`. Empaqueta Ubuntu 24.04, Prosody, nginx, Podman y una imagen inicial
   fijada por digest en una distribución exclusiva. Genera secretos y una CA por instalación,

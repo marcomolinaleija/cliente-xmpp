@@ -6,6 +6,7 @@ from datetime import date
 
 import wx
 
+from cliente_xmpp.formatting import format_call_body, format_datetime
 from cliente_xmpp.media.downloads import (
     can_describe_with_rayoai,
     has_media,
@@ -34,15 +35,18 @@ def _message_description(message: Message) -> str:
         description = message_links(message)[0].url
     else:
         description = message.body
+        if message.call is not None:
+            description = format_call_body(
+                description,
+                duration_seconds=message.call.duration_seconds,
+                event_timestamp=message.call.event_timestamp,
+            )
     description = " ".join(description.split()) or "Mensaje sin texto"
     return description if len(description) <= 260 else f"{description[:257]}..."
 
 
 def _message_datetime(message: Message) -> str:
-    try:
-        return message.sent_at.astimezone().strftime("%d/%m/%Y, %H:%M")
-    except (AttributeError, OSError, ValueError):
-        return "sin fecha"
+    return format_datetime(message.sent_at).replace("sin datos", "sin fecha")
 
 
 def _message_sort_timestamp(message: Message) -> float:

@@ -10,7 +10,10 @@ class CallStatistics:
     answered: int = 0
     missed: int = 0
     rejected: int = 0
+    cancelled: int = 0
+    unavailable: int = 0
     failed: int = 0
+    ongoing: int = 0
     incoming: int = 0
     outgoing: int = 0
     voice: int = 0

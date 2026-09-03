@@ -35,6 +35,7 @@ from cliente_xmpp.config.settings import (
     SettingsStore,
     is_local_bridge_connection,
 )
+from cliente_xmpp.formatting import format_call_body
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.local_bridge import (
     LocalBridgeConnection,
@@ -2521,7 +2522,7 @@ class MainWindow(wx.Frame):
                 is_group=message.chat_is_group
                 or MainWindow._jid_may_be_group_chat(message.chat_jid),
                 last_message_preview=(
-                    media_description(message) if has_media(message) else message.body
+                    MainWindow._message_body_for_display(message)
                 ),
                 last_message_at=message.sent_at,
             )
@@ -2594,7 +2595,7 @@ class MainWindow(wx.Frame):
             is_group=message.chat_is_group or self._message_jid_may_be_group_chat(message.chat_jid),
             notifications_muted=self._chat_notifications_muted(message.chat_jid),
             notification_settings_known=self._chat_notification_settings_known(message.chat_jid),
-            last_message_preview=media_description(message) if has_media(message) else message.body,
+            last_message_preview=self._message_body_for_display(message),
             last_message_at=message.sent_at,
         )
 
@@ -5464,7 +5465,7 @@ class MainWindow(wx.Frame):
                     )
                 if current_chat_is_open:
                     if added_message:
-                        self.conversation.append_message(message)
+                        self.conversation.insert_message_sorted(message)
                     else:
                         self.conversation.refresh_message(message)
                     for hydrated_reply in hydrated_replies:
@@ -6739,9 +6740,10 @@ class MainWindow(wx.Frame):
 
         sender = self._speakable_chat_name(message.chat_jid)
         if message.chat_is_group and message.sender_jid:
-            participant = message.sender_name or self._display_name_for_jid(message.sender_jid)
+            participant_jid = self._message_sender_jid_for_display(message)
+            participant = self._display_name_for_jid(participant_jid)
             sender = f"{participant} en {sender}"
-        preview = media_description(message) if has_media(message) else message.body
+        preview = self._message_body_for_display(message)
         if message.is_forwarded:
             preview = f"Reenviado. {preview}"
         preview = " ".join(preview.split())
@@ -6766,12 +6768,13 @@ class MainWindow(wx.Frame):
         chat_name = self._speakable_chat_name(message.chat_jid)
         title = chat_name
         if message.chat_is_group and message.sender_jid:
-            participant = message.sender_name or self._display_name_for_jid(message.sender_jid)
+            participant_jid = self._message_sender_jid_for_display(message)
+            participant = self._display_name_for_jid(participant_jid)
             title = f"{participant} en {chat_name}"
 
         preview = "Nuevo mensaje"
         if self.windows_notification_previews_enabled:
-            preview = media_description(message) if has_media(message) else message.body
+            preview = self._message_body_for_display(message)
             if message.is_forwarded:
                 preview = f"Reenviado. {preview}"
 
@@ -6951,7 +6954,7 @@ class MainWindow(wx.Frame):
                 allow_equal=True,
             ):
                 chat.last_message_preview = (
-                    media_description(message) if has_media(message) else message.body
+                    self._message_body_for_display(message)
                 )
                 chat.last_message_at = message.sent_at
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
@@ -7386,10 +7389,27 @@ class MainWindow(wx.Frame):
         self._apply_synced_chat_displayed(message.chat_jid)
 
     @staticmethod
+    def _message_sender_jid_for_display(message: Message) -> str:
+        if message.call is not None and not message.outgoing and message.call.peer_jid:
+            return message.call.peer_jid
+        return message.sender_jid
+
+    @staticmethod
+    def _message_body_for_display(message: Message) -> str:
+        preview = media_description(message) if has_media(message) else message.body
+        if message.call is not None and not has_media(message):
+            preview = format_call_body(
+                preview,
+                duration_seconds=message.call.duration_seconds,
+                event_timestamp=message.call.event_timestamp,
+            )
+        return preview
+
+    @staticmethod
     def _chat_preview_for_message(message: Message) -> str:
         if message.retracted:
             return "Eliminaste este mensaje" if message.outgoing else "Este mensaje fue eliminado"
-        preview = media_description(message) if has_media(message) else message.body
+        preview = MainWindow._message_body_for_display(message)
         if message.is_forwarded:
             preview = f"Reenviado. {preview}"
         if message.outgoing and message.delivery_state == "pending":
@@ -8265,9 +8285,21 @@ class MainWindow(wx.Frame):
             self.chat_names_by_jid[chat.jid] = name
 
     def _display_name_for_jid(self, jid: str) -> str:
-        if jid in self.chat_names_by_jid:
-            name = self.chat_names_by_jid[jid]
-            if name and name != jid:
+        bare_jid = jid.strip().split("/", 1)[0]
+        candidate_jids = [jid, bare_jid]
+        local, separator, domain = bare_jid.partition("@")
+        if separator and local.startswith("+"):
+            try:
+                normalized = normalize_phone_number(local)
+                candidate_jids.extend(
+                    whatsapp_contact_jid_candidates(normalized.e164, domain)
+                )
+            except ValueError:
+                pass
+
+        for candidate in candidate_jids:
+            name = self.chat_names_by_jid.get(candidate, "")
+            if name and name != candidate:
                 return name
 
         return self._fallback_display_name_for_jid(jid)

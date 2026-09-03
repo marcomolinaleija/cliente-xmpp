@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from cliente_xmpp.config.settings import APP_DIR
+from cliente_xmpp.formatting import format_duration
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.models.chat import Message
 
@@ -185,23 +186,6 @@ def audio_description(message: Message) -> str:
         return f"Mensaje de voz, {format_duration(message.media_duration_seconds)}"
 
     return "Mensaje de voz"
-
-
-def format_duration(duration_seconds: float) -> str:
-    total_seconds = max(0, round(duration_seconds))
-    minutes, seconds = divmod(total_seconds, 60)
-    parts: list[str] = []
-    if minutes == 1:
-        parts.append("1 minuto")
-    elif minutes > 1:
-        parts.append(f"{minutes} minutos")
-
-    if seconds == 1:
-        parts.append("1 segundo")
-    elif seconds > 1 or not parts:
-        parts.append(f"{seconds} segundos")
-
-    return " ".join(parts)
 
 
 def local_media_path(message: Message) -> Path | None:

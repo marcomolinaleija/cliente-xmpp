@@ -15,6 +15,7 @@ from pathlib import Path
 from statistics import median
 
 from cliente_xmpp.config.settings import APP_DIR
+from cliente_xmpp.formatting import format_call_body, format_duration
 from cliente_xmpp.media.links import is_link_preview, link_description
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker
 from cliente_xmpp.models.calls import CallEvent, CallSummary, aggregate_call_events
@@ -261,16 +262,31 @@ def _call_statistics_from_summaries(
         for summary in summaries
         if summary.answered and (duration := summary.duration_seconds) is not None
     ]
-    failed_reasons = {"failed", "failure", "error"}
+    failed_reasons = {"failed", "failure", "error", "invalid", "abandoned"}
     return CallStatistics(
         total=len(summaries),
         answered=sum(summary.answered for summary in summaries),
-        missed=sum(summary.state == "missed" for summary in summaries),
-        rejected=sum(summary.state == "rejected" for summary in summaries),
-        failed=sum(
-            summary.terminal_reason.casefold() in failed_reasons
+        missed=sum(
+            summary.outcome in {"missed", "silenced_by_dnd", "silenced_unknown_caller"}
+            or (not summary.outcome and summary.state == "missed")
             for summary in summaries
         ),
+        rejected=sum(
+            summary.outcome == "rejected"
+            or (not summary.outcome and summary.state == "rejected")
+            for summary in summaries
+        ),
+        cancelled=sum(summary.outcome == "cancelled" for summary in summaries),
+        unavailable=sum(summary.outcome == "unavailable" for summary in summaries),
+        failed=sum(
+            summary.outcome in {"invalid", "failed", "abandoned"}
+            or (
+                not summary.outcome
+                and summary.terminal_reason.casefold() in failed_reasons
+            )
+            for summary in summaries
+        ),
+        ongoing=sum(summary.outcome in {"upcoming", "ongoing"} for summary in summaries),
         incoming=sum(summary.direction == "incoming" for summary in summaries),
         outgoing=sum(summary.direction == "outgoing" for summary in summaries),
         voice=sum(summary.kind == "voice" for summary in summaries),
@@ -643,6 +659,9 @@ class MessageStore:
                 messages.call_event_at,
                 messages.call_answered_at,
                 messages.call_ended_at,
+                messages.call_duration_seconds,
+                messages.call_outcome,
+                messages.call_source,
                 messages.call_terminal_reason,
                 messages.call_contract_version,
                 COALESCE(
@@ -1510,6 +1529,9 @@ class MessageStore:
                     call_event_at TEXT,
                     call_answered_at TEXT,
                     call_ended_at TEXT,
+                    call_duration_seconds REAL,
+                    call_outcome TEXT NOT NULL DEFAULT '',
+                    call_source TEXT NOT NULL DEFAULT '',
                     call_terminal_reason TEXT NOT NULL DEFAULT '',
                     call_contract_version INTEGER NOT NULL DEFAULT 0,
                     received_at TEXT NOT NULL,
@@ -1751,6 +1773,9 @@ class MessageStore:
             "call_event_at": "TEXT",
             "call_answered_at": "TEXT",
             "call_ended_at": "TEXT",
+            "call_duration_seconds": "REAL",
+            "call_outcome": "TEXT NOT NULL DEFAULT ''",
+            "call_source": "TEXT NOT NULL DEFAULT ''",
             "call_terminal_reason": "TEXT NOT NULL DEFAULT ''",
             "call_contract_version": "INTEGER NOT NULL DEFAULT 0",
         }
@@ -1761,6 +1786,62 @@ class MessageStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_call_identity "
             "ON messages (account_jid, call_id, call_sequence) "
             "WHERE call_id != '' AND call_sequence > 0"
+        )
+        # WhatsApp app-state call logs arrive during the current connection,
+        # but their envelope contains the historical event time. Older v27
+        # rows persisted the arrival time, which pushed all recovered calls to
+        # the end of a conversation. Keep message chronology on that event.
+        repaired_call_timestamps = conn.execute(
+            """
+            UPDATE messages
+            SET sent_at = call_event_at
+            WHERE call_id != ''
+              AND call_event_at IS NOT NULL
+              AND call_event_at != ''
+              AND sent_at != call_event_at
+            """
+        )
+        # Keep the chat list's recency in sync with the same repaired timeline.
+        chat_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(chats)").fetchall()
+        }
+        if repaired_call_timestamps.rowcount and "last_message_at" in chat_columns:
+            conn.execute(
+                """
+                UPDATE chats
+                SET last_message_at = (
+                    SELECT messages.sent_at
+                    FROM messages
+                    WHERE messages.account_jid = chats.account_jid
+                      AND messages.chat_jid = chats.jid
+                    ORDER BY julianday(messages.sent_at) DESC, messages.rowid DESC
+                    LIMIT 1
+                )
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM messages
+                    WHERE messages.account_jid = chats.account_jid
+                      AND messages.chat_jid = chats.jid
+                )
+                """
+            )
+        # v27 briefly misclassified WhatsApp's accepted_elsewhere signal as a
+        # terminal event. Repair only rows carrying that structured reason; this
+        # is idempotent and leaves unrelated call history untouched.
+        conn.execute(
+            """
+            UPDATE messages
+            SET call_state = 'accepted',
+                call_ended_at = NULL,
+                call_terminal_reason = '',
+                body = CASE
+                    WHEN body LIKE 'Call ended with %'
+                    THEN 'Call accepted' || substr(body, 11)
+                    ELSE body
+                END
+            WHERE call_state = 'ended'
+              AND call_terminal_reason = 'accepted_elsewhere'
+            """
         )
 
     def _ensure_chat_columns(self, conn: sqlite3.Connection) -> None:
@@ -2003,7 +2084,7 @@ class MessageStore:
                 reply_to_jid, reply_to_id, retracted, edited, delivery_state,
                 call_id, call_sequence, call_peer_jid, call_chat_jid, call_group_jid,
                 call_direction, call_kind, call_state, call_event_at, call_answered_at,
-                call_ended_at,
+                call_ended_at, call_duration_seconds, call_outcome, call_source,
                 call_terminal_reason, call_contract_version, received_at
             )
             VALUES (
@@ -2011,7 +2092,7 @@ class MessageStore:
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(account_jid, chat_jid, message_key) DO UPDATE SET
                 message_id = COALESCE(NULLIF(excluded.message_id, ''), messages.message_id),
@@ -2154,6 +2235,44 @@ class MessageStore:
                 call_event_at = COALESCE(excluded.call_event_at, messages.call_event_at),
                 call_answered_at = COALESCE(excluded.call_answered_at, messages.call_answered_at),
                 call_ended_at = COALESCE(excluded.call_ended_at, messages.call_ended_at),
+                call_duration_seconds = CASE
+                    WHEN messages.call_source = 'app_state'
+                        AND excluded.call_source != 'app_state'
+                        THEN messages.call_duration_seconds
+                    WHEN messages.call_source = 'message'
+                        AND excluded.call_source = 'history_sync'
+                        THEN messages.call_duration_seconds
+                    WHEN messages.call_outcome NOT IN ('', 'ongoing', 'upcoming')
+                        AND excluded.call_outcome IN ('ongoing', 'upcoming')
+                        THEN messages.call_duration_seconds
+                    ELSE COALESCE(
+                        excluded.call_duration_seconds, messages.call_duration_seconds
+                    )
+                END,
+                call_outcome = CASE
+                    WHEN messages.call_source = 'app_state'
+                        AND excluded.call_source != 'app_state'
+                        THEN messages.call_outcome
+                    WHEN messages.call_source = 'message'
+                        AND excluded.call_source = 'history_sync'
+                        THEN messages.call_outcome
+                    WHEN messages.call_outcome NOT IN ('', 'ongoing', 'upcoming')
+                        AND excluded.call_outcome IN ('ongoing', 'upcoming')
+                        THEN messages.call_outcome
+                    ELSE COALESCE(NULLIF(excluded.call_outcome, ''), messages.call_outcome)
+                END,
+                call_source = CASE
+                    WHEN messages.call_source = 'app_state'
+                        AND excluded.call_source != 'app_state'
+                        THEN messages.call_source
+                    WHEN messages.call_source = 'message'
+                        AND excluded.call_source = 'history_sync'
+                        THEN messages.call_source
+                    WHEN messages.call_outcome NOT IN ('', 'ongoing', 'upcoming')
+                        AND excluded.call_outcome IN ('ongoing', 'upcoming')
+                        THEN messages.call_source
+                    ELSE COALESCE(NULLIF(excluded.call_source, ''), messages.call_source)
+                END,
                 call_terminal_reason = COALESCE(
                     NULLIF(excluded.call_terminal_reason, ''), messages.call_terminal_reason
                 ),
@@ -2205,6 +2324,9 @@ class MessageStore:
                 _datetime_to_db(message.call.event_timestamp) if message.call else None,
                 _datetime_to_db(message.call.answered_at) if message.call else None,
                 _datetime_to_db(message.call.ended_at) if message.call else None,
+                message.call.duration_seconds if message.call else None,
+                message.call.outcome if message.call else "",
+                message.call.source if message.call else "",
                 message.call.terminal_reason if message.call else "",
                 message.call.contract_version if message.call else 0,
                 now,
@@ -2516,11 +2638,17 @@ def _message_preview(message: Message) -> str:
         preview = "Sticker"
     elif not message.media_url:
         preview = message.body
+        if message.call is not None:
+            preview = format_call_body(
+                preview,
+                duration_seconds=message.call.duration_seconds,
+                event_timestamp=message.call.event_timestamp,
+            )
     elif is_link_preview(message):
         preview = link_description(message)
     elif message.media_kind == "audio":
         if message.media_duration_seconds > 0:
-            preview = f"voz, {_format_duration(message.media_duration_seconds)}"
+            preview = f"voz, {format_duration(message.media_duration_seconds)}"
         else:
             preview = "voz"
     else:
@@ -2531,7 +2659,7 @@ def _message_preview(message: Message) -> str:
         }.get(message.media_kind, "archivo")
         details = [label]
         if message.media_kind == "audio" and message.media_duration_seconds > 0:
-            details.append(_format_duration(message.media_duration_seconds))
+            details.append(format_duration(message.media_duration_seconds))
         if message.media_filename:
             details.append(message.media_filename)
         if message.media_size > 0:
@@ -2563,23 +2691,6 @@ def _format_size(size: int) -> str:
         value /= 1024
 
     return f"{size} B"
-
-
-def _format_duration(duration_seconds: float) -> str:
-    total_seconds = max(0, round(duration_seconds))
-    minutes, seconds = divmod(total_seconds, 60)
-    parts: list[str] = []
-    if minutes == 1:
-        parts.append("1 minuto")
-    elif minutes > 1:
-        parts.append(f"{minutes} minutos")
-
-    if seconds == 1:
-        parts.append("1 segundo")
-    elif seconds > 1 or not parts:
-        parts.append(f"{seconds} segundos")
-
-    return " ".join(parts)
 
 
 def _message_from_row(row: sqlite3.Row) -> Message:
@@ -2652,6 +2763,13 @@ def _call_event_from_row(row: sqlite3.Row) -> CallEvent | None:
             event_timestamp=event_at,
             answered_at=_datetime_from_db(row["call_answered_at"]),
             ended_at=_datetime_from_db(row["call_ended_at"]),
+            duration_seconds=(
+                float(row["call_duration_seconds"])
+                if row["call_duration_seconds"] is not None
+                else None
+            ),
+            outcome=str(row["call_outcome"] or ""),
+            source=str(row["call_source"] or ""),
             terminal_reason=str(row["call_terminal_reason"] or ""),
             sequence=sequence,
             contract_version=int(row["call_contract_version"] or 0),

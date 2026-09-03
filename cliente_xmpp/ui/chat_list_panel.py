@@ -5,6 +5,7 @@ from datetime import datetime
 
 import wx
 
+from cliente_xmpp.formatting import format_call_body
 from cliente_xmpp.media.downloads import has_media, media_description
 from cliente_xmpp.models.chat import Chat, Message
 
@@ -355,13 +356,22 @@ class ChatListPanel(wx.Panel):
         sender = (
             "Tú"
             if message.outgoing
-            else self._sender_label(chat, message.sender_jid, message.sender_name)
+            else self._sender_label(
+                chat,
+                message.call.peer_jid if message.call is not None else message.sender_jid,
+                "" if message.call is not None else message.sender_name,
+            )
         )
-        preview_source = (
-            media_description(message) if has_media(message) else message.body
-        ) or "Adjunto"
+        preview_source = media_description(message) if has_media(message) else message.body
+        if message.call is not None:
+            preview_source = format_call_body(
+                preview_source,
+                duration_seconds=message.call.duration_seconds,
+                event_timestamp=message.call.event_timestamp,
+            )
+        preview_source = preview_source or "Adjunto"
         preview = self._truncate_preview(preview_source)
-        time = self._format_time(message.sent_at)
+        time = "" if message.call is not None else self._format_time(message.sent_at)
         details = " | ".join(part for part in (sender, preview, time) if part)
         return f"{chat.name} | mensaje | {details}"
 

@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import wx
 
+from cliente_xmpp.formatting import format_datetime
 from cliente_xmpp.models.statistics import (
     CallStatistics,
     ChatMessageStatistics,
@@ -572,7 +573,10 @@ class StatisticsDialog(wx.Dialog):
                 f"Llamadas contestadas: {calls.answered}",
                 f"Llamadas perdidas: {calls.missed}",
                 f"Llamadas rechazadas: {calls.rejected}",
+                f"Llamadas canceladas: {calls.cancelled}",
+                f"Llamadas no disponibles: {calls.unavailable}",
                 f"Llamadas con error: {calls.failed}",
+                f"Llamadas en curso o programadas: {calls.ongoing}",
                 f"Llamadas entrantes: {calls.incoming}",
                 f"Llamadas salientes: {calls.outgoing}",
                 f"Llamadas de voz: {calls.voice}",
@@ -580,8 +584,8 @@ class StatisticsDialog(wx.Dialog):
                 f"Tiempo total hablando: {duration_total}",
                 f"Duración habitual: {usual_duration}",
                 (
-                    "Los tiempos sólo se calculan cuando se conoce cuándo empezó la conversación "
-                    "y cuándo terminó."
+                    "Los tiempos se calculan con la duración que informa WhatsApp o, para datos "
+                    "anteriores, cuando se conocen la aceptación y el final."
                 ),
                 (
                     "Las llamadas sin información completa se cuentan, pero no se incluyen "
@@ -666,10 +670,7 @@ class StatisticsDialog(wx.Dialog):
 
     @staticmethod
     def _format_datetime(value: object) -> str:
-        try:
-            return value.astimezone().strftime("%d/%m/%Y, %H:%M")
-        except (AttributeError, OSError, ValueError):
-            return "sin datos"
+        return format_datetime(value)
 
     @classmethod
     def _format_summary(cls, statistics: MessageStatistics) -> str:
@@ -858,14 +859,12 @@ class StatisticsDialog(wx.Dialog):
             return "sin datos suficientes"
         total_seconds = max(0, round(seconds))
         if total_seconds < 60:
-            return f"{total_seconds} segundos"
+            return f"{total_seconds} segundo" if total_seconds == 1 else f"{total_seconds} segundos"
         if total_seconds < 3600:
-            return f"{round(total_seconds / 60)} minutos"
-        if total_seconds < 86400:
-            hours = total_seconds / 3600
-            return f"{hours:.1f} horas"
-        days = total_seconds / 86400
-        return f"{days:.1f} días"
+            minutes = round(total_seconds / 60)
+            return f"{minutes} minuto" if minutes == 1 else f"{minutes} minutos"
+        hours = round(total_seconds / 3600, 1)
+        return f"{hours:g} hora" if hours == 1 else f"{hours:g} horas"
 
     def _on_refresh(self, _event: wx.CommandEvent) -> None:
         self.refresh()

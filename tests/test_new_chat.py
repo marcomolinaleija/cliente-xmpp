@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import wx
+
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.phone_numbers import (
     PhoneNumberError,
@@ -253,6 +255,59 @@ class GroupPrivateMessageTests(unittest.TestCase):
         self.assertIs(reply_message, message)
         self.assertEqual(reply_phone.e164, "+524491234567")
         self.assertEqual(reply_component, "whatsapp.example.org")
+
+    def test_context_menu_uses_popup_parent_for_bindings_and_display(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        message = self._group_message(
+            group,
+            "+524491234567@whatsapp.example.org",
+        )
+        window.conversation = SimpleNamespace(
+            current_chat=None,
+            selected_message=Mock(return_value=message),
+        )
+        window.messages_by_chat = {group.jid: [message]}
+        window._message_can_be_edited = Mock(return_value=False)
+
+        class PopupOwner:
+            def __init__(self) -> None:
+                self.bind_calls: list[tuple[object, object, object]] = []
+                self.popup_menus: list[object] = []
+
+            def Bind(self, event_type: object, handler: object, item: object) -> None:
+                self.bind_calls.append((event_type, handler, item))
+
+            def PopupMenu(self, menu: object) -> None:
+                self.popup_menus.append(menu)
+
+        popup_parent = PopupOwner()
+
+        with (
+            patch("cliente_xmpp.ui.main_window.wx.Menu", self._Menu),
+            patch.object(MainWindow, "Bind") as main_window_bind,
+            patch.object(MainWindow, "PopupMenu") as main_window_popup,
+        ):
+            MainWindow._show_message_context_menu(
+                window,
+                message,
+                popup_parent=popup_parent,  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(len(popup_parent.popup_menus), 1)
+        self.assertEqual(len(popup_parent.bind_calls), 13)
+        self.assertTrue(
+            all(
+                event_type is wx.EVT_MENU
+                for event_type, _handler, _item in popup_parent.bind_calls
+            )
+        )
+        self.assertEqual(
+            len({id(item) for _event, _handler, item in popup_parent.bind_calls}),
+            13,
+        )
+        main_window_bind.assert_not_called()
+        main_window_popup.assert_not_called()
 
     def test_private_reply_keeps_the_group_quote_and_opens_private_chat(self) -> None:
         group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)

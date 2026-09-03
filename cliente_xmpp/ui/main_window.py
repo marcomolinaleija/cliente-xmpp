@@ -4162,6 +4162,7 @@ class MainWindow(wx.Frame):
         if not message:
             return
 
+        menu_owner = popup_parent or self
         menu = wx.Menu()
         reply_item = menu.Append(wx.ID_ANY, "Responder")
         copy_item = menu.Append(
@@ -4239,12 +4240,12 @@ class MainWindow(wx.Frame):
             delete_item = menu.Append(wx.ID_ANY, "Eliminar mensaje")
             delete_item.Enable(self._message_can_be_deleted(message))
 
-        self.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
-        self.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
-        self.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
+        menu_owner.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
+        menu_owner.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        menu_owner.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
         if private_message_item is not None and private_recipient is not None:
             private_recipient_phone, private_component_jid = private_recipient
-            self.Bind(
+            menu_owner.Bind(
                 wx.EVT_MENU,
                 lambda _event: self._send_private_message_to_group_sender(
                     private_recipient_phone,
@@ -4253,7 +4254,7 @@ class MainWindow(wx.Frame):
                 private_message_item,
             )
             if private_reply_item is not None:
-                self.Bind(
+                menu_owner.Bind(
                     wx.EVT_MENU,
                     lambda _event: self._reply_privately_to_group_message(
                         message,
@@ -4263,45 +4264,53 @@ class MainWindow(wx.Frame):
                     private_reply_item,
                 )
         if edit_item:
-            self.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._begin_editing(message), edit_item)
         if link_item:
-            self.Bind(wx.EVT_MENU, lambda _event: self._open_message_link(message), link_item)
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._open_message_link(message), link_item)
         if media_item:
             if message.media_kind == "audio":
-                self.Bind(
+                menu_owner.Bind(
                     wx.EVT_MENU,
                     lambda _event: self.conversation.play_audio_message(message),
                     media_item,
                 )
             elif message.media_kind == "video":
-                self.Bind(
+                menu_owner.Bind(
                     wx.EVT_MENU,
                     lambda _event: self.conversation.play_video_message(message),
                     media_item,
                 )
             else:
-                self.Bind(
+                menu_owner.Bind(
                     wx.EVT_MENU,
                     lambda _event: self._open_or_download_media(message),
                     media_item,
                 )
         if copy_file_item:
-            self.Bind(wx.EVT_MENU, lambda _event: self._copy_media_file(message), copy_file_item)
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._copy_media_file(message),
+                copy_file_item,
+            )
         if describe_item:
-            self.Bind(
+            menu_owner.Bind(
                 wx.EVT_MENU,
                 lambda _event: self._describe_media_with_rayoai(message),
                 describe_item,
             )
         if save_album_item:
-            self.Bind(
+            menu_owner.Bind(
                 wx.EVT_MENU,
                 lambda _event: self._save_photo_album(message),
                 save_album_item,
             )
-        self.Bind(wx.EVT_MENU, lambda _event: self._toggle_starred_message(message), star_item)
+        menu_owner.Bind(
+            wx.EVT_MENU,
+            lambda _event: self._toggle_starred_message(message),
+            star_item,
+        )
         for item, reaction in reaction_items:
-            self.Bind(
+            menu_owner.Bind(
                 wx.EVT_MENU,
                 lambda _event, selected_reaction=reaction: self._react_to_message(
                     message,
@@ -4309,23 +4318,23 @@ class MainWindow(wx.Frame):
                 ),
                 item,
             )
-        self.Bind(
+        menu_owner.Bind(
             wx.EVT_MENU,
             lambda _event: self._choose_more_reaction(message),
             more_reactions_item,
         )
         if vote_item is not None:
-            self.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._vote_in_poll(message), vote_item)
         if poll_results_item is not None:
-            self.Bind(
+            menu_owner.Bind(
                 wx.EVT_MENU,
                 lambda _event: self._show_poll_results(message),
                 poll_results_item,
             )
         if delete_item:
-            self.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._delete_message(message), delete_item)
 
-        (popup_parent or self).PopupMenu(menu)
+        menu_owner.PopupMenu(menu)
         menu.Destroy()
 
     def _show_browser_message_context_menu(

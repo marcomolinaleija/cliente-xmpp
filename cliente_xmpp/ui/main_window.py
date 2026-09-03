@@ -5124,6 +5124,14 @@ class MainWindow(wx.Frame):
 
         self.status_bar.SetStatusText("Enviando a RayoAI para describir...")
 
+        if message.media_kind == "video":
+            def worker() -> None:
+                sent = rayoai.send_open_path(path)
+                wx.CallAfter(self._finish_send_video_to_rayoai, sent)
+
+            threading.Thread(target=worker, daemon=True).start()
+            return
+
         def worker() -> None:
             description = rayoai.request_description(path)
             wx.CallAfter(
@@ -5134,6 +5142,15 @@ class MainWindow(wx.Frame):
             )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_send_video_to_rayoai(self, sent: bool) -> None:
+        if sent:
+            self.status_bar.SetStatusText("Video enviado a RayoAI para describir")
+            return
+
+        self.status_bar.SetStatusText(
+            "No se pudo enviar a RayoAI. Verifica que esté abierto y actualizado."
+        )
 
     def _finish_send_media_to_rayoai(
         self,

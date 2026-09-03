@@ -548,6 +548,52 @@ class ChatContextMenuTests(unittest.TestCase):
         self.assertIn("Eliminar chat...", items)
 
 
+class RayoAiVideoTests(unittest.TestCase):
+    def test_video_uses_fire_and_forget_open_and_updates_status(self) -> None:
+        class ImmediateThread:
+            def __init__(self, target: object, daemon: bool) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()  # type: ignore[operator]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "video.mp4"
+            path.write_bytes(b"video")
+            message = Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body="Video",
+                media_kind="video",
+                media_local_path=str(path),
+            )
+            window = MainWindow.__new__(MainWindow)
+            window.current_jid = "me@example.test"
+            window.status_bar = SimpleNamespace(SetStatusText=Mock())
+
+            with (
+                patch("cliente_xmpp.ui.main_window.threading.Thread", ImmediateThread),
+                patch(
+                    "cliente_xmpp.ui.main_window.wx.CallAfter",
+                    side_effect=lambda fn, *args: fn(*args),
+                ),
+                patch(
+                    "cliente_xmpp.ui.main_window.rayoai.send_open_path",
+                    return_value=True,
+                ) as send_open_path,
+                patch(
+                    "cliente_xmpp.ui.main_window.rayoai.request_description"
+                ) as request_description,
+            ):
+                MainWindow._send_media_to_rayoai(window, message)
+
+        send_open_path.assert_called_once_with(path)
+        request_description.assert_not_called()
+        window.status_bar.SetStatusText.assert_any_call(
+            "Video enviado a RayoAI para describir"
+        )
+
+
 class NewChatShortcutTests(unittest.TestCase):
     @staticmethod
     def _event(*, control: bool, alt: bool = False, shift: bool = False) -> SimpleNamespace:

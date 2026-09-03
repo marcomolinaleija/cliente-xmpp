@@ -3455,7 +3455,7 @@ class MainWindow(wx.Frame):
             if chat and reply_context
             else ""
         )
-        reply_quote = reply_context.body if reply_context else ""
+        reply_quote = self._message_body_for_display(reply_context) if reply_context else ""
         body = self.conversation.consume_composed_message()
         if not chat or not body:
             return
@@ -3694,7 +3694,7 @@ class MainWindow(wx.Frame):
             if reply_context is not None
             else "",
             reply_context.message_id if reply_context is not None else "",
-            reply_context.body if reply_context is not None else "",
+            self._message_body_for_display(reply_context) if reply_context is not None else "",
         )
 
     def _set_clipboard_status(self, message: str) -> None:
@@ -4156,6 +4156,7 @@ class MainWindow(wx.Frame):
         message: Message | None = None,
         *,
         popup_parent: wx.Window | None = None,
+        copy_text_path: bool = False,
     ) -> None:
         message = message or self.conversation.selected_message()
         if not message:
@@ -4240,7 +4241,11 @@ class MainWindow(wx.Frame):
             delete_item.Enable(self._message_can_be_deleted(message))
 
         menu_owner.Bind(wx.EVT_MENU, lambda _event: self._reply_to_message(message), reply_item)
-        menu_owner.Bind(wx.EVT_MENU, lambda _event: self._copy_message_text(message), copy_item)
+        menu_owner.Bind(
+            wx.EVT_MENU,
+            lambda _event: self._copy_message_text(message, copy_local_path=copy_text_path),
+            copy_item,
+        )
         menu_owner.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
         if private_message_item is not None and private_recipient is not None:
             private_recipient_phone, private_component_jid = private_recipient
@@ -4341,9 +4346,11 @@ class MainWindow(wx.Frame):
         message: Message,
         popup_parent: wx.Window,
     ) -> None:
+        message = self._browser_message_in_memory(message)
         self._show_message_context_menu(
-            self._browser_message_in_memory(message),
+            message,
             popup_parent=popup_parent,
+            copy_text_path=local_media_path(message) is not None,
         )
 
     def _vote_in_poll(self, message: Message) -> None:
@@ -4698,17 +4705,23 @@ class MainWindow(wx.Frame):
         message.reply_quote = ""
         return deleted_path, deletion_error
 
-    def _copy_message_text(self, message: Message) -> None:
+    def _copy_message_text(self, message: Message, *, copy_local_path: bool = False) -> None:
         if not wx.TheClipboard.Open():
             return
 
+        local_path = local_media_path(message) if copy_local_path else None
+        copied_text = str(local_path) if local_path is not None else copyable_message_text(message)
         try:
-            wx.TheClipboard.SetData(wx.TextDataObject(copyable_message_text(message)))
+            wx.TheClipboard.SetData(wx.TextDataObject(copied_text))
         finally:
             wx.TheClipboard.Close()
 
         self.status_bar.SetStatusText(
-            "Enlace copiado" if is_link_preview(message) else "Texto copiado"
+            "Ruta copiada"
+            if local_path is not None
+            else "Enlace copiado"
+            if is_link_preview(message)
+            else "Texto copiado"
         )
 
     def _forward_message(self, source: Message) -> None:

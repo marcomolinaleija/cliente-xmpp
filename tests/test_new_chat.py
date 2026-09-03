@@ -309,6 +309,36 @@ class GroupPrivateMessageTests(unittest.TestCase):
         main_window_bind.assert_not_called()
         main_window_popup.assert_not_called()
 
+    def test_browser_context_menu_uses_local_path_for_downloaded_media_text_copy(self) -> None:
+        group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
+        window = self._window(group)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "document.pdf"
+            path.write_bytes(b"document")
+            message = Message(
+                chat_jid=group.jid,
+                sender_jid="sender@whatsapp.example.org",
+                body="Archivo",
+                media_url="https://example.org/document.pdf",
+                media_kind="file",
+                media_local_path=str(path),
+            )
+            window._browser_message_in_memory = Mock(return_value=message)
+            window._show_message_context_menu = Mock()
+            popup_parent = object()
+
+            MainWindow._show_browser_message_context_menu(
+                window,
+                message,
+                popup_parent,  # type: ignore[arg-type]
+            )
+
+            window._show_message_context_menu.assert_called_once_with(
+                message,
+                popup_parent=popup_parent,
+                copy_text_path=True,
+            )
+
     def test_private_reply_keeps_the_group_quote_and_opens_private_chat(self) -> None:
         group = Chat(jid="#room@whatsapp.example.org", name="Grupo", is_group=True)
         private_chat = Chat(

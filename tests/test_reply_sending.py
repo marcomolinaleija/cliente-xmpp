@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.main_window import MainWindow
@@ -66,6 +66,83 @@ class ReplySendingTests(unittest.TestCase):
         self.assertEqual(pending_messages[0].reply_to_id, target.message_id)
         self.assertEqual(pending_messages[0].reply_quote, target.body)
         self.assertFalse(reply_visible)
+
+    def test_media_reply_uses_the_visible_description_instead_of_the_internal_id(self) -> None:
+        chat = Chat(jid="contact@example.test", name="Contacto")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="",
+            media_url="https://example.test/opaque-media-id",
+            media_kind="image",
+            media_filename="opaque-media-id",
+            media_size=2048,
+            message_id="media-message-id",
+        )
+        window = MainWindow.__new__(MainWindow)
+        pending_messages: list[Message] = []
+        window.reply_context = target
+        window.edit_context = None
+        window.current_jid = "me@example.test"
+        window.conversation = SimpleNamespace(
+            current_chat=chat,
+            has_reply_context=lambda: True,
+            consume_composed_message=lambda: "respuesta",
+            clear_reply_quote=Mock(),
+            focus_composer=Mock(),
+        )
+        window.status_bar = self._status_bar()
+        window.xmpp = SimpleNamespace(send_reply=Mock(), send_message=Mock())
+        window._require_whatsapp_connection = lambda: True
+        window._mention_references_for_message = lambda _chat, _body: []
+        window._add_pending_outgoing_message = pending_messages.append
+        window._mark_current_chat_displayed = lambda _jid: None
+
+        MainWindow._on_send_message(window, SimpleNamespace())
+
+        self.assertEqual(pending_messages[0].reply_quote, "foto, 2.0 KB")
+        window.xmpp.send_reply.assert_called_once()
+
+    def test_copy_text_can_copy_the_downloaded_media_path(self) -> None:
+        class Clipboard:
+            def __init__(self) -> None:
+                self.data: object | None = None
+
+            def Open(self) -> bool:
+                return True
+
+            def Close(self) -> None:
+                return None
+
+            def SetData(self, data: object) -> None:
+                self.data = data
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "document.pdf"
+            path.write_bytes(b"document")
+            message = Message(
+                chat_jid="contact@example.test",
+                sender_jid="contact@example.test",
+                body="Archivo",
+                media_url="https://example.test/document.pdf",
+                media_kind="file",
+                media_local_path=str(path),
+            )
+            window = MainWindow.__new__(MainWindow)
+            window.status_bar = self._status_bar()
+            clipboard = Clipboard()
+
+            with (
+                patch("cliente_xmpp.ui.main_window.wx.TheClipboard", clipboard),
+                patch(
+                    "cliente_xmpp.ui.main_window.wx.TextDataObject",
+                    side_effect=lambda text: text,
+                ),
+            ):
+                MainWindow._copy_message_text(window, message, copy_local_path=True)
+
+            self.assertEqual(clipboard.data, message.media_local_path)
+            window.status_bar.SetStatusText.assert_called_once_with("Ruta copiada")
 
     def test_recorded_audio_keeps_reply_target_and_quote(self) -> None:
         chat = Chat(jid="contact@example.test", name="Contacto")

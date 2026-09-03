@@ -28,6 +28,12 @@ class FormattingTests(unittest.TestCase):
         self.assertNotIn("2763 seconds", formatted)
         self.assertNotIn("2026-09-02 15:45:01+00:00", formatted)
 
+    def test_call_body_hides_technical_xmpp_jid(self) -> None:
+        formatted = format_call_body(
+            "Missed call from Contacto de prueba (xmpp:contact@example.org)",
+        )
+        self.assertEqual(formatted, "Llamada perdida de Contacto de prueba")
+
     def test_call_body_translates_legacy_and_modern_prefixes(self) -> None:
         event_at = datetime.fromisoformat("2026-09-02T15:45:01+00:00")
         self.assertTrue(

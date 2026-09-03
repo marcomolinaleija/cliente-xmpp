@@ -28,6 +28,7 @@ _CALL_TIMESTAMP_PATTERN = re.compile(
     r"\s+at\s+\d{4}-\d{2}-\d{2}(?:[ T]\S+)?",
     re.IGNORECASE,
 )
+_CALL_TECHNICAL_JID_PATTERN = re.compile(r"\s+\(xmpp:[^)]+\)", re.IGNORECASE)
 _CALL_MODERN_PREFIX_PATTERN = re.compile(
     r"^(?P<direction>incoming|outgoing)\s+"
     r"(?P<kind>voice|video)\s+call:\s+"
@@ -190,6 +191,9 @@ def format_call_body(
     """
 
     result = _translate_call_prefix(body)
+    # Older bridge notices append the routable XMPP JID after the human name.
+    # It is transport metadata, not call content, so never expose it in UI text.
+    result = _CALL_TECHNICAL_JID_PATTERN.sub("", result)
     if duration_seconds is not None:
         formatted_duration = format_duration(duration_seconds)
         result, replaced = _CALL_DURATION_PATTERN.subn(

@@ -422,23 +422,89 @@ def patch_session_go(path: Path, *, backup: bool) -> bool:
 ''',
         "E2E call log message fallback",
     )
-    source = replace_once(source, '''\tcase *events.CallTerminate:\n\t\ts.propagateEvent(newCallEvent(\n\t\t\ts.ctx, client, callStateFromTerminateReason(evt.Reason), callDirectionFromMeta(client, evt.BasicCallMeta), callKindUnknown, 3, evt.Reason, evt.BasicCallMeta,\n\t\t))\n''', '''\tcase *events.CallTerminate:\n\t\treason := strings.TrimSpace(evt.Reason)\n\t\tstate := callStateFromTerminateReason(reason)\n\t\tsequence := 3\n\t\tif reason == "accepted_elsewhere" {\n\t\t\t// Another linked device answered; this is not a terminal event.\n\t\t\tstate = callStateAccepted\n\t\t\tsequence = 2\n\t\t\treason = ""\n\t\t}\n\t\ts.propagateEvent(newCallEvent(\n\t\t\ts.ctx, client, state, callDirectionFromMeta(client, evt.BasicCallMeta), callKindUnknown, sequence, reason, evt.BasicCallMeta,\n\t\t))\n''', "accepted elsewhere is non-terminal")
-    source = source.replace("sequence := 3", "sequence := callSequenceFromTerminateReason(reason)", 1)
-    source = replace_once(source, '''\tclient.AutomaticMessageRerequestFromPhone = true\n''', '''\tclient.AutomaticMessageRerequestFromPhone = true\n\tclient.EmitAppStateEventsOnFullSync = true\n''', "emit call log events during app-state backfill")
-    source = replace_once(source, '''\tif client.Store.ID != nil {\n\t\treturn client.ConnectContext(s.ctx)\n\t}\n''', '''\tif client.Store.ID != nil {\n\t\tif err := client.ConnectContext(s.ctx); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgo s.syncCallLogAppState(client)\n\t\treturn nil\n\t}\n''', "call log app-state backfill after connect")
-    source = replace_once(source, "func (s *Session) Login() error {\n", '''// syncCallLogAppState asks WhatsApp for the regular app-state snapshot. Call logs live
-// under the regular `call_log` index and are otherwise only delivered as incremental updates.
-func (s *Session) syncCallLogAppState(client *whatsmeow.Client) {
-\tif client == nil {
-\t\treturn
-\t}
-\tif err := client.FetchAppState(s.ctx, appstate.WAPatchRegular, true, false); err != nil {
-\t\tclient.Log.Warnf("Failed to backfill WhatsApp call log app state: %v", err)
-\t}
-}
-
-func (s *Session) Login() error {
-''', "call log app-state backfill helper")
+    old_call_terminate = (
+        "\tcase *events.CallTerminate:\n"
+        "\t\ts.propagateEvent(newCallEvent(\n"
+        "\t\t\ts.ctx, client, callStateFromTerminateReason(evt.Reason), "
+        "callDirectionFromMeta(client, evt.BasicCallMeta), callKindUnknown, 3, "
+        "evt.Reason, evt.BasicCallMeta,\n"
+        "\t\t))\n"
+    )
+    new_call_terminate = (
+        "\tcase *events.CallTerminate:\n"
+        "\t\treason := strings.TrimSpace(evt.Reason)\n"
+        "\t\tstate := callStateFromTerminateReason(reason)\n"
+        "\t\tsequence := 3\n"
+        "\t\tif reason == \"accepted_elsewhere\" {\n"
+        "\t\t\t// Another linked device answered; this is not a terminal event.\n"
+        "\t\t\tstate = callStateAccepted\n"
+        "\t\t\tsequence = 2\n"
+        "\t\t\treason = \"\"\n"
+        "\t\t}\n"
+        "\t\ts.propagateEvent(newCallEvent(\n"
+        "\t\t\ts.ctx, client, state, callDirectionFromMeta(client, evt.BasicCallMeta), "
+        "callKindUnknown, sequence, reason, evt.BasicCallMeta,\n"
+        "\t\t))\n"
+    )
+    source = replace_once(
+        source,
+        old_call_terminate,
+        new_call_terminate,
+        "accepted elsewhere is non-terminal",
+    )
+    source = source.replace(
+        "sequence := 3",
+        "sequence := callSequenceFromTerminateReason(reason)",
+        1,
+    )
+    source = replace_once(
+        source,
+        "\tclient.AutomaticMessageRerequestFromPhone = true\n",
+        (
+            "\tclient.AutomaticMessageRerequestFromPhone = true\n"
+            "\tclient.EmitAppStateEventsOnFullSync = true\n"
+        ),
+        "emit call log events during app-state backfill",
+    )
+    source = replace_once(
+        source,
+        (
+            "\tif client.Store.ID != nil {\n"
+            "\t\treturn client.ConnectContext(s.ctx)\n"
+            "\t}\n"
+        ),
+        (
+            "\tif client.Store.ID != nil {\n"
+            "\t\tif err := client.ConnectContext(s.ctx); err != nil {\n"
+            "\t\t\treturn err\n"
+            "\t\t}\n"
+            "\t\tgo s.syncCallLogAppState(client)\n"
+            "\t\treturn nil\n"
+            "\t}\n"
+        ),
+        "call log app-state backfill after connect",
+    )
+    source = replace_once(
+        source,
+        "func (s *Session) Login() error {\n",
+        (
+            "// syncCallLogAppState asks WhatsApp for the regular app-state snapshot. "
+            "Call logs live under the regular `call_log` index.\n"
+            "// They are otherwise only delivered as incremental updates.\n"
+            "func (s *Session) syncCallLogAppState(client *whatsmeow.Client) {\n"
+            "\tif client == nil {\n"
+            "\t\treturn\n"
+            "\t}\n"
+            "\tif err := client.FetchAppState("
+            "s.ctx, appstate.WAPatchRegular, true, false); err != nil {\n"
+            "\t\tclient.Log.Warnf(\"Failed to backfill WhatsApp call log app state: %v\", err)\n"
+            "\t}\n"
+            "}\n"
+            "\n"
+            "func (s *Session) Login() error {\n"
+        ),
+        "call log app-state backfill helper",
+    )
     if backup:
         shutil.copy2(path, path.with_suffix(path.suffix + ".before-call-records-v27"))
     path.write_text(source, encoding="utf-8", newline="\n")

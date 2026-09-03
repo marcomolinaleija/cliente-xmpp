@@ -1,3 +1,14 @@
+WhatsApp CAN 1.4.7
+
+Llamadas completas
+- Las llamadas conservan el resultado, la duración y el origen que informa WhatsApp cuando esos datos están disponibles.
+- Las distintas fases de una llamada se agrupan en un solo registro para evitar duplicados en las estadísticas.
+- Las estadísticas distinguen llamadas contestadas, perdidas, rechazadas, canceladas, no disponibles, fallidas y en curso o programadas.
+- Las llamadas recuperadas se ordenan por la fecha real del evento y muestran el nombre del contacto en lugar de identificadores técnicos.
+
+Puente local
+- El puente local se actualiza a v27 para transportar los registros completos de llamadas y sus resultados.
+
 WhatsApp CAN 1.4.6
 
 Estadísticas experimentales de llamadas

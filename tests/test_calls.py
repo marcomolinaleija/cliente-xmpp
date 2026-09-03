@@ -349,7 +349,7 @@ class CallContractTests(unittest.TestCase):
                 "Incoming voice call: connected with Contacto de prueba",
                 "Incoming voice call: connected with Contacto de prueba, 6 seconds",
             )
-            for phase, body in zip(phases, bodies):
+            for phase, body in zip(phases, bodies, strict=True):
                 store.upsert_messages(
                     self.account_jid,
                     [

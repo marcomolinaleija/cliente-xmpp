@@ -6792,7 +6792,10 @@ class MainWindow(wx.Frame):
         sender = self._speakable_chat_name(message.chat_jid)
         if message.chat_is_group and message.sender_jid:
             participant_jid = self._message_sender_jid_for_display(message)
-            participant = self._display_name_for_jid(participant_jid)
+            participant = (
+                ("" if message.call is not None else message.sender_name)
+                or self._display_name_for_jid(participant_jid)
+            )
             sender = f"{participant} en {sender}"
         preview = self._message_body_for_display(message)
         if message.is_forwarded:
@@ -6819,13 +6822,16 @@ class MainWindow(wx.Frame):
         chat_name = self._speakable_chat_name(message.chat_jid)
         title = chat_name
         if message.chat_is_group and message.sender_jid:
-            participant_jid = self._message_sender_jid_for_display(message)
-            participant = self._display_name_for_jid(participant_jid)
+            participant_jid = MainWindow._message_sender_jid_for_display(message)
+            participant = (
+                ("" if message.call is not None else message.sender_name)
+                or self._display_name_for_jid(participant_jid)
+            )
             title = f"{participant} en {chat_name}"
 
         preview = "Nuevo mensaje"
         if self.windows_notification_previews_enabled:
-            preview = self._message_body_for_display(message)
+            preview = MainWindow._message_body_for_display(message)
             if message.is_forwarded:
                 preview = f"Reenviado. {preview}"
 

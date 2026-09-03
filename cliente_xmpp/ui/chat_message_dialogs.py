@@ -767,6 +767,8 @@ class ChatFilesDialog(wx.Dialog):
                 action = self._on_play_audio
             elif message.media_kind == "video":
                 action = self._on_play_video
+            elif has_media(message):
+                action = self._on_open
             elif self._on_open_message is not None:
                 action = self._on_open_message
             else:

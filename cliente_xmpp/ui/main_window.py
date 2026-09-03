@@ -440,6 +440,7 @@ class MainWindow(wx.Frame):
             initial_audio_speed=self.settings_store.load_audio_speed(),
             on_audio_speed_changed=self._save_audio_speed,
             on_audio_download_requested=self._request_audio_download_for_playback,
+            on_video_download_requested=self._request_video_download_for_playback,
             on_go_to_quoted_message=self._go_to_quoted_message,
             can_go_to_quoted_message=self._can_go_to_quoted_message,
             on_vote_in_poll=self._vote_in_poll,
@@ -4944,7 +4945,10 @@ class MainWindow(wx.Frame):
             message.media_duration_seconds = duration_seconds
         self._persist_message_media_path(message)
         self.conversation.refresh_message(message)
-        self.conversation.audio_download_completed(message)
+        if message.media_kind == "audio":
+            self.conversation.audio_download_completed(message)
+        elif message.media_kind == "video":
+            self.conversation.video_download_completed(message)
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
         if silent:
@@ -5071,6 +5075,16 @@ class MainWindow(wx.Frame):
             self.auto_downloading_media_keys.add(key)
             self._download_media(message, silent=True)
         self.status_bar.SetStatusText("Descargando audio para reproducir...")
+
+    def _request_video_download_for_playback(self, message: Message) -> None:
+        if local_media_path(message) is not None:
+            return
+
+        key = self._auto_media_download_key(message)
+        if key not in self.auto_downloading_media_keys:
+            self.auto_downloading_media_keys.add(key)
+            self._download_media(message, silent=True)
+        self.status_bar.SetStatusText("Descargando video para reproducir...")
 
     @staticmethod
     def _auto_media_download_key(message: Message) -> tuple[str, str]:

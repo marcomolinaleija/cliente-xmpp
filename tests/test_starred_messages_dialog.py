@@ -200,6 +200,36 @@ class StarredMessagesDialogKeyboardTests(unittest.TestCase):
         self.assertEqual(played, [message])
         self.assertFalse(event.skipped)
 
+    def test_files_space_downloads_non_playable_media(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="sender@example.test",
+            body="",
+            media_url="https://example.test/document.pdf",
+            media_kind="file",
+        )
+        control = SimpleNamespace(GetFirstSelected=lambda: 0)
+        page = SimpleNamespace(GetChildren=lambda: [control])
+        opened: list[Message] = []
+        read: list[Message] = []
+        dialog = SimpleNamespace(
+            notebook=SimpleNamespace(GetCurrentPage=lambda: page),
+            _messages_by_list={id(control): [message]},
+            _selected_message=lambda selected_control: message,
+            _on_open=lambda selected_message: opened.append(selected_message) or True,
+            _on_open_message=lambda selected_message: read.append(selected_message) or True,
+            _on_play_video=None,
+            _on_play_audio=None,
+            _on_speak_message=None,
+        )
+        event = _KeyEvent(wx.WXK_SPACE)
+
+        ChatFilesDialog._on_key_down(dialog, event)  # type: ignore[arg-type]
+
+        self.assertEqual(opened, [message])
+        self.assertEqual(read, [])
+        self.assertFalse(event.skipped)
+
     def test_files_enter_goes_to_message_in_chat(self) -> None:
         message = Message(
             chat_jid="chat@example.test",

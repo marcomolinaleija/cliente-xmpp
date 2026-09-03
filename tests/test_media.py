@@ -146,6 +146,58 @@ class MediaDescriptionTests(unittest.TestCase):
 
         self.assertFalse(ConversationPanel.play_selected_audio(panel))
 
+    def test_video_starts_remote_playback_while_download_is_requested(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://upload.example.test/video.mp4",
+            media_kind="video",
+        )
+        requested: list[Message] = []
+        played: list[str] = []
+        panel = SimpleNamespace(
+            on_video_download_requested=lambda requested_message: requested.append(
+                requested_message
+            ),
+            _pending_video_message=None,
+            _speaker=SimpleNamespace(speak=lambda _text: None),
+            _video_player=SimpleNamespace(
+                play=lambda source: played.append(source) or "playing"
+            ),
+        )
+
+        self.assertTrue(ConversationPanel.play_video_message(panel, message))
+
+        self.assertEqual(requested, [message])
+        self.assertEqual(played, [message.media_url])
+        self.assertIsNone(panel._pending_video_message)
+
+    def test_video_download_completion_does_not_restart_remote_playback(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://upload.example.test/video.mp4",
+            media_kind="video",
+        )
+        played: list[str] = []
+        panel = SimpleNamespace(
+            _pending_video_message=None,
+            _video_player=SimpleNamespace(
+                play=lambda source: played.append(source) or "playing"
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "video.mp4"
+            path.write_bytes(b"video")
+            message.media_local_path = str(path)
+
+            ConversationPanel.video_download_completed(panel, message)
+
+        self.assertEqual(played, [])
+
     def test_percent_seek_ignores_a_focused_text_message(self) -> None:
         message = Message(
             chat_jid="contact@example.test",

@@ -55,6 +55,7 @@ class ConversationPanel(wx.Panel):
         initial_audio_speed: float = 1.0,
         on_audio_speed_changed: Callable[[float], None] | None = None,
         on_audio_download_requested: Callable[[Message], None] | None = None,
+        on_video_download_requested: Callable[[Message], None] | None = None,
         on_go_to_quoted_message: Callable[[Message], None] | None = None,
         can_go_to_quoted_message: Callable[[Message], bool] | None = None,
         on_vote_in_poll: Callable[[Message], None] | None = None,
@@ -63,6 +64,7 @@ class ConversationPanel(wx.Panel):
         self.resolve_display_name = resolve_display_name
         self.on_audio_speed_changed = on_audio_speed_changed
         self.on_audio_download_requested = on_audio_download_requested
+        self.on_video_download_requested = on_video_download_requested
         self.on_go_to_quoted_message = on_go_to_quoted_message
         self.can_go_to_quoted_message = can_go_to_quoted_message
         self.on_vote_in_poll = on_vote_in_poll
@@ -88,6 +90,7 @@ class ConversationPanel(wx.Panel):
         self._current_audio_source = ""
         self._pending_audio_message: Message | None = None
         self._pending_audio_row_index: int | None = None
+        self._pending_video_message: Message | None = None
         self._contact_avatar_bitmap: wx.Bitmap | None = None
 
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
@@ -145,6 +148,7 @@ class ConversationPanel(wx.Panel):
         self._focus_target_index = None
         self._pending_audio_message = None
         self._pending_audio_row_index = None
+        self._pending_video_message = None
         self._replying = False
         self._editing = False
         self.hide_mention_suggestions()
@@ -589,11 +593,21 @@ class ConversationPanel(wx.Panel):
             return
         self.play_audio_message(message)
 
+    def video_download_completed(self, message: Message) -> None:
+        if self._pending_video_message is not message:
+            return
+
+        self._pending_video_message = None
+        if local_media_path(message) is not None:
+            self.play_video_message(message)
+
     def discard_message_media(self, message: Message, local_path: str = "") -> None:
         """Stop players that may still have a soon-to-be-deleted file open."""
         if self._pending_audio_message is message:
             self._pending_audio_message = None
             self._pending_audio_row_index = None
+        if self._pending_video_message is message:
+            self._pending_video_message = None
 
         source = local_path or self._audio_source(message)
         if source and source == self._current_audio_source:
@@ -619,7 +633,16 @@ class ConversationPanel(wx.Panel):
         if message.retracted or message.media_kind != "video":
             return False
 
-        source = str(local_media_path(message) or message.media_url)
+        path = local_media_path(message)
+        if path is None:
+            if not message.media_url or self.on_video_download_requested is None:
+                return False
+            self._pending_video_message = message
+            self.on_video_download_requested(message)
+            path = local_media_path(message)
+            source = str(path) if path is not None else message.media_url
+        else:
+            source = str(path)
         if not source:
             return False
 
@@ -629,6 +652,8 @@ class ConversationPanel(wx.Panel):
             wx.MessageBox(str(exc), "Video")
             return True
 
+        if self._pending_video_message is message:
+            self._pending_video_message = None
         self._speaker.speak("Pausado" if status == "paused" else "Reproduciendo")
         return True
 

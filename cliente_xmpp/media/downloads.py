@@ -199,18 +199,31 @@ def local_media_path(message: Message) -> Path | None:
     return None
 
 
-def delete_local_media_file(message: Message) -> tuple[Path | None, OSError | None]:
+def delete_local_media_file(
+    message: Message,
+    *,
+    managed_only: bool = False,
+) -> tuple[Path | None, OSError | None]:
     """Delete the exact local file associated with a retracted message.
 
     The model path is cleared even when the file has already disappeared or Windows
     refuses the deletion.  That prevents a deleted message from remaining playable.
     """
     raw_path = message.media_local_path
-    message.media_local_path = ""
     if not raw_path:
         return None, None
 
     path = Path(raw_path)
+    if managed_only:
+        resolved = path.resolve(strict=False)
+        managed_roots = (DOWNLOADS_DIR, APP_DIR / "clipboard")
+        if not any(
+            resolved == root.resolve(strict=False)
+            or root.resolve(strict=False) in resolved.parents
+            for root in managed_roots
+        ):
+            return None, None
+    message.media_local_path = ""
     try:
         path.unlink(missing_ok=True)
     except OSError as exc:

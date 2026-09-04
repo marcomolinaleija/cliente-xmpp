@@ -445,6 +445,9 @@ class MainWindow(wx.Frame):
             on_go_to_quoted_message=self._go_to_quoted_message,
             can_go_to_quoted_message=self._can_go_to_quoted_message,
             on_vote_in_poll=self._vote_in_poll,
+            on_forward_selected_messages=self._forward_selected_messages,
+            on_copy_selected_messages=self._copy_selected_messages,
+            on_delete_selected_messages=self._delete_selected_messages,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
@@ -2750,6 +2753,23 @@ class MainWindow(wx.Frame):
 
     def _on_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        if (
+            MainWindow._is_space_key(event)
+            and self.conversation.IsShown()
+            and self.conversation.messages.HasFocus()
+            and not event.AltDown()
+            and not event.ShiftDown()
+            and (
+                event.ControlDown()
+                or getattr(self.conversation, "message_selection_mode", False)
+            )
+        ):
+            if getattr(self.conversation, "message_selection_mode", False):
+                self.conversation.toggle_focused_message_selection()
+            else:
+                self.conversation.begin_message_selection()
+            return
+
         if self._is_documentation_shortcut(event):
             self._open_user_documentation()
             return
@@ -2795,6 +2815,15 @@ class MainWindow(wx.Frame):
 
         if key_code == wx.WXK_ESCAPE and self.settings_panel.IsShown():
             self._close_settings()
+            return
+
+        if (
+            key_code == wx.WXK_ESCAPE
+            and self.conversation.IsShown()
+            and getattr(self.conversation, "message_selection_mode", False)
+        ):
+            self.conversation.cancel_message_selection()
+            self.status_bar.SetStatusText("Selección cancelada")
             return
 
         if key_code == wx.WXK_RETURN and self.chat_list.IsShown():
@@ -4081,7 +4110,44 @@ class MainWindow(wx.Frame):
         unicode_key = event.GetUnicodeKey()
         return key_code in (ord("L"), ord("l")) or unicode_key in (ord("L"), ord("l"))
 
+    @staticmethod
+    def _is_space_key(event: wx.KeyEvent) -> bool:
+        unicode_key = getattr(event, "GetUnicodeKey", lambda: 0)()
+        return event.GetKeyCode() == wx.WXK_SPACE or unicode_key == ord(" ")
+
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
+        key_code = event.GetKeyCode()
+        if key_code == wx.WXK_ESCAPE and getattr(
+            self.conversation,
+            "message_selection_mode",
+            False,
+        ):
+            self.conversation.cancel_message_selection()
+            self.status_bar.SetStatusText("Selección cancelada")
+            return
+
+        if (
+            MainWindow._is_space_key(event)
+            and not event.AltDown()
+            and event.ControlDown()
+            and not event.ShiftDown()
+        ):
+            if getattr(self.conversation, "message_selection_mode", False):
+                self.conversation.toggle_focused_message_selection()
+            else:
+                self.conversation.begin_message_selection()
+            return
+
+        if (
+            MainWindow._is_space_key(event)
+            and getattr(self.conversation, "message_selection_mode", False)
+            and not event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+        ):
+            self.conversation.toggle_focused_message_selection()
+            return
+
         home_keys = (wx.WXK_HOME, getattr(wx, "WXK_NUMPAD_HOME", wx.WXK_HOME))
         if (
             event.GetKeyCode() in home_keys
@@ -4142,16 +4208,19 @@ class MainWindow(wx.Frame):
                 self.status_bar.SetStatusText(f"Velocidad de audio: {speed:g}x")
                 return
 
-        if event.GetKeyCode() == wx.WXK_DELETE and self._delete_selected_message():
+        if key_code == wx.WXK_DELETE and self._delete_selected_message():
             return
 
-        if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_video():
+        if MainWindow._is_space_key(event) and self.conversation.play_selected_video():
             return
 
         if self._is_open_link_shortcut(event) and self._open_selected_message_link():
             return
 
-        if event.GetKeyCode() in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+        if MainWindow._is_space_key(event) or event.GetKeyCode() in (
+            wx.WXK_RETURN,
+            wx.WXK_NUMPAD_ENTER,
+        ):
             message = self.conversation.selected_message()
             if (
                 message
@@ -4166,7 +4235,7 @@ class MainWindow(wx.Frame):
             if self.conversation.open_selected_message_reader():
                 return
 
-        if event.GetKeyCode() == wx.WXK_SPACE and self.conversation.play_selected_audio():
+        if MainWindow._is_space_key(event) and self.conversation.play_selected_audio():
             return
 
         event.Skip()
@@ -4175,7 +4244,14 @@ class MainWindow(wx.Frame):
         self._show_message_context_menu()
 
     def _on_message_right_click(self, event: wx.ListEvent) -> None:
-        self.conversation.messages.Select(event.GetIndex())
+        if getattr(self.conversation, "message_selection_mode", False):
+            self.conversation.messages.SetItemState(
+                event.GetIndex(),
+                wx.LIST_STATE_FOCUSED,
+                wx.LIST_STATE_FOCUSED,
+            )
+        else:
+            self.conversation.messages.Select(event.GetIndex())
         self._show_message_context_menu()
 
     def _show_message_context_menu(
@@ -4185,6 +4261,32 @@ class MainWindow(wx.Frame):
         popup_parent: wx.Window | None = None,
         copy_text_path: bool = False,
     ) -> None:
+        selected_messages = getattr(self.conversation, "selected_messages", lambda: [])()
+        if message is None and len(selected_messages) > 1:
+            menu_owner = popup_parent or self
+            menu = wx.Menu()
+            forward_item = menu.Append(wx.ID_ANY, f"Reenviar {len(selected_messages)} mensajes...")
+            copy_item = menu.Append(wx.ID_ANY, f"Copiar {len(selected_messages)} mensajes")
+            delete_item = menu.Append(wx.ID_ANY, f"Eliminar {len(selected_messages)} mensajes")
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._forward_messages(selected_messages),
+                forward_item,
+            )
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._copy_selected_messages(),
+                copy_item,
+            )
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._delete_selected_messages(),
+                delete_item,
+            )
+            menu_owner.PopupMenu(menu)
+            menu.Destroy()
+            return
+
         message = message or self.conversation.selected_message()
         if not message:
             return
@@ -4656,11 +4758,97 @@ class MainWindow(wx.Frame):
         self.status_bar.SetStatusText("Mensaje editado")
 
     def _delete_selected_message(self) -> bool:
+        if getattr(self.conversation, "message_selection_mode", False):
+            self._delete_selected_messages()
+            return True
         message = self.conversation.selected_message()
         if message is None:
             return False
 
         return self._delete_message(message)
+
+    def _selected_messages_in_order(self) -> list[Message]:
+        selected = self.conversation.selected_messages()
+        return sorted(selected, key=self._message_timestamp)
+
+    def _copy_selected_messages(self) -> None:
+        messages = self._selected_messages_in_order()
+        if not messages:
+            return
+        if not wx.TheClipboard.Open():
+            return
+        try:
+            text = "\n\n".join(copyable_message_text(message) for message in messages)
+            wx.TheClipboard.SetData(wx.TextDataObject(text))
+        finally:
+            wx.TheClipboard.Close()
+        status = f"{len(messages)} mensajes copiados"
+        self.status_bar.SetStatusText(status)
+        self.speaker.speak(status)
+
+    def _delete_selected_messages(self) -> None:
+        messages = self._selected_messages_in_order()
+        if not messages:
+            return
+        connected = bool(getattr(self, "whatsapp_verified", False))
+        remote_messages = [
+            message
+            for message in messages
+            if connected and self._message_can_be_deleted(message)
+        ]
+        local_only = [message for message in messages if message not in remote_messages]
+        result = wx.MessageBox(
+            f"¿Eliminar {len(messages)} mensajes de este dispositivo?",
+            "Eliminar mensajes",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
+
+        for message in remote_messages:
+            self.xmpp.retract_message(
+                message.chat_jid,
+                message.message_id,
+                is_group=message.chat_is_group,
+            )
+
+        chat_jid = messages[0].chat_jid
+        current = self.messages_by_chat.get(chat_jid, [])
+        removed_ids = {id(message) for message in messages}
+        self.messages_by_chat[chat_jid] = [
+            message for message in current if id(message) not in removed_ids
+        ]
+        for message in messages:
+            local_path = message.media_local_path
+            if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
+                self.conversation.discard_message_media(message, local_path)
+            delete_local_media_file(message, managed_only=True)
+            if self.current_jid and message.message_id:
+                self._queue_storage_write(
+                    self.message_store.delete_cached_message,
+                    self.current_jid,
+                    chat_jid,
+                    message.message_id,
+                )
+
+        self._recompute_chat_summary_from_messages(chat_jid)
+        if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
+            self.conversation.cancel_message_selection()
+            self.conversation.set_messages(
+                self.messages_by_chat[chat_jid],
+                unread_count=self.conversation.unread_marker_count(),
+            )
+        self._refresh_chat_order(chat_jid)
+        if local_only:
+            status = (
+                f"{len(messages)} mensajes quitados localmente; "
+                f"{len(local_only)} no se pueden retirar del servidor"
+            )
+        else:
+            status = f"{len(messages)} mensajes eliminados"
+        self.status_bar.SetStatusText(status)
+        self.speaker.speak(status)
 
     def _message_can_be_deleted(self, message: Message) -> bool:
         return bool(
@@ -4719,7 +4907,7 @@ class MainWindow(wx.Frame):
         if conversation is not None:
             conversation.discard_message_media(message, local_path)
 
-        deleted_path, deletion_error = delete_local_media_file(message)
+        deleted_path, deletion_error = delete_local_media_file(message, managed_only=True)
         message.retracted = True
         message.body = ""
         message.audio_url = ""
@@ -4752,11 +4940,25 @@ class MainWindow(wx.Frame):
         )
 
     def _forward_message(self, source: Message) -> None:
+        self._forward_messages([source])
+
+    def _forward_selected_messages(self) -> None:
+        self._forward_messages(self._selected_messages_in_order())
+
+    def _forward_messages(self, sources: list[Message]) -> None:
         if not self._require_whatsapp_connection():
             return
 
-        if source.retracted or not (source.body or source.media_url or source.audio_url):
-            self.status_bar.SetStatusText("Ese mensaje no se puede reenviar")
+        sources = sorted(
+            [
+            source
+            for source in sources
+            if not source.retracted and (source.body or source.media_url or source.audio_url)
+            ],
+            key=self._message_timestamp,
+        )
+        if not sources:
+            self.status_bar.SetStatusText("Esos mensajes no se pueden reenviar")
             return
 
         chats = self._sort_chats_by_recency(list(self.searchable_chats_by_jid.values()))
@@ -4775,7 +4977,7 @@ class MainWindow(wx.Frame):
         dialog = wx.SingleChoiceDialog(
             self,
             "Elige el chat de destino:",
-            "Reenviar mensaje",
+            "Reenviar mensajes",
             choices,
         )
         try:
@@ -4789,51 +4991,52 @@ class MainWindow(wx.Frame):
         if selection == wx.NOT_FOUND:
             return
         target = chats[selection]
-        forward_source = source
-        if is_link_preview(source):
-            forward_source = replace(
-                source,
-                body=forwardable_message_text(source),
-                audio_url="",
-                media_url="",
-                media_kind="",
-                media_mime="",
-                media_filename="",
-                media_size=0,
-                media_duration_seconds=0,
+        for source in sources:
+            forward_source = source
+            if is_link_preview(source):
+                forward_source = replace(
+                    source,
+                    body=forwardable_message_text(source),
+                    audio_url="",
+                    media_url="",
+                    media_kind="",
+                    media_mime="",
+                    media_filename="",
+                    media_size=0,
+                    media_duration_seconds=0,
+                    media_local_path="",
+                    is_sticker=False,
+                )
+            message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
+            forwarded = Message(
+                chat_jid=target.jid,
+                sender_jid="me",
+                sender_name="Tú",
+                body="Sticker" if forward_source.is_sticker else forward_source.body,
+                sent_at=datetime.now().astimezone(),
+                outgoing=True,
+                audio_url=forward_source.audio_url,
+                media_url=forward_source.media_url,
+                media_kind=forward_source.media_kind,
+                media_mime=forward_source.media_mime,
+                media_filename=forward_source.media_filename,
+                media_size=forward_source.media_size,
+                media_duration_seconds=forward_source.media_duration_seconds,
                 media_local_path="",
-                is_sticker=False,
+                is_sticker=forward_source.is_sticker,
+                is_forwarded=not forward_source.outgoing,
+                message_id=message_id,
+                chat_is_group=target.is_group,
+                delivery_state="pending",
             )
-        message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
-        forwarded = Message(
-            chat_jid=target.jid,
-            sender_jid="me",
-            sender_name="Tú",
-            body="Sticker" if forward_source.is_sticker else forward_source.body,
-            sent_at=datetime.now().astimezone(),
-            outgoing=True,
-            audio_url=forward_source.audio_url,
-            media_url=forward_source.media_url,
-            media_kind=forward_source.media_kind,
-            media_mime=forward_source.media_mime,
-            media_filename=forward_source.media_filename,
-            media_size=forward_source.media_size,
-            media_duration_seconds=forward_source.media_duration_seconds,
-            media_local_path=forward_source.media_local_path,
-            is_sticker=forward_source.is_sticker,
-            is_forwarded=True,
-            message_id=message_id,
-            chat_is_group=target.is_group,
-            delivery_state="pending",
-        )
-        self._add_pending_outgoing_message(forwarded)
-        self.xmpp.send_forward(
-            target.jid,
-            forward_source,
-            is_group=target.is_group,
-            message_id=message_id,
-        )
-        status = f"Reenviando a {target.name or target.jid}"
+            self._add_pending_outgoing_message(forwarded)
+            self.xmpp.send_forward(
+                target.jid,
+                forward_source,
+                is_group=target.is_group,
+                message_id=message_id,
+            )
+        status = f"Reenviando {len(sources)} mensajes a {target.name or target.jid}"
         self.status_bar.SetStatusText(status)
         self.speaker.speak(status)
 
@@ -4883,6 +5086,8 @@ class MainWindow(wx.Frame):
         return links[selection]
 
     def _open_or_download_media(self, message: Message) -> None:
+        if getattr(self.conversation, "message_selection_mode", False):
+            return
         path = local_media_path(message)
         if path:
             self._open_media_path(path)
@@ -7420,7 +7625,7 @@ class MainWindow(wx.Frame):
         if not selected_jid and self.conversation.current_chat:
             selected_jid = self.conversation.current_chat.jid
         self.chat_list.set_chats(
-            self._sort_chats_by_recency(self.chat_list.chats()),
+            self._sort_chats_by_recency(self._chats_with_activity(self.chat_list.chats())),
             selected_jid=selected_jid,
             preserve_focused_order=preserve_focused_order,
         )
@@ -7511,6 +7716,38 @@ class MainWindow(wx.Frame):
 
         latest_message = self._latest_message_from_sequence(messages)
         self._update_chat_from_message(latest_message)
+
+    def _recompute_chat_summary_from_messages(self, chat_jid: str) -> None:
+        """Replace an in-memory chat summary after local message removal."""
+        messages = self.messages_by_chat.get(chat_jid, [])
+        latest_message = self._latest_message_from_sequence(messages) if messages else None
+        latest_timestamps = getattr(self, "latest_message_timestamps_by_chat", None)
+        if latest_timestamps is None:
+            latest_timestamps = self.latest_message_timestamps_by_chat = {}
+        if latest_message is None:
+            latest_timestamps.pop(chat_jid, None)
+        else:
+            latest_timestamps[chat_jid] = self._message_timestamp(
+                latest_message
+            )
+
+        chat = None
+        if hasattr(self, "chat_list"):
+            chat = self._visible_chat_by_jid(chat_jid)
+        if chat is None:
+            chat = getattr(self, "searchable_chats_by_jid", {}).get(chat_jid)
+        if chat is None:
+            return
+        updated_chat = replace(
+            chat,
+            last_message_preview=(
+                self._chat_preview_for_message(latest_message) if latest_message else ""
+            ),
+            last_message_at=latest_message.sent_at if latest_message else None,
+        )
+        self._upsert_searchable_chat(updated_chat)
+        self.chat_list.upsert_chat(updated_chat)
+        self._persist_chat(updated_chat)
 
     def _latest_message_from_sequence(self, messages: list[Message]) -> Message:
         return max(
@@ -8184,9 +8421,14 @@ class MainWindow(wx.Frame):
         )
         if result != wx.YES:
             return
-        deleted_path, error = delete_local_media_file(message)
+        deleted_path, error = delete_local_media_file(message, managed_only=True)
         if error is not None:
             self.status_bar.SetStatusText("Windows no permitió eliminar el archivo local")
+            return
+        if deleted_path is None:
+            self.status_bar.SetStatusText(
+                "No se puede eliminar desde aquí un archivo externo a la carpeta de la aplicación"
+            )
             return
         self._persist_message_media_path(message)
         self.conversation.discard_message_media(message, str(deleted_path or ""))

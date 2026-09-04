@@ -1462,6 +1462,22 @@ class MessageStore:
             if cursor.rowcount > 0:
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
+    def delete_cached_message(self, account_jid: str, chat_jid: str, message_id: str) -> None:
+        """Remove one message from the local cache without changing remote state."""
+        if not account_jid or not chat_jid or not message_id:
+            return
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM messages
+                WHERE account_jid = ? AND chat_jid = ? AND message_id = ?
+                """,
+                (account_jid, chat_jid, message_id),
+            )
+            if cursor.rowcount > 0:
+                self._rebuild_chat_summary(conn, account_jid, chat_jid)
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])

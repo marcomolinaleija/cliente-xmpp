@@ -59,6 +59,9 @@ class ConversationPanel(wx.Panel):
         on_go_to_quoted_message: Callable[[Message], None] | None = None,
         can_go_to_quoted_message: Callable[[Message], bool] | None = None,
         on_vote_in_poll: Callable[[Message], None] | None = None,
+        on_forward_selected_messages: Callable[[], None] | None = None,
+        on_copy_selected_messages: Callable[[], None] | None = None,
+        on_delete_selected_messages: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
@@ -68,6 +71,9 @@ class ConversationPanel(wx.Panel):
         self.on_go_to_quoted_message = on_go_to_quoted_message
         self.can_go_to_quoted_message = can_go_to_quoted_message
         self.on_vote_in_poll = on_vote_in_poll
+        self.on_forward_selected_messages = on_forward_selected_messages
+        self.on_copy_selected_messages = on_copy_selected_messages
+        self.on_delete_selected_messages = on_delete_selected_messages
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
@@ -92,6 +98,8 @@ class ConversationPanel(wx.Panel):
         self._pending_audio_row_index: int | None = None
         self._pending_video_message: Message | None = None
         self._contact_avatar_bitmap: wx.Bitmap | None = None
+        self._message_selection_mode = False
+        self._selected_message_keys: set[tuple[object, ...]] = set()
 
         self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
@@ -151,6 +159,8 @@ class ConversationPanel(wx.Panel):
         self._pending_video_message = None
         self._replying = False
         self._editing = False
+        self._message_selection_mode = False
+        self._selected_message_keys.clear()
         self.hide_mention_suggestions()
         self._set_compose_label_for_chat()
         self.set_recording_state(False)
@@ -183,7 +193,34 @@ class ConversationPanel(wx.Panel):
         self.Layout()
 
     def set_messages(self, messages: list[Message], unread_count: int = 0) -> None:
-        previous_focus_index = self.messages.GetFirstSelected()
+        selected_keys: set[tuple[object, ...]] = set(
+            getattr(self, "_selected_message_keys", set())
+        )
+        if not self._message_selection_mode:
+            selected_index = self.messages.GetNextItem(
+                -1,
+                wx.LIST_NEXT_ALL,
+                wx.LIST_STATE_SELECTED,
+            )
+            while selected_index != wx.NOT_FOUND:
+                selected_key = self._row_focus_key(selected_index)
+                if selected_key is not None:
+                    selected_keys.add(selected_key)
+                selected_index = self.messages.GetNextItem(
+                    selected_index,
+                    wx.LIST_NEXT_ALL,
+                    wx.LIST_STATE_SELECTED,
+                )
+        focused_index = self.messages.GetNextItem(
+            -1,
+            wx.LIST_NEXT_ALL,
+            wx.LIST_STATE_FOCUSED,
+        )
+        previous_focus_index = (
+            focused_index
+            if focused_index != wx.NOT_FOUND
+            else self.messages.GetFirstSelected()
+        )
         previous_focus_key = self._row_focus_key(previous_focus_index)
         had_message_focus = self.messages.HasFocus()
         self.messages.Freeze()
@@ -215,26 +252,62 @@ class ConversationPanel(wx.Panel):
         finally:
             self.messages.Thaw()
 
-        restore_focused_message = False
-        if had_message_focus and previous_focus_index != wx.NOT_FOUND:
+        available_keys = {
+            self._message_focus_key(message)
+            for message in self._messages
+        }
+        self._selected_message_keys = selected_keys & available_keys
+
+        restore_focused_message = bool(selected_keys or had_message_focus)
+        if previous_focus_index != wx.NOT_FOUND:
             self._focus_target_index = self._row_index_for_focus_key(
                 previous_focus_key,
                 fallback_index=previous_focus_index,
             )
-            restore_focused_message = self._focus_target_index is not None
         elif had_message_focus:
             if self._unread_marker_index is not None:
                 self._focus_target_index = self._unread_marker_index
             elif self._message_rows:
                 self._focus_target_index = len(self._message_rows) - 1
-            restore_focused_message = self._focus_target_index is not None
         elif self._unread_marker_index is not None:
             self._focus_target_index = self._unread_marker_index
         elif self._message_rows:
             self._focus_target_index = len(self._message_rows) - 1
 
         if restore_focused_message:
-            wx.CallAfter(self.focus_default_message_item)
+            wx.CallAfter(
+                self._restore_message_view_state,
+                selected_keys,
+                previous_focus_key,
+                previous_focus_index,
+                had_message_focus,
+            )
+        self._update_message_action_buttons()
+
+    def _restore_message_view_state(
+        self,
+        selected_keys: set[tuple[object, ...]],
+        focused_key: tuple[object, ...] | None,
+        fallback_index: int,
+        had_message_focus: bool,
+    ) -> None:
+        self._selected_message_keys = set(selected_keys)
+        self._sync_native_message_selection()
+
+        focus_index = self._row_index_for_focus_key(focused_key, fallback_index)
+        if focus_index is not None:
+            if not selected_keys and had_message_focus:
+                self.messages.Select(focus_index, True)
+            self.messages.SetItemState(
+                focus_index,
+                wx.LIST_STATE_FOCUSED,
+                wx.LIST_STATE_FOCUSED,
+            )
+            if had_message_focus:
+                self.messages.EnsureVisible(focus_index)
+        if had_message_focus:
+            self.messages.SetFocus()
+        self._refresh_message_selection_labels()
         self._update_message_action_buttons()
 
     def append_message(self, message: Message) -> None:
@@ -295,6 +368,13 @@ class ConversationPanel(wx.Panel):
             return
 
         index = min(self._focus_target_index, item_count - 1)
+        if self._message_selection_mode:
+            self.messages.SetItemState(index, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+            self._sync_native_message_selection()
+            self._refresh_message_selection_labels()
+            self.messages.EnsureVisible(index)
+            self._update_message_action_buttons()
+            return
         if self.messages.GetFirstSelected() == index:
             return
 
@@ -305,6 +385,7 @@ class ConversationPanel(wx.Panel):
             wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED,
         )
         self.messages.EnsureVisible(index)
+        self._refresh_message_selection_labels()
         self._update_message_action_buttons()
 
     def focus_message(self, message: Message) -> None:
@@ -476,12 +557,180 @@ class ConversationPanel(wx.Panel):
         return True
 
     def selected_message(self) -> Message | None:
+        if self._message_selection_mode:
+            for index in range(self.messages.GetItemCount()):
+                if self.messages.GetItemState(index, wx.LIST_STATE_FOCUSED):
+                    message = self._message_at_row(index)
+                    if message is not None:
+                        return message
+
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return None
 
         row = self._message_rows[index]
         return row if isinstance(row, Message) else None
+
+    def focused_message(self) -> Message | None:
+        for index in range(self.messages.GetItemCount()):
+            if self.messages.GetItemState(index, wx.LIST_STATE_FOCUSED):
+                return self._message_at_row(index)
+        return self.selected_message()
+
+    def selected_messages(self) -> list[Message]:
+        if self._message_selection_mode:
+            selected_keys = getattr(self, "_selected_message_keys", set())
+            return [
+                message
+                for message in self._messages
+                if self._message_focus_key(message) in selected_keys
+            ]
+
+        selected_ids: set[int] = set()
+        index = self.messages.GetNextItem(-1, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
+        while index != wx.NOT_FOUND:
+            message = self._message_at_row(index)
+            if message is not None:
+                selected_ids.add(id(message))
+            index = self.messages.GetNextItem(index, wx.LIST_NEXT_ALL, wx.LIST_STATE_SELECTED)
+        return [message for message in self._messages if id(message) in selected_ids]
+
+    @property
+    def message_selection_mode(self) -> bool:
+        return self._message_selection_mode
+
+    def begin_message_selection(self) -> bool:
+        message = self.focused_message()
+        if message is None:
+            return False
+        self._message_selection_mode = True
+        selected_keys = getattr(self, "_selected_message_keys", None)
+        if selected_keys is None:
+            selected_keys = self._selected_message_keys = set()
+        index = self._row_index_for_focus_key(
+            self._message_focus_key(message),
+            fallback_index=0,
+        )
+        selected_keys.add(self._message_focus_key(message))
+        if index is not None:
+            self._sync_native_message_selection()
+        self._refresh_message_selection_labels()
+        self._update_message_action_buttons()
+        self._announce_focused_message_selection(message, "Modo de selección activado")
+        return True
+
+    def toggle_focused_message_selection(self) -> bool:
+        message = self.focused_message()
+        if message is None:
+            return False
+        self._message_selection_mode = True
+        selected_keys = getattr(self, "_selected_message_keys", None)
+        if selected_keys is None:
+            selected_keys = self._selected_message_keys = set()
+        index = self._row_index_for_focus_key(
+            self._message_focus_key(message),
+            fallback_index=0,
+        )
+        if index is None:
+            return False
+        message_key = self._message_focus_key(message)
+        if message_key in selected_keys:
+            selected_keys.remove(message_key)
+        else:
+            selected_keys.add(message_key)
+        if not self.selected_messages():
+            self._message_selection_mode = False
+            selected_keys.clear()
+        self._sync_native_message_selection()
+        self._refresh_message_selection_labels()
+        self._update_message_action_buttons()
+        if self._message_selection_mode:
+            self._announce_focused_message_selection(message)
+        else:
+            self._speaker.speak(
+                f"No seleccionado. {self._format_message_for_reader(message)}. "
+                "Modo de selección desactivado"
+            )
+        return True
+
+    def cancel_message_selection(self) -> bool:
+        was_active = self._message_selection_mode or bool(self.selected_messages())
+        self._message_selection_mode = False
+        getattr(self, "_selected_message_keys", set()).clear()
+        self._clear_message_selection()
+        self._refresh_message_selection_labels()
+        self._update_message_action_buttons()
+        if was_active:
+            self._speaker.speak("Modo de selección cancelado")
+        return was_active
+
+    def _announce_focused_message_selection(
+        self,
+        message: Message,
+        prefix: str = "",
+    ) -> None:
+        count = len(self.selected_messages())
+        index = self._row_index_for_focus_key(
+            self._message_focus_key(message),
+            fallback_index=0,
+        )
+        selected = index is not None and (
+            self._message_focus_key(message)
+            in getattr(self, "_selected_message_keys", set())
+        )
+        state = "Seleccionado" if selected else "No seleccionado"
+        count_text = f"{count} {'mensaje' if count == 1 else 'mensajes'} seleccionado"
+        if count != 1:
+            count_text += "s"
+        parts = [
+            part
+            for part in (
+                prefix,
+                state,
+                self._format_message_for_reader(message),
+            )
+            if part
+        ]
+        if count:
+            parts.append(count_text)
+        self._speaker.speak(". ".join(parts))
+
+    def _refresh_message_selection_labels(self) -> None:
+        for index, row in enumerate(self._message_rows):
+            if not isinstance(row, Message):
+                continue
+            row_text = (
+                self._format_message_row_for_list(index, row)
+                if hasattr(self, "_format_message_row_for_list")
+                else self._format_message_row(row)
+            )
+            self.messages.SetItem(index, 0, row_text)
+
+    def _sync_native_message_selection(self) -> None:
+        selected_keys = getattr(self, "_selected_message_keys", set())
+        for index, row in enumerate(self._message_rows):
+            if not isinstance(row, Message):
+                continue
+            self.messages.Select(
+                index,
+                self._message_focus_key(row) in selected_keys,
+            )
+
+    def _format_message_row_for_list(self, index: int, message: Message) -> str:
+        row = self._format_message_row(message)
+        if not self._message_selection_mode:
+            return row
+        selected_keys = getattr(self, "_selected_message_keys", None)
+        if selected_keys is None:
+            selected = self.messages.GetItemState(index, wx.LIST_STATE_SELECTED)
+        else:
+            selected = self._message_focus_key(message) in selected_keys
+        state = (
+            "Seleccionado"
+            if selected
+            else "No seleccionado"
+        )
+        return f"{state}. {row}"
 
     def refresh_message(self, message: Message) -> None:
         indexes = getattr(self, "_message_row_indexes", None)
@@ -506,7 +755,12 @@ class ConversationPanel(wx.Panel):
                 return
             indexes[id(message)] = index
 
-        self.messages.SetItem(index, 0, self._format_message_row(message))
+        row_text = (
+            self._format_message_row_for_list(index, message)
+            if hasattr(self, "_format_message_row_for_list")
+            else self._format_message_row(message)
+        )
+        self.messages.SetItem(index, 0, row_text)
         self._style_message_item(index)
         image_index = self._thumbnail_index_for_message(message)
         item = self.messages.GetItem(index)
@@ -531,6 +785,8 @@ class ConversationPanel(wx.Panel):
         return True
 
     def play_selected_audio(self) -> bool:
+        if getattr(self, "_message_selection_mode", False):
+            return False
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return False
@@ -636,6 +892,8 @@ class ConversationPanel(wx.Panel):
             self._video_player.close()
 
     def play_selected_video(self) -> bool:
+        if getattr(self, "_message_selection_mode", False):
+            return False
         index = self.messages.GetFirstSelected()
         if index == wx.NOT_FOUND or index >= len(self._message_rows):
             return False
@@ -878,6 +1136,19 @@ class ConversationPanel(wx.Panel):
             wx.TOP | wx.RIGHT | wx.ALIGN_TOP,
             12,
         )
+        self.forward_selected_button = wx.Button(self, label="Reenviar selección")
+        self.copy_selected_button = wx.Button(self, label="Copiar selección")
+        self.delete_selected_button = wx.Button(self, label="Eliminar selección")
+        self.forward_selected_button.SetName("Reenviar mensajes seleccionados")
+        self.copy_selected_button.SetName("Copiar mensajes seleccionados")
+        self.delete_selected_button.SetName("Eliminar mensajes seleccionados")
+        for button in (
+            self.forward_selected_button,
+            self.copy_selected_button,
+            self.delete_selected_button,
+        ):
+            button.Hide()
+            message_area.Add(button, 0, wx.TOP | wx.RIGHT | wx.ALIGN_TOP, 12)
         box.Add(message_area, 1, wx.EXPAND)
         self.messages.InsertColumn(0, "Mensajes", width=820)
         self.messages.AssignImageList(self._thumbnail_images, wx.IMAGE_LIST_SMALL)
@@ -926,9 +1197,28 @@ class ConversationPanel(wx.Panel):
         apply_theme(self)
         self.messages.Bind(wx.EVT_SET_FOCUS, self._on_messages_focus)
         self.messages.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_message_selected)
+        self.messages.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._on_message_focused)
         self.messages.Bind(wx.EVT_SIZE, self._on_messages_size)
         self.go_to_quoted_button.Bind(wx.EVT_BUTTON, self._on_go_to_quoted_message)
         self.vote_in_poll_button.Bind(wx.EVT_BUTTON, self._on_vote_in_poll)
+        self.forward_selected_button.Bind(
+            wx.EVT_BUTTON,
+            lambda _event: self.on_forward_selected_messages()
+            if self.on_forward_selected_messages is not None
+            else None,
+        )
+        self.copy_selected_button.Bind(
+            wx.EVT_BUTTON,
+            lambda _event: self.on_copy_selected_messages()
+            if self.on_copy_selected_messages is not None
+            else None,
+        )
+        self.delete_selected_button.Bind(
+            wx.EVT_BUTTON,
+            lambda _event: self.on_delete_selected_messages()
+            if self.on_delete_selected_messages is not None
+            else None,
+        )
         wx.CallAfter(self._fit_message_column)
 
     def _on_messages_size(self, event: wx.SizeEvent) -> None:
@@ -958,6 +1248,19 @@ class ConversationPanel(wx.Panel):
         self._update_message_action_buttons()
         event.Skip()
 
+    def _on_message_focused(self, event: wx.ListEvent) -> None:
+        if self._message_selection_mode:
+            sync_selection = getattr(self, "_sync_native_message_selection", None)
+            if sync_selection is not None:
+                sync_selection()
+            self._refresh_message_selection_labels()
+            get_index = getattr(event, "GetIndex", lambda: wx.NOT_FOUND)
+            message_at_row = getattr(self, "_message_at_row", lambda _index: None)
+            message = message_at_row(get_index())
+            if message is not None:
+                self._announce_focused_message_selection(message)
+        event.Skip()
+
     def _on_go_to_quoted_message(self, _event: wx.CommandEvent) -> None:
         message = self.selected_message()
         if message is None or not self._can_go_to_quoted_message(message):
@@ -975,9 +1278,20 @@ class ConversationPanel(wx.Panel):
             self.on_vote_in_poll(message)
 
     def _update_message_action_buttons(self) -> None:
+        selected_count = len(self.selected_messages())
+        show_selection_actions = self._message_selection_mode and selected_count > 0
         message = self.selected_message()
-        show_quote = message is not None and self._can_go_to_quoted_message(message)
-        show_vote = message is not None and message.poll is not None and not message.retracted
+        show_quote = (
+            not show_selection_actions
+            and message is not None
+            and self._can_go_to_quoted_message(message)
+        )
+        show_vote = (
+            not show_selection_actions
+            and message is not None
+            and message.poll is not None
+            and not message.retracted
+        )
         if self.go_to_quoted_button.IsShown() != show_quote:
             self.go_to_quoted_button.Show(show_quote)
             self.Layout()
@@ -986,6 +1300,18 @@ class ConversationPanel(wx.Panel):
             self.Layout()
         self.go_to_quoted_button.Enable(show_quote)
         self.vote_in_poll_button.Enable(show_vote)
+        for button in (
+            self.forward_selected_button,
+            self.copy_selected_button,
+            self.delete_selected_button,
+        ):
+            button.Show(show_selection_actions)
+            button.Enable(show_selection_actions)
+        if show_selection_actions:
+            self.forward_selected_button.SetLabel(f"Reenviar ({selected_count})")
+            self.copy_selected_button.SetLabel(f"Copiar ({selected_count})")
+            self.delete_selected_button.SetLabel(f"Eliminar ({selected_count})")
+        self.Layout()
 
     def _can_go_to_quoted_message(self, message: Message) -> bool:
         callback = getattr(self, "can_go_to_quoted_message", None)
@@ -1064,6 +1390,12 @@ class ConversationPanel(wx.Panel):
         indexes[id(message)] = index
         image_index = self._thumbnail_index_for_message(message)
         self.messages.InsertItem(index, self._format_message_row(message), image_index)
+        row_text = (
+            self._format_message_row_for_list(index, message)
+            if hasattr(self, "_format_message_row_for_list")
+            else self._format_message_row(message)
+        )
+        self.messages.SetItem(index, 0, row_text)
         self._style_message_item(index)
 
         return index
@@ -1379,7 +1711,12 @@ class ConversationPanel(wx.Panel):
 
         self._audio_durations_by_url[audio_url] = duration
         message.media_duration_seconds = duration
-        self.messages.SetItem(index, 0, self._format_message_row(message))
+        row_text = (
+            self._format_message_row_for_list(index, message)
+            if hasattr(self, "_format_message_row_for_list")
+            else self._format_message_row(message)
+        )
+        self.messages.SetItem(index, 0, row_text)
         self._style_message_item(index)
 
     def _style_message_item(self, index: int) -> None:

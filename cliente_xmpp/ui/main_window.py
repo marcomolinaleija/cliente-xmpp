@@ -274,6 +274,7 @@ class MainWindow(wx.Frame):
         self.local_history_loading_chats: set[str] = set()
         self.local_history_before_by_chat: dict[str, datetime] = {}
         self.local_history_exhausted_chats: set[str] = set()
+        self.deleted_message_ids_by_chat: dict[tuple[str, str], set[str]] = {}
         self.background_history_queue: deque[str] = deque()
         self.background_history_queued_chats: set[str] = set()
         self.background_history_loading_chat = ""
@@ -4299,6 +4300,10 @@ class MainWindow(wx.Frame):
             "Copiar enlace" if is_link_preview(message) else "Copiar texto",
         )
         forward_item = menu.Append(wx.ID_ANY, "Reenviar...")
+        select_item = menu.Append(wx.ID_ANY, "Iniciar selección de mensajes...")
+        select_item.Enable(
+            not getattr(self.conversation, "message_selection_mode", False)
+        )
         forward_item.Enable(
             not message.retracted and bool(message.body or message.media_url or message.audio_url)
         )
@@ -4376,6 +4381,11 @@ class MainWindow(wx.Frame):
             copy_item,
         )
         menu_owner.Bind(wx.EVT_MENU, lambda _event: self._forward_message(message), forward_item)
+        menu_owner.Bind(
+            wx.EVT_MENU,
+            lambda _event: self._begin_message_selection_from_context(message),
+            select_item,
+        )
         if private_message_item is not None and private_recipient is not None:
             private_recipient_phone, private_component_jid = private_recipient
             menu_owner.Bind(
@@ -4785,6 +4795,8 @@ class MainWindow(wx.Frame):
         status = f"{len(messages)} mensajes copiados"
         self.status_bar.SetStatusText(status)
         self.speaker.speak(status)
+        if getattr(self.conversation, "message_selection_mode", False):
+            self.conversation.cancel_message_selection()
 
     def _delete_selected_messages(self) -> None:
         messages = self._selected_messages_in_order()
@@ -4819,6 +4831,7 @@ class MainWindow(wx.Frame):
         self.messages_by_chat[chat_jid] = [
             message for message in current if id(message) not in removed_ids
         ]
+        self._remember_locally_deleted_messages(messages)
         for message in messages:
             local_path = message.media_local_path
             if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
@@ -4833,8 +4846,9 @@ class MainWindow(wx.Frame):
                 )
 
         self._recompute_chat_summary_from_messages(chat_jid)
-        if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
+        if getattr(self.conversation, "message_selection_mode", False):
             self.conversation.cancel_message_selection()
+        if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
             self.conversation.set_messages(
                 self.messages_by_chat[chat_jid],
                 unread_count=self.conversation.unread_marker_count(),
@@ -5039,6 +5053,12 @@ class MainWindow(wx.Frame):
         status = f"Reenviando {len(sources)} mensajes a {target.name or target.jid}"
         self.status_bar.SetStatusText(status)
         self.speaker.speak(status)
+        if getattr(self.conversation, "message_selection_mode", False):
+            self.conversation.cancel_message_selection()
+
+    def _begin_message_selection_from_context(self, message: Message) -> None:
+        self.conversation.focus_message(message)
+        self.conversation.begin_message_selection()
 
     def _open_selected_message_link(self) -> bool:
         message = self.conversation.selected_message()
@@ -5705,6 +5725,8 @@ class MainWindow(wx.Frame):
             case MessageReceived(message=message, notify=notify):
                 if message.outgoing and is_local_bridge_command(message.body):
                     return
+                if self._is_locally_deleted_message(message):
+                    return
                 if self._cleared_chat_blocks_timestamp(
                     message.chat_jid,
                     self._message_timestamp(message),
@@ -5786,7 +5808,7 @@ class MainWindow(wx.Frame):
                     for message in messages
                     if not (
                         message.outgoing and is_local_bridge_command(message.body)
-                    )
+                    ) and not self._is_locally_deleted_message(message)
                 ]
                 messages = self._messages_after_chat_clear(chat_jid, messages)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
@@ -7404,6 +7426,7 @@ class MainWindow(wx.Frame):
         if not self.current_jid:
             return
 
+        self._load_deleted_message_ids_for_chat(chat_jid)
         cache_key = (self.current_jid, chat_jid)
         if cache_key in self.cached_message_loads:
             return
@@ -7457,6 +7480,45 @@ class MainWindow(wx.Frame):
             chat=chat_jid,
             messages=len(cached_messages),
         )
+
+    def _load_deleted_message_ids_for_chat(self, chat_jid: str) -> set[str]:
+        current_jid = getattr(self, "current_jid", "")
+        if not current_jid or not chat_jid:
+            return set()
+
+        deleted_by_chat = getattr(self, "deleted_message_ids_by_chat", None)
+        if deleted_by_chat is None:
+            deleted_by_chat = self.deleted_message_ids_by_chat = {}
+        cache_key = (current_jid, chat_jid)
+        cached = deleted_by_chat.get(cache_key)
+        if cached is not None:
+            return cached
+
+        loader = getattr(getattr(self, "message_store", None), "load_deleted_message_ids", None)
+        if not callable(loader):
+            deleted_ids: set[str] = set()
+        else:
+            try:
+                deleted_ids = set(loader(current_jid, chat_jid))
+            except Exception:
+                deleted_ids = set()
+        deleted_by_chat[cache_key] = deleted_ids
+        return deleted_ids
+
+    def _remember_locally_deleted_messages(self, messages: list[Message]) -> None:
+        if not getattr(self, "current_jid", ""):
+            return
+
+        for message in messages:
+            if not message.message_id:
+                continue
+            deleted_ids = self._load_deleted_message_ids_for_chat(message.chat_jid)
+            deleted_ids.add(message.message_id)
+
+    def _is_locally_deleted_message(self, message: Message) -> bool:
+        if not message.message_id:
+            return False
+        return message.message_id in self._load_deleted_message_ids_for_chat(message.chat_jid)
 
     def _persist_chat(self, chat: Chat) -> None:
         if not self.current_jid:

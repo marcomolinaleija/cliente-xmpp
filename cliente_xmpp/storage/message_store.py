@@ -37,7 +37,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -1204,6 +1204,10 @@ class MessageStore:
                 (account_jid, chat_jid),
             )
             conn.execute(
+                "DELETE FROM deleted_messages WHERE account_jid = ? AND chat_jid = ?",
+                (account_jid, chat_jid),
+            )
+            conn.execute(
                 """
                 UPDATE chats
                 SET unread_count = 0, last_message_preview = '', last_message_at = NULL,
@@ -1385,7 +1389,20 @@ class MessageStore:
             return
 
         with self._connect() as conn:
+            deleted_ids = {
+                (str(row["chat_jid"]), str(row["message_id"]))
+                for row in conn.execute(
+                    """
+                    SELECT chat_jid, message_id
+                    FROM deleted_messages
+                    WHERE account_jid = ?
+                    """,
+                    (account_jid,),
+                ).fetchall()
+            }
             for message in messages:
+                if message.message_id and (message.chat_jid, message.message_id) in deleted_ids:
+                    continue
                 self._upsert_message(conn, account_jid, message)
                 self._upsert_message_chat_summary(conn, account_jid, message)
 
@@ -1463,11 +1480,19 @@ class MessageStore:
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
     def delete_cached_message(self, account_jid: str, chat_jid: str, message_id: str) -> None:
-        """Remove one message from the local cache without changing remote state."""
+        """Remove one message and remember it so a stale sync cannot restore it."""
         if not account_jid or not chat_jid or not message_id:
             return
 
         with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO deleted_messages (
+                    account_jid, chat_jid, message_id, deleted_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (account_jid, chat_jid, message_id, _datetime_to_db(datetime.now())),
+            )
             cursor = conn.execute(
                 """
                 DELETE FROM messages
@@ -1477,6 +1502,21 @@ class MessageStore:
             )
             if cursor.rowcount > 0:
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
+
+    def load_deleted_message_ids(self, account_jid: str, chat_jid: str) -> set[str]:
+        if not account_jid or not chat_jid:
+            return set()
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id
+                FROM deleted_messages
+                WHERE account_jid = ? AND chat_jid = ?
+                """,
+                (account_jid, chat_jid),
+            ).fetchall()
+        return {str(row["message_id"]) for row in rows if str(row["message_id"])}
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -1576,6 +1616,14 @@ class MessageStore:
                     nick TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account_jid, group_jid, participant_jid)
+                );
+
+                CREATE TABLE IF NOT EXISTS deleted_messages (
+                    account_jid TEXT NOT NULL,
+                    chat_jid TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    deleted_at TEXT NOT NULL,
+                    PRIMARY KEY (account_jid, chat_jid, message_id)
                 );
                 """
             )

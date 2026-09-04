@@ -656,7 +656,7 @@ class ConversationPanel(wx.Panel):
     def cancel_message_selection(self) -> bool:
         was_active = self._message_selection_mode or bool(self.selected_messages())
         self._message_selection_mode = False
-        getattr(self, "_selected_message_keys", set()).clear()
+        self._selected_message_keys = set()
         self._clear_message_selection()
         self._refresh_message_selection_labels()
         self._update_message_action_buttons()

@@ -295,7 +295,7 @@ class GroupPrivateMessageTests(unittest.TestCase):
             )
 
         self.assertEqual(len(popup_parent.popup_menus), 1)
-        self.assertEqual(len(popup_parent.bind_calls), 13)
+        self.assertEqual(len(popup_parent.bind_calls), 14)
         self.assertTrue(
             all(
                 event_type is wx.EVT_MENU
@@ -304,7 +304,7 @@ class GroupPrivateMessageTests(unittest.TestCase):
         )
         self.assertEqual(
             len({id(item) for _event, _handler, item in popup_parent.bind_calls}),
-            13,
+            14,
         )
         main_window_bind.assert_not_called()
         main_window_popup.assert_not_called()

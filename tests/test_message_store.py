@@ -727,6 +727,7 @@ class MessageStoreTests(unittest.TestCase):
 
             loaded = store.load_recent_messages(account_jid, chat_jid)
             self.assertEqual([message.message_id for message in loaded], ["remote-1"])
+
             chat = store.load_chats(account_jid)[0]
             self.assertIn("Mensaje anterior", chat.last_message_preview)
             self.assertEqual(chat.last_message_at, older.sent_at.astimezone(UTC))
@@ -735,6 +736,31 @@ class MessageStoreTests(unittest.TestCase):
 
             loaded = store.load_recent_messages(account_jid, chat_jid)
             self.assertEqual([message.message_id for message in loaded], ["remote-1"])
+
+    def test_deleted_cached_message_stays_hidden_after_reopen_and_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            account_jid = "me@example.test"
+            chat_jid = "chat@example.test"
+            message = Message(
+                chat_jid=chat_jid,
+                sender_jid="me@example.test",
+                body="Mensaje eliminado",
+                outgoing=True,
+                message_id="remote-1",
+            )
+            store = MessageStore(path)
+            store.upsert_messages(account_jid, [message])
+            store.delete_cached_message(account_jid, chat_jid, message.message_id)
+
+            reopened = MessageStore(path)
+            reopened.upsert_messages(account_jid, [message])
+
+            self.assertEqual(reopened.load_recent_messages(account_jid, chat_jid), [])
+            self.assertEqual(
+                reopened.load_deleted_message_ids(account_jid, chat_jid),
+                {message.message_id},
+            )
 
     def test_startup_removes_only_failed_local_optimistic_messages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

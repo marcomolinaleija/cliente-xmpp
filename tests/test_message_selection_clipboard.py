@@ -266,6 +266,76 @@ class MessageSelectionClipboardTests(unittest.TestCase):
         self.assertFalse(ConversationPanel.play_selected_audio(panel))
         self.assertFalse(ConversationPanel.play_selected_video(panel))
 
+    def test_cancel_selection_clears_logical_messages(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="other@example.test",
+            body="mensaje",
+            message_id="message-id",
+        )
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._message_selection_mode = True
+        panel._selected_message_keys = {
+            ConversationPanel._message_focus_key(message),
+        }
+        panel._speaker = SimpleNamespace(speak=Mock())
+        panel._clear_message_selection = Mock()
+        panel._refresh_message_selection_labels = Mock()
+        panel._update_message_action_buttons = Mock()
+        panel.selected_messages = lambda: (
+            [message] if panel._selected_message_keys else []
+        )
+
+        self.assertTrue(ConversationPanel.cancel_message_selection(panel))
+        self.assertFalse(panel._message_selection_mode)
+        self.assertEqual(panel._selected_message_keys, set())
+        self.assertEqual(panel.selected_messages(), [])
+
+    def test_copy_selected_messages_exits_selection_mode(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="other@example.test",
+            body="mensaje",
+            message_id="message-id",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.conversation = SimpleNamespace(
+            message_selection_mode=True,
+            selected_messages=lambda: [message],
+            cancel_message_selection=Mock(),
+        )
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+        window.speaker = SimpleNamespace(speak=Mock())
+        clipboard = SimpleNamespace(
+            Open=Mock(return_value=True),
+            SetData=Mock(),
+            Close=Mock(),
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.TheClipboard", clipboard):
+            MainWindow._copy_selected_messages(window)
+
+        window.conversation.cancel_message_selection.assert_called_once_with()
+
+    def test_context_selection_entry_focuses_message_before_starting(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="other@example.test",
+            body="mensaje",
+            message_id="message-id",
+        )
+        conversation = SimpleNamespace(
+            focus_message=Mock(),
+            begin_message_selection=Mock(),
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.conversation = conversation
+
+        MainWindow._begin_message_selection_from_context(window, message)
+
+        conversation.focus_message.assert_called_once_with(message)
+        conversation.begin_message_selection.assert_called_once_with()
+
     def test_batch_delete_retracts_only_eligible_own_messages_and_removes_local_rows(self) -> None:
         chat = Chat(jid="chat@example.test", name="Chat")
         now = datetime.now().astimezone()
@@ -316,6 +386,7 @@ class MessageSelectionClipboardTests(unittest.TestCase):
         )
         self.assertEqual(window.messages_by_chat[chat.jid], [])
         self.assertEqual(window.message_store.delete_cached_message.call_count, 2)
+        window.conversation.cancel_message_selection.assert_called_once_with()
         self.assertIn("no se pueden retirar", window.status_bar.SetStatusText.call_args.args[0])
 
     def test_local_batch_delete_removes_cached_incoming_message_too(self) -> None:
@@ -409,7 +480,11 @@ class MessageSelectionClipboardTests(unittest.TestCase):
         window = MainWindow.__new__(MainWindow)
         window.searchable_chats_by_jid = {target.jid: target}
         window.latest_message_timestamps_by_chat = {}
-        window.conversation = SimpleNamespace(messages=SimpleNamespace(SetFocus=Mock()))
+        window.conversation = SimpleNamespace(
+            messages=SimpleNamespace(SetFocus=Mock()),
+            message_selection_mode=True,
+            cancel_message_selection=Mock(),
+        )
         window.xmpp = SimpleNamespace(send_forward=Mock())
         window._require_whatsapp_connection = lambda: True
         window._add_pending_outgoing_message = Mock()
@@ -441,6 +516,7 @@ class MessageSelectionClipboardTests(unittest.TestCase):
 
         forwarded = window._add_pending_outgoing_message.call_args.args[0]
         self.assertEqual(forwarded.media_local_path, "")
+        window.conversation.cancel_message_selection.assert_called_once_with()
 
     def test_individual_external_media_delete_has_no_false_success(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.chat_list_panel import ChatListPanel
@@ -31,6 +31,104 @@ class _CapturingExecutor:
 
 
 class ConversationPerformanceTests(unittest.TestCase):
+    def test_focus_event_updates_only_the_focused_row(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="mensaje",
+        )
+        panel = SimpleNamespace(
+            _message_selection_mode=True,
+            _message_at_row=lambda index: message if index == 2500 else None,
+            _sync_native_message_selection=Mock(),
+            _refresh_message_selection_labels=Mock(),
+            _announce_focused_message_selection=Mock(),
+            _update_message_action_buttons=Mock(),
+        )
+        event = SimpleNamespace(GetIndex=lambda: 2500, Skip=Mock())
+
+        ConversationPanel._on_message_focused(panel, event)
+
+        panel._sync_native_message_selection.assert_called_once_with(2500)
+        panel._refresh_message_selection_labels.assert_called_once_with(2500)
+        panel._update_message_action_buttons.assert_called_once_with(message)
+        event.Skip.assert_called_once_with()
+
+    def test_selection_buttons_count_does_not_scan_messages(self) -> None:
+        messages = [
+            Message(
+                chat_jid="chat@example.test",
+                sender_jid="contact@example.test",
+                body=f"mensaje {index}",
+                message_id=f"message-{index}",
+            )
+            for index in range(5000)
+        ]
+
+        class Button:
+            def __init__(self) -> None:
+                self.visible = False
+                self.enabled = False
+                self.label = ""
+
+            def IsShown(self) -> bool:
+                return self.visible
+
+            def Show(self, value: bool) -> None:
+                self.visible = value
+
+            def Enable(self, value: bool) -> None:
+                self.enabled = value
+
+            def SetLabel(self, value: str) -> None:
+                self.label = value
+
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._message_selection_mode = True
+        panel._messages = messages
+        panel._selected_message_keys = {
+            ConversationPanel._message_focus_key(messages[-1]),
+        }
+        panel.selected_messages = Mock(side_effect=AssertionError("unexpected full scan"))
+        panel.selected_message = lambda: None
+        panel._can_go_to_quoted_message = lambda _message: False
+        panel.go_to_quoted_button = Button()
+        panel.vote_in_poll_button = Button()
+        (
+            panel.forward_selected_button,
+            panel.copy_selected_button,
+            panel.delete_selected_button,
+        ) = (Button(), Button(), Button())
+        panel.Layout = Mock()
+
+        ConversationPanel._update_message_action_buttons(panel)
+
+        self.assertTrue(panel.forward_selected_button.visible)
+        self.assertEqual(panel.forward_selected_button.label, "Reenviar (1)")
+
+    def test_selection_announcement_count_does_not_scan_messages(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="mensaje",
+            message_id="message-2500",
+        )
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._message_selection_mode = True
+        panel._selected_message_keys = {
+            ConversationPanel._message_focus_key(message),
+        }
+        panel.selected_messages = Mock(side_effect=AssertionError("unexpected full scan"))
+        panel._message_at_row = lambda index: message if index == 2500 else None
+        panel._message_focus_key = ConversationPanel._message_focus_key
+        panel._format_message_for_reader = lambda _message: "Mensaje completo"
+        panel._speaker = SimpleNamespace(speak=Mock())
+
+        ConversationPanel._announce_focused_message_selection(panel, message, index=2500)
+
+        panel._speaker.speak.assert_called_once()
+        self.assertIn("1 mensaje seleccionado", panel._speaker.speak.call_args.args[0])
+
     def test_long_list_row_is_bounded_but_reader_keeps_full_body(self) -> None:
         body = "contenido " * 1000
         message = Message(

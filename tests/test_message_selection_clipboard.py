@@ -74,6 +74,19 @@ class MessageSelectionClipboardTests(unittest.TestCase):
         conversation.toggle_focused_message_selection.assert_called_once_with()
         conversation.begin_message_selection.assert_not_called()
 
+    def test_enter_video_uses_native_player_instead_of_text_reader(self) -> None:
+        conversation = SimpleNamespace(
+            message_selection_mode=False,
+            play_selected_video=Mock(return_value=True),
+            open_selected_message_reader=Mock(),
+        )
+        window = SimpleNamespace(conversation=conversation)
+
+        MainWindow._on_messages_key_down(window, _KeyEvent(wx.WXK_RETURN))
+
+        conversation.play_selected_video.assert_called_once_with()
+        conversation.open_selected_message_reader.assert_not_called()
+
     def test_selection_row_label_exposes_selected_state_to_screen_readers(self) -> None:
         message = Message(
             chat_jid="chat@example.test",
@@ -228,17 +241,21 @@ class MessageSelectionClipboardTests(unittest.TestCase):
         )
         self.assertEqual(message_list.labels[0], "Seleccionado. Mensaje visible")
 
-    def test_focused_row_refreshes_accessible_selection_label(self) -> None:
+    def test_focused_row_refreshes_only_its_accessible_selection_label(self) -> None:
         panel = SimpleNamespace(
             _message_selection_mode=True,
             _sync_native_message_selection=Mock(),
             _refresh_message_selection_labels=Mock(),
+            _message_at_row=Mock(return_value=None),
+            _update_message_action_buttons=Mock(),
         )
-        event = SimpleNamespace(Skip=Mock())
+        event = SimpleNamespace(GetIndex=lambda: 17, Skip=Mock())
 
         ConversationPanel._on_message_focused(panel, event)
 
-        panel._refresh_message_selection_labels.assert_called_once_with()
+        panel._sync_native_message_selection.assert_not_called()
+        panel._refresh_message_selection_labels.assert_not_called()
+        panel._update_message_action_buttons.assert_not_called()
         event.Skip.assert_called_once_with()
 
     def test_focused_row_is_announced_with_state_and_message(self) -> None:
@@ -251,13 +268,17 @@ class MessageSelectionClipboardTests(unittest.TestCase):
             _message_selection_mode=True,
             _refresh_message_selection_labels=Mock(),
             _message_at_row=Mock(return_value=message),
+            _sync_native_message_selection=Mock(),
             _announce_focused_message_selection=Mock(),
+            _update_message_action_buttons=Mock(),
         )
         event = SimpleNamespace(GetIndex=lambda: 0, Skip=Mock())
 
         ConversationPanel._on_message_focused(panel, event)
 
-        panel._announce_focused_message_selection.assert_called_once_with(message)
+        panel._sync_native_message_selection.assert_called_once_with(0)
+        panel._refresh_message_selection_labels.assert_called_once_with(0)
+        panel._announce_focused_message_selection.assert_called_once_with(message, index=0)
 
     def test_selection_mode_disables_media_playback(self) -> None:
         panel = ConversationPanel.__new__(ConversationPanel)

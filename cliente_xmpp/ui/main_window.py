@@ -4212,7 +4212,13 @@ class MainWindow(wx.Frame):
         if key_code == wx.WXK_DELETE and self._delete_selected_message():
             return
 
-        if MainWindow._is_space_key(event) and self.conversation.play_selected_video():
+        if (
+            (
+                MainWindow._is_space_key(event)
+                or key_code in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER)
+            )
+            and self.conversation.play_selected_video()
+        ):
             return
 
         if self._is_open_link_shortcut(event) and self._open_selected_message_link():
@@ -4222,6 +4228,8 @@ class MainWindow(wx.Frame):
             wx.WXK_RETURN,
             wx.WXK_NUMPAD_ENTER,
         ):
+            if getattr(self.conversation, "message_selection_mode", False):
+                return
             message = self.conversation.selected_message()
             if (
                 message

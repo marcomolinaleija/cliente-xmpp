@@ -119,6 +119,14 @@ class MessageDeliveryUpdated:
 
 
 @dataclass(slots=True)
+class FileBatchCompleted:
+    chat_jid: str
+    total: int
+    succeeded: int
+    failed: int
+
+
+@dataclass(slots=True)
 class ChatDisplayedSynced:
     chat_jid: str
     message_id: str
@@ -185,6 +193,7 @@ XmppEvent = (
     | MessageReactionReceived
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
+    | FileBatchCompleted
     | ChatDisplayedSynced
     | ContactPresenceUpdated
     | ContactAvatarReceived

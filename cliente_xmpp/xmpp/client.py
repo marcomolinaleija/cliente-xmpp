@@ -54,6 +54,7 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
+    FileBatchCompleted,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -5138,6 +5139,66 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(schedule)
 
+    def send_files_serial(
+        self,
+        to_jid: str,
+        paths: list[str],
+        is_group: bool = False,
+        reply_to_jid: str = "",
+        reply_to_id: str = "",
+        reply_quote: str = "",
+    ) -> None:
+        """Upload a stable file snapshot in order and report one aggregate result."""
+        snapshot = tuple(paths)
+        if not self._client or not self._loop:
+            self._emit(
+                FileBatchCompleted(
+                    chat_jid=to_jid,
+                    total=len(snapshot),
+                    succeeded=0,
+                    failed=len(snapshot),
+                )
+            )
+            return
+
+        async def send() -> None:
+            succeeded = 0
+            failed = 0
+            for path in snapshot:
+                if not self._client:
+                    failed += 1
+                    continue
+                try:
+                    message = await self._client.send_file(
+                        to_jid,
+                        path,
+                        is_group=is_group,
+                        reply_to_jid=reply_to_jid,
+                        reply_to_id=reply_to_id,
+                        reply_quote=reply_quote,
+                    )
+                except Exception:
+                    failed += 1
+                    delete_temporary_voice_note(path)
+                    continue
+                succeeded += 1
+                self._emit(MessageReceived(message))
+
+            self._emit(
+                FileBatchCompleted(
+                    chat_jid=to_jid,
+                    total=len(snapshot),
+                    succeeded=succeeded,
+                    failed=failed,
+                )
+            )
+
+        def schedule() -> None:
+            if self._loop:
+                self._loop.create_task(send())
+
+        self._loop.call_soon_threadsafe(schedule)
+
     def send_forward(
         self,
         to_jid: str,
@@ -5190,7 +5251,7 @@ class XmppService:
                 self._append_message_flags(
                     msg,
                     is_sticker=source.is_sticker,
-                    is_forwarded=True,
+                    is_forwarded=not source.outgoing,
                 )
                 self._request_delivery_updates(msg, message_type)
                 self._client.track_transient_message_retry(

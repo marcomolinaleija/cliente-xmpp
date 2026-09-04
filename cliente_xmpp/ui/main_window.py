@@ -143,6 +143,7 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarReceived,
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
+    FileBatchCompleted,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -3643,7 +3644,7 @@ class MainWindow(wx.Frame):
         if not self._require_whatsapp_connection():
             return
 
-        files = [path for path in paths if path.is_file()]
+        files = tuple(path for path in tuple(paths) if path.is_file())
         if not files:
             self._set_clipboard_status("No se pudo adjuntar: no hay archivos válidos")
             return
@@ -3653,19 +3654,30 @@ class MainWindow(wx.Frame):
         reply_context, reply_to_jid, reply_to_id, reply_quote = reply_data
 
         if len(files) == 1:
-            self._set_clipboard_status(f"Subiendo {source_label}: {files[0].name}")
+            self._set_clipboard_status(f"Enviando {source_label}: {files[0].name}")
         else:
-            self._set_clipboard_status(f"Subiendo {len(files)} archivos...")
+            self._set_clipboard_status(f"Enviando {len(files)} archivos...")
 
-        for path in files:
-            self.xmpp.send_file(
+        send_files_serial = getattr(self.xmpp, "send_files_serial", None)
+        if send_files_serial is not None:
+            send_files_serial(
                 chat.jid,
-                str(path),
+                [str(path) for path in files],
                 is_group=chat.is_group,
                 reply_to_jid=reply_to_jid,
                 reply_to_id=reply_to_id,
                 reply_quote=reply_quote,
             )
+        else:
+            for path in files:
+                self.xmpp.send_file(
+                    chat.jid,
+                    str(path),
+                    is_group=chat.is_group,
+                    reply_to_jid=reply_to_jid,
+                    reply_to_id=reply_to_id,
+                    reply_quote=reply_quote,
+                )
         if reply_context is not None:
             self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
@@ -3699,6 +3711,20 @@ class MainWindow(wx.Frame):
         )
 
     def _set_clipboard_status(self, message: str) -> None:
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _handle_file_batch_completed(
+        self,
+        chat_jid: str,
+        total: int,
+        succeeded: int,
+        failed: int,
+    ) -> None:
+        if failed:
+            message = f"Archivos enviados: {succeeded} de {total}; fallos: {failed}"
+        else:
+            message = f"Archivos enviados: {succeeded} de {total}; sin fallos"
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
 
@@ -5571,6 +5597,13 @@ class MainWindow(wx.Frame):
                     delivery_state,
                     detail,
                 )
+            case FileBatchCompleted(
+                chat_jid=chat_jid,
+                total=total,
+                succeeded=succeeded,
+                failed=failed,
+            ):
+                self._handle_file_batch_completed(chat_jid, total, succeeded, failed)
             case ChatDisplayedSynced(chat_jid=chat_jid, message_id=message_id):
                 self._handle_synced_chat_displayed(chat_jid, message_id)
             case ContactPresenceUpdated(chat_jid=chat_jid):

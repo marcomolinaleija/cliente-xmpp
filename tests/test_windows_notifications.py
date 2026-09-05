@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.notifications.windows import (
@@ -160,6 +161,27 @@ class IncomingWindowsNotificationTests(unittest.TestCase):
         )
 
         self.assertEqual(played, [])
+
+    def test_open_focused_chat_uses_its_dedicated_sound_before_a_custom_tone(self) -> None:
+        played: list[str] = []
+        window = SimpleNamespace(
+            IsActive=lambda: True,
+            _message_notifications_muted=lambda _message: False,
+            _notification_sound_path_for_chat=lambda _jid: r"C:\\custom.wav",
+            open_chat_message_sound_enabled=True,
+            open_chat_message_sound=SimpleNamespace(play=lambda: played.append("open")),
+            new_message_sound=SimpleNamespace(play=lambda: played.append("new")),
+        )
+
+        with patch("cliente_xmpp.ui.main_window.play_sound_path") as play_custom:
+            MainWindow._play_incoming_message_sound(
+                window,
+                self._message(),
+                current_chat_is_open=True,
+            )
+
+        self.assertEqual(played, ["open"])
+        play_custom.assert_not_called()
 
 
 if __name__ == "__main__":

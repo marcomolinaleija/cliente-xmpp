@@ -6750,13 +6750,13 @@ class MainWindow(wx.Frame):
         if windows_notification_shown:
             return
 
-        sound_path = self._notification_sound_path_for_chat(message.chat_jid)
-        if sound_path and play_sound_path(sound_path):
-            return
-
         if current_chat_is_open and self.IsActive():
             if getattr(self, "open_chat_message_sound_enabled", True):
                 self.open_chat_message_sound.play()
+            return
+
+        sound_path = self._notification_sound_path_for_chat(message.chat_jid)
+        if sound_path and play_sound_path(sound_path):
             return
 
         self.new_message_sound.play()

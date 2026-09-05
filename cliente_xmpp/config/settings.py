@@ -161,10 +161,29 @@ class SettingsStore:
         sent_message_enabled: bool,
     ) -> None:
         payload = self._load_payload()
-        payload["notification_sounds"] = {
+        sounds = payload.get("notification_sounds", {})
+        if not isinstance(sounds, dict):
+            sounds = {}
+        sounds.update({
             "open_chat_message": bool(open_chat_message_enabled),
             "sent_message": bool(sent_message_enabled),
-        }
+        })
+        payload["notification_sounds"] = sounds
+        self._save_payload(payload)
+
+    def load_incoming_notification_sound_path(self) -> str:
+        sounds = self._load_payload().get("notification_sounds", {})
+        if not isinstance(sounds, dict):
+            return ""
+        return str(sounds.get("incoming_message_path", "")).strip()
+
+    def save_incoming_notification_sound_path(self, path: str) -> None:
+        payload = self._load_payload()
+        sounds = payload.get("notification_sounds", {})
+        if not isinstance(sounds, dict):
+            sounds = {}
+        sounds["incoming_message_path"] = str(path).strip()
+        payload["notification_sounds"] = sounds
         self._save_payload(payload)
 
     def load_desktop_notification_settings(self) -> DesktopNotificationSettings:

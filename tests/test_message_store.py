@@ -13,6 +13,19 @@ from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_chat_notification_sound_path_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            chat = Chat(jid="chat@example.test", name="Chat")
+            store.upsert_chats("me@example.test", [chat])
+            store.set_chat_notification_sound_path(
+                "me@example.test", chat.jid, r"C:\\Windows\\Media\\notify.wav"
+            )
+
+            loaded = store.load_chats("me@example.test")
+
+        self.assertEqual(loaded[0].notification_sound_path, r"C:\\Windows\\Media\\notify.wav")
+
     def test_rayoai_description_survives_message_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

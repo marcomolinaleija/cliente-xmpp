@@ -22,6 +22,7 @@ from cliente_xmpp.audio.notification import (
     NewMessageSound,
     OpenChatMessageSound,
     SentMessageSound,
+    play_sound_path,
 )
 from cliente_xmpp.audio.recorder import AudioRecordingError, MciAudioRecorder
 from cliente_xmpp.config.credentials import CredentialStore
@@ -113,6 +114,7 @@ from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
+from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
@@ -227,6 +229,9 @@ class MainWindow(wx.Frame):
             self.open_chat_message_sound_enabled,
             self.sent_message_sound_enabled,
         ) = self.settings_store.load_notification_sound_settings()
+        self.incoming_notification_sound_path = (
+            self.settings_store.load_incoming_notification_sound_path()
+        )
         desktop_notifications = self.settings_store.load_desktop_notification_settings()
         self.windows_notifications_enabled = desktop_notifications.enabled
         self.windows_notification_previews_enabled = desktop_notifications.show_preview
@@ -283,6 +288,7 @@ class MainWindow(wx.Frame):
         self.audio_metadata_in_progress: set[str] = set()
         self.auto_downloading_media_keys: set[tuple[str, str]] = set()
         self.chat_names_by_jid: dict[str, str] = {}
+        self.notification_sound_paths_by_chat: dict[str, str] = {}
         self.group_participants_by_chat: dict[str, dict[str, GroupParticipant]] = {}
         self.mention_candidates: list[MentionCandidate] = []
         self.contact_presence_by_chat: dict[str, ContactPresenceUpdated] = {}
@@ -511,6 +517,12 @@ class MainWindow(wx.Frame):
             wx.EVT_BUTTON,
             self._on_test_windows_notification,
         )
+        self.settings_panel.choose_incoming_sound_button.Bind(
+            wx.EVT_BUTTON, self._on_choose_incoming_sound
+        )
+        self.settings_panel.reset_incoming_sound_button.Bind(
+            wx.EVT_BUTTON, self._on_reset_incoming_sound
+        )
         self.settings_panel.update_check_interval.Bind(
             wx.EVT_COMBOBOX,
             self._on_update_check_interval_changed,
@@ -641,6 +653,14 @@ class MainWindow(wx.Frame):
         except Exception:
             return
 
+    def _save_incoming_notification_sound_path(self) -> None:
+        try:
+            self.settings_store.save_incoming_notification_sound_path(
+                self.incoming_notification_sound_path
+            )
+        except Exception:
+            return
+
     def _save_desktop_notification_settings(self) -> None:
         settings = DesktopNotificationSettings(
             enabled=self.windows_notifications_enabled,
@@ -675,6 +695,7 @@ class MainWindow(wx.Frame):
             announce_with_nvda=self.windows_notification_nvda_announcements_enabled,
             open_chat_sound=self.open_chat_message_sound_enabled,
             sent_message_sound=self.sent_message_sound_enabled,
+            incoming_sound_path=self.incoming_notification_sound_path,
             minimize_to_tray_on_alt_f4=self.minimize_to_tray_on_alt_f4,
             update_check_interval_minutes=self.update_check_interval_minutes,
             connection_mode=self.preferred_connection_mode,
@@ -820,6 +841,7 @@ class MainWindow(wx.Frame):
             title="WhatsApp CAN",
             message="Las notificaciones nativas de Windows están funcionando.",
             chat_jid="",
+            sound_path=self.incoming_notification_sound_path,
         )
         if shown:
             if not self.windows_notification_service.native_toasts_enabled:
@@ -831,6 +853,58 @@ class MainWindow(wx.Frame):
             return
         self.status_bar.SetStatusText("Windows no pudo mostrar la notificación de prueba")
         self.speaker.speak("Windows no pudo mostrar la notificación de prueba")
+
+    def _on_choose_incoming_sound(self, _event: wx.CommandEvent) -> None:
+        self._choose_notification_sound_for_chat("")
+
+    def _on_reset_incoming_sound(self, _event: wx.CommandEvent) -> None:
+        self.incoming_notification_sound_path = ""
+        self._save_incoming_notification_sound_path()
+        self._sync_settings_panel()
+        message = "Se restauró el sonido predeterminado de mensajes entrantes"
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _choose_notification_sound_for_chat(self, chat_jid: str) -> None:
+        selected_path = (
+            self._notification_sound_path_for_chat(chat_jid)
+            if chat_jid
+            else self.incoming_notification_sound_path
+        )
+        dialog = NotificationSoundDialog(self, selected_path=selected_path)
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            path = dialog.selected_path
+        finally:
+            dialog.Destroy()
+        if chat_jid:
+            self._set_chat_notification_sound_path(chat_jid, path)
+            return
+        self.incoming_notification_sound_path = path
+        self._save_incoming_notification_sound_path()
+        self._sync_settings_panel()
+        play_sound_path(path, "cliente_xmpp_notification_preview")
+        self.status_bar.SetStatusText("Sonido de mensajes entrantes actualizado")
+
+    def _set_chat_notification_sound_path(self, chat_jid: str, path: str) -> None:
+        if not self.current_jid:
+            return
+        try:
+            self.message_store.set_chat_notification_sound_path(self.current_jid, chat_jid, path)
+        except Exception:
+            self.status_bar.SetStatusText("No se pudo guardar el sonido del chat")
+            return
+        chat = self._chat_by_jid(chat_jid)
+        if chat is not None:
+            chat.notification_sound_path = path
+        if path:
+            self.notification_sound_paths_by_chat[chat_jid] = path
+            play_sound_path(path, "cliente_xmpp_chat_notification_preview")
+            self.status_bar.SetStatusText("Sonido personalizado del chat actualizado")
+        else:
+            self.notification_sound_paths_by_chat.pop(chat_jid, None)
+            self.status_bar.SetStatusText("El chat volverá a usar el sonido general")
 
     def _schedule_auto_connect(self) -> None:
         if not self._auto_connect_enabled():
@@ -1826,6 +1900,9 @@ class MainWindow(wx.Frame):
             wx.ID_ANY,
             "Desilenciar chat" if chat.notifications_muted else "Silenciar chat",
         )
+        sound_item = menu.Append(wx.ID_ANY, "Elegir sonido de notificación...")
+        default_sound_item = menu.Append(wx.ID_ANY, "Usar sonido general")
+        default_sound_item.Enable(bool(chat.notification_sound_path))
         pin_label = "Desfijar chat" if self._is_chat_pinned(chat.jid) else "Fijar chat"
         pin_item = menu.Append(wx.ID_ANY, pin_label)
         if not self._is_chat_pinned(chat.jid) and len(self.pinned_chat_jids) >= MAX_PINNED_CHATS:
@@ -1835,6 +1912,16 @@ class MainWindow(wx.Frame):
 
         self.Bind(wx.EVT_MENU, lambda _event: self._rename_selected_chat(), rename_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._toggle_selected_chat_mute(), mute_item)
+        self.Bind(
+            wx.EVT_MENU,
+            lambda _event, jid=chat.jid: self._choose_notification_sound_for_chat(jid),
+            sound_item,
+        )
+        self.Bind(
+            wx.EVT_MENU,
+            lambda _event, jid=chat.jid: self._set_chat_notification_sound_path(jid, ""),
+            default_sound_item,
+        )
         self.Bind(wx.EVT_MENU, lambda _event: self._toggle_selected_chat_pin(), pin_item)
         self.Bind(wx.EVT_MENU, lambda _event: self._delete_selected_chat(), delete_item)
         self.PopupMenu(menu)
@@ -6663,6 +6750,10 @@ class MainWindow(wx.Frame):
         if windows_notification_shown:
             return
 
+        sound_path = self._notification_sound_path_for_chat(message.chat_jid)
+        if sound_path and play_sound_path(sound_path):
+            return
+
         if current_chat_is_open and self.IsActive():
             if getattr(self, "open_chat_message_sound_enabled", True):
                 self.open_chat_message_sound.play()
@@ -7159,6 +7250,7 @@ class MainWindow(wx.Frame):
             title=title,
             message=preview,
             chat_jid=message.chat_jid,
+            sound_path=self._notification_sound_path_for_chat(message.chat_jid),
         )
 
     def _open_chat_from_windows_notification(self, chat_jid: str) -> None:
@@ -7296,6 +7388,11 @@ class MainWindow(wx.Frame):
         try:
             load_chats_started_at = time.perf_counter()
             chats = self.message_store.load_chats(self.current_jid)
+            self.notification_sound_paths_by_chat = {
+                chat.jid: chat.notification_sound_path
+                for chat in chats
+                if chat.notification_sound_path
+            }
             self._debug_perf(
                 "_load_cached_chats.load_chats",
                 load_chats_started_at,
@@ -8731,6 +8828,16 @@ class MainWindow(wx.Frame):
 
     def _message_notifications_muted(self, message: Message) -> bool:
         return self._chat_notifications_muted(message.chat_jid)
+
+    def _notification_sound_path_for_chat(self, chat_jid: str) -> str:
+        path = self.notification_sound_paths_by_chat.get(chat_jid, "")
+        if path:
+            return path
+        chat = self._chat_by_jid(chat_jid)
+        if chat is not None and chat.notification_sound_path:
+            self.notification_sound_paths_by_chat[chat_jid] = chat.notification_sound_path
+            return chat.notification_sound_path
+        return self.incoming_notification_sound_path
 
     def _update_chat_names(self, chats: list[Chat]) -> None:
         for chat in chats:

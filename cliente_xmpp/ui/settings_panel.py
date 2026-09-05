@@ -84,6 +84,14 @@ class SettingsPanel(wx.Panel):
             self,
             label=SENT_MESSAGE_SOUND_LABEL,
         )
+        self.incoming_sound_path = wx.TextCtrl(self, style=wx.TE_READONLY)
+        self.incoming_sound_path.SetName("Sonido para mensajes entrantes")
+        self.incoming_sound_path.SetToolTip(
+            "Archivo usado para mensajes entrantes. Puedes elegir un sonido de Windows "
+            "o uno personalizado."
+        )
+        self.choose_incoming_sound_button = wx.Button(self, label="Elegir sonido...")
+        self.reset_incoming_sound_button = wx.Button(self, label="Usar predeterminado")
         self.minimize_to_tray_on_alt_f4 = wx.CheckBox(
             self,
             label=MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL,
@@ -123,6 +131,7 @@ class SettingsPanel(wx.Panel):
         announce_with_nvda: bool,
         open_chat_sound: bool,
         sent_message_sound: bool,
+        incoming_sound_path: str,
         minimize_to_tray_on_alt_f4: bool,
         update_check_interval_minutes: int | None = DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
         connection_mode: str = CONNECTION_MODE_REMOTE,
@@ -135,6 +144,9 @@ class SettingsPanel(wx.Panel):
         self.announce_with_nvda.SetValue(announce_with_nvda)
         self.open_chat_sound.SetValue(open_chat_sound)
         self.sent_message_sound.SetValue(sent_message_sound)
+        self.incoming_sound_path.SetValue(
+            incoming_sound_path or "Sonido predeterminado de WhatsApp CAN"
+        )
         self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
         self.set_update_check_interval_minutes(update_check_interval_minutes)
         self.refresh_accessible_states()
@@ -275,6 +287,17 @@ class SettingsPanel(wx.Panel):
         notification_box.Add(self.announce_with_nvda, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
         notification_box.Add(self.open_chat_sound, 0, wx.ALL, 8)
         notification_box.Add(self.sent_message_sound, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        notification_box.Add(
+            wx.StaticText(self, label="Sonido de mensajes entrantes:"),
+            0,
+            wx.LEFT | wx.RIGHT | wx.TOP,
+            8,
+        )
+        notification_box.Add(self.incoming_sound_path, 0, wx.ALL | wx.EXPAND, 8)
+        incoming_sound_buttons = wx.BoxSizer(wx.HORIZONTAL)
+        incoming_sound_buttons.Add(self.choose_incoming_sound_button, 0, wx.RIGHT, 8)
+        incoming_sound_buttons.Add(self.reset_incoming_sound_button, 0)
+        notification_box.Add(incoming_sound_buttons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
         window_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Ventana")
         window_box.Add(self.minimize_to_tray_on_alt_f4, 0, wx.ALL, 8)

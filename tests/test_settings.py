@@ -106,6 +106,20 @@ class NotificationSoundSettingsTests(unittest.TestCase):
 
             self.assertEqual(store.load_notification_sound_settings(), (False, True))
 
+    def test_incoming_notification_sound_path_survives_other_sound_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            store.save_incoming_notification_sound_path(r"C:\\Windows\\Media\\notify.wav")
+            store.save_notification_sound_settings(
+                open_chat_message_enabled=False,
+                sent_message_enabled=True,
+            )
+
+            self.assertEqual(
+                store.load_incoming_notification_sound_path(),
+                r"C:\\Windows\\Media\\notify.wav",
+            )
+
 
 class NewChatSettingsTests(unittest.TestCase):
     def test_country_defaults_to_mexico(self) -> None:

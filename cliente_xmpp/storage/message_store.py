@@ -320,6 +320,7 @@ class MessageStore:
                 """
                 SELECT
                     jid, name, custom_name, is_group, notifications_muted,
+                    notification_sound_path,
                     notification_settings_known, group_member_count, is_self_group,
                     unread_count, last_message_preview, last_message_at
                 FROM chats
@@ -337,6 +338,7 @@ class MessageStore:
                 is_group=bool(row["is_group"]),
                 notifications_muted=bool(row["notifications_muted"]),
                 notification_settings_known=bool(row["notification_settings_known"]),
+                notification_sound_path=str(row["notification_sound_path"] or ""),
                 group_member_count=int(row["group_member_count"] or 0),
                 is_self_group=bool(row["is_self_group"]),
                 unread_count=int(row["unread_count"] or 0),
@@ -1180,6 +1182,23 @@ class MessageStore:
                 (int(muted), now, account_jid, chat_jid),
             )
 
+    def set_chat_notification_sound_path(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        sound_path: str,
+    ) -> None:
+        now = _datetime_to_db(datetime.now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE chats
+                SET notification_sound_path = ?, updated_at = ?
+                WHERE account_jid = ? AND jid = ?
+                """,
+                (sound_path.strip(), now, account_jid, chat_jid),
+            )
+
     def load_chat_media_paths(self, account_jid: str, chat_jid: str) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1532,6 +1551,7 @@ class MessageStore:
                     is_group INTEGER NOT NULL DEFAULT 0,
                     notifications_muted INTEGER NOT NULL DEFAULT 0,
                     notification_settings_known INTEGER NOT NULL DEFAULT 0,
+                    notification_sound_path TEXT NOT NULL DEFAULT '',
                     group_member_count INTEGER NOT NULL DEFAULT 0,
                     is_self_group INTEGER NOT NULL DEFAULT 0,
                     unread_count INTEGER NOT NULL DEFAULT 0,
@@ -1928,6 +1948,10 @@ class MessageStore:
                 "ALTER TABLE chats ADD COLUMN notification_settings_known "
                 "INTEGER NOT NULL DEFAULT 0"
             )
+        if "notification_sound_path" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN notification_sound_path TEXT NOT NULL DEFAULT ''"
+            )
         if "group_member_count" not in existing_columns:
             conn.execute(
                 "ALTER TABLE chats ADD COLUMN group_member_count INTEGER NOT NULL DEFAULT 0"
@@ -2083,7 +2107,8 @@ class MessageStore:
         existing = conn.execute(
             """
             SELECT name, last_message_preview, last_message_at, custom_name, is_group,
-                notifications_muted, notification_settings_known, group_member_count,
+                notifications_muted, notification_settings_known, notification_sound_path,
+                group_member_count,
                 is_self_group
             FROM chats
             WHERE account_jid = ? AND jid = ?
@@ -2112,6 +2137,10 @@ class MessageStore:
             else:
                 notifications_muted = bool(existing["notifications_muted"])
                 notification_settings_known = bool(existing["notification_settings_known"])
+            notification_sound_path = (
+                chat.notification_sound_path
+                or str(existing["notification_sound_path"] or "")
+            )
             group_member_count = chat.group_member_count or int(
                 existing["group_member_count"] or 0
             )
@@ -2120,6 +2149,7 @@ class MessageStore:
             is_group = chat.is_group
             notifications_muted = chat.notifications_muted
             notification_settings_known = chat.notification_settings_known
+            notification_sound_path = chat.notification_sound_path
             group_member_count = chat.group_member_count
             is_self_group = chat.is_self_group
 
@@ -2127,10 +2157,11 @@ class MessageStore:
             """
             INSERT INTO chats (
                 account_jid, jid, name, custom_name, is_group, notifications_muted,
-                notification_settings_known, group_member_count, is_self_group,
+                notification_settings_known, notification_sound_path, group_member_count,
+                is_self_group,
                 unread_count, last_message_preview, last_message_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_jid, jid) DO UPDATE SET
                 name = excluded.name,
                 custom_name = COALESCE(NULLIF(excluded.custom_name, ''), chats.custom_name),
@@ -2144,6 +2175,10 @@ class MessageStore:
                         OR chats.notification_settings_known = 1 THEN 1
                     ELSE 0
                 END,
+                notification_sound_path = COALESCE(
+                    NULLIF(excluded.notification_sound_path, ''),
+                    chats.notification_sound_path
+                ),
                 group_member_count = COALESCE(
                     NULLIF(excluded.group_member_count, 0),
                     chats.group_member_count
@@ -2168,6 +2203,7 @@ class MessageStore:
                 int(is_group),
                 int(notifications_muted),
                 int(notification_settings_known),
+                notification_sound_path,
                 group_member_count,
                 int(is_self_group),
                 chat.unread_count,

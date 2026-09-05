@@ -137,6 +137,7 @@ class Chat:
     is_group: bool = False
     notifications_muted: bool = False
     notification_settings_known: bool = False
+    notification_sound_path: str = ""
     group_member_count: int = 0
     is_self_group: bool = False
     unread_count: int = 0

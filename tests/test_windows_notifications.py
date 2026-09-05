@@ -84,6 +84,7 @@ class IncomingWindowsNotificationTests(unittest.TestCase):
             _message_notifications_muted=lambda _message: muted,
             _speakable_chat_name=lambda _jid: "Familia",
             _display_name_for_jid=lambda _jid: "Participante",
+            _notification_sound_path_for_chat=lambda _jid: "",
             windows_notification_service=SimpleNamespace(
                 show_message=lambda **content: shown.append(content) or True
             ),
@@ -104,6 +105,7 @@ class IncomingWindowsNotificationTests(unittest.TestCase):
             "title": "Ana en Familia",
             "message": "Hola desde el grupo",
             "chat_jid": "room@example.org",
+            "sound_path": "",
         }])
 
     def test_hides_message_content_when_preview_is_disabled(self) -> None:

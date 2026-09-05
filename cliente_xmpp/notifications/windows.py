@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 APP_USER_MODEL_ID = "MarcoML.WhatsAppCAN"
@@ -41,17 +42,21 @@ class WindowsNotificationService:
         self.native_toasts_enabled = False
         self.initialization_error = ""
 
-    def show_message(self, *, title: str, message: str, chat_jid: str) -> bool:
+    def show_message(
+        self, *, title: str, message: str, chat_jid: str, sound_path: str = ""
+    ) -> bool:
         self._ensure_initialized()
         if self._toaster is None:
             return False
 
-        from windows_toasts import Toast, ToastButton
+        from windows_toasts import Toast, ToastButton, ToastAudio
 
         content = format_windows_notification(title, message)
         toast: Any
+        audio = ToastAudio(Path(sound_path)) if Path(sound_path).is_file() else None
         toast = Toast(
             [content.title, content.message],
+            audio=audio,
             on_activated=lambda event: self._handle_activation(
                 toast,
                 chat_jid,

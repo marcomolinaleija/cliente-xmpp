@@ -114,9 +114,9 @@ from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
-from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
+from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
 from cliente_xmpp.ui.poll_vote_dialog import PollVoteDialog
 from cliente_xmpp.ui.reaction_dialog import EmojiReactionDialog
@@ -6755,7 +6755,16 @@ class MainWindow(wx.Frame):
                 self.open_chat_message_sound.play()
             return
 
-        sound_path = self._notification_sound_path_for_chat(message.chat_jid)
+        notification_sound_path_for_chat = getattr(
+            self,
+            "_notification_sound_path_for_chat",
+            None,
+        )
+        sound_path = (
+            notification_sound_path_for_chat(message.chat_jid)
+            if callable(notification_sound_path_for_chat)
+            else ""
+        )
         if sound_path and play_sound_path(sound_path):
             return
 

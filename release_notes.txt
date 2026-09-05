@@ -1,3 +1,22 @@
+WhatsApp CAN 1.4.8
+
+Selección y gestión de mensajes
+- Para seleccionar varios mensajes, sitúa el foco en la lista y pulsa Ctrl+Espacio. Después, muévete con las flechas y pulsa Espacio sobre cada mensaje que quieras incluir; NVDA anuncia el mensaje, su estado y el total seleccionado.
+- Mientras la selección está activa aparecen las acciones Reenviar, Copiar y Eliminar con el número de mensajes elegidos. Escape cancela la selección sin ejecutar una acción.
+- Los mensajes eliminados dejan de reaparecer al volver a abrir el chat o reiniciar la aplicación, y sus archivos locales se limpian cuando corresponde.
+- Puedes pegar o adjuntar varios archivos de una vez: se envían en orden y la aplicación informa cuántos terminaron correctamente si alguno falla.
+
+Multimedia, respuestas y RayoAI
+- Espacio mantiene la reproducción de multimedia con prioridad de descarga cuando hace falta; Enter reproduce los videos directamente sin abrirlos como texto ni forzar una descarga local.
+- En Archivos y Destacados, Enter reproduce los videos en el visor integrado. Las respuestas a fotos y otros archivos usan una descripción legible, y Copiar puede copiar la ruta local de un archivo ya descargado.
+- Los videos enviados manualmente a RayoAI se entregan como archivos para su descripción y muestran el resultado en la barra de estado.
+- Se corrigieron las acciones del menú contextual de mensajes y archivos, incluido Responder, Copiar, Reenviar, guardar, reacciones y acciones de multimedia.
+
+Sonidos de notificación
+- En Configuración, en Sonido de mensajes entrantes, elige un sonido de Windows o agrega un archivo compatible. Al cambiar de fila puedes preescucharlo; Usar predeterminado restaura el sonido de WhatsApp CAN.
+- En el menú contextual de cada contacto o grupo, elige Elegir sonido de notificación... para asignarle un sonido propio. Usa Usar sonido general para quitar esa personalización.
+- El sonido se conserva por chat. Cuando un chat está abierto y activo se mantiene el sonido general configurado para el chat abierto; los sonidos personalizados se aplican a las notificaciones de los demás chats.
+
 WhatsApp CAN 1.4.7
 
 Llamadas completas

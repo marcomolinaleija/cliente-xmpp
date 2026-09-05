@@ -49,7 +49,7 @@ class WindowsNotificationService:
         if self._toaster is None:
             return False
 
-        from windows_toasts import Toast, ToastButton, ToastAudio
+        from windows_toasts import Toast, ToastAudio, ToastButton
 
         content = format_windows_notification(title, message)
         toast: Any

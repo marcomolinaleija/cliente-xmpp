@@ -42,6 +42,7 @@ from cliente_xmpp.local_bridge import (
     LocalBridgeConnection,
     LocalBridgeError,
     LocalBridgeService,
+    LocalBridgeUpdateStatus,
 )
 from cliente_xmpp.media.downloads import (
     DownloadedMedia,
@@ -263,6 +264,10 @@ class MainWindow(wx.Frame):
             thread_name_prefix="cliente-xmpp-local-bridge",
         )
         self.local_bridge_startup_in_progress = False
+        self.bridge_update_in_progress = False
+        self.bridge_update_installing = False
+        self.bridge_update_status: LocalBridgeUpdateStatus | None = None
+        self.bridge_update_feedback_timer: wx.CallLater | None = None
         self._closing = False
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
@@ -535,6 +540,14 @@ class MainWindow(wx.Frame):
             wx.EVT_BUTTON,
             self._on_check_updates_now,
         )
+        self.settings_panel.check_bridge_updates_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_check_bridge_updates_now,
+        )
+        self.settings_panel.update_bridge_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_update_bridge_now,
+        )
         for checkbox in (
             self.settings_panel.windows_notifications,
             self.settings_panel.show_preview,
@@ -700,6 +713,10 @@ class MainWindow(wx.Frame):
             update_check_interval_minutes=self.update_check_interval_minutes,
             connection_mode=self.preferred_connection_mode,
             local_bridge_available=self.local_bridge_available,
+            local_bridge_active=(
+                self.local_bridge_available
+                and self.connection_mode == CONNECTION_MODE_LOCAL
+            ),
         )
         if self.preferred_connection_mode != self.connection_mode:
             connection_status = "El cambio se aplicará al reiniciar WhatsApp CAN."
@@ -768,6 +785,13 @@ class MainWindow(wx.Frame):
         self._request_update_check(manual=True)
 
     def _request_update_check(self, *, manual: bool) -> None:
+        if getattr(self, "bridge_update_in_progress", False):
+            if manual:
+                message = "Espera a que termine la actualización del puente local."
+                self.settings_panel.set_update_check_status(message)
+                self.status_bar.SetStatusText(message)
+                self.speaker.speak(message)
+            return
         if not can_check_for_updates():
             if manual:
                 message = "La búsqueda de actualizaciones requiere la aplicación instalada."
@@ -815,6 +839,225 @@ class MainWindow(wx.Frame):
                 _offer_update(self, update)
 
         check_for_update_in_background(on_complete)
+
+    def _on_check_bridge_updates_now(self, _event: wx.CommandEvent) -> None:
+        self._request_bridge_update_check(manual=True)
+
+    def _request_bridge_update_check(self, *, manual: bool) -> None:
+        if self.connection_mode != CONNECTION_MODE_LOCAL or not self.local_bridge_available:
+            return
+        if self.bridge_update_in_progress:
+            if manual:
+                message = "Ya hay una operación del puente local en curso."
+                self.status_bar.SetStatusText(message)
+                self.speaker.speak(message)
+            return
+
+        self.bridge_update_in_progress = True
+        self.settings_panel.set_bridge_update_in_progress(True)
+        if manual:
+            self.status_bar.SetStatusText("Buscando actualización del puente local...")
+        future = self.local_bridge_executor.submit(self.local_bridge.check_for_update)
+
+        def completed() -> None:
+            if self._closing:
+                return
+            try:
+                result = future.result()
+            except LocalBridgeError as exc:
+                wx.CallAfter(self._finish_bridge_update_check, None, str(exc), manual)
+            except Exception:
+                wx.CallAfter(
+                    self._finish_bridge_update_check,
+                    None,
+                    "No se pudo comprobar la versión del puente local.",
+                    manual,
+                )
+            else:
+                wx.CallAfter(self._finish_bridge_update_check, result, "", manual)
+
+        future.add_done_callback(lambda _future: completed())
+
+    def _finish_bridge_update_check(
+        self,
+        result: LocalBridgeUpdateStatus | None,
+        error: str,
+        announce: bool,
+    ) -> None:
+        self.bridge_update_in_progress = False
+        if self.IsBeingDeleted():
+            return
+        self.settings_panel.set_bridge_update_in_progress(False)
+        self.bridge_update_status = result
+        if error:
+            message = f"No se pudo comprobar el puente local: {error}"
+            self.settings_panel.set_bridge_update_status(message)
+        elif result is None or not result.supports_updates:
+            message = (
+                "Esta instalación del puente necesita migrarse antes de poder "
+                "actualizarse desde la aplicación."
+            )
+            self.settings_panel.set_bridge_update_status(message)
+        elif result.update_available:
+            message = (
+                f"Puente v{result.current_version} instalado; "
+                f"v{result.target_version} disponible."
+            )
+            self.settings_panel.set_bridge_update_status(message, can_update=True)
+        else:
+            message = f"El puente local v{result.current_version} ya está actualizado."
+            self.settings_panel.set_bridge_update_status(message)
+        if announce:
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+
+    def _on_update_bridge_now(self, _event: wx.CommandEvent) -> None:
+        update = self.bridge_update_status
+        if update is None or not update.update_available:
+            self._request_bridge_update_check(manual=True)
+            return
+        if self.update_check_in_progress or self.bridge_update_in_progress:
+            message = "Espera a que termine la operación de actualización actual."
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
+        confirmation = wx.MessageBox(
+            (
+                f"Se actualizará el puente local de v{update.current_version} "
+                f"a v{update.target_version}.\n\n"
+                "La sesión de WhatsApp se conservará. El servicio puede quedar "
+                "sin conexión brevemente mientras se valida la nueva versión.\n\n"
+                "No cierres WhatsApp CAN ni apagues el equipo durante la actualización."
+            ),
+            "Actualizar puente local de WhatsApp",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if confirmation != wx.YES:
+            return
+
+        self.bridge_update_in_progress = True
+        self.bridge_update_installing = True
+        self.settings_panel.set_bridge_update_in_progress(True)
+        message = (
+            "Descargando y preparando la actualización del puente local. "
+            "Esto puede tardar varios minutos..."
+        )
+        self.settings_panel.set_bridge_update_status(message)
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+        self._schedule_bridge_update_feedback()
+        self._set_whatsapp_remote_actions_enabled(False)
+
+        def update_and_verify() -> LocalBridgeUpdateStatus:
+            self.local_bridge.update_bridge()
+            wx.CallAfter(
+                self._announce_bridge_update_progress,
+                "La imagen del puente fue aplicada. Comprobando la versión activa...",
+            )
+            installed = self.local_bridge.installed_update_status()
+            if (
+                not installed.supports_updates
+                or installed.current_version != update.target_version
+                or installed.current_digest != update.target_digest
+            ):
+                raise LocalBridgeError(
+                    "La imagen activa no coincide con la actualización seleccionada."
+                )
+            return installed
+
+        future = self.local_bridge_executor.submit(update_and_verify)
+
+        def completed() -> None:
+            if self._closing:
+                return
+            try:
+                result = future.result()
+            except LocalBridgeError as exc:
+                wx.CallAfter(self._finish_bridge_update, None, str(exc))
+            except Exception:
+                wx.CallAfter(
+                    self._finish_bridge_update,
+                    None,
+                    "La operación terminó con un error inesperado.",
+                )
+            else:
+                wx.CallAfter(self._finish_bridge_update, result, "")
+
+        future.add_done_callback(lambda _future: completed())
+
+    def _finish_bridge_update(
+        self,
+        result: LocalBridgeUpdateStatus | None,
+        error: str,
+    ) -> None:
+        self.bridge_update_in_progress = False
+        self.bridge_update_installing = False
+        self._stop_bridge_update_feedback()
+        if self.IsBeingDeleted():
+            return
+        self.settings_panel.set_bridge_update_in_progress(False)
+        self._set_whatsapp_remote_actions_enabled(self.whatsapp_verified)
+        if error:
+            message = f"No se pudo actualizar el puente local: {error}"
+            self.bridge_update_status = None
+            self.settings_panel.set_bridge_update_status(message)
+            wx.MessageBox(
+                message,
+                "Actualización del puente local",
+                wx.OK | wx.ICON_ERROR,
+                self,
+            )
+        else:
+            self.bridge_update_status = result
+            version = result.current_version if result is not None else None
+            message = (
+                f"El puente local se actualizó correctamente a v{version}."
+                if version is not None
+                else "El puente local se actualizó correctamente."
+            )
+            self.settings_panel.set_bridge_update_status(message)
+            wx.MessageBox(
+                message,
+                "Actualización del puente local",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _schedule_bridge_update_feedback(self) -> None:
+        self._stop_bridge_update_feedback()
+        self.bridge_update_feedback_timer = wx.CallLater(
+            20_000,
+            self._repeat_bridge_update_feedback,
+        )
+
+    def _repeat_bridge_update_feedback(self) -> None:
+        self.bridge_update_feedback_timer = None
+        if not self.bridge_update_installing or self.IsBeingDeleted():
+            return
+        self._announce_bridge_update_progress(
+            "La actualización del puente local sigue en curso. "
+            "No cierres la aplicación."
+        )
+        self.bridge_update_feedback_timer = wx.CallLater(
+            45_000,
+            self._repeat_bridge_update_feedback,
+        )
+
+    def _announce_bridge_update_progress(self, message: str) -> None:
+        if not self.bridge_update_installing or self.IsBeingDeleted():
+            return
+        self.settings_panel.set_bridge_update_status(message)
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    def _stop_bridge_update_feedback(self) -> None:
+        timer = getattr(self, "bridge_update_feedback_timer", None)
+        self.bridge_update_feedback_timer = None
+        if timer is not None:
+            timer.Stop()
 
     def _on_settings_changed(self, event: wx.CommandEvent) -> None:
         self.windows_notifications_enabled = self.settings_panel.windows_notifications.GetValue()
@@ -3416,6 +3659,8 @@ class MainWindow(wx.Frame):
         self.Layout()
         self.settings_panel.focus()
         self.status_bar.SetStatusText("Configuración")
+        if self.connection_mode == CONNECTION_MODE_LOCAL and self.local_bridge_available:
+            self._request_bridge_update_check(manual=False)
 
     def _close_settings(self) -> None:
         if not self.settings_panel.IsShown():
@@ -5671,7 +5916,23 @@ class MainWindow(wx.Frame):
         self._handle_xmpp_event(event.event)
 
     def _on_close(self, event: wx.CloseEvent) -> None:
+        if getattr(self, "bridge_update_installing", False) and event.CanVeto():
+            message = (
+                "La operación del puente local todavía está en curso. "
+                "Espera a que termine antes de cerrar WhatsApp CAN."
+            )
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            wx.MessageBox(
+                message,
+                "Actualización del puente local",
+                wx.OK | wx.ICON_WARNING,
+                self,
+            )
+            event.Veto()
+            return
         self._closing = True
+        self._stop_bridge_update_feedback()
         update_check_timer = getattr(self, "update_check_timer", None)
         if update_check_timer is not None:
             update_check_timer.Stop()

@@ -38,6 +38,7 @@ class SettingsPanel(wx.Panel):
         super().__init__(parent)
         self._update_check_runtime_available = False
         self._local_bridge_available = False
+        self._bridge_update_in_progress = False
 
         self.title = wx.StaticText(self, label="Configuración")
         title_font = self.title.GetFont()
@@ -115,6 +116,25 @@ class SettingsPanel(wx.Panel):
         )
         self.update_check_status = wx.StaticText(self, label="")
 
+        self.bridge_updates_panel = wx.Panel(self)
+        self.bridge_version_status = wx.StaticText(self.bridge_updates_panel, label="")
+        self.bridge_version_status.SetName("Estado de actualización del puente local")
+        self.check_bridge_updates_button = wx.Button(
+            self.bridge_updates_panel,
+            label="Buscar actualización del puente",
+        )
+        self.check_bridge_updates_button.SetToolTip(
+            "Consulta la versión estable del puente local sin bloquear la aplicación."
+        )
+        self.update_bridge_button = wx.Button(
+            self.bridge_updates_panel,
+            label="Actualizar puente ahora",
+        )
+        self.update_bridge_button.SetToolTip(
+            "Actualiza el puente local conservando la sesión y comprobando el resultado."
+        )
+        self.update_bridge_button.Disable()
+
         self.test_notification_button = wx.Button(
             self,
             label="Probar notificación de Windows",
@@ -136,6 +156,7 @@ class SettingsPanel(wx.Panel):
         update_check_interval_minutes: int | None = DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
         connection_mode: str = CONNECTION_MODE_REMOTE,
         local_bridge_available: bool = False,
+        local_bridge_active: bool = False,
     ) -> None:
         self._local_bridge_available = local_bridge_available
         self.set_connection_mode(connection_mode)
@@ -149,6 +170,7 @@ class SettingsPanel(wx.Panel):
         )
         self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
         self.set_update_check_interval_minutes(update_check_interval_minutes)
+        self.set_bridge_updates_visible(local_bridge_available and local_bridge_active)
         self.refresh_accessible_states()
 
     def connection_mode_value(self) -> str:
@@ -200,6 +222,29 @@ class SettingsPanel(wx.Panel):
 
     def set_update_check_status(self, status: str) -> None:
         self.update_check_status.SetLabel(status)
+
+    def set_bridge_updates_visible(self, visible: bool) -> None:
+        self.bridge_updates_panel.Show(visible)
+        if not visible:
+            self.bridge_version_status.SetLabel("")
+            self.update_bridge_button.Disable()
+        self.Layout()
+
+    def set_bridge_update_in_progress(self, in_progress: bool) -> None:
+        self._bridge_update_in_progress = in_progress
+        self.check_bridge_updates_button.Enable(not in_progress)
+        self.update_bridge_button.Enable(False)
+        if in_progress:
+            self.bridge_version_status.SetLabel(
+                "Comprobando el puente local en segundo plano..."
+            )
+        self.Layout()
+
+    def set_bridge_update_status(self, status: str, *, can_update: bool = False) -> None:
+        self.bridge_version_status.SetLabel(status)
+        self.check_bridge_updates_button.Enable(not self._bridge_update_in_progress)
+        self.update_bridge_button.Enable(can_update and not self._bridge_update_in_progress)
+        self.Layout()
 
     def refresh_accessible_states(self) -> None:
         self._apply_control_state()
@@ -313,6 +358,29 @@ class SettingsPanel(wx.Panel):
         updates_box.Add(self.check_updates_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         updates_box.Add(self.update_check_status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
+        bridge_updates_box = wx.StaticBoxSizer(
+            wx.VERTICAL,
+            self.bridge_updates_panel,
+            "Puente local de WhatsApp",
+        )
+        bridge_updates_box.Add(
+            self.bridge_version_status,
+            0,
+            wx.ALL | wx.EXPAND,
+            8,
+        )
+        bridge_update_buttons = wx.BoxSizer(wx.HORIZONTAL)
+        bridge_update_buttons.Add(self.check_bridge_updates_button, 0, wx.RIGHT, 8)
+        bridge_update_buttons.Add(self.update_bridge_button, 0)
+        bridge_updates_box.Add(
+            bridge_update_buttons,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            8,
+        )
+        self.bridge_updates_panel.SetSizer(bridge_updates_box)
+        self.bridge_updates_panel.Hide()
+
         buttons = wx.BoxSizer(wx.HORIZONTAL)
         buttons.Add(self.test_notification_button, 0, wx.RIGHT, 8)
         buttons.Add(self.back_button, 0)
@@ -323,6 +391,12 @@ class SettingsPanel(wx.Panel):
         box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
         box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
         box.Add(updates_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
+        box.Add(
+            self.bridge_updates_panel,
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
+            16,
+        )
         box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 16)
         box.AddStretchSpacer(1)
         self.SetSizer(box)

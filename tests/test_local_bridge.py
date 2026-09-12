@@ -19,9 +19,11 @@ from cliente_xmpp.config.settings import (
     SettingsStore,
 )
 from cliente_xmpp.local_bridge import (
+    BRIDGE_UPDATE_TIMEOUT_SECONDS,
     LocalBridgeConnection,
     LocalBridgeError,
     LocalBridgeService,
+    LocalBridgeUpdateStatus,
 )
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.whatsapp_link_panel import WhatsAppLinkPanel
@@ -524,6 +526,150 @@ class LocalBridgeServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(LocalBridgeError, "fallo final"):
                 service.prepare()
 
+    def test_detects_available_bridge_image_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection_file, _ca_file = self._contract(directory)
+            commands: list[list[str]] = []
+
+            def runner(
+                command: list[str], **_kwargs: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                commands.append(command)
+                if command[1:] == ["--list", "--quiet"]:
+                    stdout = "WhatsAppCAN-Bridge\n".encode("utf-16-le")
+                elif command[-1] == "status":
+                    stdout = json.dumps(
+                        {
+                            "bridge": {
+                                "image": (
+                                    "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v25"
+                                ),
+                                "digest": f"sha256:{'1' * 64}",
+                            }
+                        }
+                    ).encode()
+                else:
+                    stdout = b""
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+            response = Mock()
+            response.read.return_value = json.dumps(
+                {
+                    "schema_version": 1,
+                    "channel": "stable",
+                    "bridge_version": 27,
+                    "image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v27",
+                    "digest": f"sha256:{'2' * 64}",
+                }
+            ).encode()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            service = LocalBridgeService(
+                connection_file=connection_file,
+                platform_name="nt",
+                runner=runner,
+            )
+
+            with patch("cliente_xmpp.local_bridge.urllib.request.urlopen", return_value=response):
+                result = service.check_for_update()
+
+            self.assertTrue(result.supports_updates)
+            self.assertTrue(result.update_available)
+            self.assertEqual(result.current_version, 25)
+            self.assertEqual(result.target_version, 27)
+            self.assertEqual(result.target_digest, f"sha256:{'2' * 64}")
+            self.assertIn("test", commands[1])
+            self.assertEqual(commands[2][-1], "status")
+
+    def test_local_post_update_verification_does_not_require_internet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection_file, _ca_file = self._contract(directory)
+
+            def runner(
+                command: list[str], **_kwargs: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                if command[1:] == ["--list", "--quiet"]:
+                    stdout = "WhatsAppCAN-Bridge\n".encode("utf-16-le")
+                elif command[-1] == "status":
+                    stdout = json.dumps(
+                        {
+                            "bridge": {
+                                "image": (
+                                    "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v27"
+                                ),
+                                "digest": f"sha256:{'2' * 64}",
+                            }
+                        }
+                    ).encode()
+                else:
+                    stdout = b""
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+            service = LocalBridgeService(
+                connection_file=connection_file,
+                platform_name="nt",
+                runner=runner,
+            )
+
+            with patch("cliente_xmpp.local_bridge.urllib.request.urlopen") as urlopen:
+                result = service.installed_update_status()
+
+            self.assertEqual(result.current_version, 27)
+            self.assertEqual(result.current_digest, f"sha256:{'2' * 64}")
+            urlopen.assert_not_called()
+
+    def test_legacy_bridge_does_not_fetch_update_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection_file, _ca_file = self._contract(directory)
+
+            def runner(
+                command: list[str], **_kwargs: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                if command[1:] == ["--list", "--quiet"]:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout="WhatsAppCAN-Bridge\n".encode("utf-16-le"),
+                        stderr=b"",
+                    )
+                return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"")
+
+            service = LocalBridgeService(
+                connection_file=connection_file,
+                platform_name="nt",
+                runner=runner,
+            )
+
+            with patch("cliente_xmpp.local_bridge.urllib.request.urlopen") as urlopen:
+                result = service.check_for_update()
+
+            self.assertFalse(result.supports_updates)
+            urlopen.assert_not_called()
+
+    def test_bridge_update_uses_a_dedicated_long_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection_file, _ca_file = self._contract(directory)
+            observed: dict[str, object] = {}
+
+            def runner(
+                command: list[str], **kwargs: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                observed["command"] = command
+                observed["timeout"] = kwargs.get("timeout")
+                return subprocess.CompletedProcess(command, 0, stdout=b"actualizado", stderr=b"")
+
+            service = LocalBridgeService(
+                connection_file=connection_file,
+                platform_name="nt",
+                runner=runner,
+            )
+
+            output = service.update_bridge()
+
+            self.assertEqual(output, "actualizado")
+            self.assertEqual(observed["timeout"], BRIDGE_UPDATE_TIMEOUT_SECONDS)
+            self.assertEqual(observed["command"][-1], "update")
+
 
 class CredentialStoreTests(unittest.TestCase):
     def test_save_password_reports_success(self) -> None:
@@ -633,6 +779,127 @@ class LocalBridgeUiTests(unittest.TestCase):
         WhatsAppLinkPanel.focus_action(panel)
 
         panel.open_button.SetFocus.assert_called_once_with()
+
+    def test_available_bridge_update_is_exposed_in_settings(self) -> None:
+        panel = Mock()
+        window = SimpleNamespace(
+            bridge_update_in_progress=True,
+            bridge_update_status=None,
+            IsBeingDeleted=Mock(return_value=False),
+            settings_panel=panel,
+            status_bar=Mock(),
+            speaker=Mock(),
+        )
+        result = LocalBridgeUpdateStatus(
+            supports_updates=True,
+            current_version=25,
+            target_version=27,
+            update_available=True,
+        )
+
+        MainWindow._finish_bridge_update_check(window, result, "", True)
+
+        self.assertFalse(window.bridge_update_in_progress)
+        self.assertEqual(window.bridge_update_status, result)
+        panel.set_bridge_update_status.assert_called_once_with(
+            "Puente v25 instalado; v27 disponible.",
+            can_update=True,
+        )
+        window.speaker.speak.assert_called_once_with(
+            "Puente v25 instalado; v27 disponible."
+        )
+
+    def test_legacy_bridge_explains_that_migration_is_required(self) -> None:
+        panel = Mock()
+        window = SimpleNamespace(
+            bridge_update_in_progress=True,
+            bridge_update_status=None,
+            IsBeingDeleted=Mock(return_value=False),
+            settings_panel=panel,
+            status_bar=Mock(),
+            speaker=Mock(),
+        )
+
+        MainWindow._finish_bridge_update_check(
+            window,
+            LocalBridgeUpdateStatus(supports_updates=False),
+            "",
+            False,
+        )
+
+        status = panel.set_bridge_update_status.call_args.args[0]
+        self.assertIn("necesita migrarse", status)
+        window.speaker.speak.assert_not_called()
+
+    def test_bridge_update_section_is_active_only_for_the_local_profile(self) -> None:
+        def window(mode: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                settings_panel=Mock(),
+                windows_notifications_enabled=True,
+                windows_notification_previews_enabled=True,
+                windows_notification_nvda_announcements_enabled=False,
+                open_chat_message_sound_enabled=True,
+                sent_message_sound_enabled=True,
+                incoming_notification_sound_path="",
+                minimize_to_tray_on_alt_f4=False,
+                update_check_interval_minutes=60,
+                preferred_connection_mode=mode,
+                connection_mode=mode,
+                local_bridge_available=True,
+            )
+
+        local_window = window(CONNECTION_MODE_LOCAL)
+        remote_window = window("remote")
+        with patch("cliente_xmpp.ui.main_window.can_check_for_updates", return_value=True):
+            MainWindow._sync_settings_panel(local_window)
+            MainWindow._sync_settings_panel(remote_window)
+
+        self.assertTrue(
+            local_window.settings_panel.set_values.call_args.kwargs["local_bridge_active"]
+        )
+        self.assertFalse(
+            remote_window.settings_panel.set_values.call_args.kwargs["local_bridge_active"]
+        )
+
+    def test_bridge_update_feedback_is_spoken_and_repeated(self) -> None:
+        scheduled = Mock()
+        window = SimpleNamespace(
+            bridge_update_feedback_timer=None,
+            bridge_update_installing=True,
+            IsBeingDeleted=Mock(return_value=False),
+            _announce_bridge_update_progress=Mock(),
+            _repeat_bridge_update_feedback=Mock(),
+        )
+
+        with patch(
+            "cliente_xmpp.ui.main_window.wx.CallLater",
+            return_value=scheduled,
+        ) as call_later:
+            MainWindow._repeat_bridge_update_feedback(window)
+
+        window._announce_bridge_update_progress.assert_called_once_with(
+            "La actualización del puente local sigue en curso. "
+            "No cierres la aplicación."
+        )
+        call_later.assert_called_once_with(45_000, window._repeat_bridge_update_feedback)
+        self.assertIs(window.bridge_update_feedback_timer, scheduled)
+
+    def test_bridge_update_progress_updates_all_accessible_channels(self) -> None:
+        window = SimpleNamespace(
+            bridge_update_installing=True,
+            IsBeingDeleted=Mock(return_value=False),
+            settings_panel=Mock(),
+            status_bar=Mock(),
+            speaker=Mock(),
+        )
+
+        MainWindow._announce_bridge_update_progress(window, "Verificando puente...")
+
+        window.settings_panel.set_bridge_update_status.assert_called_once_with(
+            "Verificando puente..."
+        )
+        window.status_bar.SetStatusText.assert_called_once_with("Verificando puente...")
+        window.speaker.speak.assert_called_once_with("Verificando puente...")
 
 
 class LocalBridgeXmppDiscoveryTests(unittest.TestCase):

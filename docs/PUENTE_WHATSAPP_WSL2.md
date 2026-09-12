@@ -225,6 +225,16 @@ después de publicar y validar la imagen indicada. El manifiesto contiene etique
 actualizador rechaza repositorios distintos, etiquetas sin formato `vN`, digests inválidos y URLs
 que no usen HTTPS.
 
+Cuando el cliente está usando el perfil `Puente local (WSL2)`, Configuración muestra además el
+apartado `Puente local de WhatsApp`. Desde ahí se puede consultar la versión instalada y ejecutar
+la misma actualización sin abrir PowerShell. El apartado permanece oculto en el modo de servidor
+XMPP y explica la migración requerida si detecta un appliance 1.0 sin actualizador de imágenes.
+La consulta y la instalación se ejecutan en el worker dedicado del puente, nunca en el hilo wx.
+Durante la activación no se permite cerrar el cliente; al terminar se comprueba localmente la
+imagen activa y sólo entonces se informa el resultado. La aplicación anuncia mediante NVDA el inicio,
+recordatorios espaciados mientras la operación continúa, la verificación local y el resultado;
+los recordatorios se cancelan al terminar o fallar para no producir anuncios tardíos.
+
 ### Archivos y audios salientes
 
 Prosody ofrece `upload.xmpp.whatsappcan.local` mediante XEP-0363. Los slots anuncian únicamente

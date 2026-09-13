@@ -1,9 +1,11 @@
-WhatsApp CAN 1.4.8
+WhatsApp CAN 1.4.9
 
 Actualización del puente local
 - Cuando está activo el modo Puente local (WSL2), Configuración muestra la versión instalada y permite buscar e instalar la versión estable sin abrir PowerShell.
 - La aplicación conserva la sesión, ejecuta la actualización fuera del hilo de interfaz y comprueba el puente antes de volver a habilitar sus acciones.
 - NVDA anuncia el inicio, la continuidad, la verificación local y el resultado de la actualización sin depender de cambios visuales en los botones.
+
+WhatsApp CAN 1.4.8
 
 Selección y gestión de mensajes
 - Para seleccionar varios mensajes, sitúa el foco en la lista y pulsa Ctrl+Espacio. Después, muévete con las flechas y pulsa Espacio sobre cada mensaje que quieras incluir; NVDA anuncia el mensaje, su estado y el total seleccionado.

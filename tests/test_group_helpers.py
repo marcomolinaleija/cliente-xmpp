@@ -1796,6 +1796,49 @@ class BookmarkNotificationTests(unittest.TestCase):
         self.assertEqual(chats[0].jid, "#120363@test.whatsapp.example")
         self.assertEqual(chats[0].name, "Familia")
         self.assertTrue(chats[0].is_group)
+        self.assertTrue(chats[0].auto_join)
+
+    def test_new_or_invited_groups_do_not_join_during_discovery(self) -> None:
+        group_jid = "#new-group@example.org"
+        joins: list[str] = []
+        client = SimpleNamespace(
+            _group_chat_jids={group_jid, "#existing@example.org"},
+            _jid_may_be_group_chat=lambda jid: jid.startswith("#"),
+            _emit=lambda _event: None,
+            _join_group_chat=joins.append,
+        )
+
+        BridgeXmppClient._monitor_discovered_group_chats(
+            client,
+            [
+                Chat(jid=group_jid, name="Nuevo grupo", is_group=True),
+                Chat(
+                    jid="#existing@example.org",
+                    name="Grupo existente",
+                    is_group=True,
+                    auto_join=True,
+                ),
+            ],
+        )
+
+        self.assertEqual(joins, ["#existing@example.org"])
+
+    def test_cached_groups_are_monitored_without_joining(self) -> None:
+        group_jid = "#cached@example.org"
+        joins: list[str] = []
+        client = SimpleNamespace(
+            _group_chat_jids=set(),
+            _jid_may_be_group_chat=lambda jid: jid.startswith("#"),
+            _join_group_chat=joins.append,
+            _enrich_monitored_group_chats=lambda _jids: None,
+            load_recent_activity=lambda _jids: None,
+        )
+
+        with patch("cliente_xmpp.xmpp.client.asyncio.create_task"):
+            BridgeXmppClient.monitor_group_chats(client, [group_jid])
+
+        self.assertEqual(client._group_chat_jids, {group_jid})
+        self.assertEqual(joins, [])
 
 
 class GroupArchiveTests(unittest.TestCase):

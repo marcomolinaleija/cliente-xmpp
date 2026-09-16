@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v27@sha256:b292de2e52cb7ceed08ab0f5784a47eaad1362e4cc0040c2bbdc13bd6cea561c
+
+FROM ${BASE_IMAGE} AS patched
+
+USER root
+COPY patch_slidge_whatsapp_no_auto_join.py /tmp/patch_no_auto_join.py
+RUN python -B /tmp/patch_no_auto_join.py /venv/lib/python3.13/site-packages \
+        --no-backup && \
+    python -m compileall -q \
+        /venv/lib/python3.13/site-packages/slidge_whatsapp/group.py && \
+    rm /tmp/patch_no_auto_join.py
+
+COPY smoke_bridge_no_auto_join_runtime.py /tmp/smoke_bridge_no_auto_join_runtime.py
+RUN python -B /tmp/smoke_bridge_no_auto_join_runtime.py && \
+    rm /tmp/smoke_bridge_no_auto_join_runtime.py
+
+USER slidge

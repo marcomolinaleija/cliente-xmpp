@@ -143,6 +143,8 @@ class Chat:
     unread_count: int = 0
     last_message_preview: str = ""
     last_message_at: datetime | None = None
+    # XEP-0402 bookmark policy; false keeps newly discovered groups out of the MUC until opened.
+    auto_join: bool = False
 
 
 @dataclass(slots=True)

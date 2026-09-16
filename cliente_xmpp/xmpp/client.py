@@ -1274,7 +1274,8 @@ class BridgeXmppClient(ClientXMPP):
         self._group_chat_jids.update(chat.jid for chat in chats)
         self._emit(ChatsDiscovered(chats))
         for chat in chats:
-            self._join_group_chat(chat.jid)
+            if chat.auto_join:
+                self._join_group_chat(chat.jid)
         if new_group_jids:
             asyncio.create_task(self.load_recent_activity(new_group_jids))
 
@@ -2490,6 +2491,7 @@ class BridgeXmppClient(ClientXMPP):
             notifications_muted, notification_settings_known = (
                 self._bookmark_notification_settings(conference)
             )
+            auto_join = self._truthy_value(conference.attrib.get("autojoin", ""))
             chats.append(
                 Chat(
                     jid=jid,
@@ -2497,6 +2499,7 @@ class BridgeXmppClient(ClientXMPP):
                     is_group=True,
                     notifications_muted=notifications_muted,
                     notification_settings_known=notification_settings_known,
+                    auto_join=auto_join,
                 )
             )
         return chats
@@ -2512,6 +2515,7 @@ class BridgeXmppClient(ClientXMPP):
             notifications_muted, notification_settings_known = (
                 cls._bookmark_notification_settings(conference)
             )
+            auto_join = cls._truthy_value(conference.attrib.get("autojoin", ""))
             name = conference.attrib.get("name", "").strip() or jid
             chats.append(
                 Chat(
@@ -2520,6 +2524,7 @@ class BridgeXmppClient(ClientXMPP):
                     is_group=True,
                     notifications_muted=notifications_muted,
                     notification_settings_known=notification_settings_known,
+                    auto_join=auto_join,
                 )
             )
         return chats
@@ -2719,8 +2724,6 @@ class BridgeXmppClient(ClientXMPP):
 
         new_group_jids = group_jids - self._group_chat_jids
         self._group_chat_jids.update(group_jids)
-        for group_jid in group_jids:
-            self._join_group_chat(group_jid)
         if new_group_jids:
             asyncio.create_task(self._enrich_monitored_group_chats(new_group_jids))
             asyncio.create_task(self.load_recent_activity(new_group_jids))

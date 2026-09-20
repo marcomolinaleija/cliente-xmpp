@@ -1,3 +1,14 @@
+WhatsApp CAN 1.4.10
+
+Almacenamiento local
+- El gestor de almacenamiento permite auditar la base de datos sin modificarla y muestra su estado, el espacio recuperable y los respaldos disponibles.
+- La optimización crea un respaldo antes de reorganizar la base de datos, conserva los mensajes y archivos locales, y ofrece un botón para eliminar los respaldos cuando ya no sean necesarios.
+- Si la sincronización estaba activa, se reanuda automáticamente después de una optimización exitosa.
+
+Estadísticas de llamadas
+- Las estadísticas ya no cuentan como llamadas de usuario los registros administrativos generados durante la comunicación interna.
+- Los totales y los tiempos mostrados representan mejor las llamadas reales guardadas en la aplicación.
+
 WhatsApp CAN 1.4.9
 
 Actualización del puente local

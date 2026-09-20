@@ -103,7 +103,14 @@ from cliente_xmpp.models.phone_numbers import (
 from cliente_xmpp.models.reactions import ReactionState, ReactionUpdate, flattened_reactions
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
-from cliente_xmpp.storage.manager import StorageCleanupResult, StorageManager, StorageSnapshot
+from cliente_xmpp.storage.manager import (
+    DatabaseBackupInfo,
+    DatabaseOptimizationPreview,
+    DatabaseOptimizationResult,
+    StorageCleanupResult,
+    StorageManager,
+    StorageSnapshot,
+)
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.chat_message_dialogs import (
@@ -251,6 +258,8 @@ class MainWindow(wx.Frame):
         self.message_store = MessageStore()
         self.storage_manager = StorageManager(self.message_store)
         self._storage_reset_in_progress = False
+        self._storage_maintenance_in_progress = False
+        self._storage_maintenance_resume_requested = False
         self.storage_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="cliente-xmpp-storage",
@@ -3277,8 +3286,11 @@ class MainWindow(wx.Frame):
         dialog = StorageManagerDialog(
             self,
             self._load_storage_snapshot_async,
+            self._load_database_optimization_preview_async,
+            self._load_database_backups_async,
             self._delete_storage_files_async,
             self._optimize_storage_database_async,
+            self._delete_database_backups_async,
             self._delete_all_storage_async,
         )
         result = wx.ID_CANCEL
@@ -3305,6 +3317,38 @@ class MainWindow(wx.Frame):
 
         self._submit_storage_manager_worker(worker, callback)
 
+    def _load_database_optimization_preview_async(
+        self,
+        callback: Callable[[DatabaseOptimizationPreview | None, str], None],
+    ) -> None:
+        def worker() -> None:
+            try:
+                preview = self.storage_manager.preview_database_optimization()
+            except Exception:
+                wx.CallAfter(
+                    callback,
+                    None,
+                    "No se pudo calcular una estimación segura de la optimización.",
+                )
+                return
+            wx.CallAfter(callback, preview, "")
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _load_database_backups_async(
+        self,
+        callback: Callable[[tuple[DatabaseBackupInfo, ...] | None, str], None],
+    ) -> None:
+        def worker() -> None:
+            try:
+                backups = self.storage_manager.list_database_backups()
+            except Exception:
+                wx.CallAfter(callback, (), "No se pudieron comprobar los respaldos.")
+                return
+            wx.CallAfter(callback, backups, "")
+
+        self._submit_storage_manager_worker(worker, callback)
+
     def _delete_storage_files_async(
         self,
         paths: tuple[str, ...],
@@ -3319,6 +3363,20 @@ class MainWindow(wx.Frame):
                 wx.CallAfter(callback, None, "No se pudo completar la limpieza local.")
                 return
             wx.CallAfter(self._finish_storage_cleanup, result, callback)
+
+        self._submit_storage_manager_worker(worker, callback)
+
+    def _delete_database_backups_async(
+        self,
+        callback: Callable[[StorageCleanupResult | None, str], None],
+    ) -> None:
+        def worker() -> None:
+            try:
+                result = self.storage_manager.delete_database_backups()
+            except Exception:
+                wx.CallAfter(callback, None, "No se pudieron eliminar los respaldos.")
+                return
+            wx.CallAfter(callback, result, "")
 
         self._submit_storage_manager_worker(worker, callback)
 
@@ -3369,17 +3427,53 @@ class MainWindow(wx.Frame):
 
     def _optimize_storage_database_async(
         self,
-        callback: Callable[[int | None, str], None],
+        callback: Callable[[DatabaseOptimizationResult | None, str], None],
     ) -> None:
+        self._storage_maintenance_in_progress = True
+        self._storage_maintenance_resume_requested = bool(
+            getattr(self, "current_jid", "") and getattr(self, "whatsapp_verified", False)
+        )
+        self.conversation.close_audio()
+        self.audio_recorder.cancel()
+        self.xmpp.disconnect()
+
         def worker() -> None:
             try:
-                reclaimed = self.storage_manager.compact_database()
+                result = self.storage_manager.optimize_database()
             except Exception:
-                wx.CallAfter(callback, None, "No se pudo optimizar la base de datos local.")
+                wx.CallAfter(
+                    self._finish_database_optimization,
+                    None,
+                    "No se pudo optimizar la base de datos local.",
+                    callback,
+                )
                 return
-            wx.CallAfter(callback, reclaimed, "")
+            wx.CallAfter(self._finish_database_optimization, result, "", callback)
 
         self._submit_storage_manager_worker(worker, callback)
+
+    def _finish_database_optimization(
+        self,
+        result: DatabaseOptimizationResult | None,
+        error: str,
+        callback: Callable[[DatabaseOptimizationResult | None, str], None],
+    ) -> None:
+        self._storage_maintenance_in_progress = False
+        resume_requested = self._storage_maintenance_resume_requested
+        self._storage_maintenance_resume_requested = False
+        callback(result, error)
+        if result is not None and not error and resume_requested:
+            wx.CallAfter(self._resume_after_storage_optimization)
+
+    def _resume_after_storage_optimization(self) -> None:
+        login = self.login_panel.get_login_data()
+        if not login.settings.jid or not login.password:
+            self.status_bar.SetStatusText(
+                "Optimización terminada; conecta manualmente para reanudar la sincronización."
+            )
+            return
+        self.status_bar.SetStatusText("Optimización terminada; reanudando la sincronización...")
+        self._on_connect(wx.CommandEvent())
 
     def _delete_all_storage_async(
         self,
@@ -3435,6 +3529,8 @@ class MainWindow(wx.Frame):
             executor.submit(worker)
         except RuntimeError:
             self._storage_reset_in_progress = False
+            self._storage_maintenance_in_progress = False
+            self._storage_maintenance_resume_requested = False
             wx.CallAfter(callback, None, "La aplicación se está cerrando.")
 
     def _load_statistics_async(
@@ -4910,7 +5006,11 @@ class MainWindow(wx.Frame):
                 "No están cargadas todas las fotos de este álbum"
             )
             return
-        if getattr(self, "_storage_reset_in_progress", False):
+        if getattr(self, "_storage_reset_in_progress", False) or getattr(
+            self,
+            "_storage_maintenance_in_progress",
+            False,
+        ):
             return
         if not self.current_jid:
             self.status_bar.SetStatusText("No hay una cuenta conectada para guardar el álbum")
@@ -6074,8 +6174,8 @@ class MainWindow(wx.Frame):
                 self._preload_recent_histories()
             case GroupParticipantUpdated(participant=participant):
                 self._remember_group_participant(participant)
-            case GroupParticipantsLoaded(participants=participants):
-                self._remember_group_participants(participants)
+            case GroupParticipantsLoaded(group_jid=group_jid, participants=participants):
+                self._replace_group_participants(group_jid, participants)
             case MessageReactionReceived(update=update):
                 self._handle_reaction_update(update)
             case MessageReceived(message=message, notify=notify):
@@ -7242,6 +7342,9 @@ class MainWindow(wx.Frame):
     def _remember_message_sender(self, message: Message) -> None:
         if not message.chat_is_group or message.outgoing or not message.sender_name:
             return
+        known_participants = getattr(self, "group_participants_by_chat", None)
+        if known_participants is not None and message.chat_jid not in known_participants:
+            return
 
         remember_participant = getattr(self, "_remember_group_participant", None)
         if callable(remember_participant):
@@ -7297,6 +7400,28 @@ class MainWindow(wx.Frame):
             self.message_store.upsert_group_participants,
             self.current_jid,
             list(changed_participants),
+        )
+
+    def _replace_group_participants(
+        self,
+        group_jid: str,
+        participants: list[GroupParticipant],
+    ) -> None:
+        valid_participants = [
+            participant
+            for participant in participants
+            if participant.group_jid == group_jid and participant.jid and participant.nick
+        ]
+        self.group_participants_by_chat[group_jid] = {
+            participant.jid: participant for participant in valid_participants
+        }
+        if not self.current_jid:
+            return
+        self._queue_storage_write(
+            self.message_store.replace_group_participants,
+            self.current_jid,
+            group_jid,
+            list(valid_participants),
         )
 
     def _message_by_merge_key(

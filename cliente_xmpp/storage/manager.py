@@ -10,6 +10,9 @@ from cliente_xmpp.config.settings import APP_DIR
 from cliente_xmpp.media.downloads import sanitize_filename
 from cliente_xmpp.storage.message_store import (
     DATABASE_PATH,
+    DatabaseAudit,
+    DatabaseOptimizationPreview,
+    DatabaseOptimizationResult,
     MessageStore,
     StorageChatRecord,
     StorageMediaRecord,
@@ -55,6 +58,12 @@ class StorageSnapshot:
 
     def category(self, key: str) -> StorageCategoryUsage | None:
         return next((item for item in self.categories if item.key == key), None)
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseBackupInfo:
+    path: str
+    size_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +317,68 @@ class StorageManager:
         self.message_store.compact_database()
         return max(0, before - self._database_family_size())
 
+    def audit_database(self) -> DatabaseAudit:
+        return self.message_store.audit_database()
+
+    def preview_database_optimization(self) -> DatabaseOptimizationPreview:
+        return self.message_store.preview_database_optimization()
+
+    def optimize_database(self) -> DatabaseOptimizationResult:
+        backup_dir = self.app_dir / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = backup_dir / f"messages-{stamp}.sqlite3"
+        suffix = 1
+        while backup_path.exists():
+            backup_path = backup_dir / f"messages-{stamp}-{suffix}.sqlite3"
+            suffix += 1
+        return self.message_store.optimize_database(backup_path)
+
+    def list_database_backups(self) -> tuple[DatabaseBackupInfo, ...]:
+        backup_dir = self.app_dir / "backups"
+        if not backup_dir.is_dir():
+            return ()
+        backups: list[DatabaseBackupInfo] = []
+        for path in backup_dir.iterdir():
+            if not self._is_database_backup_path(path):
+                continue
+            try:
+                backups.append(
+                    DatabaseBackupInfo(
+                        path=str(path),
+                        size_bytes=max(0, int(path.stat().st_size)),
+                    )
+                )
+            except OSError:
+                continue
+        return tuple(sorted(backups, key=lambda item: item.path.casefold(), reverse=True))
+
+    def delete_database_backups(self) -> StorageCleanupResult:
+        backups = self.list_database_backups()
+        deleted: list[str] = []
+        failures: list[str] = []
+        reclaimed_bytes = 0
+        for backup in backups:
+            path = Path(backup.path)
+            if not self._is_database_backup_path(path):
+                failures.append(f"Ruta de respaldo no válida: {path.name}")
+                continue
+            try:
+                size = max(0, int(path.stat().st_size))
+                path.unlink()
+            except OSError as exc:
+                failures.append(f"{path.name}: {exc}")
+                continue
+            deleted.append(str(path))
+            reclaimed_bytes += size
+        return StorageCleanupResult(
+            attempted_file_count=len(backups),
+            deleted_file_count=len(deleted),
+            reclaimed_bytes=reclaimed_bytes,
+            deleted_paths=tuple(deleted),
+            failures=tuple(failures),
+        )
+
     def delete_all_data(self) -> StorageCleanupResult:
         self._validate_total_deletion_root()
         files = list(self._iter_files(self.app_dir, include_symlinks=True))
@@ -517,6 +588,19 @@ class StorageManager:
             _file_size(Path(f"{self.database_path}{suffix}"))
             for suffix in ("", "-wal", "-shm", "-journal")
         )
+
+    def _is_database_backup_path(self, path: Path) -> bool:
+        backup_dir = self.app_dir / "backups"
+        try:
+            return (
+                not path.is_symlink()
+                and path.is_file()
+                and path.parent.resolve(strict=False) == backup_dir.resolve(strict=False)
+                and path.name.startswith("messages-")
+                and path.suffix.casefold() == ".sqlite3"
+            )
+        except OSError:
+            return False
 
     def _validate_total_deletion_root(self) -> None:
         absolute = Path(os.path.abspath(self.app_dir))

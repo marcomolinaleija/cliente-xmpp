@@ -7,7 +7,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import wx
 
@@ -243,6 +243,32 @@ class StorageManagerTests(unittest.TestCase):
             self.assertFalse(result.failures)
             self.assertFalse(app_dir.exists())
 
+    def test_database_backups_are_listed_and_deleted_without_touching_active_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_dir = Path(temp_dir) / ".cliente-xmpp"
+            store = MessageStore(app_dir / "messages.sqlite3")
+            backup_dir = app_dir / "backups"
+            backup_dir.mkdir(parents=True)
+            first = backup_dir / "messages-20260920-120000.sqlite3"
+            second = backup_dir / "messages-20260920-120001.sqlite3"
+            ignored = backup_dir / "notes.txt"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            ignored.write_text("keep", encoding="utf-8")
+
+            manager = StorageManager(store, app_dir=app_dir)
+            backups = manager.list_database_backups()
+
+            self.assertEqual({Path(item.path) for item in backups}, {first, second})
+            result = manager.delete_database_backups()
+
+            self.assertEqual(result.deleted_file_count, 2)
+            self.assertEqual(result.reclaimed_bytes, 11)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertTrue(ignored.exists())
+            self.assertTrue((app_dir / "messages.sqlite3").exists())
+
     def test_formats_large_sizes_for_accessible_ui(self) -> None:
         self.assertEqual(format_storage_size(0), "0 B")
         self.assertEqual(format_storage_size(1536), "1.5 KB")
@@ -321,6 +347,24 @@ class StorageManagerTests(unittest.TestCase):
             [deleted_message, untouched_message]
         )
         callback.assert_called_once_with(result, "")
+
+    def test_successful_database_optimization_schedules_connection_resume(self) -> None:
+        callback = Mock()
+        resume = Mock()
+        result = object()
+        window = SimpleNamespace(
+            _storage_maintenance_in_progress=True,
+            _storage_maintenance_resume_requested=True,
+            _resume_after_storage_optimization=resume,
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter") as call_after:
+            MainWindow._finish_database_optimization(window, result, "", callback)
+
+        self.assertFalse(window._storage_maintenance_in_progress)
+        self.assertFalse(window._storage_maintenance_resume_requested)
+        callback.assert_called_once_with(result, "")
+        call_after.assert_called_once_with(resume)
 
 
 if __name__ == "__main__":

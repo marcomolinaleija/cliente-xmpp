@@ -5,6 +5,9 @@ from collections.abc import Callable
 import wx
 
 from cliente_xmpp.storage.manager import (
+    DatabaseBackupInfo,
+    DatabaseOptimizationPreview,
+    DatabaseOptimizationResult,
     StorageCategoryUsage,
     StorageChatUsage,
     StorageCleanupResult,
@@ -16,7 +19,17 @@ SnapshotCallback = Callable[[StorageSnapshot | None, str], None]
 SnapshotLoader = Callable[[SnapshotCallback], None]
 CleanupCallback = Callable[[StorageCleanupResult | None, str], None]
 FileCleaner = Callable[[tuple[str, ...], CleanupCallback], None]
-DatabaseOptimizer = Callable[[Callable[[int | None, str], None]], None]
+DatabasePreviewLoader = Callable[
+    [Callable[[DatabaseOptimizationPreview | None, str], None]],
+    None,
+]
+DatabaseBackupLoader = Callable[
+    [Callable[[tuple[DatabaseBackupInfo, ...] | None, str], None]],
+    None,
+]
+DatabaseOptimizationCallback = Callable[[DatabaseOptimizationResult | None, str], None]
+DatabaseOptimizer = Callable[[DatabaseOptimizationCallback], None]
+DatabaseBackupCleaner = Callable[[Callable[[StorageCleanupResult | None, str], None]], None]
 TotalCleaner = Callable[[CleanupCallback], None]
 
 DOWNLOAD_CATEGORY_KEYS = {
@@ -36,8 +49,11 @@ class StorageManagerDialog(wx.Dialog):
         self,
         parent: wx.Window,
         load_snapshot: SnapshotLoader,
+        load_database_preview: DatabasePreviewLoader,
+        load_database_backups: DatabaseBackupLoader,
         delete_files: FileCleaner,
         optimize_database: DatabaseOptimizer,
+        delete_database_backups: DatabaseBackupCleaner,
         delete_all_data: TotalCleaner,
     ) -> None:
         super().__init__(
@@ -48,13 +64,19 @@ class StorageManagerDialog(wx.Dialog):
         )
         self.SetMinSize((780, 560))
         self._load_snapshot = load_snapshot
+        self._load_database_preview = load_database_preview
+        self._load_database_backups = load_database_backups
         self._delete_files = delete_files
         self._optimize_database = optimize_database
+        self._delete_database_backups = delete_database_backups
         self._delete_all_data = delete_all_data
         self._snapshot: StorageSnapshot | None = None
+        self._database_preview: DatabaseOptimizationPreview | None = None
+        self._database_backups: tuple[DatabaseBackupInfo, ...] = ()
         self._visible_chats: tuple[StorageChatUsage, ...] = ()
         self._visible_categories: tuple[StorageCategoryUsage, ...] = ()
         self._request_id = 0
+        self._database_request_id = 0
         self._active = True
         self._busy = False
         self._can_close_while_busy = True
@@ -63,6 +85,7 @@ class StorageManagerDialog(wx.Dialog):
         self.summary = self._create_summary_page()
         self.chats = self._create_chats_page()
         self.elements = self._create_elements_page()
+        self.database_report, self.database_candidates = self._create_database_page()
         self._create_maintenance_page()
 
         self.status = wx.StaticText(self, label="Calculando el espacio utilizado...")
@@ -87,6 +110,8 @@ class StorageManagerDialog(wx.Dialog):
         apply_theme(self)
         self.CentreOnParent()
         wx.CallAfter(self._refresh)
+        wx.CallAfter(self._refresh_database_audit)
+        wx.CallAfter(self._refresh_database_backups)
 
     def deactivate(self) -> None:
         self._active = False
@@ -194,6 +219,66 @@ class StorageManagerDialog(wx.Dialog):
         self.notebook.AddPage(page, "Por elementos")
         return elements
 
+    def _create_database_page(self) -> tuple[wx.TextCtrl, wx.ListCtrl]:
+        page = wx.Panel(self.notebook)
+        intro = wx.StaticText(
+            page,
+            label=(
+                "Esta auditoría sólo lee la base. La optimización conserva mensajes, chats, "
+                "audios y transcripciones; únicamente retira participantes de grupos que no "
+                "tienen mensajes locales y después reorganiza SQLite."
+            ),
+        )
+        report = wx.TextCtrl(
+            page,
+            value="Calculando la auditoría...",
+            style=wx.TE_MULTILINE | wx.TE_READONLY,
+        )
+        report.SetName("Informe accesible de optimización de la base de datos")
+
+        candidates = wx.ListCtrl(page, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
+        candidates.SetName("Datos candidatos a la optimización de la base de datos")
+        for index, (label, width) in enumerate(
+            (
+                ("Candidato", 245),
+                ("Registros", 100),
+                ("Recuperación estimada", 150),
+                ("Motivo y protección", 430),
+            )
+        ):
+            candidates.InsertColumn(index, label, width=width)
+
+        self.database_audit_button = wx.Button(page, label="Auditar de nuevo")
+        self.database_audit_button.SetName("Auditar de nuevo la base de datos")
+        self.database_audit_button.Bind(wx.EVT_BUTTON, self._on_database_audit)
+        self.database_optimize_button = wx.Button(
+            page,
+            label="Crear respaldo y optimizar...",
+        )
+        self.database_optimize_button.SetName("Crear respaldo y optimizar base de datos")
+        self.database_optimize_button.Enable(False)
+        self.database_optimize_button.Bind(wx.EVT_BUTTON, self._on_database_optimize)
+        self.database_delete_backups_button = wx.Button(page, label="Eliminar respaldos...")
+        self.database_delete_backups_button.SetName("Eliminar respaldos de la base de datos")
+        self.database_delete_backups_button.Hide()
+        self.database_delete_backups_button.Bind(
+            wx.EVT_BUTTON,
+            self._on_delete_database_backups,
+        )
+
+        actions = wx.BoxSizer(wx.HORIZONTAL)
+        actions.Add(self.database_audit_button, 0, wx.RIGHT, 8)
+        actions.Add(self.database_optimize_button, 0, wx.RIGHT, 8)
+        actions.Add(self.database_delete_backups_button, 0)
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(intro, 0, wx.ALL | wx.EXPAND, 10)
+        box.Add(report, 1, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+        box.Add(candidates, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+        box.Add(actions, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        page.SetSizer(box)
+        self.notebook.AddPage(page, "Optimizar base de datos")
+        return report, candidates
+
     def _create_maintenance_page(self) -> None:
         page = wx.Panel(self.notebook)
         explanation = wx.TextCtrl(
@@ -245,6 +330,8 @@ class StorageManagerDialog(wx.Dialog):
 
     def _on_refresh(self, _event: wx.CommandEvent) -> None:
         self._refresh()
+        self._refresh_database_audit()
+        self._refresh_database_backups()
 
     def _refresh(self) -> None:
         if self._busy:
@@ -266,6 +353,122 @@ class StorageManagerDialog(wx.Dialog):
             self._render(snapshot)
 
         self._load_snapshot(callback)
+
+    def _on_database_audit(self, _event: wx.CommandEvent) -> None:
+        self._refresh_database_audit()
+        self._refresh_database_backups()
+
+    def _refresh_database_audit(self) -> None:
+        if not self._active:
+            return
+        self._database_request_id += 1
+        request_id = self._database_request_id
+        self._database_preview = None
+        self.database_audit_button.Enable(False)
+        self.database_optimize_button.Enable(False)
+        self.database_report.ChangeValue("Calculando la auditoría y una estimación segura...")
+
+        def callback(preview: DatabaseOptimizationPreview | None, error: str) -> None:
+            if not self._active or request_id != self._database_request_id:
+                return
+            self.database_audit_button.Enable(not self._busy)
+            if preview is None or error:
+                self.database_report.ChangeValue(
+                    error or "No se pudo auditar la base de datos local."
+                )
+                self.database_candidates.DeleteAllItems()
+                return
+            self._database_preview = preview
+            self._render_database_preview(preview)
+            self.database_optimize_button.Enable(not self._busy)
+
+        self._load_database_preview(callback)
+
+    def _refresh_database_backups(self) -> None:
+        if not self._active:
+            return
+
+        def callback(
+            backups: tuple[DatabaseBackupInfo, ...] | None,
+            _error: str,
+        ) -> None:
+            if not self._active:
+                return
+            self._database_backups = backups or ()
+            if self._database_preview is not None:
+                self._render_database_preview(self._database_preview)
+            else:
+                self._update_database_backup_button()
+
+        self._load_database_backups(callback)
+
+    def _render_database_preview(self, preview: DatabaseOptimizationPreview) -> None:
+        audit = preview.audit
+        table_rows = dict(audit.table_rows)
+        lines = [
+            "Auditoría de la base de datos local",
+            f"Tamaño actual: {format_storage_size(audit.total_bytes)}",
+            f"SQLite: {audit.integrity_check}; comprobación rápida: {audit.quick_check}",
+            f"Modo de diario: {audit.journal_mode.upper()} | "
+            f"versión de esquema: {audit.user_version}",
+            f"Páginas: {audit.page_count:,} | páginas libres: {audit.freelist_count:,}",
+            "",
+            "Contenido conservado",
+            f"Chats: {audit.chat_count:,} ({audit.empty_chat_count:,} sin mensajes locales; "
+            f"{audit.empty_contact_count:,} contactos y {audit.empty_group_chat_count:,} grupos)",
+            f"Mensajes: {audit.message_count:,} | audios: {audit.audio_message_count:,}",
+            f"Transcripciones Zapia: {audit.zapia_transcription_count:,} | "
+            f"Deepgram: {audit.deepgram_transcription_count:,}",
+            "Distribución interna: "
+            f"messages {table_rows.get('messages', 0):,}; "
+            f"group_participants {table_rows.get('group_participants', 0):,}; "
+            f"chats {table_rows.get('chats', 0):,}.",
+            "",
+            "Resultado estimado antes de borrar",
+            f"Participantes de grupos sin mensajes locales: "
+            f"{preview.estimated_removed_participant_count:,}",
+            f"Tamaño final estimado: {format_storage_size(preview.estimated_final_bytes)}",
+            f"Espacio recuperable estimado: "
+            f"{format_storage_size(preview.estimated_reclaimed_bytes)}",
+            f"Respaldos disponibles: {len(self._database_backups):,} | "
+            f"{format_storage_size(sum(item.size_bytes for item in self._database_backups))}",
+            "",
+            "Protecciones: no se borran chats vacíos porque también funcionan como agenda; "
+            "tampoco se borran mensajes, audios, transcripciones ni cuentas antiguas.",
+            "Al optimizar se detiene temporalmente la sincronización, se hace checkpoint de WAL "
+            "y se crea un respaldo antes de cualquier eliminación.",
+        ]
+        self.database_report.ChangeValue("\n".join(lines))
+        self.database_report.SetInsertionPoint(0)
+
+        self.database_candidates.DeleteAllItems()
+        row = self.database_candidates.InsertItem(0, "Participantes de grupos sin mensajes")
+        self.database_candidates.SetItem(row, 1, str(preview.estimated_removed_participant_count))
+        self.database_candidates.SetItem(
+            row,
+            2,
+            format_storage_size(preview.estimated_reclaimed_bytes),
+        )
+        self.database_candidates.SetItem(
+            row,
+            3,
+            "Caché regenerable al abrir el grupo; no se tocan chats ni mensajes.",
+        )
+        self._update_database_backup_button()
+
+    def _update_database_backup_button(self) -> None:
+        count = len(self._database_backups)
+        if count:
+            self.database_delete_backups_button.SetLabel(
+                f"Eliminar {count} respaldo{'s' if count != 1 else ''}..."
+            )
+            self.database_delete_backups_button.Show()
+            self.database_delete_backups_button.Enable(not self._busy)
+        else:
+            self.database_delete_backups_button.Hide()
+            self.database_delete_backups_button.Disable()
+        self.database_delete_backups_button.GetParent().Layout()
+        self.notebook.Layout()
 
     def _render(self, snapshot: StorageSnapshot) -> None:
         self.summary.ChangeValue(self._format_summary(snapshot))
@@ -439,14 +642,83 @@ class StorageManagerDialog(wx.Dialog):
         self._refresh()
 
     def _on_optimize_database(self, _event: wx.CommandEvent) -> None:
-        self._set_busy(True, "Optimizando la base de datos...")
+        self._on_database_optimize(_event)
+
+    def _on_database_optimize(self, _event: wx.CommandEvent) -> None:
+        preview = self._database_preview
+        if preview is None:
+            return
+        result = wx.MessageBox(
+            "Se detendrá temporalmente la sincronización para proteger la base. "
+            "Primero se creará un respaldo y después se retirará únicamente la caché de "
+            f"{preview.estimated_removed_participant_count:,} participantes sin mensajes.\n\n"
+            f"Recuperación estimada: {format_storage_size(preview.estimated_reclaimed_bytes)}\n\n"
+            "¿Continuar?",
+            "Crear respaldo y optimizar base de datos",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
+        self._set_busy(True, "Deteniendo la sincronización y creando el respaldo...")
         self._optimize_database(self._finish_database_optimization)
 
-    def _finish_database_optimization(self, reclaimed: int | None, error: str) -> None:
+    def _on_delete_database_backups(self, _event: wx.CommandEvent) -> None:
+        if not self._database_backups:
+            return
+        total_bytes = sum(item.size_bytes for item in self._database_backups)
+        result = wx.MessageBox(
+            f"Se eliminarán {len(self._database_backups):,} respaldos locales de la base "
+            f"({format_storage_size(total_bytes)}).\n\n"
+            "Esta acción no elimina la base activa ni los mensajes actuales. ¿Continuar?",
+            "Eliminar respaldos de la base de datos",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        )
+        if result != wx.YES:
+            return
+        self._set_busy(True, "Eliminando respaldos de la base de datos...")
+        self._delete_database_backups(self._finish_database_backups_deletion)
+
+    def _finish_database_backups_deletion(
+        self,
+        result: StorageCleanupResult | None,
+        error: str,
+    ) -> None:
         if not self._active:
             return
         self._set_busy(False)
-        if reclaimed is None or error:
+        if result is None or error:
+            wx.MessageBox(
+                error or "No se pudieron eliminar los respaldos.",
+                "Eliminar respaldos",
+                wx.OK | wx.ICON_ERROR,
+                self,
+            )
+            return
+        message = (
+            f"Se eliminaron {result.deleted_file_count:,} respaldos y se liberaron "
+            f"{format_storage_size(result.reclaimed_bytes)}."
+        )
+        if result.failures:
+            message += f"\n\n{len(result.failures):,} respaldos no se pudieron eliminar."
+        wx.MessageBox(
+            message,
+            "Respaldos eliminados",
+            wx.OK | (wx.ICON_WARNING if result.failures else wx.ICON_INFORMATION),
+            self,
+        )
+        self._refresh_database_backups()
+
+    def _finish_database_optimization(
+        self,
+        result: DatabaseOptimizationResult | None,
+        error: str,
+    ) -> None:
+        if not self._active:
+            return
+        self._set_busy(False)
+        if result is None or error:
             wx.MessageBox(
                 error or "No se pudo optimizar la base de datos.",
                 "Optimizar base de datos",
@@ -454,13 +726,38 @@ class StorageManagerDialog(wx.Dialog):
                 self,
             )
             return
+        self._database_preview = None
+        self.database_optimize_button.Enable(False)
+        self.database_report.ChangeValue(self._format_optimization_result(result))
+        self.database_report.SetInsertionPoint(0)
         wx.MessageBox(
-            f"La base de datos se optimizó. Espacio liberado: {format_storage_size(reclaimed)}.",
+            "La base de datos se optimizó y el respaldo se creó correctamente.\n\n"
+            f"Espacio liberado: {format_storage_size(result.reclaimed_bytes)}.",
             "Optimización terminada",
             wx.OK | wx.ICON_INFORMATION,
             self,
         )
         self._refresh()
+        self._refresh_database_backups()
+
+    @staticmethod
+    def _format_optimization_result(result: DatabaseOptimizationResult) -> str:
+        before = result.before
+        after = result.after
+        return "\n".join(
+            (
+                "Informe de optimización terminado",
+                f"Tamaño anterior: {format_storage_size(before.total_bytes)}",
+                f"Tamaño final: {format_storage_size(after.total_bytes)}",
+                f"Espacio recuperado: {format_storage_size(result.reclaimed_bytes)}",
+                f"Participantes de caché retirados: {result.removed_participant_count:,}",
+                f"Respaldo: {result.backup_path}",
+                "",
+                "No se eliminaron mensajes, chats, audios ni transcripciones.",
+                f"Comprobación final: {after.integrity_check}; rápida: {after.quick_check}.",
+                "Si la sincronización estaba activa, se reanudará automáticamente al terminar.",
+            )
+        )
 
     def _on_delete_all(self, _event: wx.CommandEvent) -> None:
         first = wx.MessageBox(
@@ -527,6 +824,7 @@ class StorageManagerDialog(wx.Dialog):
             self.clean_downloads_button,
             self.clean_auxiliary_button,
             self.optimize_button,
+            self.database_delete_backups_button,
             self.delete_all_button,
         ):
             control.Enable(not busy)
@@ -545,6 +843,9 @@ class StorageManagerDialog(wx.Dialog):
         )
         if not busy:
             self._update_marked_action_buttons()
+            self.database_audit_button.Enable(True)
+            self.database_optimize_button.Enable(self._database_preview is not None)
+            self._update_database_backup_button()
         if message:
             self.status.SetLabel(message)
 

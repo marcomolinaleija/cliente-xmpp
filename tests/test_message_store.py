@@ -9,10 +9,93 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
+from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.storage.message_store import MessageStore
 
 
 class MessageStoreTests(unittest.TestCase):
+    def test_database_audit_preview_and_optimization_are_conservative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "messages.sqlite3"
+            store = MessageStore(path)
+            account = "me@example.test"
+            active_group = "active@example.test"
+            empty_group = "empty@example.test"
+            store.upsert_chats(
+                account,
+                [
+                    Chat(jid=active_group, name="Active", is_group=True),
+                    Chat(jid=empty_group, name="Empty", is_group=True),
+                    Chat(jid="contact@example.test", name="Contact"),
+                ],
+            )
+            store.upsert_messages(
+                account,
+                [
+                    Message(
+                        chat_jid=active_group,
+                        sender_jid="person@example.test",
+                        body="hello",
+                        message_id="message-1",
+                    )
+                ],
+            )
+            store.upsert_group_participants(
+                account,
+                [
+                    GroupParticipant(active_group, "person@example.test", "Person"),
+                    GroupParticipant(empty_group, "old-1@example.test", "Old 1"),
+                    GroupParticipant(empty_group, "old-2@example.test", "Old 2"),
+                ],
+            )
+
+            preview = store.preview_database_optimization()
+
+            self.assertEqual(preview.audit.empty_chat_count, 2)
+            self.assertEqual(preview.audit.empty_contact_count, 1)
+            self.assertEqual(preview.audit.participants_without_messages, 2)
+            self.assertEqual(preview.estimated_removed_participant_count, 2)
+            self.assertGreaterEqual(preview.estimated_reclaimed_bytes, 0)
+            self.assertEqual(
+                len(store.load_group_participants(account, empty_group)),
+                2,
+            )
+
+            backup = Path(temp_dir) / "backups" / "messages.sqlite3"
+            result = store.optimize_database(backup)
+
+            self.assertTrue(backup.is_file())
+            self.assertEqual(result.removed_participant_count, 2)
+            self.assertEqual(result.after.participants_without_messages, 0)
+            self.assertEqual(result.after.chat_count, 3)
+            self.assertEqual(result.after.message_count, 1)
+            self.assertEqual(store.load_group_participants(account, empty_group), [])
+
+    def test_replace_group_participants_removes_departed_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account = "me@example.test"
+            group = "group@example.test"
+            store.upsert_group_participants(
+                account,
+                [
+                    GroupParticipant(group, "one@example.test", "One"),
+                    GroupParticipant(group, "two@example.test", "Two"),
+                ],
+            )
+
+            store.replace_group_participants(
+                account,
+                group,
+                [GroupParticipant(group, "one@example.test", "One renamed")],
+            )
+
+            participants = store.load_group_participants(account, group)
+            self.assertEqual(
+                [(participant.jid, participant.nick) for participant in participants],
+                [("one@example.test", "One renamed")],
+            )
+
     def test_chat_notification_sound_path_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

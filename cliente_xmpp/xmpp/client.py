@@ -189,6 +189,8 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._group_roster_requests: set[str] = set()
+        self._group_participant_cache_enabled: set[str] = set()
         self._group_rejoin_scheduled: set[str] = set()
         self._group_membership_ping_failures: dict[str, int] = {}
         self._group_membership_ping_unsupported_jids: set[str] = set()
@@ -243,6 +245,8 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._clear_transient_message_retries()
         self._joined_group_chat_jids.clear()
+        getattr(self, "_group_roster_requests", set()).clear()
+        getattr(self, "_group_participant_cache_enabled", set()).clear()
         self._group_rejoin_scheduled.clear()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
@@ -296,6 +300,8 @@ class BridgeXmppClient(ClientXMPP):
         getattr(self, "_pending_poll_votes", {}).clear()
         self._clear_transient_message_retries()
         self._stop_group_membership_watchdog()
+        getattr(self, "_group_roster_requests", set()).clear()
+        getattr(self, "_group_participant_cache_enabled", set()).clear()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
         if self._disconnect_requested:
@@ -1060,6 +1066,9 @@ class BridgeXmppClient(ClientXMPP):
         full_from_jid: str,
         presence: object,
     ) -> None:
+        enabled_groups = getattr(self, "_group_participant_cache_enabled", None)
+        if enabled_groups is not None and group_jid not in enabled_groups:
+            return
         participant_jid = self._muc_user_item_jid(getattr(presence, "xml", None))
         nick = unescape_jid_text(self._jid_resource(full_from_jid)).strip()
         if not participant_jid or not nick:
@@ -2632,8 +2641,13 @@ class BridgeXmppClient(ClientXMPP):
         text = " ".join(part for part in xml.itertext() if part)
         return [match.group(1).rstrip(").,;]") for match in JID_PATTERN.finditer(text)]
 
-    def _join_group_chat(self, jid: str) -> None:
+    def _join_group_chat(self, jid: str, *, request_roster: bool = False) -> None:
+        if request_roster:
+            self._group_roster_requests.add(jid)
         if jid in self._joined_group_chat_jids:
+            if request_roster:
+                self._group_roster_requests.discard(jid)
+                self._emit_group_participants_from_roster(jid)
             return
 
         self._joined_group_chat_jids.add(jid)
@@ -2650,12 +2664,16 @@ class BridgeXmppClient(ClientXMPP):
             task.result()
         except (TimeoutError, IqError, IqTimeout):
             self._joined_group_chat_jids.discard(jid)
+            self._group_roster_requests.discard(jid)
             return
         except Exception:
             self._joined_group_chat_jids.discard(jid)
+            self._group_roster_requests.discard(jid)
             return
 
-        self._emit_group_participants_from_roster(jid)
+        if jid in self._group_roster_requests:
+            self._group_roster_requests.discard(jid)
+            self._emit_group_participants_from_roster(jid)
 
     def _emit_group_participants_from_roster(self, group_jid: str) -> None:
         try:
@@ -2688,8 +2706,7 @@ class BridgeXmppClient(ClientXMPP):
                 )
             )
 
-        if participants:
-            self._emit(GroupParticipantsLoaded(group_jid, participants))
+        self._emit(GroupParticipantsLoaded(group_jid, participants))
 
     def _muc_nick(self) -> str:
         return str(self.boundjid.user or self.boundjid.bare or self.settings.jid)
@@ -2699,7 +2716,8 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         self._group_chat_jids.add(chat_jid)
-        self._join_group_chat(chat_jid)
+        self._group_participant_cache_enabled.add(chat_jid)
+        self._join_group_chat(chat_jid, request_roster=True)
 
     def request_contact_presence_subscription(self, chat_jid: str) -> None:
         bare_jid = chat_jid.split("/", 1)[0]

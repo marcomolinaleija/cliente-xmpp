@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
@@ -71,6 +73,63 @@ class StorageMediaRecord:
     local_path: str
     media_kind: str
     is_sticker: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseAudit:
+    """Read-only facts used to explain and plan local SQLite maintenance."""
+
+    database_bytes: int
+    wal_bytes: int
+    shm_bytes: int
+    journal_bytes: int
+    page_size: int
+    page_count: int
+    freelist_count: int
+    user_version: int
+    journal_mode: str
+    integrity_check: str
+    quick_check: str
+    table_rows: tuple[tuple[str, int], ...]
+    chat_count: int
+    message_count: int
+    empty_chat_count: int
+    empty_group_chat_count: int
+    empty_contact_count: int
+    participant_count: int
+    participant_group_count: int
+    participants_without_messages: int
+    participant_groups_without_messages: int
+    audio_message_count: int
+    zapia_transcription_count: int
+    deepgram_transcription_count: int
+
+    @property
+    def total_bytes(self) -> int:
+        return self.database_bytes + self.wal_bytes + self.shm_bytes + self.journal_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseOptimizationResult:
+    before: DatabaseAudit
+    after: DatabaseAudit
+    backup_path: str
+    removed_participant_count: int
+
+    @property
+    def reclaimed_bytes(self) -> int:
+        return max(0, self.before.total_bytes - self.after.total_bytes)
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseOptimizationPreview:
+    audit: DatabaseAudit
+    estimated_final_bytes: int
+    estimated_removed_participant_count: int
+
+    @property
+    def estimated_reclaimed_bytes(self) -> int:
+        return max(0, self.audit.total_bytes - self.estimated_final_bytes)
 
 
 @dataclass(slots=True)
@@ -1297,6 +1356,42 @@ class MessageStore:
                 ],
             )
 
+    def replace_group_participants(
+        self,
+        account_jid: str,
+        group_jid: str,
+        participants: list[GroupParticipant],
+    ) -> None:
+        """Replace one authoritative MUC roster snapshot, including departures."""
+        valid_by_jid = {
+            participant.jid: participant
+            for participant in participants
+            if participant.group_jid == group_jid and participant.jid and participant.nick
+        }
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM group_participants WHERE account_jid = ? AND group_jid = ?",
+                (account_jid, group_jid),
+            )
+            conn.executemany(
+                """
+                INSERT INTO group_participants (
+                    account_jid, group_jid, participant_jid, nick, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        account_jid,
+                        group_jid,
+                        participant.jid,
+                        participant.nick,
+                        _datetime_to_db(datetime.now()),
+                    )
+                    for participant in valid_by_jid.values()
+                ],
+            )
+
     def update_message_media_local_path(
         self,
         account_jid: str,
@@ -1372,6 +1467,221 @@ class MessageStore:
                 ((rowid,) for rowid in missing_rowids),
             )
         return len(missing_rowids)
+
+    def audit_database(self) -> DatabaseAudit:
+        """Collect database facts without opening a write transaction."""
+        if not self.path.is_file():
+            raise FileNotFoundError(self.path)
+
+        sizes = {
+            suffix: _file_size(Path(f"{self.path}{suffix}"))
+            for suffix in ("", "-wal", "-shm", "-journal")
+        }
+        uri = f"file:{self.path.resolve().as_posix()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+
+            def scalar(sql: str, parameters: tuple[object, ...] = ()) -> int:
+                return int(conn.execute(sql, parameters).fetchone()[0] or 0)
+
+            tables = tuple(
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                ).fetchall()
+            )
+            table_rows = tuple(
+                (table, scalar(f'SELECT COUNT(*) FROM "{table}"')) for table in tables
+            )
+            empty_chat_count = scalar(
+                """
+                SELECT COUNT(*)
+                FROM chats AS c
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM messages AS m
+                    WHERE m.account_jid = c.account_jid AND m.chat_jid = c.jid
+                )
+                """
+            )
+            empty_group_chat_count = scalar(
+                """
+                SELECT COUNT(*)
+                FROM chats AS c
+                WHERE c.is_group = 1
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM messages AS m
+                        WHERE m.account_jid = c.account_jid AND m.chat_jid = c.jid
+                    )
+                """
+            )
+            participant_groups_without_messages = scalar(
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT p.account_jid, p.group_jid
+                    FROM group_participants AS p
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM messages AS m
+                        WHERE m.account_jid = p.account_jid
+                            AND m.chat_jid = p.group_jid
+                    )
+                    GROUP BY p.account_jid, p.group_jid
+                )
+                """
+            )
+            return DatabaseAudit(
+                database_bytes=sizes[""],
+                wal_bytes=sizes["-wal"],
+                shm_bytes=sizes["-shm"],
+                journal_bytes=sizes["-journal"],
+                page_size=int(conn.execute("PRAGMA page_size").fetchone()[0]),
+                page_count=int(conn.execute("PRAGMA page_count").fetchone()[0]),
+                freelist_count=int(conn.execute("PRAGMA freelist_count").fetchone()[0]),
+                user_version=int(conn.execute("PRAGMA user_version").fetchone()[0]),
+                journal_mode=str(conn.execute("PRAGMA journal_mode").fetchone()[0] or ""),
+                integrity_check=str(conn.execute("PRAGMA integrity_check").fetchone()[0]),
+                quick_check=str(conn.execute("PRAGMA quick_check").fetchone()[0]),
+                table_rows=table_rows,
+                chat_count=scalar("SELECT COUNT(*) FROM chats"),
+                message_count=scalar("SELECT COUNT(*) FROM messages"),
+                empty_chat_count=empty_chat_count,
+                empty_group_chat_count=empty_group_chat_count,
+                empty_contact_count=empty_chat_count - empty_group_chat_count,
+                participant_count=scalar("SELECT COUNT(*) FROM group_participants"),
+                participant_group_count=scalar(
+                    "SELECT COUNT(*) FROM "
+                    "(SELECT account_jid, group_jid FROM group_participants "
+                    "GROUP BY account_jid, group_jid)"
+                ),
+                participants_without_messages=scalar(
+                    """
+                    SELECT COUNT(*)
+                    FROM group_participants AS p
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM messages AS m
+                        WHERE m.account_jid = p.account_jid AND m.chat_jid = p.group_jid
+                    )
+                    """
+                ),
+                participant_groups_without_messages=participant_groups_without_messages,
+                audio_message_count=scalar(
+                    "SELECT COUNT(*) FROM messages WHERE media_kind = 'audio' OR audio_url != ''"
+                ),
+                zapia_transcription_count=scalar(
+                    "SELECT COUNT(*) FROM messages "
+                    "WHERE lower(body) LIKE '%transcrito gratis por zapia.com/app%'"
+                ),
+                deepgram_transcription_count=scalar(
+                    "SELECT COUNT(*) FROM messages "
+                    "WHERE body LIKE 'Transcripción:%' AND body LIKE '%Transcrito en %'"
+                ),
+            )
+
+    def preview_database_optimization(self) -> DatabaseOptimizationPreview:
+        """Estimate the conservative cleanup on a temporary SQLite copy."""
+        audit = self.audit_database()
+        file_descriptor, raw_path = tempfile.mkstemp(
+            prefix="cliente-xmpp-db-preview-",
+            suffix=".sqlite3",
+        )
+        os.close(file_descriptor)
+        preview_path = Path(raw_path)
+        try:
+            source_uri = f"file:{self.path.resolve().as_posix()}?mode=ro"
+            with closing(sqlite3.connect(source_uri, uri=True)) as source:
+                source.execute("PRAGMA query_only = ON")
+                destination = sqlite3.connect(preview_path)
+                try:
+                    source.backup(destination)
+                    destination.execute("PRAGMA journal_mode = DELETE")
+                    removed = destination.execute(
+                        """
+                        DELETE FROM group_participants
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM messages
+                            WHERE messages.account_jid = group_participants.account_jid
+                                AND messages.chat_jid = group_participants.group_jid
+                        )
+                        """
+                    ).rowcount
+                    destination.commit()
+                    destination.execute("VACUUM")
+                finally:
+                    destination.close()
+            return DatabaseOptimizationPreview(
+                audit=audit,
+                estimated_final_bytes=_database_family_size(preview_path),
+                estimated_removed_participant_count=max(0, int(removed)),
+            )
+        finally:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                Path(f"{preview_path}{suffix}").unlink(missing_ok=True)
+
+    def create_database_backup(self, backup_path: Path) -> Path:
+        """Checkpoint and create a consistent SQLite backup before writes."""
+        backup_path = Path(backup_path)
+        if backup_path.resolve() == self.path.resolve():
+            raise ValueError("El respaldo debe ser distinto de la base original.")
+        if backup_path.exists():
+            raise FileExistsError(backup_path)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with closing(sqlite3.connect(self.path)) as source:
+            source.execute("PRAGMA busy_timeout = 5000")
+            checkpoint = source.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint and int(checkpoint[0]) != 0:
+                raise RuntimeError("No se pudo completar el checkpoint de WAL.")
+            quick_check = str(source.execute("PRAGMA quick_check").fetchone()[0])
+            if quick_check.lower() != "ok":
+                raise RuntimeError(f"La comprobación de SQLite no fue correcta: {quick_check}")
+            destination = sqlite3.connect(backup_path)
+            try:
+                source.backup(destination)
+                destination.commit()
+            finally:
+                destination.close()
+        return backup_path
+
+    def optimize_database(self, backup_path: Path) -> DatabaseOptimizationResult:
+        """Backup, remove only stale participant cache, checkpoint, and VACUUM."""
+        before = self.audit_database()
+        self.create_database_backup(backup_path)
+
+        with self._connect() as conn:
+            removed = conn.execute(
+                """
+                DELETE FROM group_participants
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM messages
+                    WHERE messages.account_jid = group_participants.account_jid
+                        AND messages.chat_jid = group_participants.group_jid
+                )
+                """
+            ).rowcount
+
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint and int(checkpoint[0]) != 0:
+                raise RuntimeError("No se pudo completar el checkpoint de WAL posterior.")
+            conn.execute("VACUUM")
+
+        after = self.audit_database()
+        return DatabaseOptimizationResult(
+            before=before,
+            after=after,
+            backup_path=str(backup_path),
+            removed_participant_count=max(0, int(removed)),
+        )
 
     def compact_database(self) -> None:
         """Reclaim unused SQLite pages without changing the schema."""
@@ -2836,6 +3146,20 @@ def _message_preview(message: Message) -> str:
     if message.outgoing and message.delivery_state == "failed":
         return f"{preview} | No enviado"
     return preview
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return max(0, int(path.stat().st_size))
+    except OSError:
+        return 0
+
+
+def _database_family_size(path: Path) -> int:
+    return sum(
+        _file_size(Path(f"{path}{suffix}"))
+        for suffix in ("", "-wal", "-shm", "-journal")
+    )
 
 
 def _format_size(size: int) -> str:

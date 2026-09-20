@@ -570,9 +570,26 @@ class CallContractTests(unittest.TestCase):
                         body="Administrative text",
                         sent_at=datetime(2026, 8, 31, 12, tzinfo=UTC),
                         message_id="admin",
-                    )
+                    ),
+                    self._message(
+                        self._event(
+                            "component-call",
+                            1,
+                            "accepted",
+                            at=datetime(2026, 8, 31, 13, tzinfo=UTC),
+                            direction="unknown",
+                        ),
+                        message_id="component-call",
+                        chat_jid=self.component_jid,
+                    ),
                 ],
             )
+            statistics = store.load_statistics(
+                self.account_jid,
+                7,
+                now=datetime(2026, 8, 31, 23, tzinfo=UTC),
+            )
+            self.assertEqual(statistics.calls.total, 0)
             local = store.load_chat_statistics(
                 self.account_jid,
                 self.component_jid,

@@ -795,12 +795,16 @@ class MessageStore:
 
             call_event = _call_event_from_row(row)
             if call_event is not None:
+                call_chat_jid = str(row["chat_jid"])
+                if call_chat_jid in gateway_component_jids:
+                    # Administrative bridge traffic is not a user conversation and
+                    # must not contribute to call totals or durations.
+                    continue
                 call_local_at = call_event.event_timestamp.astimezone(reference_now.tzinfo)
                 if (
                     (start_local is None or call_local_at >= start_local)
                     and call_local_at <= reference_now
                 ):
-                    call_chat_jid = str(row["chat_jid"])
                     call_events.append((call_chat_jid, call_event))
                     call_chat_metadata.setdefault(
                         call_chat_jid,

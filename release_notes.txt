@@ -1,4 +1,10 @@
-WhatsApp CAN 1.4.10
+WhatsApp CAN 1.4.11
+
+Búsqueda y navegación
+- La búsqueda global de mensajes vuelve a mostrar resultados rápidamente sin congelar la aplicación.
+- La búsqueda dentro de un chat mantiene sus resultados aunque el historial sea grande.
+- El primer resultado queda seleccionado automáticamente al entrar en la lista y Enter ya no abre por error el chat anterior mientras la búsqueda termina.
+- Ir al mensaje citado y abrir un resultado de búsqueda llevan al mensaje correcto, también en grupos.
 
 Almacenamiento local
 - El gestor de almacenamiento permite auditar la base de datos sin modificarla y muestra su estado, el espacio recuperable y los respaldos disponibles.

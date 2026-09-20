@@ -606,17 +606,67 @@ class MessageStore:
         chat_jid: str | None = None,
         sent_on: date | None = None,
     ) -> list[Message]:
+        if limit <= 0:
+            return []
+
         terms = _search_terms(query)
+        raw_terms = _raw_search_terms(query)
         if not terms and sent_on is None:
             return []
 
-        with self._connect() as conn:
+        search_expression = " || ' ' || ".join(
+            (
+                "COALESCE(messages.body, '')",
+                "COALESCE(messages.reply_quote, '')",
+                "COALESCE(messages.media_url, '')",
+                "COALESCE(messages.media_filename, '')",
+                "COALESCE(messages.sender_name, '')",
+                "COALESCE(messages.sender_jid, '')",
+                "COALESCE(messages.chat_jid, '')",
+                "COALESCE(chats.name, '')",
+                "COALESCE(chats.custom_name, '')",
+            )
+        )
+        def fetch_rows(
+            conn: sqlite3.Connection,
+            *,
+            normalized: bool,
+        ) -> list[sqlite3.Row]:
+            search_terms = terms if normalized else raw_terms
             where_clauses = ["messages.account_jid = ?"]
             parameters: list[object] = [account_jid]
             if chat_jid:
                 where_clauses.append("messages.chat_jid = ?")
                 parameters.append(chat_jid)
-            rows = conn.execute(
+            expression = (
+                _sqlite_normalized_search_expression(search_expression)
+                if normalized
+                else f"LOWER({search_expression})"
+            )
+            where_clauses.extend(
+                f"{expression} LIKE ? ESCAPE '\\'"
+                for _term in search_terms
+            )
+            parameters.extend(
+                f"%{_escape_search_like(term)}%"
+                for term in search_terms
+            )
+            if sent_on is not None:
+                start_local = datetime.combine(sent_on, datetime_time.min).astimezone()
+                end_local = start_local + timedelta(days=1)
+                where_clauses.extend(
+                    (
+                        "messages.sent_at >= ?",
+                        "messages.sent_at < ?",
+                    )
+                )
+                parameters.extend(
+                    (
+                        _datetime_to_db(start_local),
+                        _datetime_to_db(end_local),
+                    )
+                )
+            return conn.execute(
                 f"""
                 SELECT messages.*, chats.name AS chat_name, chats.custom_name AS chat_custom_name
                 FROM messages
@@ -625,34 +675,24 @@ class MessageStore:
                     AND chats.jid = messages.chat_jid
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY julianday(messages.sent_at) DESC, messages.rowid DESC
+                LIMIT ?
                 """,
-                parameters,
+                (*parameters, limit),
             ).fetchall()
+
+        with self._connect() as conn:
+            # Keep the common path in SQLite native code. A Python callback
+            # once per message holds the GIL and freezes the wx event loop.
+            rows = fetch_rows(conn, normalized=False)
+            # Preserve accent-insensitive matching for queries such as
+            # "cafe" / "café" when the native path did not fill the window.
+            if terms and len(rows) < limit:
+                rows = fetch_rows(conn, normalized=True)
 
         matches: list[Message] = []
         for row in rows:
             message = _message_from_row(row)
-            if sent_on is not None and message.sent_at.astimezone().date() != sent_on:
-                continue
-            haystack = _normalize_search_text(
-                " ".join(
-                    (
-                        message.body,
-                        message.reply_quote,
-                        message.media_url,
-                        message.media_filename,
-                        message.sender_name,
-                        message.sender_jid,
-                        message.chat_jid,
-                        str(row["chat_name"] or ""),
-                        str(row["chat_custom_name"] or ""),
-                    )
-                )
-            )
-            if not terms or all(term in haystack for term in terms):
-                matches.append(message)
-                if len(matches) >= limit:
-                    break
+            matches.append(message)
 
         return list(reversed(matches))
 
@@ -3406,9 +3446,52 @@ def _search_terms(query: str) -> list[str]:
     ]
 
 
+def _raw_search_terms(query: str) -> list[str]:
+    return [term for term in query.casefold().split() if term]
+
+
+def _sqlite_normalized_search_expression(expression: str) -> str:
+    normalized = f"LOWER({expression})"
+    for source, target in SEARCH_DIACRITIC_REPLACEMENTS:
+        normalized = f"REPLACE({normalized}, '{source}', '{target}')"
+    return normalized
+
+
+SEARCH_DIACRITIC_REPLACEMENTS = (
+    ("á", "a"),
+    ("é", "e"),
+    ("í", "i"),
+    ("ó", "o"),
+    ("ú", "u"),
+    ("ü", "u"),
+    ("ñ", "n"),
+    ("à", "a"),
+    ("è", "e"),
+    ("ì", "i"),
+    ("ò", "o"),
+    ("ù", "u"),
+    ("â", "a"),
+    ("ê", "e"),
+    ("î", "i"),
+    ("ô", "o"),
+    ("û", "u"),
+    ("ä", "a"),
+    ("ë", "e"),
+    ("ï", "i"),
+    ("ö", "o"),
+    ("ã", "a"),
+    ("õ", "o"),
+    ("ç", "c"),
+)
+
+
 def _normalize_search_text(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text.casefold())
     return "".join(character for character in decomposed if not unicodedata.combining(character))
+
+
+def _escape_search_like(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _datetime_timestamp(value: datetime | None) -> float | None:

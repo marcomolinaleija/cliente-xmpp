@@ -2417,6 +2417,10 @@ class MainWindow(wx.Frame):
         if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
             self._cancel_scheduled_chat_search()
             self._apply_chat_search()
+            if self.chat_list.is_searching and self.chat_list.selected_item() is None:
+                if self.chat_list.select_first() is None:
+                    self.status_bar.SetStatusText("Esperando resultados de búsqueda...")
+                    return
             self._show_selected_chat()
             return
 
@@ -2731,10 +2735,6 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(f"{len(contact_results)} resultados")
             return
 
-        messages_snapshot = {
-            chat_jid: tuple(messages)
-            for chat_jid, messages in self.messages_by_chat.items()
-        }
         self.status_bar.SetStatusText(
             f"{len(contact_results)} chats; buscando mensajes..."
         )
@@ -2745,7 +2745,7 @@ class MainWindow(wx.Frame):
                 query,
                 terms,
                 chats_by_jid,
-                messages_snapshot,
+                {},
                 self.current_jid,
                 remaining_message_results,
                 contact_results,
@@ -2759,18 +2759,23 @@ class MainWindow(wx.Frame):
         query: str,
         terms: list[str],
         chats_by_jid: dict[str, Chat],
-        messages_by_chat: dict[str, tuple[Message, ...]],
+        messages_by_chat: dict[str, Iterable[Message]],
         account_jid: str,
         limit: int,
         contact_results: list[ChatListItem],
     ) -> None:
+        if request_id != self.search_request_id:
+            return
         message_results = self._message_search_results(
             terms,
             chats_by_jid,
             limit=limit,
             messages_by_chat=messages_by_chat,
             account_jid=account_jid,
+            request_id=request_id,
         )
+        if request_id != self.search_request_id:
+            return
         wx.CallAfter(
             self._finish_message_search,
             request_id,
@@ -2805,8 +2810,9 @@ class MainWindow(wx.Frame):
         terms: list[str],
         chats_by_jid: dict[str, Chat],
         limit: int = SEARCH_RESULT_LIMIT,
-        messages_by_chat: dict[str, tuple[Message, ...]] | None = None,
+        messages_by_chat: dict[str, Iterable[Message]] | None = None,
         account_jid: str = "",
+        request_id: int | None = None,
     ) -> list[ChatListItem]:
         started_at = time.perf_counter()
         if limit <= 0:
@@ -2814,15 +2820,10 @@ class MainWindow(wx.Frame):
 
         memory_started_at = time.perf_counter()
         messages_by_key: dict[tuple[object, ...], Message] = {}
-        message_sources = (
-            messages_by_chat
-            if messages_by_chat is not None
-            else {
-                chat_jid: tuple(messages)
-                for chat_jid, messages in self.messages_by_chat.items()
-            }
-        )
+        message_sources = messages_by_chat or {}
         for messages in message_sources.values():
+            if request_id is not None and request_id != self.search_request_id:
+                return []
             for message in messages:
                 chat = chats_by_jid.get(message.chat_jid)
                 if self._message_matches_search(message, terms, chat):
@@ -2886,7 +2887,7 @@ class MainWindow(wx.Frame):
         chat_jid: str,
         terms: list[str],
         sent_on: date | None,
-        messages_snapshot: tuple[Message, ...],
+        messages_snapshot: Iterable[Message],
         account_jid: str,
         chat: Chat | None,
     ) -> list[Message]:
@@ -3638,7 +3639,7 @@ class MainWindow(wx.Frame):
             return
 
         terms = self._search_terms(query)
-        messages_snapshot = tuple(self.messages_by_chat.get(chat_jid, []))
+        messages_snapshot = tuple(self.messages_by_chat.get(chat_jid, [])[-SEARCH_RESULT_LIMIT:])
         chat = self._chat_by_jid(chat_jid)
 
         def worker() -> None:
@@ -7313,6 +7314,7 @@ class MainWindow(wx.Frame):
                 message
                 for message in self.messages_by_chat.get(chat_jid, [])
                 if message.message_id == message_id
+                or message.displayed_marker_id == message_id
             ),
             None,
         )

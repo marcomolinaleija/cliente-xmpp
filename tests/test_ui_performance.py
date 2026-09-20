@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from cliente_xmpp.models.chat import Chat, Message
-from cliente_xmpp.ui.chat_list_panel import ChatListPanel
+from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.conversation_panel import (
     MESSAGE_ROW_TEXT_LIMIT,
     ConversationPanel,
@@ -31,6 +31,118 @@ class _CapturingExecutor:
 
 
 class ConversationPerformanceTests(unittest.TestCase):
+    def test_search_results_select_the_first_result_instead_of_previous_chat(self) -> None:
+        panel = ChatListPanel.__new__(ChatListPanel)
+        panel._set_items = Mock()
+        panel.select_first = Mock()
+        items = [
+            ChatListItem(
+                chat=Chat(jid="chat@example.test", name="Chat"),
+                message=Message(
+                    chat_jid="chat@example.test",
+                    sender_jid="contact@example.test",
+                    body="resultado",
+                    message_id="message-1",
+                ),
+            )
+        ]
+
+        ChatListPanel.set_search_results(panel, items)
+
+        panel.select_first.assert_called_once_with()
+
+    def test_focusing_search_results_selects_first_item_automatically(self) -> None:
+        class ListBox:
+            def __init__(self) -> None:
+                self.selection = -1
+                self.focused = False
+
+            def GetSelection(self) -> int:
+                return self.selection
+
+            def SetSelection(self, index: int) -> None:
+                self.selection = index
+
+            def SetFocus(self) -> None:
+                self.focused = True
+
+        panel = ChatListPanel.__new__(ChatListPanel)
+        panel.list_box = ListBox()
+        panel._items = [
+            ChatListItem(chat=Chat(jid="chat@example.test", name="Chat"))
+        ]
+        panel._last_selected_jid = ""
+
+        ChatListPanel.focus(panel)
+
+        self.assertEqual(panel.list_box.selection, 0)
+        self.assertTrue(panel.list_box.focused)
+        self.assertEqual(panel._last_selected_jid, "chat@example.test")
+
+    def test_focus_restore_does_not_override_explicit_navigation_target(self) -> None:
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._selected_message_keys = set()
+        panel._sync_native_message_selection = Mock()
+        panel._row_index_for_focus_key = Mock(return_value=3)
+        panel._focus_target_index = 8
+        panel.messages = SimpleNamespace()
+        panel._refresh_message_selection_labels = Mock()
+        panel._update_message_action_buttons = Mock()
+
+        ConversationPanel._restore_message_view_state(
+            panel,
+            set(),
+            ("id", "previous"),
+            3,
+            True,
+        )
+
+        panel._sync_native_message_selection.assert_called_once_with()
+        panel._refresh_message_selection_labels.assert_not_called()
+        panel._update_message_action_buttons.assert_not_called()
+
+    def test_normal_focus_does_not_scan_all_selected_messages_for_action_buttons(self) -> None:
+        message = Message(
+            chat_jid="chat@example.test",
+            sender_jid="contact@example.test",
+            body="mensaje",
+        )
+
+        class Button:
+            def __init__(self) -> None:
+                self.visible = False
+                self.enabled = False
+
+            def IsShown(self) -> bool:
+                return self.visible
+
+            def Show(self, value: bool) -> None:
+                self.visible = value
+
+            def Enable(self, value: bool) -> None:
+                self.enabled = value
+
+            def SetLabel(self, _value: str) -> None:
+                return
+
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._message_selection_mode = False
+        panel.selected_messages = Mock(side_effect=AssertionError("unexpected full scan"))
+        panel.selected_message = lambda: message
+        panel._can_go_to_quoted_message = lambda _message: False
+        panel.go_to_quoted_button = Button()
+        panel.vote_in_poll_button = Button()
+        (
+            panel.forward_selected_button,
+            panel.copy_selected_button,
+            panel.delete_selected_button,
+        ) = (Button(), Button(), Button())
+        panel.Layout = Mock()
+
+        ConversationPanel._update_message_action_buttons(panel)
+
+        panel.selected_messages.assert_not_called()
+
     def test_focus_event_updates_only_the_focused_row(self) -> None:
         message = Message(
             chat_jid="chat@example.test",

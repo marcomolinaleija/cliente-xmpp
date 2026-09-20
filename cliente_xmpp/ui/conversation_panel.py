@@ -300,6 +300,12 @@ class ConversationPanel(wx.Panel):
         self._sync_native_message_selection()
 
         focus_index = self._row_index_for_focus_key(focused_key, fallback_index)
+        if (
+            self._focus_target_index is not None
+            and focus_index is not None
+            and self._focus_target_index != focus_index
+        ):
+            return
         if focus_index is not None:
             self._focused_message_row_index = focus_index
             if not selected_keys and had_message_focus:
@@ -1356,7 +1362,7 @@ class ConversationPanel(wx.Panel):
         selected_count = (
             len(getattr(self, "_selected_message_keys", set()))
             if self._message_selection_mode
-            else len(self.selected_messages())
+            else 0
         )
         show_selection_actions = self._message_selection_mode and selected_count > 0
         message = message or self.selected_message()

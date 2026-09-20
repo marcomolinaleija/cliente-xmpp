@@ -91,6 +91,8 @@ class ChatListPanel(wx.Panel):
     def set_search_results(self, items: list[ChatListItem], selected_jid: str = "") -> None:
         self._searching = True
         self._set_items(items, selected_jid=selected_jid, preserve_focused_order=False)
+        if items and not selected_jid:
+            self.select_first()
 
     def set_placeholder(self, text: str) -> None:
         self._chats = []
@@ -312,6 +314,8 @@ class ChatListPanel(wx.Panel):
         return None
 
     def focus(self) -> None:
+        if self.list_box.GetSelection() == wx.NOT_FOUND:
+            self.select_first()
         self.list_box.SetFocus()
 
     def focus_search(self) -> None:

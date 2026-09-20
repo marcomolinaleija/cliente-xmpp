@@ -375,6 +375,38 @@ class ReplySendingTests(unittest.TestCase):
             reply.reply_to_id,
         )
 
+    def test_group_quote_navigation_finds_displayed_marker_id_in_memory(self) -> None:
+        group = Chat(
+            jid="#120363216552048055@whatsapp.example.test",
+            name="Grupo",
+            is_group=True,
+        )
+        target = Message(
+            chat_jid=group.jid,
+            sender_jid="member@example.test",
+            body="mensaje original",
+            message_id="internal-id",
+            displayed_marker_id="whatsapp-id",
+            chat_is_group=True,
+        )
+        reply = Message(
+            chat_jid=group.jid,
+            sender_jid="member@example.test",
+            body="respuesta",
+            reply_to_jid=group.jid,
+            reply_to_id="whatsapp-id",
+            chat_is_group=True,
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.messages_by_chat = {group.jid: [target, reply]}
+        window.conversation = SimpleNamespace(current_chat=group)
+        window._chat_by_jid = lambda chat_jid: group if chat_jid == group.jid else None
+
+        self.assertEqual(
+            MainWindow._quoted_message_navigation_target(window, reply),
+            (group, target),
+        )
+
     def test_group_reply_without_occupant_or_nick_is_rejected(self) -> None:
         chat = Chat(
             jid="#120363216552048055@whatsapp.example.test",

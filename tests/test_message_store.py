@@ -448,6 +448,36 @@ class MessageStoreTests(unittest.TestCase):
                 ["matching-message"],
             )
 
+    def test_search_normalizes_accents_and_applies_limit_before_materializing_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            account_jid = "me@example.test"
+            chat_jid = "ari@example.test"
+            store.upsert_messages(
+                account_jid,
+                [
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Café de ayer",
+                        sent_at=datetime(2026, 8, 10, 12, tzinfo=UTC),
+                        message_id="older",
+                    ),
+                    Message(
+                        chat_jid=chat_jid,
+                        sender_jid=chat_jid,
+                        body="Café de hoy",
+                        sent_at=datetime(2026, 8, 11, 12, tzinfo=UTC),
+                        message_id="newer",
+                    ),
+                ],
+            )
+
+            results = store.search_messages(account_jid, "cafe", limit=1)
+
+            self.assertEqual([message.message_id for message in results], ["newer"])
+            self.assertEqual(store.search_messages(account_jid, "cafe", limit=0), [])
+
     def test_loads_message_by_remote_or_group_displayed_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MessageStore(Path(temp_dir) / "messages.sqlite3")

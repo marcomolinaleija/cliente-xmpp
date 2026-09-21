@@ -10,9 +10,13 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.conversation_panel import (
     MESSAGE_ROW_TEXT_LIMIT,
+    UNREAD_MARKER_ROW,
     ConversationPanel,
 )
-from cliente_xmpp.ui.main_window import MainWindow
+from cliente_xmpp.ui.main_window import (
+    CACHED_CONVERSATION_MESSAGE_LIMIT,
+    MainWindow,
+)
 
 
 class _CapturingExecutor:
@@ -100,6 +104,36 @@ class ConversationPerformanceTests(unittest.TestCase):
         panel._sync_native_message_selection.assert_called_once_with()
         panel._refresh_message_selection_labels.assert_not_called()
         panel._update_message_action_buttons.assert_not_called()
+
+    def test_clear_unread_marker_removes_single_item_without_full_rerender(self) -> None:
+        msg1 = Message(chat_jid="chat@example.test", sender_jid="contact@example.test", body="1")
+        msg2 = Message(chat_jid="chat@example.test", sender_jid="contact@example.test", body="2")
+        panel = ConversationPanel.__new__(ConversationPanel)
+        panel._unread_marker_index = 1
+        panel._unread_marker_count = 1
+        panel._message_rows = [msg1, UNREAD_MARKER_ROW, msg2]
+        panel._message_row_indexes = {id(msg1): 0, id(msg2): 2}
+        panel._focus_target_index = 2
+        panel._focused_message_row_index = 2
+        deleted_indices: list[int] = []
+        panel.messages = SimpleNamespace(
+            DeleteItem=deleted_indices.append,
+            GetItemCount=lambda: 3,
+        )
+        panel.set_messages = Mock(side_effect=AssertionError("unexpected full rerender"))
+        panel._update_message_action_buttons = Mock()
+
+        ConversationPanel.clear_unread_marker(panel)
+
+        self.assertEqual(deleted_indices, [1])
+        self.assertIsNone(panel._unread_marker_index)
+        self.assertEqual(panel._unread_marker_count, 0)
+        self.assertEqual(panel._message_rows, [msg1, msg2])
+        self.assertEqual(panel._message_row_indexes, {id(msg1): 0, id(msg2): 1})
+        self.assertEqual(panel._focus_target_index, 1)
+        self.assertEqual(panel._focused_message_row_index, 1)
+        panel.set_messages.assert_not_called()
+        panel._update_message_action_buttons.assert_called_once_with()
 
     def test_normal_focus_does_not_scan_all_selected_messages_for_action_buttons(self) -> None:
         message = Message(
@@ -543,6 +577,9 @@ class MainWindowPerformanceTests(unittest.TestCase):
 
         self.assertIsNone(result)
         compare.assert_not_called()
+
+    def test_cached_conversation_message_limit_is_bounded_to_five_hundred(self) -> None:
+        self.assertEqual(CACHED_CONVERSATION_MESSAGE_LIMIT, 500)
 
     def test_performance_logging_is_disabled_by_default(self) -> None:
         with (

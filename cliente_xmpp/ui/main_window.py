@@ -175,7 +175,7 @@ from cliente_xmpp.xmpp.events import (
 
 HISTORY_PAGE_SIZE = 20
 MANUAL_HISTORY_PAGE_SIZE = 100
-CACHED_CONVERSATION_MESSAGE_LIMIT = 5000
+CACHED_CONVERSATION_MESSAGE_LIMIT = 500
 MARK_ALL_READ_DELAY_MS = 750
 MARK_ALL_READ_HISTORY_TIMEOUT_MS = 8000
 PRELOAD_CHAT_LIMIT = 20
@@ -4003,11 +4003,15 @@ class MainWindow(wx.Frame):
         event.Skip()
 
     def _on_load_older_messages(self, _event: wx.CommandEvent) -> None:
-        if not self._require_whatsapp_connection():
-            return
-
         chat = self.conversation.current_chat
         if not chat:
+            return
+
+        has_local = bool(
+            self.local_history_before_by_chat.get(chat.jid)
+            and chat.jid not in self.local_history_exhausted_chats
+        )
+        if not has_local and not self._require_whatsapp_connection():
             return
 
         self._request_older_history_page(chat.jid)
@@ -4586,7 +4590,7 @@ class MainWindow(wx.Frame):
             and not event.ShiftDown()
         ):
             chat = self.conversation.current_chat
-            if self.whatsapp_verified and chat is not None:
+            if chat is not None:
                 self._request_older_history_page(chat.jid)
             # Preserve the native ListCtrl navigation to the first row.
             event.Skip()
@@ -6425,6 +6429,8 @@ class MainWindow(wx.Frame):
         if older:
             loaded_count = len(messages)
             self.status_bar.SetStatusText(f"{loaded_count} mensajes anteriores cargados")
+            if hasattr(self, "speaker") and hasattr(self.speaker, "speak"):
+                self.speaker.speak(f"{loaded_count} mensajes anteriores cargados")
         elif chat_jid in self.preloaded_history_chats:
             self.status_bar.SetStatusText("Historial reciente precargado")
         else:
@@ -6991,6 +6997,8 @@ class MainWindow(wx.Frame):
             self.status_bar.SetStatusText(
                 f"{len(messages)} mensajes anteriores cargados de la caché local"
             )
+            if hasattr(self, "speaker") and hasattr(self.speaker, "speak"):
+                self.speaker.speak(f"{len(messages)} mensajes anteriores cargados")
             self._refresh_load_older_button(chat_jid)
             return
 
@@ -7089,15 +7097,19 @@ class MainWindow(wx.Frame):
             or chat_jid in self.local_history_loading_chats
         )
         exhausted = chat_jid in self.history_exhausted_chats
+        has_local = bool(
+            self.local_history_before_by_chat.get(chat_jid)
+            and chat_jid not in self.local_history_exhausted_chats
+        )
         self.conversation.load_older_button.Enable(
-            self.whatsapp_verified and not loading and not exhausted
+            (has_local or self.whatsapp_verified) and not loading and not exhausted
         )
         if loading:
             self.conversation.load_older_button.SetLabel("Cargando mensajes...")
-        elif exhausted:
+        elif exhausted and not has_local:
             self.conversation.load_older_button.SetLabel("No hay mensajes anteriores")
         else:
-            self.conversation.load_older_button.SetLabel("Cargar mensajes anteriores...")
+            self.conversation.load_older_button.SetLabel("&Cargar mensajes anteriores...")
 
     def _play_incoming_message_sound(
         self,

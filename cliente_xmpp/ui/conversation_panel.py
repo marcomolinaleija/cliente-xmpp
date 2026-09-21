@@ -102,7 +102,7 @@ class ConversationPanel(wx.Panel):
         self._message_selection_mode = False
         self._selected_message_keys: set[tuple[object, ...]] = set()
 
-        self.load_older_button = wx.Button(self, label="Cargar mensajes anteriores...")
+        self.load_older_button = wx.Button(self, label="&Cargar mensajes anteriores...")
         self.back_button = wx.Button(self, label="Volver")
         # El botón ya presenta el avatar junto al nombre. Mantener una segunda
         # imagen aquí duplicaba el retrato y no aportaba ninguna acción.
@@ -433,7 +433,52 @@ class ConversationPanel(wx.Panel):
         if self._unread_marker_index is None:
             return
 
-        self.set_messages(self._messages)
+        marker_index = self._unread_marker_index
+        self._unread_marker_index = None
+        self._unread_marker_count = 0
+
+        target_row_index: int | None = None
+        if (
+            0 <= marker_index < len(self._message_rows)
+            and self._message_rows[marker_index] == UNREAD_MARKER_ROW
+        ):
+            target_row_index = marker_index
+        elif UNREAD_MARKER_ROW in self._message_rows:
+            target_row_index = self._message_rows.index(UNREAD_MARKER_ROW)
+
+        if target_row_index is not None:
+            del self._message_rows[target_row_index]
+            if hasattr(self.messages, "DeleteItem"):
+                item_count_getter = getattr(self.messages, "GetItemCount", None)
+                item_count = (
+                    item_count_getter()
+                    if callable(item_count_getter)
+                    else target_row_index + 1
+                )
+                if item_count > target_row_index:
+                    self.messages.DeleteItem(target_row_index)
+            indexes = getattr(self, "_message_row_indexes", None)
+            if indexes:
+                self._message_row_indexes = {
+                    msg_id: idx - 1 if idx > target_row_index else idx
+                    for msg_id, idx in indexes.items()
+                    if idx != target_row_index
+                }
+            marker_index = target_row_index
+
+        if self._focus_target_index is not None:
+            if self._focus_target_index == marker_index:
+                self._focus_target_index = None
+            elif self._focus_target_index > marker_index:
+                self._focus_target_index -= 1
+
+        if self._focused_message_row_index is not None:
+            if self._focused_message_row_index == marker_index:
+                self._focused_message_row_index = None
+            elif self._focused_message_row_index > marker_index:
+                self._focused_message_row_index -= 1
+
+        self._update_message_action_buttons()
 
     def unread_marker_count(self) -> int:
         return self._unread_marker_count

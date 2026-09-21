@@ -630,6 +630,61 @@ class MainWindowPerformanceTests(unittest.TestCase):
         normalize.assert_not_called()
         download.assert_not_called()
 
+    def test_apply_roster_chats_monitors_active_and_autojoin_groups_only(self) -> None:
+        window = MainWindow.__new__(MainWindow)
+        window.whatsapp_verified = True
+        active_group = Chat(
+            jid="#active@example.org",
+            name="Activo",
+            is_group=True,
+            last_message_preview="Hola",
+        )
+        autojoin_group = Chat(
+            jid="#autojoin@example.org",
+            name="Auto",
+            is_group=True,
+            auto_join=True,
+        )
+        empty_group = Chat(
+            jid="#empty@example.org",
+            name="Vacio",
+            is_group=True,
+            auto_join=False,
+        )
+        contact = Chat(
+            jid="user@example.org",
+            name="User",
+            is_group=False,
+        )
+        window._load_cached_chats = lambda: [active_group, autojoin_group, empty_group, contact]
+        window._merge_chat_lists = lambda chats, cached: chats + cached
+        window._set_searchable_chats = lambda chats: None
+        window.searchable_chats_by_jid = {}
+        window._sort_chats_by_recency = lambda chats: chats
+        window.chat_list = SimpleNamespace(
+            set_chats=lambda chats: None,
+            selected_chat=lambda: None,
+            select_first=lambda: None,
+            focus=lambda: None,
+        )
+        window.status_bar = SimpleNamespace(SetStatusText=lambda text: None)
+        window.roster_jids = set()
+        window.xmpp = SimpleNamespace(
+            load_recent_activity=lambda _jids: None,
+        )
+        monitored: list[list[str]] = []
+        window.xmpp.monitor_group_chats = monitored.append
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallLater"):
+            MainWindow._apply_roster_chats(window, [])
+
+        self.assertTrue(window.loading_initial_chat_activity)
+        self.assertEqual(len(monitored), 1)
+        self.assertIn("#active@example.org", monitored[0])
+        self.assertIn("#autojoin@example.org", monitored[0])
+        self.assertNotIn("#empty@example.org", monitored[0])
+        self.assertNotIn("user@example.org", monitored[0])
+
     def test_performance_logging_is_disabled_by_default(self) -> None:
         with (
             patch("cliente_xmpp.ui.main_window.PERF_DEBUG_ENABLED", False),

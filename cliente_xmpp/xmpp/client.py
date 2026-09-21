@@ -2742,6 +2742,8 @@ class BridgeXmppClient(ClientXMPP):
 
         new_group_jids = group_jids - self._group_chat_jids
         self._group_chat_jids.update(group_jids)
+        for group_jid in group_jids:
+            self._join_group_chat(group_jid)
         if new_group_jids:
             asyncio.create_task(self._enrich_monitored_group_chats(new_group_jids))
             asyncio.create_task(self.load_recent_activity(new_group_jids))

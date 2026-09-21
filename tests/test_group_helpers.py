@@ -1823,7 +1823,7 @@ class BookmarkNotificationTests(unittest.TestCase):
 
         self.assertEqual(joins, ["#existing@example.org"])
 
-    def test_cached_groups_are_monitored_without_joining(self) -> None:
+    def test_cached_groups_are_monitored_and_joined(self) -> None:
         group_jid = "#cached@example.org"
         joins: list[str] = []
         client = SimpleNamespace(
@@ -1838,7 +1838,7 @@ class BookmarkNotificationTests(unittest.TestCase):
             BridgeXmppClient.monitor_group_chats(client, [group_jid])
 
         self.assertEqual(client._group_chat_jids, {group_jid})
-        self.assertEqual(joins, [])
+        self.assertEqual(joins, [group_jid])
 
 
 class GroupArchiveTests(unittest.TestCase):

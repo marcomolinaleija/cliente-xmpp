@@ -2063,11 +2063,17 @@ class MainWindow(wx.Frame):
             merge_started_at,
             searchable=len(self.searchable_chats_by_jid),
         )
-        self.xmpp.monitor_group_chats([chat.jid for chat in cached_chats if chat.is_group])
+        visible_cached_chats = self._chats_with_activity(cached_chats)
+        visible_cached_jids = {chat.jid for chat in visible_cached_chats}
+        self.loaded_chat_summaries = len(visible_cached_chats)
         self.loading_initial_chat_activity = True
         self.pending_chat_activity = {}
-        visible_cached_chats = self._chats_with_activity(cached_chats)
-        self.loaded_chat_summaries = len(visible_cached_chats)
+        active_group_jids = [
+            chat.jid
+            for chat in cached_chats
+            if chat.is_group and (chat.auto_join or chat.jid in visible_cached_jids)
+        ]
+        self.xmpp.monitor_group_chats(active_group_jids)
         render_started_at = time.perf_counter()
         self.chat_list.set_chats(self._sort_chats_by_recency(visible_cached_chats))
         self._debug_perf(

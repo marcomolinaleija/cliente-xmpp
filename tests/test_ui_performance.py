@@ -14,7 +14,9 @@ from cliente_xmpp.ui.conversation_panel import (
     ConversationPanel,
 )
 from cliente_xmpp.ui.main_window import (
+    BACKGROUND_SYNC_DELAY_MS,
     CACHED_CONVERSATION_MESSAGE_LIMIT,
+    PRELOAD_CHAT_LIMIT,
     MainWindow,
 )
 
@@ -580,6 +582,53 @@ class MainWindowPerformanceTests(unittest.TestCase):
 
     def test_cached_conversation_message_limit_is_bounded_to_five_hundred(self) -> None:
         self.assertEqual(CACHED_CONVERSATION_MESSAGE_LIMIT, 500)
+
+    def test_preload_chat_limit_and_sync_delay_are_bounded(self) -> None:
+        self.assertEqual(PRELOAD_CHAT_LIMIT, 10)
+        self.assertEqual(BACKGROUND_SYNC_DELAY_MS, 1200)
+
+    def test_background_history_sync_skips_audio_normalization_and_media_download(self) -> None:
+        window = MainWindow.__new__(MainWindow)
+        window.background_history_loading_chat = "chat@example.test"
+        window.background_history_queued_chats = {"chat@example.test"}
+        window.history_exhausted_chats = set()
+        window.history_loaded_chats = set()
+        window.conversation = SimpleNamespace(
+            IsShown=lambda: True,
+            current_chat=Chat(jid="other@example.test", name="Otro"),
+        )
+        window.messages_by_chat = {}
+        window._chat_has_preview = lambda _jid: True
+        window._merge_messages = lambda _jid, _msgs: []
+        window._flush_pending_reaction_updates = lambda _jid: None
+        window._persist_messages = lambda _msgs: None
+        window._update_chat_activity_from_messages = lambda _jid, _msgs: None
+        window._update_chat_preview_from_messages = lambda _jid, _msgs: None
+        window._refresh_chat_order = lambda: None
+        window._finish_mark_all_read_chat = lambda _jid: None
+        window._enqueue_background_history_sync = lambda _jids: None
+
+        with (
+            patch.object(window, "_normalize_audio_metadata_for_messages") as normalize,
+            patch.object(window, "_auto_download_media_messages") as download,
+            patch("cliente_xmpp.ui.main_window.wx.CallLater"),
+        ):
+            msg = Message(
+                chat_jid="chat@example.test",
+                sender_jid="sender@example.test",
+                body="test",
+            )
+            MainWindow._handle_message_history_loaded(
+                window,
+                "chat@example.test",
+                [msg],
+                older=False,
+                complete=False,
+                background=True,
+            )
+
+        normalize.assert_not_called()
+        download.assert_not_called()
 
     def test_performance_logging_is_disabled_by_default(self) -> None:
         with (

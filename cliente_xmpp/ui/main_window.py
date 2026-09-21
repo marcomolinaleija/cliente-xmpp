@@ -178,8 +178,8 @@ MANUAL_HISTORY_PAGE_SIZE = 100
 CACHED_CONVERSATION_MESSAGE_LIMIT = 500
 MARK_ALL_READ_DELAY_MS = 750
 MARK_ALL_READ_HISTORY_TIMEOUT_MS = 8000
-PRELOAD_CHAT_LIMIT = 20
-BACKGROUND_SYNC_DELAY_MS = 350
+PRELOAD_CHAT_LIMIT = 10
+BACKGROUND_SYNC_DELAY_MS = 1200
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 GROUP_SELF_ECHO_WINDOW_SECONDS = 10
@@ -6383,7 +6383,13 @@ class MainWindow(wx.Frame):
         if complete and not empty_preview_chat:
             self.history_exhausted_chats.add(chat_jid)
 
-        self._normalize_audio_metadata_for_messages(messages)
+        is_visible_chat = bool(
+            self.conversation.IsShown()
+            and self.conversation.current_chat
+            and self.conversation.current_chat.jid == chat_jid
+        )
+        if not background or is_visible_chat:
+            self._normalize_audio_metadata_for_messages(messages)
         merged_updates = self._merge_messages(chat_jid, messages)
         self._flush_pending_reaction_updates(chat_jid)
         regular_messages = [message for message in messages if message.poll_update is None]
@@ -6405,7 +6411,8 @@ class MainWindow(wx.Frame):
         if activity_messages:
             self._update_chat_activity_from_messages(chat_jid, activity_messages)
             self._update_chat_preview_from_messages(chat_jid, activity_messages)
-            self._auto_download_media_messages(activity_messages)
+            if not background or is_visible_chat:
+                self._auto_download_media_messages(activity_messages)
         self._refresh_chat_order()
         if (
             not background

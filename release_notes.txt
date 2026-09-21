@@ -1,3 +1,19 @@
+WhatsApp CAN 1.4.12
+
+Rendimiento y navegación en chats
+- Al abrir o salir de conversaciones con muchos mensajes, la interfaz responde de inmediato sin congelarse ni reconstruir innecesariamente la lista.
+- Se limitan los mensajes iniciales cargados en la conversación a 500 para mantener la fluidez sin perder acceso al historial.
+- La tecla Inicio dentro de una conversación solicita y carga las páginas de mensajes anteriores con anuncio de voz para lectores de pantalla.
+- El botón de carga de mensajes anteriores incorpora el atajo Alt+C ("&Cargar mensajes anteriores...").
+
+Consumo de CPU y arranque
+- Se optimiza la sincronización inicial en segundo plano moderando la cola de precarga a 10 chats y espaciando las consultas.
+- Se omite el sondeo de duración de audios con ffmpeg y la preparación de stickers en segundo plano para chats inactivos, reduciendo drásticamente el uso de CPU y ventilador al iniciar la aplicación.
+
+Grupos y mensajería en vivo
+- Al iniciar la aplicación, los grupos activos con mensajes en el historial se unen automáticamente al servicio MUC para recibir mensajes entrantes en tiempo real sin requerir abrirlos manualmente primero.
+- Se conserva la protección contra la autoentrada a grupos vacíos o descubiertos en comunidades hasta que el usuario decida abrirlos.
+
 WhatsApp CAN 1.4.11
 
 Búsqueda y navegación

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -593,6 +594,7 @@ class MainWindowPerformanceTests(unittest.TestCase):
         window.background_history_queued_chats = {"chat@example.test"}
         window.history_exhausted_chats = set()
         window.history_loaded_chats = set()
+        window.preloaded_history_chats = set()
         window.conversation = SimpleNamespace(
             IsShown=lambda: True,
             current_chat=Chat(jid="other@example.test", name="Otro"),
@@ -607,6 +609,7 @@ class MainWindowPerformanceTests(unittest.TestCase):
         window._refresh_chat_order = lambda: None
         window._finish_mark_all_read_chat = lambda _jid: None
         window._enqueue_background_history_sync = lambda _jids: None
+        window._apply_synced_chat_displayed = Mock()
 
         with (
             patch.object(window, "_normalize_audio_metadata_for_messages") as normalize,
@@ -629,6 +632,64 @@ class MainWindowPerformanceTests(unittest.TestCase):
 
         normalize.assert_not_called()
         download.assert_not_called()
+        window._apply_synced_chat_displayed.assert_called_once_with("chat@example.test")
+
+    def test_background_history_reapplies_a_synced_read_marker(self) -> None:
+        chat = Chat(
+            jid="chat@example.test",
+            name="Chat",
+            unread_count=1,
+            last_message_at=None,
+        )
+        message = Message(
+            chat_jid=chat.jid,
+            sender_jid="sender@example.test",
+            body="test",
+            sent_at=datetime.now().astimezone(),
+            message_id="marker-id",
+        )
+        window = MainWindow.__new__(MainWindow)
+        window.background_history_loading_chat = chat.jid
+        window.background_history_queued_chats = {chat.jid}
+        window.history_exhausted_chats = set()
+        window.history_loaded_chats = set()
+        window.preloaded_history_chats = set()
+        window.conversation = SimpleNamespace(
+            IsShown=lambda: False,
+            current_chat=None,
+        )
+        window.messages_by_chat = {}
+        window.synced_displayed_marker_ids_by_chat = {chat.jid: "marker-id"}
+        window._chat_has_preview = lambda _jid: False
+        window._merge_messages = lambda jid, messages: (
+            window.messages_by_chat.__setitem__(jid, list(messages)) or list(messages)
+        )
+        window._flush_pending_reaction_updates = lambda _jid: None
+        window._persist_messages = lambda _messages: None
+        window._update_chat_activity_from_messages = lambda _jid, _messages: None
+        window._update_chat_preview_from_messages = lambda _jid, _messages: None
+        window._refresh_chat_order = lambda: None
+        window._finish_mark_all_read_chat = lambda _jid: None
+        window._enqueue_background_history_sync = lambda _jids: None
+        window._chat_by_jid = lambda _jid: chat
+        window._message_timestamp = MainWindow._message_timestamp
+        window._datetime_timestamp = MainWindow._datetime_timestamp
+        window._update_chat_summary = Mock()
+        window._apply_synced_chat_displayed = lambda jid: MainWindow._apply_synced_chat_displayed(
+            window, jid
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallLater"):
+            MainWindow._handle_message_history_loaded(
+                window,
+                chat.jid,
+                [message],
+                older=False,
+                complete=True,
+                background=True,
+            )
+
+        window._update_chat_summary.assert_called_once_with(chat.jid, unread_count=0)
 
     def test_apply_roster_chats_monitors_active_and_autojoin_groups_only(self) -> None:
         window = MainWindow.__new__(MainWindow)

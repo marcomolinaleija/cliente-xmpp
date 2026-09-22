@@ -586,6 +586,7 @@ class BridgeXmppClient(ClientXMPP):
         self._emit_delivery_update_from_marker(msg, "delivered")
 
     def _on_marker_displayed(self, msg: object) -> None:
+        self._emit_synced_displayed_from_own_marker(msg)
         self._emit_delivery_update_from_marker(msg, "read")
 
     def _handle_message_error(self, msg: object, from_jid: str = "") -> None:
@@ -763,6 +764,29 @@ class BridgeXmppClient(ClientXMPP):
             xml = getattr(stanza, "xml", None)
             chat_jid = xml.attrib.get("to", "").split("/", 1)[0] if xml is not None else ""
         if not chat_jid or chat_jid == self.boundjid.bare:
+            return
+
+        self._emit(ChatDisplayedSynced(chat_jid=chat_jid, message_id=marker_id))
+
+    def _emit_synced_displayed_from_own_marker(self, msg: object) -> None:
+        """Handle a displayed marker delivered without an XEP-0280 wrapper."""
+        marker_id = self._displayed_marker_id(msg)
+        if not marker_id:
+            return
+
+        try:
+            sender_jid = str(msg["from"].bare)
+            chat_jid = str(msg["to"].bare)
+            own_jid = self.boundjid.bare
+        except Exception:
+            xml = getattr(msg, "xml", None)
+            if xml is None:
+                return
+            sender_jid = xml.attrib.get("from", "").split("/", 1)[0]
+            chat_jid = xml.attrib.get("to", "").split("/", 1)[0]
+            own_jid = self.boundjid.bare
+
+        if not own_jid or sender_jid != own_jid or not chat_jid or chat_jid == own_jid:
             return
 
         self._emit(ChatDisplayedSynced(chat_jid=chat_jid, message_id=marker_id))

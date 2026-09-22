@@ -6419,6 +6419,9 @@ class MainWindow(wx.Frame):
             self._update_chat_preview_from_messages(chat_jid, activity_messages)
             if not background or is_visible_chat:
                 self._auto_download_media_messages(activity_messages)
+        # A synced read marker may arrive before the corresponding history page.
+        # Reapply it after merging messages so the marker can now be resolved.
+        self._apply_synced_chat_displayed(chat_jid)
         self._refresh_chat_order()
         if (
             not background

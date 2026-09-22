@@ -526,6 +526,51 @@ class DisplayedMarkerTests(unittest.TestCase):
             [ChatDisplayedSynced(chat_jid="contact@example.org", message_id="incoming-id")],
         )
 
+    def test_reads_synced_displayed_marker_from_own_marker_stanza(self) -> None:
+        emitted: list[object] = []
+        message = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <message from="me@example.org" to="contact@example.org">
+                  <displayed xmlns="urn:xmpp:chat-markers:0" id="incoming-id" />
+                </message>
+                """
+            )
+        )
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="me@example.org"),
+            _displayed_marker_id=BridgeXmppClient._displayed_marker_id,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._emit_synced_displayed_from_own_marker(client, message)
+
+        self.assertEqual(
+            emitted,
+            [ChatDisplayedSynced(chat_jid="contact@example.org", message_id="incoming-id")],
+        )
+
+    def test_does_not_treat_contact_marker_as_synced_read(self) -> None:
+        emitted: list[object] = []
+        message = SimpleNamespace(
+            xml=ET.fromstring(
+                """
+                <message from="contact@example.org" to="me@example.org">
+                  <displayed xmlns="urn:xmpp:chat-markers:0" id="outgoing-id" />
+                </message>
+                """
+            )
+        )
+        client = SimpleNamespace(
+            boundjid=SimpleNamespace(bare="me@example.org"),
+            _displayed_marker_id=BridgeXmppClient._displayed_marker_id,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._emit_synced_displayed_from_own_marker(client, message)
+
+        self.assertEqual(emitted, [])
+
     def test_reads_group_displayed_state_from_xep_0490(self) -> None:
         message = ET.fromstring(
             """

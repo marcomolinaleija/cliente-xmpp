@@ -329,6 +329,7 @@ class MainWindow(wx.Frame):
         self.whatsapp_link_session: tuple[str, str, str] | None = None
         self.whatsapp_link_mode = ""
         self.whatsapp_pair_phone_pending = ""
+        self.whatsapp_pairing_bootstrap_generation = 0
         self.whatsapp_qr_dialog: WhatsAppQrDialog | None = None
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_deadline = 0.0
@@ -1364,6 +1365,7 @@ class MainWindow(wx.Frame):
             return
 
         if status in {"connected", "paired"}:
+            self.whatsapp_pairing_bootstrap_generation += 1
             started_at = time.perf_counter()
             self.whatsapp_verified = True
             self.whatsapp_link_session = None
@@ -1458,8 +1460,14 @@ class MainWindow(wx.Frame):
         )
         self.status_bar.SetStatusText(message)
         self.workspace_panel.Layout()
-        wx.CallAfter(self.whatsapp_link_panel.focus_action)
+        wx.CallAfter(self._focus_whatsapp_link_action)
         wx.CallAfter(self.speaker.speak, message)
+
+    def _focus_whatsapp_link_action(self) -> None:
+        if not self.whatsapp_link_panel.IsShownOnScreen():
+            return
+        self.Raise()
+        self.whatsapp_link_panel.focus_action()
 
     def _handle_whatsapp_pairing_code(self, component_jid: str, code: str) -> None:
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
@@ -1526,8 +1534,14 @@ class MainWindow(wx.Frame):
         detail: str,
     ) -> None:
         if self.whatsapp_link_session == (component_jid, command_node, session_id):
+            was_phone_pairing_bootstrap = (
+                self.whatsapp_link_mode == "qr" and bool(self.whatsapp_pair_phone_pending)
+            )
             self.whatsapp_link_session = None
             self.whatsapp_link_mode = ""
+            if was_phone_pairing_bootstrap:
+                self.whatsapp_pair_phone_pending = ""
+                self.whatsapp_pairing_bootstrap_generation += 1
         if self.whatsapp_qr_restart_after_cancel:
             self.whatsapp_qr_restart_after_cancel = False
             self.whatsapp_qr_request_in_flight = False
@@ -1852,6 +1866,13 @@ class MainWindow(wx.Frame):
             return
 
         self.whatsapp_pair_phone_pending = phone
+        self.whatsapp_pairing_bootstrap_generation += 1
+        bootstrap_generation = self.whatsapp_pairing_bootstrap_generation
+        wx.CallLater(
+            WHATSAPP_QR_TIMEOUT_SECONDS * 1000,
+            self._on_whatsapp_phone_pairing_bootstrap_timeout,
+            bootstrap_generation,
+        )
         self.whatsapp_link_panel.set_status(
             "Preparando la sesión para solicitar el código de vinculacion de WhatsApp.",
             action_label="Espera...",
@@ -1865,6 +1886,55 @@ class MainWindow(wx.Frame):
             return
         self._request_whatsapp_link_command()
 
+    def _on_whatsapp_phone_pairing_bootstrap_timeout(self, generation: int) -> None:
+        if (
+            generation != self.whatsapp_pairing_bootstrap_generation
+            or not self.whatsapp_pair_phone_pending
+        ):
+            return
+
+        self.whatsapp_pair_phone_pending = ""
+        self.whatsapp_pairing_bootstrap_generation += 1
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_deadline = 0.0
+        message = (
+            "El puente no confirmó la sesión de WhatsApp a tiempo. No llegó la señal "
+            "necesaria para pedir el código; cancela el intento pendiente o vuelve a "
+            "intentar la vinculación."
+        )
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+        self.whatsapp_link_panel.set_status(
+            message,
+            action_label="Reintentar vinculación",
+            can_cancel=can_cancel,
+            action_enabled=True,
+        )
+        self.workspace_panel.Layout()
+        self.status_bar.SetStatusText(message)
+        wx.CallAfter(self.speaker.speak, message)
+        wx.CallAfter(self._focus_whatsapp_link_action)
+
+    def _mark_whatsapp_phone_pairing_error(self) -> None:
+        self.whatsapp_pair_phone_pending = ""
+        self.whatsapp_pairing_bootstrap_generation += 1
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_deadline = 0.0
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+        visible_message = (
+            "El puente rechazó la solicitud para preparar la vinculación por teléfono. "
+            "Corrige el problema antes de volver a intentarlo."
+        )
+        self.whatsapp_link_panel.set_status(
+            visible_message,
+            action_label="Reintentar vinculación",
+            can_cancel=can_cancel,
+            action_enabled=True,
+        )
+        self.workspace_panel.Layout()
+        self.status_bar.SetStatusText(visible_message)
+        wx.CallAfter(self.speaker.speak, visible_message)
+        wx.CallAfter(self._focus_whatsapp_link_action)
+
     def _request_pending_whatsapp_pair_code(self, component_jid: str) -> bool:
         phone = self.whatsapp_pair_phone_pending
         if not phone:
@@ -1875,6 +1945,7 @@ class MainWindow(wx.Frame):
             return False
 
         self.whatsapp_pair_phone_pending = ""
+        self.whatsapp_pairing_bootstrap_generation += 1
         self.whatsapp_qr_request_in_flight = False
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_deadline = 0.0
@@ -6116,7 +6187,12 @@ class MainWindow(wx.Frame):
                 self.login_panel.set_connecting(False)
                 if self.startup_panel.IsShown():
                     self._set_connected_ui(False)
-                if self.whatsapp_qr_request_in_flight and "vincul" in message.casefold():
+                if (
+                    self.whatsapp_pair_phone_pending
+                    and "no se pudo iniciar la revinculacion por qr" in message.casefold()
+                ):
+                    self._mark_whatsapp_phone_pairing_error()
+                elif self.whatsapp_qr_request_in_flight and "vincul" in message.casefold():
                     self._mark_whatsapp_qr_error(message)
                 if getattr(self, "development_mode", False) and self.workspace_panel.IsShown():
                     self.connection_header.set_status("Modo de desarrollo sin conexión")

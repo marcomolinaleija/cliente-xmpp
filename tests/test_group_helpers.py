@@ -27,6 +27,7 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppBridgeStatus,
     WhatsAppQrImageDataReceived,
     XmppConnected,
+    XmppError,
 )
 
 
@@ -807,6 +808,111 @@ class DisplayedMarkerTests(unittest.TestCase):
 
 
 class WhatsAppPairingCodeTests(unittest.TestCase):
+    def test_relogin_probe_overrides_stale_connected_status(self) -> None:
+        emitted: list[tuple[str, str]] = []
+
+        async def commands(_jid: str) -> list[tuple[str, str]]:
+            return [
+                ("https://slidge.im/command/core/re-login", "Re-login"),
+                ("wa_pair_phone", "Pair phone"),
+            ]
+
+        client = SimpleNamespace(
+            _last_whatsapp_status_by_component={"whatsapp.example.org": "connected\n"},
+            _adhoc_commands=commands,
+            _debug_whatsapp_commands=lambda _jid, _commands: None,
+            _whatsapp_command_state=BridgeXmppClient._whatsapp_command_state,
+            _emit_whatsapp_status=lambda jid, state, _detail="": emitted.append((jid, state)),
+        )
+
+        state = asyncio.run(
+            BridgeXmppClient._debug_whatsapp_component_commands(
+                client,
+                "whatsapp.example.org",
+            )
+        )
+
+        self.assertEqual(state, "needs_relogin")
+        self.assertEqual(emitted, [("whatsapp.example.org", "needs_relogin")])
+
+    def test_whatsapp_unlinked_status_focuses_relink_action(self) -> None:
+        focus_calls: list[str] = []
+        window = SimpleNamespace(
+            whatsapp_link_panel=SimpleNamespace(
+                IsShownOnScreen=lambda: True,
+                focus_action=lambda: focus_calls.append("action"),
+            ),
+            Raise=lambda: focus_calls.append("raise"),
+        )
+        MainWindow._focus_whatsapp_link_action(window)
+        self.assertEqual(focus_calls, ["raise", "action"])
+
+    def test_phone_pairing_bootstrap_timeout_exits_permanent_preparing_state(self) -> None:
+        updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        statuses: list[str] = []
+        spoken: list[str] = []
+        window = SimpleNamespace(
+            whatsapp_pairing_bootstrap_generation=7,
+            whatsapp_pair_phone_pending="+521234567890",
+            whatsapp_component_jid="whatsapp.example.org",
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_qr_deadline=123.0,
+            _has_cancelable_whatsapp_link=lambda _jid: True,
+            _focus_whatsapp_link_action=lambda: None,
+            whatsapp_link_panel=SimpleNamespace(
+                set_status=lambda *args, **kwargs: updates.append((args, kwargs))
+            ),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+            status_bar=SimpleNamespace(SetStatusText=statuses.append),
+            speaker=SimpleNamespace(speak=spoken.append),
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter", side_effect=lambda fn, *a: fn(*a)):
+            MainWindow._on_whatsapp_phone_pairing_bootstrap_timeout(window, 7)
+
+        self.assertEqual(window.whatsapp_pair_phone_pending, "")
+        self.assertFalse(window.whatsapp_qr_request_in_flight)
+        self.assertEqual(window.whatsapp_qr_deadline, 0.0)
+        self.assertEqual(window.whatsapp_pairing_bootstrap_generation, 8)
+        self.assertIn("No llegó la señal necesaria", updates[0][0][0])
+        self.assertEqual(updates[0][1]["action_label"], "Reintentar vinculación")
+        self.assertTrue(updates[0][1]["can_cancel"])
+        self.assertTrue(updates[0][1]["action_enabled"])
+        self.assertEqual(statuses, [updates[0][0][0]])
+        self.assertEqual(spoken, [updates[0][0][0]])
+
+    def test_phone_pairing_relogin_error_exits_preparing_state_immediately(self) -> None:
+        updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        statuses: list[str] = []
+        focused: list[bool] = []
+        window = SimpleNamespace(
+            whatsapp_pair_phone_pending="+521234567890",
+            whatsapp_pairing_bootstrap_generation=3,
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_qr_deadline=123.0,
+            whatsapp_component_jid="whatsapp.example.org",
+            _has_cancelable_whatsapp_link=lambda _jid: False,
+            whatsapp_link_panel=SimpleNamespace(
+                set_status=lambda *args, **kwargs: updates.append((args, kwargs))
+            ),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+            status_bar=SimpleNamespace(SetStatusText=statuses.append),
+            speaker=SimpleNamespace(speak=lambda _message: None),
+            _focus_whatsapp_link_action=lambda: focused.append(True),
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter", side_effect=lambda fn, *a: fn(*a)):
+            MainWindow._mark_whatsapp_phone_pairing_error(window)
+
+        self.assertEqual(window.whatsapp_pair_phone_pending, "")
+        self.assertEqual(window.whatsapp_pairing_bootstrap_generation, 4)
+        self.assertFalse(window.whatsapp_qr_request_in_flight)
+        self.assertEqual(window.whatsapp_qr_deadline, 0.0)
+        self.assertEqual(updates[0][1]["action_label"], "Reintentar vinculación")
+        self.assertTrue(updates[0][1]["action_enabled"])
+        self.assertEqual(statuses, [updates[0][0][0]])
+        self.assertEqual(focused, [True])
+
     def test_syncing_after_pairing_keeps_whatsapp_verified_and_cache_visible(self) -> None:
         statuses: list[str] = []
         remote_actions: list[bool] = []
@@ -909,6 +1015,7 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         panel_updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
         window = SimpleNamespace(
             whatsapp_pair_phone_pending="+524491234567",
+            whatsapp_pairing_bootstrap_generation=0,
             whatsapp_component_jid="whatsapp.example.org",
             whatsapp_qr_request_in_flight=True,
             whatsapp_qr_path="old-path",
@@ -2152,6 +2259,58 @@ class GroupMessageParsingTests(unittest.TestCase):
 
         self.assertNotIn(group_jid, client._joined_group_chat_jids)
         self.assertFalse(scheduled)
+
+    def test_unauthenticated_whatsapp_session_requests_relink(self) -> None:
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(id="cliente-xmpp-unauthenticated-1")
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client" type="error"
+                             id="cliente-xmpp-unauthenticated-1">
+                      <error type="cancel">
+                        <not-authorized xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          cannot send message for unauthenticated session
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        emitted = []
+        client = SimpleNamespace(
+            _retry_legacy_session_message=lambda *_args: False,
+            _message_error_parts=BridgeXmppClient._message_error_parts,
+            _is_probable_whatsapp_bridge_jid=BridgeXmppClient._is_probable_whatsapp_bridge_jid,
+            _safe_debug_text=BridgeXmppClient._safe_debug_text,
+            _emit_whatsapp_status=lambda component_jid, status, detail: (
+                BridgeXmppClient._emit_whatsapp_status(
+                    client,
+                    component_jid,
+                    status,
+                    detail,
+                )
+            ),
+            _last_whatsapp_status_by_component={},
+            _whatsapp_session_ready=True,
+            _emit=emitted.append,
+        )
+
+        BridgeXmppClient._handle_message_error(
+            client,
+            ErrorMessage(),
+            "contact@whatsapp.example.org",
+        )
+
+        status = next(event for event in emitted if isinstance(event, WhatsAppBridgeStatus))
+        failure = next(event for event in emitted if isinstance(event, MessageDeliveryUpdated))
+        self.assertEqual(status.status, "needs_relogin")
+        self.assertEqual(status.component_jid, "whatsapp.example.org")
+        self.assertEqual(failure.delivery_state, "failed")
+        self.assertIn("vincular", failure.detail)
+        self.assertFalse(client._whatsapp_session_ready)
+        self.assertFalse(any(isinstance(event, XmppError) for event in emitted))
 
     def test_group_message_error_marks_send_failed_and_rejoins_room(self) -> None:
         class ErrorMessage(dict):

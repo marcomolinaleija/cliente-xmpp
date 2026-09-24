@@ -603,6 +603,25 @@ class BridgeXmppClient(ClientXMPP):
         reason = error_text or condition.replace("-", " ") or "rechazado por el servidor"
         detail = f"No se pudo enviar el mensaje: {reason}."
 
+        unauthenticated_whatsapp_session = (
+            "unauthenticated session" in error_text.casefold()
+        )
+        if unauthenticated_whatsapp_session:
+            bare_jid = from_jid.split("/", 1)[0]
+            component_jid = bare_jid.split("@", 1)[-1]
+            if self._is_probable_whatsapp_bridge_jid(component_jid):
+                detail = (
+                    "La sesión de WhatsApp ya no está autenticada. Vuelve a vincular "
+                    "WhatsApp para enviar y recibir mensajes."
+                )
+                self._emit_whatsapp_status(
+                    component_jid,
+                    "needs_relogin",
+                    error_text,
+                )
+            else:
+                unauthenticated_whatsapp_session = False
+
         if self._retry_legacy_session_message(message_id, error_text):
             return
 
@@ -625,7 +644,8 @@ class BridgeXmppClient(ClientXMPP):
                     detail=detail,
                 )
             )
-        self._emit(XmppError(detail))
+        if not unauthenticated_whatsapp_session:
+            self._emit(XmppError(detail))
 
     def track_transient_message_retry(
         self,
@@ -1412,10 +1432,9 @@ class BridgeXmppClient(ClientXMPP):
         current_state = self._last_whatsapp_status_by_component.get(
             jid.split("/", 1)[0], ""
         ).partition("\n")[0]
-        if current_state in {"needs_qr", "connected", "paired"} and state in {
-            "needs_pairing",
-            "needs_relogin",
-        }:
+        if current_state == "needs_qr" and state in {"needs_pairing", "needs_relogin"}:
+            return current_state
+        if current_state in {"connected", "paired"} and state == "needs_pairing":
             return current_state
         if defer_unlinked_state and state in {"needs_pairing", "needs_relogin"}:
             if current_state == "connecting":
@@ -2434,10 +2453,10 @@ class BridgeXmppClient(ClientXMPP):
 
         if has_logout:
             return "connected"
-        if has_pair_phone:
-            return "needs_pairing"
         if has_relogin:
             return "needs_relogin"
+        if has_pair_phone:
+            return "needs_pairing"
         if has_register:
             return "needs_registration"
         return "unknown"

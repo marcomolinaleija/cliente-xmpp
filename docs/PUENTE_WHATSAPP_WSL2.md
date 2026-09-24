@@ -57,8 +57,9 @@ El instalador de WhatsApp CAN presenta una página titulada `Forma de conexión`
 
 El appliance no se incrusta en el EXE. Vive en la release dedicada e inmutable
 `wsl-appliance-v1.0.0`; `tools/wsl-appliance/release-manifest.json` fija su URL, tamaño y SHA-256.
-`build_release.ps1` copia esos valores al instalador y rechaza la compilación si el artefacto local
-no coincide. Inno Setup vuelve a comprobar el SHA-256 durante la descarga antes de ejecutar
+En el modo completo, `build_release.ps1` copia esos valores al instalador y rechaza la compilación
+si el artefacto local no coincide. El modo de sólo ZIP no necesita ese manifiesto. Inno Setup
+vuelve a comprobar el SHA-256 durante la descarga antes de ejecutar
 `install-appliance.ps1`.
 
 El modo elegido se guarda en el cliente al terminar. Una reinstalación recuerda la selección

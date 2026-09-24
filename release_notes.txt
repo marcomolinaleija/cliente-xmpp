@@ -1,3 +1,10 @@
+WhatsApp CAN 1.4.14
+
+Detección de vinculación en el servidor remoto
+- CAN comprueba el estado del puente de WhatsApp al conectarse, sin esperar a que termine de cargar los contactos y chats. Así puede ofrecer la revinculación aunque todavía muestre conversaciones guardadas localmente.
+- Si el puente rechaza un mensaje porque la sesión aún no está inicializada y se agotan los reintentos, CAN vuelve a consultar el estado de vinculación para mostrar la acción correspondiente cuando la cuenta esté desvinculada.
+- La consulta no inicia una nueva vinculación ni genera un QR por sí sola; el usuario decide cuándo solicitarlo.
+
 WhatsApp CAN 1.4.13
 
 Vinculación y recuperación de WhatsApp

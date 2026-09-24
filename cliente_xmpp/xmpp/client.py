@@ -260,6 +260,12 @@ class BridgeXmppClient(ClientXMPP):
             asyncio.create_task(
                 self._probe_local_whatsapp_state(local_component, session_generation)
             )
+        else:
+            remote_component = self._configured_remote_whatsapp_component()
+            if remote_component:
+                asyncio.create_task(
+                    self._probe_remote_whatsapp_state(remote_component, session_generation)
+                )
         self._start_group_membership_watchdog(session_generation)
 
     async def _load_initial_roster(self, session_generation: int) -> None:
@@ -624,6 +630,10 @@ class BridgeXmppClient(ClientXMPP):
 
         if self._retry_legacy_session_message(message_id, error_text):
             return
+        if LEGACY_SESSION_NOT_READY_TEXT in error_text.casefold():
+            component_jid = from_jid.split("/", 1)[0].split("@", 1)[-1]
+            if self._is_probable_whatsapp_bridge_jid(component_jid):
+                asyncio.create_task(self._debug_whatsapp_component_commands(component_jid))
 
         normalized_error = error_text.casefold()
         membership_error = condition == "registration-required" or (
@@ -1376,6 +1386,28 @@ class BridgeXmppClient(ClientXMPP):
         if not separator or domain != "xmpp.whatsappcan.local":
             return ""
         return f"whatsapp.{domain}"
+
+    def _configured_remote_whatsapp_component(self) -> str:
+        _local_part, separator, domain = self.settings.jid.strip().casefold().partition("@")
+        if not separator or not domain or domain == "xmpp.whatsappcan.local":
+            return ""
+        return f"whatsapp.{domain}"
+
+    async def _probe_remote_whatsapp_state(
+        self,
+        component_jid: str,
+        session_generation: int,
+    ) -> None:
+        # Probe the usual gateway directly: the roster and service discovery can
+        # take much longer than opening locally cached chats.
+        for delay in (0, 2, 5):
+            if delay:
+                await asyncio.sleep(delay)
+            if session_generation != self._session_generation:
+                return
+            state = await self._debug_whatsapp_component_commands(component_jid)
+            if state != "unknown":
+                return
 
     async def _probe_local_whatsapp_state(
         self,

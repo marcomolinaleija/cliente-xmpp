@@ -1370,6 +1370,8 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _enable_carbons=enable_carbons,
                 _load_initial_roster=load_initial_roster,
                 _configured_local_whatsapp_component=lambda: "",
+                _configured_remote_whatsapp_component=lambda: "whatsapp.example.test",
+                _probe_remote_whatsapp_state=lambda _jid, _generation: asyncio.sleep(0),
                 _clear_transient_message_retries=lambda: None,
                 _start_group_membership_watchdog=lambda _generation: calls.append("watchdog"),
             )
@@ -1393,6 +1395,86 @@ class InitialConnectionFlowTests(unittest.TestCase):
 
         self.assertTrue(any(isinstance(event, XmppConnected) for event in events))
         self.assertIn("roster-finished", calls)
+
+    def test_remote_whatsapp_probe_does_not_wait_for_roster(self) -> None:
+        async def scenario() -> tuple[list[str], list[str]]:
+            roster_release = asyncio.Event()
+            probes: list[str] = []
+            calls: list[str] = []
+
+            async def load_roster(_generation: int) -> None:
+                await roster_release.wait()
+                calls.append("roster-finished")
+
+            async def probe(component: str, _generation: int) -> None:
+                probes.append(component)
+
+            client = SimpleNamespace(
+                _session_generation=0,
+                _last_whatsapp_status_by_component={},
+                _initial_roster_chats=None,
+                _whatsapp_session_ready=False,
+                _initial_remote_sync_started=False,
+                _pending_transient_message_retries={},
+                _joined_group_chat_jids=set(),
+                _group_rejoin_scheduled=set(),
+                _presence_subscription_jids=set(),
+                send_presence=lambda: None,
+                _emit=lambda _event: None,
+                _enable_carbons=lambda: asyncio.sleep(0),
+                _load_initial_roster=load_roster,
+                _configured_local_whatsapp_component=lambda: "",
+                _configured_remote_whatsapp_component=lambda: "whatsapp.example.test",
+                _probe_remote_whatsapp_state=probe,
+                _clear_transient_message_retries=lambda: None,
+                _start_group_membership_watchdog=lambda _generation: None,
+            )
+
+            await BridgeXmppClient._on_session_start(client, None)
+            await asyncio.sleep(0)
+            self.assertEqual(probes, ["whatsapp.example.test"])
+            self.assertNotIn("roster-finished", calls)
+            roster_release.set()
+            await asyncio.sleep(0)
+            return probes, calls
+
+        probes, calls = asyncio.run(scenario())
+        self.assertEqual(probes, ["whatsapp.example.test"])
+        self.assertIn("roster-finished", calls)
+
+    def test_remote_whatsapp_component_uses_account_domain(self) -> None:
+        client = SimpleNamespace(settings=SimpleNamespace(jid="user@xmpp.example.test"))
+        self.assertEqual(
+            BridgeXmppClient._configured_remote_whatsapp_component(client),
+            "whatsapp.xmpp.example.test",
+        )
+
+    def test_remote_whatsapp_probe_retries_unknown_state(self) -> None:
+        async def scenario() -> tuple[list[str], list[float]]:
+            states = iter(("unknown", "needs_relogin"))
+            probes: list[str] = []
+            delays: list[float] = []
+
+            async def check_commands(jid: str) -> str:
+                probes.append(jid)
+                return next(states)
+
+            async def fast_sleep(delay: float) -> None:
+                delays.append(delay)
+
+            client = SimpleNamespace(
+                _session_generation=3,
+                _debug_whatsapp_component_commands=check_commands,
+            )
+            with patch("cliente_xmpp.xmpp.client.asyncio.sleep", new=fast_sleep):
+                await BridgeXmppClient._probe_remote_whatsapp_state(
+                    client, "whatsapp.example.test", 3
+                )
+            return probes, delays
+
+        probes, delays = asyncio.run(scenario())
+        self.assertEqual(probes, ["whatsapp.example.test"] * 2)
+        self.assertEqual(delays, [2])
 
     def test_local_whatsapp_probe_retries_until_component_is_ready(self) -> None:
         async def scenario() -> tuple[list[str], list[float]]:
@@ -2487,6 +2569,58 @@ class GroupMessageParsingTests(unittest.TestCase):
             ],
         )
         self.assertFalse(emitted)
+
+    def test_legacy_session_error_rechecks_gateway_after_retries_fail(self) -> None:
+        class ErrorMessage(dict):
+            def __init__(self) -> None:
+                super().__init__(id="message-1")
+                self.xml = ET.fromstring(
+                    """
+                    <message xmlns="jabber:client" type="error" id="message-1">
+                      <error type="wait">
+                        <internal-server-error
+                            xmlns="urn:ietf:params:xml:ns:xmpp-stanzas" />
+                        <text xmlns="urn:ietf:params:xml:ns:xmpp-stanzas">
+                          Legacy session is not fully initialized, retry later.
+                        </text>
+                      </error>
+                    </message>
+                    """
+                )
+
+        async def scenario() -> tuple[list[str], list[object]]:
+            probes: list[str] = []
+            emitted: list[object] = []
+
+            async def check_commands(component_jid: str) -> str:
+                probes.append(component_jid)
+                return "needs_relogin"
+
+            client = SimpleNamespace(
+                _retry_legacy_session_message=lambda *_args: False,
+                _message_error_parts=BridgeXmppClient._message_error_parts,
+                _is_probable_whatsapp_bridge_jid=(
+                    BridgeXmppClient._is_probable_whatsapp_bridge_jid
+                ),
+                _debug_whatsapp_component_commands=check_commands,
+                _jid_may_be_group_chat=lambda _jid: False,
+                _emit=emitted.append,
+            )
+            BridgeXmppClient._handle_message_error(
+                client, ErrorMessage(), "contact@whatsapp.example.test"
+            )
+            await asyncio.sleep(0)
+            return probes, emitted
+
+        probes, emitted = asyncio.run(scenario())
+        self.assertEqual(probes, ["whatsapp.example.test"])
+        self.assertTrue(
+            any(
+                isinstance(event, MessageDeliveryUpdated)
+                and event.delivery_state == "failed"
+                for event in emitted
+            )
+        )
 
     def test_message_error_callback_accepts_stanza_without_explicit_jid(self) -> None:
         class FromJid:

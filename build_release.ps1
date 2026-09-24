@@ -1,5 +1,7 @@
 ﻿param(
     [switch]$SkipChecks,
+    [ValidateSet("zip", "installer")]
+    [string]$ReleaseMode = "",
     [string]$WslManifestPath = (Join-Path $PSScriptRoot "tools\wsl-appliance\release-manifest.json")
 )
 
@@ -7,35 +9,49 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path $PSScriptRoot).Path
 Set-Location $projectRoot
 
-$resolvedWslManifest = (Resolve-Path -LiteralPath $WslManifestPath).Path
-$wslManifest = Get-Content -LiteralPath $resolvedWslManifest -Raw | ConvertFrom-Json
-if ($wslManifest.schema_version -ne 1) {
-    throw "Versión de manifiesto WSL no compatible: $($wslManifest.schema_version)."
+if (-not $ReleaseMode) {
+    Write-Host "Elige el tipo de actualización:"
+    Write-Host "  1. Parcial: ZIP y firma SHA-256, sin instalador"
+    Write-Host "  2. Completa: ZIP, firma SHA-256 e instalador"
+    $selection = [string](Read-Host "Escribe 1 o 2")
+    switch ($selection.Trim()) {
+        "1" { $ReleaseMode = "zip" }
+        "2" { $ReleaseMode = "installer" }
+        default { throw "Opción inválida. Ejecuta de nuevo y elige 1 o 2." }
+    }
 }
-$wslPackageName = [string]$wslManifest.asset_name
-$wslPackageUrl = [string]$wslManifest.download_url
-$wslPackageSha256 = ([string]$wslManifest.sha256).Trim().ToLowerInvariant()
-$wslPackageSize = [long]$wslManifest.size_bytes
-if (-not $wslPackageName.EndsWith(".wsl", [StringComparison]::OrdinalIgnoreCase)) {
-    throw "El manifiesto WSL no contiene un nombre de asset .wsl válido."
-}
-if (-not [Uri]::IsWellFormedUriString($wslPackageUrl, [UriKind]::Absolute) -or -not $wslPackageUrl.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
-    throw "El manifiesto WSL debe usar una URL HTTPS absoluta."
-}
-if ($wslPackageSha256 -notmatch '^[0-9a-f]{64}$') {
-    throw "El manifiesto WSL no contiene un SHA-256 válido."
-}
-if ($wslPackageSize -le 0) {
-    throw "El manifiesto WSL no contiene un tamaño válido."
-}
-$wslPackageSizeMb = [Math]::Ceiling($wslPackageSize / 1MB)
-$wslInstallScript = (Resolve-Path -LiteralPath "tools\wsl-appliance\install-appliance.ps1").Path
-$localWslArtifact = Join-Path $projectRoot "dist\wsl\$wslPackageName"
-if (Test-Path -LiteralPath $localWslArtifact -PathType Leaf) {
-    $localWslItem = Get-Item -LiteralPath $localWslArtifact
-    $localWslHash = (Get-FileHash -LiteralPath $localWslArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($localWslItem.Length -ne $wslPackageSize -or $localWslHash -ne $wslPackageSha256) {
-        throw "El artefacto WSL local no coincide con release-manifest.json."
+
+if ($ReleaseMode -eq "installer") {
+    $resolvedWslManifest = (Resolve-Path -LiteralPath $WslManifestPath).Path
+    $wslManifest = Get-Content -LiteralPath $resolvedWslManifest -Raw | ConvertFrom-Json
+    if ($wslManifest.schema_version -ne 1) {
+        throw "Versión de manifiesto WSL no compatible: $($wslManifest.schema_version)."
+    }
+    $wslPackageName = [string]$wslManifest.asset_name
+    $wslPackageUrl = [string]$wslManifest.download_url
+    $wslPackageSha256 = ([string]$wslManifest.sha256).Trim().ToLowerInvariant()
+    $wslPackageSize = [long]$wslManifest.size_bytes
+    if (-not $wslPackageName.EndsWith(".wsl", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "El manifiesto WSL no contiene un nombre de asset .wsl válido."
+    }
+    if (-not [Uri]::IsWellFormedUriString($wslPackageUrl, [UriKind]::Absolute) -or -not $wslPackageUrl.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "El manifiesto WSL debe usar una URL HTTPS absoluta."
+    }
+    if ($wslPackageSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw "El manifiesto WSL no contiene un SHA-256 válido."
+    }
+    if ($wslPackageSize -le 0) {
+        throw "El manifiesto WSL no contiene un tamaño válido."
+    }
+    $wslPackageSizeMb = [Math]::Ceiling($wslPackageSize / 1MB)
+    $wslInstallScript = (Resolve-Path -LiteralPath "tools\wsl-appliance\install-appliance.ps1").Path
+    $localWslArtifact = Join-Path $projectRoot "dist\wsl\$wslPackageName"
+    if (Test-Path -LiteralPath $localWslArtifact -PathType Leaf) {
+        $localWslItem = Get-Item -LiteralPath $localWslArtifact
+        $localWslHash = (Get-FileHash -LiteralPath $localWslArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($localWslItem.Length -ne $wslPackageSize -or $localWslHash -ne $wslPackageSha256) {
+            throw "El artefacto WSL local no coincide con release-manifest.json."
+        }
     }
 }
 
@@ -109,6 +125,17 @@ $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvar
 [IO.File]::WriteAllText($checksumPath, "$hash  $zipName`n", [Text.UTF8Encoding]::new($false))
 & python tools\validate_release.py $zipPath $checksumPath
 if ($LASTEXITCODE -ne 0) { throw "La validación del paquete final falló." }
+
+if ($ReleaseMode -eq "zip") {
+    $existingInstaller = Join-Path $releaseDir "WhatsApp-CAN-$version-Setup.exe"
+    if (Test-Path -LiteralPath $existingInstaller -PathType Leaf) {
+        Write-Warning "Existe un instalador anterior para esta versión; no se ha actualizado. Publica sólo en modo zip."
+    }
+    Write-Host "Actualización parcial preparada (sin instalador):"
+    Write-Host "  $zipPath"
+    Write-Host "  $checksumPath"
+    return
+}
 
 $isccCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),

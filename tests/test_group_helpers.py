@@ -17,6 +17,7 @@ from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.names import display_label_from_jid, normalize_chat_name, unescape_jid_text
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.main_window import APP_WINDOW_TITLE, USER_DOCUMENTATION_PATH, MainWindow
+from cliente_xmpp.ui.whatsapp_link_panel import WhatsAppLinkPanel
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import (
     ChatDisplayedSynced,
@@ -847,6 +848,65 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         MainWindow._focus_whatsapp_link_action(window)
         self.assertEqual(focus_calls, ["raise", "action"])
 
+    def test_whatsapp_link_panel_focuses_cancel_when_retry_is_disabled(self) -> None:
+        focus_calls: list[str] = []
+        panel = SimpleNamespace(
+            IsShownOnScreen=lambda: True,
+            open_button=SimpleNamespace(IsEnabled=lambda: False),
+            cancel_button=SimpleNamespace(
+                IsShown=lambda: True,
+                IsEnabled=lambda: True,
+                SetFocus=lambda: focus_calls.append("cancel"),
+            ),
+        )
+
+        WhatsAppLinkPanel.focus_action(panel)
+
+        self.assertEqual(focus_calls, ["cancel"])
+
+    def test_old_link_session_end_does_not_interrupt_new_attempt(self) -> None:
+        panel_updates: list[str] = []
+        window = SimpleNamespace(
+            whatsapp_link_session=("whatsapp.example.org", "re-login", "new-session"),
+            whatsapp_link_mode="qr",
+            whatsapp_pair_phone_pending="",
+            whatsapp_qr_restart_after_cancel=False,
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_link_panel=SimpleNamespace(
+                IsShown=lambda: True,
+                set_status=lambda *_args, **_kwargs: panel_updates.append("updated"),
+            ),
+        )
+
+        MainWindow._handle_whatsapp_link_session_ended(
+            window, "whatsapp.example.org", "re-login", "old-session", False, ""
+        )
+
+        self.assertEqual(window.whatsapp_link_session[2], "new-session")
+        self.assertTrue(window.whatsapp_qr_request_in_flight)
+        self.assertEqual(panel_updates, [])
+
+    def test_active_link_session_end_clears_pending_phone_bootstrap(self) -> None:
+        window = SimpleNamespace(
+            whatsapp_link_session=("whatsapp.example.org", "re-login", "active-session"),
+            whatsapp_link_mode="qr",
+            whatsapp_pair_phone_pending="phone-placeholder",
+            whatsapp_pairing_bootstrap_generation=5,
+            whatsapp_qr_restart_after_cancel=False,
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_qr_dialog=None,
+            whatsapp_link_panel=SimpleNamespace(IsShown=lambda: False),
+        )
+
+        MainWindow._handle_whatsapp_link_session_ended(
+            window, "whatsapp.example.org", "re-login", "active-session", False, ""
+        )
+
+        self.assertIsNone(window.whatsapp_link_session)
+        self.assertEqual(window.whatsapp_pair_phone_pending, "")
+        self.assertEqual(window.whatsapp_pairing_bootstrap_generation, 6)
+        self.assertFalse(window.whatsapp_qr_request_in_flight)
+
     def test_phone_pairing_bootstrap_timeout_exits_permanent_preparing_state(self) -> None:
         updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
         statuses: list[str] = []
@@ -877,7 +937,7 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         self.assertIn("No llegó la señal necesaria", updates[0][0][0])
         self.assertEqual(updates[0][1]["action_label"], "Reintentar vinculación")
         self.assertTrue(updates[0][1]["can_cancel"])
-        self.assertTrue(updates[0][1]["action_enabled"])
+        self.assertFalse(updates[0][1]["action_enabled"])
         self.assertEqual(statuses, [updates[0][0][0]])
         self.assertEqual(spoken, [updates[0][0][0]])
 
@@ -912,6 +972,30 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
         self.assertTrue(updates[0][1]["action_enabled"])
         self.assertEqual(statuses, [updates[0][0][0]])
         self.assertEqual(focused, [True])
+
+    def test_phone_pairing_relogin_error_requires_cancel_when_session_is_active(self) -> None:
+        updates: list[dict[str, object]] = []
+        window = SimpleNamespace(
+            whatsapp_pair_phone_pending="phone-placeholder",
+            whatsapp_pairing_bootstrap_generation=3,
+            whatsapp_qr_request_in_flight=True,
+            whatsapp_qr_deadline=123.0,
+            whatsapp_component_jid="whatsapp.example.org",
+            _has_cancelable_whatsapp_link=lambda _jid: True,
+            whatsapp_link_panel=SimpleNamespace(
+                set_status=lambda _text, **kwargs: updates.append(kwargs)
+            ),
+            workspace_panel=SimpleNamespace(Layout=lambda: None),
+            status_bar=SimpleNamespace(SetStatusText=lambda _message: None),
+            speaker=SimpleNamespace(speak=lambda _message: None),
+            _focus_whatsapp_link_action=lambda: None,
+        )
+
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter", side_effect=lambda fn, *a: fn(*a)):
+            MainWindow._mark_whatsapp_phone_pairing_error(window)
+
+        self.assertTrue(updates[0]["can_cancel"])
+        self.assertFalse(updates[0]["action_enabled"])
 
     def test_syncing_after_pairing_keeps_whatsapp_verified_and_cache_visible(self) -> None:
         statuses: list[str] = []

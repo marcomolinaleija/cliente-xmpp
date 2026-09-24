@@ -35,8 +35,12 @@ class WhatsAppLinkPanel(wx.Panel):
         self.Layout()
 
     def focus_action(self) -> None:
-        if self.IsShownOnScreen() and self.open_button.IsEnabled():
+        if not self.IsShownOnScreen():
+            return
+        if self.open_button.IsEnabled():
             self.open_button.SetFocus()
+        elif self.cancel_button.IsShown() and self.cancel_button.IsEnabled():
+            self.cancel_button.SetFocus()
 
     def clear(self) -> None:
         self.open_button.Enable()

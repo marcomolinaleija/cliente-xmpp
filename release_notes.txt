@@ -1,3 +1,14 @@
+WhatsApp CAN 1.4.13
+
+Vinculación y recuperación de WhatsApp
+- Si la sesión deja de estar autenticada, CAN muestra la opción de volver a vincular WhatsApp en lugar de conservar un estado de conexión obsoleto.
+- El inicio de sesión reconoce la opción de revinculación aunque el puente ofrezca también vinculación por número de teléfono.
+- La preparación del código por teléfono informa si el puente no responde a tiempo; si queda una solicitud anterior activa, ofrece cancelarla antes de reintentar.
+- Los avisos tardíos de una vinculación anterior ya no interrumpen el intento actual. El foco se dirige a la acción disponible, incluida Cancelar cuando corresponde.
+
+Mensajes leídos
+- Los marcadores de lectura propios que llegan directamente del puente se sincronizan también cuando el historial del chat todavía se está cargando.
+
 WhatsApp CAN 1.4.12
 
 Rendimiento y navegación en chats

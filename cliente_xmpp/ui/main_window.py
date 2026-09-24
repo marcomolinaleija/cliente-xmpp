@@ -1533,15 +1533,16 @@ class MainWindow(wx.Frame):
         canceled: bool,
         detail: str,
     ) -> None:
-        if self.whatsapp_link_session == (component_jid, command_node, session_id):
-            was_phone_pairing_bootstrap = (
-                self.whatsapp_link_mode == "qr" and bool(self.whatsapp_pair_phone_pending)
-            )
-            self.whatsapp_link_session = None
-            self.whatsapp_link_mode = ""
-            if was_phone_pairing_bootstrap:
-                self.whatsapp_pair_phone_pending = ""
-                self.whatsapp_pairing_bootstrap_generation += 1
+        if self.whatsapp_link_session != (component_jid, command_node, session_id):
+            return
+        was_phone_pairing_bootstrap = (
+            self.whatsapp_link_mode == "qr" and bool(self.whatsapp_pair_phone_pending)
+        )
+        self.whatsapp_link_session = None
+        self.whatsapp_link_mode = ""
+        if was_phone_pairing_bootstrap:
+            self.whatsapp_pair_phone_pending = ""
+            self.whatsapp_pairing_bootstrap_generation += 1
         if self.whatsapp_qr_restart_after_cancel:
             self.whatsapp_qr_restart_after_cancel = False
             self.whatsapp_qr_request_in_flight = False
@@ -1567,6 +1568,7 @@ class MainWindow(wx.Frame):
                 can_cancel=False,
             )
             self.workspace_panel.Layout()
+            wx.CallAfter(self._focus_whatsapp_link_action)
 
     def _whatsapp_link_action_label(self) -> str:
         if self.whatsapp_qr_path:
@@ -1897,17 +1899,20 @@ class MainWindow(wx.Frame):
         self.whatsapp_pairing_bootstrap_generation += 1
         self.whatsapp_qr_request_in_flight = False
         self.whatsapp_qr_deadline = 0.0
+        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
         message = (
             "El puente no confirmó la sesión de WhatsApp a tiempo. No llegó la señal "
-            "necesaria para pedir el código; cancela el intento pendiente o vuelve a "
-            "intentar la vinculación."
+            "necesaria para pedir el código. "
         )
-        can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
+        if can_cancel:
+            message += "Cancela el intento pendiente antes de volver a intentar la vinculación."
+        else:
+            message += "Vuelve a intentar la vinculación."
         self.whatsapp_link_panel.set_status(
             message,
             action_label="Reintentar vinculación",
             can_cancel=can_cancel,
-            action_enabled=True,
+            action_enabled=not can_cancel,
         )
         self.workspace_panel.Layout()
         self.status_bar.SetStatusText(message)
@@ -1922,13 +1927,16 @@ class MainWindow(wx.Frame):
         can_cancel = self._has_cancelable_whatsapp_link(self.whatsapp_component_jid)
         visible_message = (
             "El puente rechazó la solicitud para preparar la vinculación por teléfono. "
-            "Corrige el problema antes de volver a intentarlo."
         )
+        if can_cancel:
+            visible_message += "Cancela el intento pendiente antes de volver a intentarlo."
+        else:
+            visible_message += "Vuelve a intentarlo."
         self.whatsapp_link_panel.set_status(
             visible_message,
             action_label="Reintentar vinculación",
             can_cancel=can_cancel,
-            action_enabled=True,
+            action_enabled=not can_cancel,
         )
         self.workspace_panel.Layout()
         self.status_bar.SetStatusText(visible_message)

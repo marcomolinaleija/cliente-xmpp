@@ -1,0 +1,44 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v28@sha256:4b9ba26457cafa0ffe2f4c19a503d2288445d8f7b40bc0fab9133a23e01eca35
+FROM ${BASE_IMAGE} AS patched
+USER root
+COPY patch_slidge_sticker_delivery_v29.py /tmp/patch_sticker_delivery.py
+COPY bridge_sticker_pack.go /venv/lib/python3.13/site-packages/slidge_whatsapp/sticker_pack.go
+COPY bridge_sticker_pack.py /venv/lib/python3.13/site-packages/slidge_whatsapp/sticker_pack.py
+RUN python -B /tmp/patch_sticker_delivery.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -B /tmp/patch_sticker_delivery.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp \
+        /venv/lib/python3.13/site-packages/slidge/core/dispatcher/message/message.py && \
+    rm /tmp/patch_sticker_delivery.py
+
+FROM golang:1.25-trixie AS go_builder
+RUN apt-get update -y && apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_sticker_delivery_test.go /src/slidge_whatsapp/sticker_delivery_test.go
+COPY bridge_native_sticker_test.go /src/slidge_whatsapp/native_sticker_test.go
+COPY bridge_sticker_accessibility_test.go /src/slidge_whatsapp/sticker_accessibility_test.go
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go sticker_pack.go *_test.go && \
+    PACK_FIXTURE_OUTPUT=/tmp/native-pack-fixture.zip go test -v . && go test -race . && \
+    rm sticker_delivery_test.go native_sticker_test.go sticker_accessibility_test.go && \
+    cd generated && go build -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=go_builder /src/slidge_whatsapp/event.go /src/slidge_whatsapp/sticker_pack.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=go_builder /tmp/native-pack-fixture.zip /opt/can-tests/native-pack-fixture.zip
+COPY smoke_bridge_sticker_delivery_runtime.py smoke_bridge_sticker_accessibility_runtime.py smoke_bridge_stickers_runtime.py smoke_bridge_no_auto_join_runtime.py /opt/can-tests/
+RUN chmod 0755 /opt/can-tests && chmod 0644 /opt/can-tests/* \
+    /venv/lib/python3.13/site-packages/slidge_whatsapp/sticker_pack.py \
+    /venv/lib/python3.13/site-packages/slidge_whatsapp/sticker_pack.go
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

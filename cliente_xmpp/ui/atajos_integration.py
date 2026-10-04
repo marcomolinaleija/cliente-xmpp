@@ -7,6 +7,7 @@ import wx
 from cliente_xmpp.integrations.atajos_api import LocalAssistantAPI
 from cliente_xmpp.integrations.atajos_credentials import integration_token
 from cliente_xmpp.models.chat import Message
+from cliente_xmpp.storage.assistant_media import AssistantMediaStore
 from cliente_xmpp.storage.conversation_context import ConversationContextStore
 
 
@@ -49,6 +50,7 @@ class AtajosIntegrationMixin:
                 token,
                 lambda row: wx.CallAfter(self._send_atajos_message, row),
                 read_context=ConversationContextStore(self.message_store.path).read_page,
+                media_store=AssistantMediaStore(self.message_store.path),
             )
             self._sync_atajos_api()
             self._atajos_api.start()

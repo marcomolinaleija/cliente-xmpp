@@ -14,6 +14,7 @@ from datetime import datetime
 from aiohttp import web
 
 from cliente_xmpp.integrations.atajos_automation import AutomationAPIMixin
+from cliente_xmpp.integrations.atajos_media import MediaAPIMixin
 from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.storage.scheduled_messages import ScheduledMessageStore
 
@@ -69,7 +70,7 @@ def _json_pairs(pairs: list) -> dict:
     return result
 
 
-class LocalAssistantAPI(AutomationAPIMixin):
+class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
     def __init__(
         self,
         token: str,
@@ -78,6 +79,7 @@ class LocalAssistantAPI(AutomationAPIMixin):
         store: ScheduledMessageStore | None = None,
         clock: Callable[[], float] = time.time,
         read_context: Callable | None = None,
+        media_store=None,
     ) -> None:
         self._token = token
         self._send = send
@@ -96,6 +98,7 @@ class LocalAssistantAPI(AutomationAPIMixin):
         self._closed = threading.Event()
         self.error = ""
         self._initialize_automation()
+        self._initialize_media(media_store)
 
     def update(self, account: str, ready: bool, contacts: list[tuple[str, str]]) -> None:
         mapped = {}
@@ -207,6 +210,7 @@ class LocalAssistantAPI(AutomationAPIMixin):
         app.router.add_get("/v1/messages", self._list_messages)
         app.router.add_post("/v1/messages/{id}/cancel", self._cancel_message)
         self._automation_routes(app)
+        self._media_routes(app)
         return app
 
     async def _status(self, _request: web.Request) -> web.Response:
@@ -220,6 +224,7 @@ class LocalAssistantAPI(AutomationAPIMixin):
                 "account_id": self._account_id(account),
                 "late_default": "send-when-connected",
                 "chat_context": self._read_context is not None,
+                "media": self._media_store is not None,
                 "automation": True,
                 "journal_epoch": self._automation_epoch,
             }

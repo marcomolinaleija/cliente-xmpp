@@ -41,6 +41,19 @@ Usa un contacto de pruebas autorizado: programa un mensaje a un minuto y comprue
 
 Las pruebas automáticas de `tests/test_atajos_api.py` usan bases temporales, contactos ficticios y un callback de envío simulado; no mandan mensajes a personas.
 
+## Adjuntos para el asistente
+
+WhatsApp CAN 1.4.15 anuncia `media=true` en `/v1/status`. Atajos 1.1.6 añade análisis de imágenes, audio y vídeo con Gemini. El asistente interactivo consulta los adjuntos y obtiene únicamente el elegido por el usuario; las reglas autónomas no reciben estas herramientas.
+
+- `POST /v1/media`: exactamente `account_id`, `contact_id` (ID de contactos/grupos o vacío para todos los chats disponibles), `kind` (`image`, `audio`, `video`, `all`) y `count` (1..10). Devuelve los últimos recibidos por fecha e identidad local. Incluye nombre del chat, tipo, fecha, nombre del archivo, tamaño y un ID temporal; no incluye cuerpos, rutas, JID o URLs.
+- `POST /v1/media/content`: exactamente `account_id` y `media_id`. Devuelve los bytes de un adjunto seleccionado anteriormente, con `X-Atajos-Account` y `X-Atajos-Media-Mime`; la credencial Bearer y las restricciones de origen/host son las mismas que en los otros endpoints. El contenido no se guarda en la caché HTTP.
+
+La selección caduca a los diez minutos, pertenece a una cuenta/chat/mensaje y se revalida antes/después de leer. No ofrece medios salientes, retraídos, eliminados localmente, de otra cuenta o chats fuera del catálogo. Las copias locales deben estar dentro de downloads/clipboard administrados y no contener enlaces. Si falta la copia, el cliente descarga en un worker a `.part`, con límite de 100 MiB tanto por cabecera como durante el streaming, y persiste la ruta solo tras el éxito. Una retracción durante la descarga impide devolver el contenido y retira solo la nueva copia. No abre chats, envía recibos, modifica borradores o manda respuestas. La consulta funciona sobre la caché local; no consulta MAM ni garantiza todo el historial remoto.
+
+Los archivos elegidos se envían a Google desde Atajos con la clave Gemini del usuario. El cliente solo los entrega por la API local autenticada; no tiene una nueva clave Gemini ni ejecuta instrucciones procedentes de archivos. Atajos tiene progreso, cancelación y un resultado completo para lectura/copia.
+
+Para probar: reinicia el cliente actualizado con la integración activa, pide describir una foto ficticia recibida, luego el último audio de un contacto de pruebas y un vídeo de un grupo. Comprueba que no cambia el foco, no reproduce sonidos, no marca leído y no envía mensajes. Repite sin copia local, con cuenta cambiada, adjunto retraído y límite de tamaño. Las pruebas automáticas `test_atajos_media.py` usan bases temporales, archivos y contactos ficticios, sin conexión real.
+
 ## Respuestas autónomas
 
 Atajos 1.1.4 añade reglas por chats seleccionados, contactos, grupos o toda la cuenta, con exclusiones. Se activan expresamente, con intervalo, duración, contexto de 1 a 400 mensajes e instrucciones. El motor sigue en Atajos y Gemini redacta sin herramientas. La confirmación de Atajos produce borradores. Reiniciar requiere reactivar y no responde al historial acumulado; la cola manual conserva su política de reconexión.

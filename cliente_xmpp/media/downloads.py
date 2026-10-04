@@ -218,8 +218,7 @@ def delete_local_media_file(
         resolved = path.resolve(strict=False)
         managed_roots = (DOWNLOADS_DIR, APP_DIR / "clipboard")
         if not any(
-            resolved == root.resolve(strict=False)
-            or root.resolve(strict=False) in resolved.parents
+            resolved == root.resolve(strict=False) or root.resolve(strict=False) in resolved.parents
             for root in managed_roots
         ):
             return None, None
@@ -231,14 +230,24 @@ def delete_local_media_file(
     return path, None
 
 
-def download_media(message: Message, account_jid: str) -> DownloadedMedia:
+def download_media(
+    message: Message, account_jid: str, *, maximum_bytes: int | None = None
+) -> DownloadedMedia:
     url = media_url(message)
     if not url:
         raise ValueError("El mensaje no tiene URL de archivo.")
+    if maximum_bytes is not None and urlparse(url).scheme.lower() not in {"http", "https"}:
+        raise ValueError("El adjunto no tiene una dirección HTTP válida.")
 
-    target_dir = DOWNLOADS_DIR / sanitize_filename(account_jid or "cuenta") / sanitize_filename(
-        message.chat_jid or "chat"
+    target_dir = (
+        DOWNLOADS_DIR
+        / sanitize_filename(account_jid or "cuenta")
+        / sanitize_filename(message.chat_jid or "chat")
     )
+    if maximum_bytes is not None and any(
+        path.is_symlink() or path.is_junction() for path in (target_dir, *target_dir.parents)
+    ):
+        raise ValueError("El almacenamiento del adjunto contiene enlaces.")
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = unique_path(target_dir / media_filename(message))
     temp_path = target_path.with_name(f"{target_path.name}.part")
@@ -248,16 +257,25 @@ def download_media(message: Message, account_jid: str) -> DownloadedMedia:
         with urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
             mime = str(response.headers.get("Content-Type") or message.media_mime or "")
             size = int(response.headers.get("Content-Length") or 0)
+            if maximum_bytes is not None and size > maximum_bytes:
+                raise ValueError("El adjunto supera el tamaño permitido.")
             with temp_path.open("wb") as target:
-                shutil.copyfileobj(response, target, CHUNK_SIZE)
+                if maximum_bytes is None:
+                    shutil.copyfileobj(response, target, CHUNK_SIZE)
+                else:
+                    total = 0
+                    while chunk := response.read(CHUNK_SIZE):
+                        total += len(chunk)
+                        if total > maximum_bytes:
+                            raise ValueError("El adjunto supera el tamaño permitido.")
+                        target.write(chunk)
 
         actual_size = temp_path.stat().st_size
         if actual_size <= 0:
             raise OSError("El servidor devolvio un archivo vacio.")
         if size > 0 and actual_size != size:
             raise OSError(
-                f"La descarga quedo incompleta: se esperaban {size} bytes y llegaron "
-                f"{actual_size}."
+                f"La descarga quedo incompleta: se esperaban {size} bytes y llegaron {actual_size}."
             )
         temp_path.replace(target_path)
     except Exception:

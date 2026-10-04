@@ -39,6 +39,8 @@ La configuracion local se guarda en `%USERPROFILE%\.cliente-xmpp\settings.json`.
 
 ## Integración con el asistente de Atajos
 
+WhatsApp CAN 1.4.15 permite a Atajos 1.1.6 consultar los últimos adjuntos recibidos y obtener la imagen, audio o vídeo elegido para analizarlo con Gemini. Puede descargar la copia que falte, con límite de 100 MiB. Requiere la integración local activada. La consulta no marca leído ni envía respuestas; el contenido elegido se comparte con Google por petición del usuario.
+
 En Configuración activa **Permitir integración local con Atajos**. Permite buscar contactos individuales, enviar/programar textos, consultar/cancelar pendientes y leer el contexto guardado del contacto seleccionado sin abrir el chat ni marcar mensajes como leídos. La cola espera la reconexión original y se conserva aunque Atajos se cierre; WhatsApp CAN debe estar abierto para despacharla.
 
 Atajos 1.1.3 ofrece **Mensajería…** para conmutar la confirmación (desactivada inicialmente) y configurar el contexto inicial entre 1 y 400 mensajes (cinco por defecto). Las cantidades explícitas prevalecen y todo el chat guardado se recorre por páginas. Los textos consultados se comparten con Gemini. Consulta [Integración local con Atajos](docs/INTEGRACION_ATAJOS.md) para el contrato, ejemplos y límites.

@@ -2,7 +2,7 @@
 
 En Configuración activa **Permitir integración local con Atajos**. La preferencia se conserva y la integración vuelve a iniciarse al abrir el cliente. Requiere la versión de Atajos que incluya las herramientas `xmpp_`. No introduce cambios en el servidor o puente de WhatsApp.
 
-Atajos busca contactos individuales del catálogo cargado en el cliente. Cada solicitud admite uno a diez destinatarios y hasta 4000 caracteres de texto por persona. También puede consultar el historial local del contacto seleccionado para identificarlo o personalizar lo solicitado. Las búsquedas comparten nombres e identificadores opacos con Gemini; el texto consultado del chat también se envía a Gemini como contexto. No se consultan grupos, archivos adjuntos, contraseñas ni comandos `/stats`, `/status` o `/transcribe`.
+Atajos busca contactos y grupos del catálogo cargado. Cada solicitud admite uno a diez destinatarios y hasta 4000 caracteres por chat. Puede consultar el historial local para identificarlo o personalizar la petición. Gemini recibe nombres, identificadores opacos y el texto consultado como contexto. Los grupos conservan nombres de participantes y su identidad de sala. No se leen adjuntos, contraseñas ni comandos `/stats`, `/status` o `/transcribe`.
 
 Por defecto Atajos ejecuta las peticiones de envío sin confirmación adicional. En **Mensajería…** puedes activar la revisión accesible con destinatarios, texto completo y hora, y configurar la cantidad inicial de contexto entre 1 y 400 (inicialmente 5). Una cantidad explícita prevalece sobre esa preferencia; todo el chat guardado se recorre por páginas. El cliente persiste la cola en `~/.cliente-xmpp/assistant-outbox.sqlite3`, separada de la base de conversaciones. No se cancela al cerrar Atajos. WhatsApp CAN debe estar abierto, con la integración activada y conectado para despacharla. Al volver a abrirlo o reconectar espera la cuenta original y envía los mensajes vencidos; nunca sustituye una cuenta o contacto. Un contacto retirado queda retenido.
 
@@ -40,6 +40,25 @@ La API y SQLite trabajan en un hilo independiente. El catálogo se copia desde w
 Usa un contacto de pruebas autorizado: programa un mensaje a un minuto y comprueba que la preferencia desactivada evita la revisión. Actívala desde **Mensajería…** y verifica Confirmar/Cancelar con teclado y NVDA. Programa otro, cierra Atajos y comprueba el envío. Desconecta/cierra WhatsApp CAN y verifica que espera la reconexión original. Consulta/cancela un pendiente y comprueba que no sale. Pide leer cinco mensajes, luego 400 y después todo el chat guardado, verificando cantidades, dirección, páginas y límites. Comprueba que no cambia el chat abierto, borrador, foco ni los no leídos.
 
 Las pruebas automáticas de `tests/test_atajos_api.py` usan bases temporales, contactos ficticios y un callback de envío simulado; no mandan mensajes a personas.
+
+## Respuestas autónomas
+
+Atajos 1.1.4 añade reglas por chats seleccionados, contactos, grupos o toda la cuenta, con exclusiones. Se activan expresamente, con intervalo, duración, contexto de 1 a 400 mensajes e instrucciones. El motor sigue en Atajos y Gemini redacta sin herramientas. La confirmación de Atajos produce borradores. Reiniciar requiere reactivar y no responde al historial acumulado; la cola manual conserva su política de reconexión.
+
+El cliente registra texto en vivo con identidad estable; MAM, inbox e historial no inician respuestas. Mensajes propios, ediciones, eliminaciones, medios, encuestas y llamadas invalidan borradores anteriores. El diario persistente está en `assistant-outbox.sqlite3`, separado de la conversación. Vaciar un chat elimina sus textos del diario; editar/eliminar invalida el desencadenante original. Los grupos autorizados se supervisan por lotes de diez cada tres segundos, sin abrirlos, marcar lectura ni cargar todo el historial.
+
+API nueva, con la misma autenticación local y rechazo de orígenes web:
+
+- `GET /v1/contacts?kind=contacts|groups|all`: catálogo paginado con `is_group`; por defecto conserva individuos.
+- `POST /v1/automation/lease`: permiso vinculado a cuenta y sesión del diario; alcance y exclusiones inmutables hasta revocar. Atajos concede tres minutos y renueva mientras esté activo; la API limita permisos a cinco minutos. Activar devuelve el final del diario para omitir el pasado.
+- `POST /v1/automation/events`: novedades desde `after_seq`, con identidad opaca, tipo, participante y secuencia. La paginación avanza también sobre chats retirados.
+- `POST /v1/automation/reply`: UUID persistente, regla, chat y secuencia desencadenante. Comprueba que el último evento siga siendo entrante, que el permiso esté vigente y que no exista otra respuesta para ese desencadenante.
+- `POST /v1/automation/revoke` y `/revoke-all`: revocan permisos y cancelan pendientes automáticos. Primero invalidan en memoria los callbacks ya encolados.
+- `GET /v1/requests/{id}?account_id=…`: reconcilia sin reenviar.
+
+Los handlers wx revalidan sin SQLite y el protocolo comprueba el permiso justo antes del envío. Las respuestas automáticas no usan reintentos transitorios; los mensajes normales conservan los suyos. Un envío ya entregado al protocolo puede estar en curso. Reiniciar cambia la sesión del diario y retiene pendientes automáticos; cuentas diferentes, permisos caducados o contexto modificado exigen revisar/reactivar.
+
+Las pruebas `test_atajos_automation.py` y `test_conversation_context.py` usan datos ficticios, bases temporales y envío simulado. Para probar manualmente, empieza con un contacto de prueba en modo borrador; después prueba un grupo. Comprueba una sola respuesta ante ráfagas, cancelación al responder manualmente durante la generación, pausa, reinicio y cambio de cuenta. Verifica el modo automático consultando el estado de su solicitud, sin repetir un resultado incierto.
 
 ## Certificados del servidor remoto
 

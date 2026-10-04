@@ -4827,6 +4827,7 @@ class XmppService:
         ephemeral: bool = False,
         expected_account: str = "",
         on_deferred: Callable[[], None] | None = None,
+        authorization: Callable[[], bool] | None = None,
     ) -> None:
         if not self._client or not self._loop:
             if expected_account and on_deferred:
@@ -4845,10 +4846,18 @@ class XmppService:
             return
 
         def send() -> None:
-            if expected_account and on_deferred and (
-                not self._client
-                or str(self._client.boundjid.bare) != expected_account
-                or not self._client.is_connected()
+            if authorization is not None and not authorization():
+                if on_deferred:
+                    on_deferred()
+                return
+            if (
+                expected_account
+                and on_deferred
+                and (
+                    not self._client
+                    or str(self._client.boundjid.bare) != expected_account
+                    or not self._client.is_connected()
+                )
             ):
                 on_deferred()
                 return
@@ -4868,11 +4877,16 @@ class XmppService:
                     else:
                         self._append_mentions(msg, mentions or [])
                         self._request_delivery_updates(msg, message_type)
-                        self._client.track_transient_message_retry(
-                            to_jid,
-                            message_id,
-                            msg.send,
-                        )
+                        if authorization is None:
+                            self._client.track_transient_message_retry(
+                                to_jid,
+                                message_id,
+                                msg.send,
+                            )
+                    if authorization is not None and not authorization():
+                        if on_deferred:
+                            on_deferred()
+                        return
                     msg.send()
                     if message_id:
                         self._emit(
@@ -5487,7 +5501,13 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(request)
 
-    def monitor_group_chats(self, chat_jids: Iterable[str]) -> None:
+    def monitor_group_chats(
+        self,
+        chat_jids: Iterable[str],
+        *,
+        expected_account: str = "",
+        authorization: Callable[[str], bool] | None = None,
+    ) -> None:
         if not self._client or not self._loop:
             return
 
@@ -5497,7 +5517,10 @@ class XmppService:
 
         def monitor() -> None:
             if self._client:
-                self._client.monitor_group_chats(group_jids)
+                if expected_account and str(self._client.boundjid.bare) != expected_account:
+                    return
+                allowed = [jid for jid in group_jids if authorization is None or authorization(jid)]
+                self._client.monitor_group_chats(allowed)
 
         self._loop.call_soon_threadsafe(monitor)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import sqlite3
 import threading
 import time
 import unicodedata
@@ -12,6 +13,7 @@ from datetime import datetime
 
 from aiohttp import web
 
+from cliente_xmpp.integrations.atajos_automation import AutomationAPIMixin
 from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.storage.scheduled_messages import ScheduledMessageStore
 
@@ -67,7 +69,7 @@ def _json_pairs(pairs: list) -> dict:
     return result
 
 
-class LocalAssistantAPI:
+class LocalAssistantAPI(AutomationAPIMixin):
     def __init__(
         self,
         token: str,
@@ -93,12 +95,19 @@ class LocalAssistantAPI:
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
         self.error = ""
+        self._initialize_automation()
 
     def update(self, account: str, ready: bool, contacts: list[tuple[str, str]]) -> None:
-        mapped = {
-            str(uuid.uuid5(self._namespace, account + "\0" + jid)): {"jid": jid, "name": name}
-            for jid, name in contacts
-        }
+        mapped = {}
+        for entry in contacts:
+            jid, name = entry[:2]
+            group = bool(entry[2]) if len(entry) > 2 else False
+            identity = account + "\0" + jid + ("\0group" if group else "")
+            mapped[str(uuid.uuid5(self._namespace, identity))] = {
+                "jid": jid,
+                "name": name,
+                "is_group": group,
+            }
         with self._lock:
             self._account = account
             self._ready = ready
@@ -128,10 +137,17 @@ class LocalAssistantAPI:
     def _run(self) -> None:
         try:
             asyncio.run(self._serve())
+        except sqlite3.Error:
+            self.error = (
+                "La API local se detuvo por un problema de almacenamiento; "
+                "vuelve a activar la integración."
+            )
         except Exception:
             self.error = (
                 "No se pudo iniciar la API local; comprueba que el puerto 47843 esté libre."
             )
+        finally:
+            self._closed.set()
 
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -190,9 +206,11 @@ class LocalAssistantAPI:
         app.router.add_post("/v1/messages", self._create_messages)
         app.router.add_get("/v1/messages", self._list_messages)
         app.router.add_post("/v1/messages/{id}/cancel", self._cancel_message)
+        self._automation_routes(app)
         return app
 
     async def _status(self, _request: web.Request) -> web.Response:
+        await self._flush_observations()
         account, ready, _ = self._snapshot()
         return web.json_response(
             {
@@ -202,24 +220,30 @@ class LocalAssistantAPI:
                 "account_id": self._account_id(account),
                 "late_default": "send-when-connected",
                 "chat_context": self._read_context is not None,
+                "automation": True,
+                "journal_epoch": self._automation_epoch,
             }
         )
 
     async def _find_contacts(self, request: web.Request) -> web.Response:
-        if set(request.query) - {"query", "offset"} or len(request.query) != len(
+        if set(request.query) - {"query", "offset", "kind"} or len(request.query) != len(
             set(request.query)
         ):
             raise ValueError("Parámetros no válidos.")
         account, _, contacts = self._snapshot()
         query = _fold(_text(request.query.get("query", ""), 100, empty=True)).split()
         offset = int(request.query.get("offset", "0"))
+        kind = request.query.get("kind", "contacts")
+        if kind not in {"contacts", "groups", "all"}:
+            raise ValueError("Tipo de chat no válido.")
         if not 0 <= offset <= 100000:
             raise ValueError("Página no válida.")
         matches = sorted(
             (
-                {"id": key, "name": contact["name"]}
+                {"id": key, "name": contact["name"], "is_group": contact["is_group"]}
                 for key, contact in contacts.items()
                 if all(word in _fold(contact["name"]) for word in query)
+                and (kind == "all" or contact["is_group"] == (kind == "groups"))
             ),
             key=lambda c: c["name"],
         )
@@ -272,9 +296,17 @@ class LocalAssistantAPI:
             return web.json_response(
                 {"error": "Este cliente no permite consultar contexto."}, status=501
             )
+        options = {"is_group": True} if contact["is_group"] else {}
         page = await asyncio.to_thread(
-            self._read_context, account, contact["jid"], count, before, anchor
+            self._read_context, account, contact["jid"], count, before, anchor, **options
         )
+        for message in page["messages"]:
+            identity = message.pop("identity", "")
+            message["id"] = (
+                str(uuid.uuid5(self._namespace, account + "\0" + contact["jid"] + "\0" + identity))
+                if identity
+                else ""
+            )
         active_account, _, active_contacts = self._snapshot()
         if active_account != account or body["contact_id"] not in active_contacts:
             return web.json_response(
@@ -299,6 +331,7 @@ class LocalAssistantAPI:
                 **page,
                 "account_id": self._account_id(account),
                 "name": contact["name"],
+                "is_group": contact["is_group"],
                 "source": "local-cache",
                 "next_cursor": next_cursor,
                 "marks_read": False,
@@ -347,7 +380,14 @@ class LocalAssistantAPI:
             if contact_id in seen or is_local_bridge_command(text):
                 raise ValueError("Destinatario duplicado o comando local no permitido.")
             seen.add(contact_id)
-            messages.append({"jid": contact["jid"], "name": contact["name"], "text": text})
+            messages.append(
+                {
+                    "jid": contact["jid"],
+                    "name": contact["name"],
+                    "text": text,
+                    "is_group": contact["is_group"],
+                }
+            )
         rows = await asyncio.to_thread(
             self._store.create, request_id, account, messages, due, policy
         )
@@ -388,12 +428,24 @@ class LocalAssistantAPI:
         return web.json_response({"canceled": canceled}, status=200 if canceled else 409)
 
     async def tick(self) -> None:
+        await self._flush_observations()
         account, ready, contacts = self._snapshot()
         active = {contact["jid"] for contact in contacts.values()}
         rows = await asyncio.to_thread(self._store.due, self._clock(), account)
         for row in rows:
             if self._closed.is_set():
                 break
+            if row["rule_id"] and not await asyncio.to_thread(
+                self._automation.authorized, row, self._clock()
+            ):
+                await asyncio.to_thread(
+                    self._store.transition,
+                    row["id"],
+                    "pending",
+                    "canceled",
+                    "La regla caducó o el chat cambió; no se envió.",
+                )
+                continue
             if row["late_policy"] == "send-when-connected" and (
                 row["account"] != account or not ready
             ):

@@ -72,6 +72,50 @@ class ConversationContextTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_group_context_keeps_participants_and_separates_individual_history(self):
+        group = "group@rooms.example.test"
+        self.store.upsert_messages(
+            ACCOUNT,
+            [
+                Message(
+                    group,
+                    "participant@example.test",
+                    "Texto grupal ficticio",
+                    sender_name="Participante ficticio",
+                    message_id="group-1",
+                    chat_is_group=True,
+                ),
+                Message(
+                    group,
+                    "participant@example.test",
+                    "Texto individual ficticio",
+                    message_id="individual-1",
+                    chat_is_group=False,
+                ),
+            ],
+        )
+        self.api.update(ACCOUNT, True, [(group, "Grupo ficticio", True)])
+        response = await self.client.get("/v1/contacts?kind=groups", headers=self.headers)
+        data = await response.json()
+        response = await self.client.post(
+            "/v1/context",
+            headers=self.headers,
+            json={
+                "account_id": data["account_id"],
+                "contact_id": data["contacts"][0]["id"],
+                "count": 5,
+                "cursor": "",
+            },
+        )
+        self.assertEqual(response.status, 200)
+        page = await response.json()
+        self.assertTrue(page["is_group"])
+        self.assertEqual(page["returned_count"], 1)
+        self.assertEqual(page["messages"][0]["sender"], "Participante ficticio")
+        self.assertEqual(page["messages"][0]["text"], "Texto grupal ficticio")
+        self.assertNotIn("identity", page["messages"][0])
+        self.assertNotIn("@", json.dumps(page))
+
     async def read(self, **kwargs) -> dict:
         response = await self.client.post(
             "/v1/context", json={**self.body, **kwargs}, headers=self.headers

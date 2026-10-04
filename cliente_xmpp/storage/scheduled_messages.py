@@ -29,10 +29,26 @@ class ScheduledMessageStore:
                 "CREATE INDEX IF NOT EXISTS assistant_outbox_due "
                 "ON assistant_outbox(account, state, due)"
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(assistant_outbox)")}
+            for name, definition in {
+                "is_group": "INTEGER NOT NULL DEFAULT 0",
+                "rule_id": "TEXT NOT NULL DEFAULT ''",
+                "trigger_seq": "INTEGER NOT NULL DEFAULT 0",
+                "auto_expires": "REAL NOT NULL DEFAULT 0",
+            }.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE assistant_outbox ADD COLUMN {name} {definition}"
+                    )
             # Never repeat a send whose acknowledgement was lost during a process restart.
             connection.execute(
                 "UPDATE assistant_outbox SET state='uncertain', detail=? WHERE state='dispatching'",
                 ("El cliente se cerró durante el envío; comprueba el chat antes de repetir.",),
+            )
+            connection.execute(
+                "UPDATE assistant_outbox SET state='held', detail=? "
+                "WHERE rule_id<>'' AND state='pending'",
+                ("Automatización detenida al reiniciar el cliente; reactívala desde Atajos.",),
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -61,6 +77,7 @@ class ScheduledMessageStore:
                     and row["body"] == message["text"]
                     and row["due"] == due
                     and row["late_policy"] == late_policy
+                    and bool(row["is_group"]) == bool(message.get("is_group", False))
                     for row, message in zip(old, messages, strict=True)
                 )
                 if not same:
@@ -74,7 +91,9 @@ class ScheduledMessageStore:
                 raise ValueError("Hay demasiados mensajes pendientes; revisa o cancela algunos.")
             for index, message in enumerate(messages):
                 connection.execute(
-                    "INSERT INTO assistant_outbox VALUES (?,?,?,?,?,?,?,?,?,'pending','')",
+                    "INSERT INTO assistant_outbox "
+                    "(id,request_id,recipient_index,account,jid,name,body,due,late_policy,is_group,"
+                    "state,detail) VALUES (?,?,?,?,?,?,?,?,?,?,'pending','')",
                     (
                         str(uuid.uuid4()),
                         request_id,
@@ -85,6 +104,7 @@ class ScheduledMessageStore:
                         message["text"],
                         due,
                         late_policy,
+                        int(bool(message.get("is_group", False))),
                     ),
                 )
             return [
@@ -193,4 +213,6 @@ class ScheduledMessageStore:
             "state": row["state"],
             "detail": row["detail"],
             "late_policy": row["late_policy"],
+            "is_group": bool(row["is_group"]),
+            "rule_id": row["rule_id"],
         }

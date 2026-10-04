@@ -46,7 +46,8 @@ class AtajosIntegrationMixin:
         try:
             token = integration_token()
             self._atajos_api = LocalAssistantAPI(
-                token, lambda row: wx.CallAfter(self._send_atajos_message, row),
+                token,
+                lambda row: wx.CallAfter(self._send_atajos_message, row),
                 read_context=ConversationContextStore(self.message_store.path).read_page,
             )
             self._sync_atajos_api()
@@ -70,12 +71,27 @@ class AtajosIntegrationMixin:
     def _sync_atajos_api(self) -> None:
         account = self.current_jid.split("/", 1)[0]
         contacts = [
-            (chat.jid, chat.custom_name or self.chat_names_by_jid.get(chat.jid) or chat.name)
+            (
+                chat.jid,
+                chat.custom_name or self.chat_names_by_jid.get(chat.jid) or chat.name,
+                chat.is_group,
+            )
             for chat in self.searchable_chats_by_jid.values()
-            if not chat.is_group and chat.jid in self.roster_jids
+            if chat.is_group or chat.jid in self.roster_jids
         ]
         ready = bool(self.whatsapp_verified and self.roster_jids)
         self._atajos_api.update(account, ready, contacts)
+        groups = sorted(self._atajos_api.monitored_group_jids(account))
+        if groups:
+            offset = getattr(self, "_atajos_group_rotation", 0) % len(groups)
+            batch = (groups + groups)[offset : offset + min(10, len(groups))]
+            self._atajos_group_rotation = offset + len(batch)
+            api = self._atajos_api
+            self.xmpp.monitor_group_chats(
+                batch,
+                expected_account=account,
+                authorization=lambda jid: jid in api.monitored_group_jids(account),
+            )
 
     def _send_atajos_message(self, row: dict[str, object]) -> None:
         api = self._atajos_api
@@ -91,8 +107,16 @@ class AtajosIntegrationMixin:
                 wait=row["late_policy"] == "send-when-connected",
             )
             return
-        if chat is None or chat.is_group or jid not in self.roster_jids:
+        if (
+            chat is None
+            or chat.is_group != bool(row.get("is_group", False))
+            or not chat.is_group
+            and jid not in self.roster_jids
+        ):
             api.rejected(str(row["id"]), "El contacto cambió antes del envío; revisa el mensaje.")
+            return
+        if row.get("rule_id") and not api.can_dispatch_on_ui(row):
+            api.rejected(str(row["id"]), "La regla se detuvo o el chat cambió antes del envío.")
             return
         message_id = "cliente-xmpp-api-" + str(row["id"])
         message = Message(
@@ -104,6 +128,7 @@ class AtajosIntegrationMixin:
             outgoing=True,
             message_id=message_id,
             delivery_state="pending",
+            chat_is_group=chat.is_group,
         )
         try:
             self._add_pending_outgoing_message(message)
@@ -112,8 +137,10 @@ class AtajosIntegrationMixin:
                 jid,
                 message.body,
                 message_id=message_id,
+                is_group=chat.is_group,
                 expected_account=account,
                 on_deferred=lambda: wx.CallAfter(self._defer_atajos_message, api, row),
+                authorization=(lambda: api.can_dispatch_on_ui(row)) if row.get("rule_id") else None,
             )
         except Exception:
             api.unconfirmed(str(row["id"]))
@@ -123,9 +150,33 @@ class AtajosIntegrationMixin:
             self._remove_failed_local_message(str(row["jid"]), "cliente-xmpp-api-" + str(row["id"]))
         api.rejected(
             str(row["id"]),
-            "Esperando la cuenta y conexión originales.",
+            "La respuesta automática perdió su permiso, conversación o conexión; no se reintentó."
+            if row.get("rule_id")
+            else "Esperando la cuenta y conexión originales.",
             wait=row["late_policy"] == "send-when-connected",
         )
+
+    def _observe_atajos_message(self, message: Message, *, live: bool, added: bool) -> None:
+        api = getattr(self, "_atajos_api", None)
+        if api is None:
+            return
+        if message.retracted or message.edited:
+            kind = "changed"
+        elif message.outgoing and live:
+            kind = "outgoing"
+        elif live and added:
+            kind = (
+                "incoming"
+                if message.body
+                and len(message.body) <= 4000
+                and not message.media_kind
+                and not message.poll
+                and not message.call
+                else "changed"
+            )
+        else:
+            return
+        api.observe_message(self.current_jid.split("/", 1)[0], message, kind)
 
     def _close_atajos_api(self) -> None:
         api = getattr(self, "_atajos_api", None)

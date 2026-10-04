@@ -2402,6 +2402,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
 
         account_jid = self.current_jid
         self._mark_chat_content_cleared(chat.jid)
+        api = getattr(self, "_atajos_api", None)
+        if api is not None:
+            api.observe_message(account_jid.split("/", 1)[0], Message(
+                chat_jid=chat.jid, sender_jid="me", body="", message_id=str(uuid.uuid4()),
+                chat_is_group=chat.is_group,
+            ), "cleared")
         self.conversation.close_audio()
         self.status_bar.SetStatusText(f"Eliminando el contenido local de {chat.name}...")
 
@@ -5283,6 +5289,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
 
         message.body = body
         message.edited = True
+        api = getattr(self, "_atajos_api", None)
+        if api is not None:
+            api.observe_message(self.current_jid.split("/", 1)[0], message, "changed")
         self._persist_messages([message])
         self.conversation.refresh_message(message)
         self._update_chat_from_message(message)
@@ -5364,6 +5373,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             message for message in current if id(message) not in removed_ids
         ]
         self._remember_locally_deleted_messages(messages)
+        api = getattr(self, "_atajos_api", None)
+        if api is not None:
+            for message in messages:
+                api.observe_message(self.current_jid.split("/", 1)[0], message, "changed")
         for message in messages:
             local_path = message.media_local_path
             if self.conversation.current_chat and self.conversation.current_chat.jid == chat_jid:
@@ -5430,6 +5443,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             is_group=message.chat_is_group,
         )
         deleted_path, deletion_error = self._discard_retracted_message_media(message)
+        api = getattr(self, "_atajos_api", None)
+        if api is not None:
+            api.observe_message(self.current_jid.split("/", 1)[0], message, "changed")
         self._persist_messages([message])
         self.conversation.refresh_message(message)
         self._update_chat_from_message(message)
@@ -6308,6 +6324,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     )
 
                 self._ensure_chat_for_message(message)
+                self._observe_atajos_message(
+                    message, live=not suppress_notification, added=added_message
+                )
                 current_chat_is_open = (
                     self.conversation.IsShown()
                     and self.conversation.current_chat
@@ -6365,6 +6384,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     ) and not self._is_locally_deleted_message(message)
                 ]
                 messages = self._messages_after_chat_clear(chat_jid, messages)
+                for message in messages:
+                    if message.retracted or message.edited:
+                        self._observe_atajos_message(message, live=False, added=False)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case MessageDeliveryUpdated(
                 chat_jid=chat_jid,
@@ -7441,6 +7463,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         message.chat_is_group = message.chat_is_group or self._message_jid_may_be_group_chat(
             message.chat_jid
         )
+        self._observe_atajos_message(message, live=True, added=True)
         self._normalize_audio_metadata_for_messages([message])
         self._merge_messages(message.chat_jid, [message])
         stored_message = self._message_by_merge_key(

@@ -25,6 +25,8 @@ class ConversationContextStore:
         count: int,
         before: tuple[float, int] | None = None,
         anchor: int | None = None,
+        *,
+        is_group: bool = False,
     ) -> dict:
         if not 1 <= count <= 400:
             raise ValueError("Cantidad de contexto fuera del intervalo.")
@@ -38,12 +40,12 @@ class ConversationContextStore:
                     (account, jid),
                 ).fetchone()[0]
             where = (
-                "m.account_jid=? AND m.chat_jid=? AND m.rowid<=? AND m.chat_is_group=0 "
+                "m.account_jid=? AND m.chat_jid=? AND m.rowid<=? AND m.chat_is_group=? "
                 "AND NOT EXISTS (SELECT 1 FROM deleted_messages d WHERE "
                 "d.account_jid=m.account_jid AND d.chat_jid=m.chat_jid AND "
                 "(d.message_id=m.message_id OR d.message_id=m.displayed_marker_id))"
             )
-            args: list[object] = [account, jid, anchor]
+            args: list[object] = [account, jid, anchor, int(is_group)]
             total = connection.execute(
                 f"SELECT COUNT(*) FROM messages m WHERE {where}", args
             ).fetchone()[0]
@@ -59,7 +61,8 @@ class ConversationContextStore:
             rows = connection.execute(
                 "SELECT m.rowid, COALESCE(julianday(m.sent_at),0) AS sort_date, "
                 "CASE WHEN m.retracted=1 THEN '' ELSE substr(m.body,1,32000) END AS body, "
-                "length(m.body) AS body_length, m.sent_at, m.outgoing, m.retracted, m.media_kind "
+                "length(m.body) AS body_length, m.sent_at, m.outgoing, m.retracted, m.media_kind, "
+                "m.message_key, m.sender_name "
                 f"FROM messages m WHERE {where} ORDER BY sort_date DESC,m.rowid DESC LIMIT ?",
                 [*args, count],
             ).fetchall()
@@ -69,6 +72,10 @@ class ConversationContextStore:
         for row in rows:
             retracted = bool(row["retracted"])
             item = {
+                "identity": row["message_key"],
+                "sender": ("Tú" if row["outgoing"] else row["sender_name"] or "Participante")
+                if is_group
+                else "",
                 "text": "Mensaje eliminado" if retracted else row["body"],
                 "sent_at": row["sent_at"],
                 "outgoing": bool(row["outgoing"]),

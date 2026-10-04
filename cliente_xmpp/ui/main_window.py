@@ -5574,7 +5574,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 chat_jid=target.jid,
                 sender_jid="me",
                 sender_name="Tú",
-                body="Sticker" if forward_source.is_sticker else forward_source.body,
+                body=(
+                    sticker_display_text(forward_source.media_alt_text or forward_source.body)
+                    if forward_source.is_sticker else forward_source.body
+                ),
                 sent_at=datetime.now().astimezone(),
                 outgoing=True,
                 audio_url=forward_source.audio_url,
@@ -5586,6 +5589,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 media_duration_seconds=forward_source.media_duration_seconds,
                 media_local_path="",
                 is_sticker=forward_source.is_sticker,
+                media_alt_text=forward_source.media_alt_text,
                 is_forwarded=not forward_source.outgoing,
                 message_id=message_id,
                 chat_is_group=target.is_group,

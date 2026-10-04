@@ -989,6 +989,7 @@ class ForwardSendContractTests(unittest.TestCase):
             media_filename="sticker.webp",
             media_size=2048,
             is_sticker=True,
+            media_alt_text="Una figura saluda.",
         )
 
         service.send_forward(
@@ -1003,6 +1004,17 @@ class ForwardSendContractTests(unittest.TestCase):
             fake_client.message.xml.find(f"{{{WHATSAPP_FORWARDED_NS}}}forwarded")
         )
         self.assertIsNotNone(fake_client.message.xml.find(f"{{{STICKER_NS}}}sticker"))
+        self.assertEqual(fake_client.message.xml.findtext(
+            "{urn:xmpp:sfs:0}file-sharing/{urn:xmpp:file:metadata:0}file/"
+            "{urn:xmpp:file:metadata:0}desc"
+        ), source.media_alt_text)
+        source.media_alt_text = ""
+        source.body = "Sticker: Una figura saluda."
+        service.send_forward("target@example.test", source)
+        self.assertEqual(fake_client.message.xml.findtext(
+            "{urn:xmpp:sfs:0}file-sharing/{urn:xmpp:file:metadata:0}file/"
+            "{urn:xmpp:file:metadata:0}desc"
+        ), "Una figura saluda.")
         self.assertEqual(
             fake_client.message.xml.findtext(f"{{{OOB_NS}}}x/{{{OOB_NS}}}url"),
             source.media_url,

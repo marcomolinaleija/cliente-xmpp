@@ -27,6 +27,7 @@ from cliente_xmpp.audio.opus import (
     delete_temporary_voice_note,
 )
 from cliente_xmpp.config.settings import ConnectionSettings
+from cliente_xmpp.media.outgoing_stickers import prepare_outgoing_sticker
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker, sticker_display_text
 from cliente_xmpp.models.chat import (
     Chat,
@@ -4536,6 +4537,10 @@ class BridgeXmppClient(ClientXMPP):
         media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
         if as_sticker and media_kind != "image":
             raise ValueError("Los stickers deben ser archivos de imagen.")
+        source_path = file_path
+        if as_sticker:
+            file_path = await asyncio.to_thread(prepare_outgoing_sticker, file_path)
+            mime = "image/webp"
         upload_mime = mime
         if media_kind == "audio":
             file_path = convert_to_voice_note(file_path)
@@ -4553,6 +4558,8 @@ class BridgeXmppClient(ClientXMPP):
             )
         except Exception:
             delete_temporary_voice_note(file_path)
+            if as_sticker and file_path != source_path:
+                file_path.unlink(missing_ok=True)
             raise
 
         message_type = "groupchat" if is_group else "chat"
@@ -4736,6 +4743,7 @@ class BridgeXmppClient(ClientXMPP):
         mime: str,
         media_kind: str,
         duration: float = 0.0,
+        description: str = "",
     ) -> None:
         oob = ET.Element(f"{{{OOB_NS}}}x")
         url_node = ET.SubElement(oob, f"{{{OOB_NS}}}url")
@@ -4749,10 +4757,10 @@ class BridgeXmppClient(ClientXMPP):
         media_type.text = mime
         name = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}name")
         name.text = filename
-        if media_kind == "audio":
+        if description.strip() or media_kind == "audio":
             desc = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}desc")
-            desc.text = "Voice message"
-            if duration > 0:
+            desc.text = description.strip() or "Voice message"
+            if media_kind == "audio" and duration > 0:
                 duration_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}duration")
                 duration_node.text = str(round(duration, 3))
         size_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}size")
@@ -4775,10 +4783,10 @@ class BridgeXmppClient(ClientXMPP):
         sims_media_type.text = mime
         sims_name = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}name")
         sims_name.text = filename
-        if media_kind == "audio":
+        if description.strip() or media_kind == "audio":
             sims_desc = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}desc")
-            sims_desc.text = "Voice message"
-            if duration > 0:
+            sims_desc.text = description.strip() or "Voice message"
+            if media_kind == "audio" and duration > 0:
                 sims_duration = ET.SubElement(
                     sims_file,
                     f"{{{JINGLE_FILE_TRANSFER_NS}}}duration",
@@ -5373,6 +5381,12 @@ class XmppService:
                         mime=source.media_mime,
                         media_kind=source.media_kind or "file",
                         duration=source.media_duration_seconds,
+                        description=(
+                            source.media_alt_text or (
+                                source.body[8:].strip()
+                                if source.body.casefold().startswith("sticker: ") else ""
+                            )
+                        ) if source.is_sticker else "",
                     )
                 self._append_message_flags(
                     msg,

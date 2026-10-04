@@ -112,6 +112,7 @@ from cliente_xmpp.storage.manager import (
     StorageSnapshot,
 )
 from cliente_xmpp.storage.message_store import MessageStore
+from cliente_xmpp.ui.atajos_integration import AtajosIntegrationMixin
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.chat_message_dialogs import (
     ChatFilesDialog,
@@ -208,7 +209,7 @@ class ClipboardAttachment:
     message: str = ""
 
 
-class MainWindow(wx.Frame):
+class MainWindow(AtajosIntegrationMixin, wx.Frame):
     def __init__(self, *, development_mode: bool = False) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
@@ -395,6 +396,7 @@ class MainWindow(wx.Frame):
         ):
             self._schedule_auto_connect()
         wx.CallLater(UPDATE_CHECK_INITIAL_DELAY_MS, self._start_configured_update_checks)
+        self._initialize_atajos_integration()
 
     def _layout(self) -> None:
         menu_bar = wx.MenuBar()
@@ -6122,6 +6124,7 @@ class MainWindow(wx.Frame):
             event.Veto()
             return
         self._closing = True
+        self._close_atajos_api()
         self._stop_bridge_update_feedback()
         update_check_timer = getattr(self, "update_check_timer", None)
         if update_check_timer is not None:
@@ -6369,6 +6372,9 @@ class MainWindow(wx.Frame):
                 delivery_state=delivery_state,
                 detail=detail,
             ):
+                api = getattr(self, "_atajos_api", None)
+                if api is not None:
+                    api.delivery(message_id, delivery_state)
                 self._handle_message_delivery_updated(
                     chat_jid,
                     message_id,

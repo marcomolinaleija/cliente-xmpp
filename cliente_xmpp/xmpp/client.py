@@ -4825,8 +4825,13 @@ class XmppService:
         message_id: str = "",
         mentions: list[MentionReference] | None = None,
         ephemeral: bool = False,
+        expected_account: str = "",
+        on_deferred: Callable[[], None] | None = None,
     ) -> None:
         if not self._client or not self._loop:
+            if expected_account and on_deferred:
+                on_deferred()
+                return
             if message_id:
                 self._emit(
                     MessageDeliveryUpdated(
@@ -4840,8 +4845,17 @@ class XmppService:
             return
 
         def send() -> None:
+            if expected_account and on_deferred and (
+                not self._client
+                or str(self._client.boundjid.bare) != expected_account
+                or not self._client.is_connected()
+            ):
+                on_deferred()
+                return
             if self._client:
                 try:
+                    if expected_account and str(self._client.boundjid.bare) != expected_account:
+                        raise ValueError("La cuenta cambió antes del envío.")
                     if is_group:
                         self._client._join_group_chat(to_jid)
                     message_type = "groupchat" if is_group else "chat"

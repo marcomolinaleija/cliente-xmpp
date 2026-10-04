@@ -141,6 +141,10 @@ class SettingsPanel(wx.Panel):
         )
         self.back_button = wx.Button(self, label="&Volver")
 
+        self.atajos_api_enabled = wx.CheckBox(self, label="Permitir integración local con Atajos")
+        self.atajos_api_enabled.SetName("Permitir integración local con Atajos")
+        self.atajos_api_status = wx.StaticText(self, label="Integración desactivada.")
+
         self._layout()
 
     def set_values(
@@ -390,6 +394,16 @@ class SettingsPanel(wx.Panel):
         box.Add(connection_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
         box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
         box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
+        integration_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Asistente de Atajos")
+        integration_box.Add(self.atajos_api_enabled, 0, wx.ALL, 8)
+        integration_box.Add(wx.StaticText(self, label=(
+            "Permite buscar contactos y enviar/programar mensajes desde el asistente.\n"
+            "Solo escucha en este equipo. El contexto que solicites en Atajos "
+            "se comparte con Gemini.\n"
+            "Los programados esperan automáticamente a que vuelva la conexión."
+        )), 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        integration_box.Add(self.atajos_api_status, 0, wx.ALL, 8)
+        box.Add(integration_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
         box.Add(updates_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
         box.Add(
             self.bridge_updates_panel,

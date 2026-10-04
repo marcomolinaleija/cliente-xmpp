@@ -37,6 +37,12 @@ python -m cliente_xmpp.app.main
 
 La configuracion local se guarda en `%USERPROFILE%\.cliente-xmpp\settings.json`.
 
+## Integración con el asistente de Atajos
+
+En Configuración activa **Permitir integración local con Atajos**. Permite buscar contactos individuales, enviar/programar textos, consultar/cancelar pendientes y leer el contexto guardado del contacto seleccionado sin abrir el chat ni marcar mensajes como leídos. La cola espera la reconexión original y se conserva aunque Atajos se cierre; WhatsApp CAN debe estar abierto para despacharla.
+
+Atajos 1.1.3 ofrece **Mensajería…** para conmutar la confirmación (desactivada inicialmente) y configurar el contexto inicial entre 1 y 400 mensajes (cinco por defecto). Las cantidades explícitas prevalecen y todo el chat guardado se recorre por páginas. Los textos consultados se comparten con Gemini. Consulta [Integración local con Atajos](docs/INTEGRACION_ATAJOS.md) para el contrato, ejemplos y límites.
+
 ## Compilacion de Windows
 
 La configuracion reproducible de PyInstaller vive en `WhatsApp-CAN.spec`. El build necesita el

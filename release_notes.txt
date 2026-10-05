@@ -28,10 +28,10 @@ Descripciones accesibles: manuales, con RayoAI o sin descripción
 
 Envío de stickers: corrección de enlaces y conservación de descripciones
 - Se corrige la preparación de imágenes enviadas como stickers: CAN utiliza un WebP compatible en vez de limitarse a identificar una imagen cualquiera como sticker.
-- El puente actualizado corrige el caso en que volver a enviar un sticker ya utilizado terminaba mostrando enlaces de archivo en WhatsApp oficial. Repetir el mismo sticker ya no se trata como un fallo por existir previamente en la caché.
+- El puente actualizado (v30) corrige el caso en que volver a enviar un sticker ya utilizado terminaba mostrando enlaces de archivo en WhatsApp oficial. Repetir el mismo sticker ya no se trata como un fallo por existir previamente en la caché.
 - Las descripciones se envían por mensaje, incluso al repetir un sticker con otro texto alternativo, sin reemplazar la descripción de otros mensajes que usen la misma imagen.
 - Los stickers individuales conservan las citas de respuesta, también en grupos. Un fallo real de envío se informa como error; no se convierte silenciosamente en un mensaje de texto con un enlace.
-- Estas correcciones requieren el puente v29 o posterior. Actualizar únicamente el cliente no corrige un puente antiguo. El envío individual con descripción ya fue confirmado en WhatsApp oficial; esa confirmación no equivale a validar todos los paquetes o dispositivos.
+- Estas correcciones requieren el puente v30 o posterior. Actualizar únicamente el cliente no corrige un puente antiguo. El envío individual con descripción ya fue confirmado en WhatsApp oficial; esa confirmación no equivale a validar todos los paquetes o dispositivos.
 
 Importar, exportar y compartir paquetes
 - Un paquete recibido puede incorporarse desde Importar paquete de stickers... en el menú contextual del archivo o de su título Paquete de stickers: ... cuando CAN puede asociarlo de forma inequívoca con el adjunto. También puedes importar un archivo desde Biblioteca.

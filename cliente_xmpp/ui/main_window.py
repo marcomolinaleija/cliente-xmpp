@@ -63,6 +63,12 @@ from cliente_xmpp.media.links import (
     is_link_preview,
     message_links,
 )
+from cliente_xmpp.media.sticker_creation import (
+    can_create_sticker,
+    message_sticker_description,
+    source_from_message,
+)
+from cliente_xmpp.media.sticker_packs import sticker_pack_from_message
 from cliente_xmpp.media.stickers import (
     convert_lottie_sticker_package,
     looks_like_lottie_sticker_attachment,
@@ -112,6 +118,7 @@ from cliente_xmpp.storage.manager import (
     StorageSnapshot,
 )
 from cliente_xmpp.storage.message_store import MessageStore
+from cliente_xmpp.storage.sticker_library import StickerLibrary
 from cliente_xmpp.ui.atajos_integration import AtajosIntegrationMixin
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.chat_message_dialogs import (
@@ -131,6 +138,7 @@ from cliente_xmpp.ui.poll_vote_dialog import PollVoteDialog
 from cliente_xmpp.ui.reaction_dialog import EmojiReactionDialog
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
+from cliente_xmpp.ui.sticker_gallery_dialog import StickerGalleryDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
 from cliente_xmpp.ui.system_tray import SystemTrayIcon
 from cliente_xmpp.ui.theme import apply_theme
@@ -257,6 +265,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         self.update_check_offered_tags: set[str] = set()
         self.update_check_timer = wx.Timer(self)
         self.message_store = MessageStore()
+        self.sticker_library = StickerLibrary()
         self.storage_manager = StorageManager(self.message_store)
         self._storage_reset_in_progress = False
         self._storage_maintenance_in_progress = False
@@ -428,6 +437,8 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             "Muestra y permite administrar el espacio ocupado por los datos locales",
         )
         menu_bar.Append(view_menu, "&Ver")
+        gallery_item = view_menu.Append(wx.ID_ANY, "Galería de &stickers...\tCtrl+Shift+S")
+        self.Bind(wx.EVT_MENU, self._on_manage_stickers, gallery_item)
         help_menu = wx.Menu()
         self.documentation_menu_item = help_menu.Append(
             wx.ID_HELP,
@@ -4144,28 +4155,33 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             return
         reply_context, reply_to_jid, reply_to_id, reply_quote = reply_data
 
-        dialog = wx.FileDialog(
-            self,
-            "Selecciona una imagen para enviar como sticker",
-            wildcard=(
-                "Imágenes (*.webp;*.png;*.jpg;*.jpeg)|*.webp;*.png;*.jpg;*.jpeg|"
-                "Todos los archivos (*.*)|*.*"
-            ),
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        account = self.current_jid
+
+        def share(path: Path) -> None:
+            if self.current_jid == account and self._require_whatsapp_connection():
+                self.xmpp.send_file(chat.jid, str(path), is_group=chat.is_group,
+                                    as_sticker_pack=True)
+
+        dialog = StickerGalleryDialog(
+            self, self.sticker_library, self.settings_store, can_send=True, on_share=share,
         )
         try:
             if dialog.ShowModal() != wx.ID_OK:
                 return
-            path = Path(dialog.GetPath())
+            sticker = dialog.selected_sticker
         finally:
             dialog.Destroy()
-
-        self.status_bar.SetStatusText(f"Subiendo sticker: {path.name}")
+        if (sticker is None or self.current_jid != account
+                or not self._require_whatsapp_connection()):
+            return
+        self.status_bar.SetStatusText(f"Subiendo sticker: {sticker.name}")
         self.xmpp.send_file(
             chat.jid,
-            str(path),
+            sticker.path,
             is_group=chat.is_group,
             as_sticker=True,
+            copy_sticker=True,
+            sticker_description=sticker.description,
             reply_to_jid=reply_to_jid,
             reply_to_id=reply_to_id,
             reply_quote=reply_quote,
@@ -4173,6 +4189,59 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if reply_context is not None:
             self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
+
+    def _on_manage_stickers(self, _event=None) -> None:
+        dialog = StickerGalleryDialog(self, self.sticker_library, self.settings_store)
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+
+    def _create_sticker_from_message(self, message: Message) -> None:
+        if not can_create_sticker(message):
+            return
+        if (message.is_sticker and (message.media_filename.lower().endswith(".bin")
+                                   or message.media_mime == "application/was")):
+            if wx.MessageBox(
+                "Este sticker Lottie se guardará como una imagen fija representativa.\n"
+                "El original animado se conserva. ¿Quieres continuar?",
+                "Crear sticker desde Lottie", wx.YES_NO | wx.NO_DEFAULT, self,
+            ) != wx.YES:
+                return
+        account = self.current_jid
+        # Keep the original model so withdrawal during download can cancel creation.
+        dialog = StickerGalleryDialog(
+            self, self.sticker_library, self.settings_store,
+            initial_source=lambda: source_from_message(message, account),
+            initial_description=message_sticker_description(message),
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
+
+    def _import_sticker_pack_from_message(self, message: Message) -> None:
+        account = self.current_jid
+
+        def source() -> Path:
+            if message.retracted:
+                raise ValueError("El mensaje fue retirado.")
+            path = local_media_path(message)
+            if path is None:
+                if not account:
+                    raise ValueError("Conecta la cuenta para descargar el paquete.")
+                path = download_media(message, account).path
+            if message.retracted:
+                raise ValueError("El mensaje fue retirado durante la descarga.")
+            return path
+
+        dialog = StickerGalleryDialog(
+            self, self.sticker_library, self.settings_store, initial_pack=source,
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.Destroy()
 
     def _attach_clipboard_files(self) -> bool:
         result = self._clipboard_attachment_paths()
@@ -4852,6 +4921,15 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         copy_file_item: wx.MenuItem | None = None
         describe_item: wx.MenuItem | None = None
         save_album_item: wx.MenuItem | None = None
+        create_sticker_item = (
+            menu.Append(wx.ID_ANY, "Crear sticker...") if can_create_sticker(message) else None
+        )
+        import_sticker_pack_item = None
+        pack_message = sticker_pack_from_message(
+            getattr(self, "messages_by_chat", {}).get(message.chat_jid, []), message
+        )
+        if pack_message is not None:
+            import_sticker_pack_item = menu.Append(wx.ID_ANY, "Importar paquete de stickers...")
         album_count = album_photo_count(message)
         album_photos: list[Message] = []
         if album_count:
@@ -4981,6 +5059,13 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 lambda _event: self._save_photo_album(message),
                 save_album_item,
             )
+        if create_sticker_item:
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._create_sticker_from_message(message),
+                            create_sticker_item)
+        if import_sticker_pack_item:
+            menu_owner.Bind(wx.EVT_MENU,
+                            lambda _event: self._import_sticker_pack_from_message(pack_message),
+                            import_sticker_pack_item)
         menu_owner.Bind(
             wx.EVT_MENU,
             lambda _event: self._toggle_starred_message(message),

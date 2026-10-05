@@ -15,7 +15,9 @@ MAX_SOURCE_BYTES = 20 * 1024 * 1024
 MAX_SOURCE_PIXELS = 16 * 1024 * 1024
 
 
-def prepare_outgoing_sticker(source: Path) -> Path:
+def prepare_outgoing_sticker(
+    source: Path, *, output_dir: Path | None = None, copy_compatible: bool = False
+) -> Path:
     """Prepare a native WhatsApp WebP without changing the user's source file."""
     if source.stat().st_size > MAX_SOURCE_BYTES:
         raise ValueError("La imagen del sticker supera 20 MB.")
@@ -41,7 +43,9 @@ def prepare_outgoing_sticker(source: Path) -> Path:
                     elapsed += duration
                     if elapsed > 10_000:
                         raise ValueError("El sticker animado supera 10 segundos.")
-                return source
+                return (
+                    _write_sticker(source.read_bytes(), output_dir) if copy_compatible else source
+                )
 
             image.load()
             if (
@@ -51,7 +55,9 @@ def prepare_outgoing_sticker(source: Path) -> Path:
                 and source.stat().st_size <= limit
             ):
                 # Preserve native EXIF/pack/accessibility metadata byte-for-byte.
-                return source
+                return (
+                    _write_sticker(source.read_bytes(), output_dir) if copy_compatible else source
+                )
             if image.format not in {"PNG", "JPEG", "WEBP"}:
                 raise ValueError("Selecciona una imagen PNG, JPEG o WebP para el sticker.")
             canvas = ImageOps.pad(
@@ -73,11 +79,16 @@ def prepare_outgoing_sticker(source: Path) -> Path:
     except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
         raise ValueError("No se pudo leer la imagen del sticker.") from exc
 
-    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    destination = DOWNLOADS_DIR / f"sticker-{uuid.uuid4().hex}.webp"
+    return _write_sticker(payload.getvalue(), output_dir)
+
+
+def _write_sticker(payload: bytes, output_dir: Path | None) -> Path:
+    directory = output_dir if output_dir is not None else DOWNLOADS_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"sticker-{uuid.uuid4().hex}.webp"
     partial = destination.with_suffix(".webp.part")
     try:
-        partial.write_bytes(payload.getvalue())
+        partial.write_bytes(payload)
         partial.replace(destination)
     finally:
         partial.unlink(missing_ok=True)

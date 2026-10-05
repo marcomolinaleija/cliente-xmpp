@@ -4526,20 +4526,43 @@ class BridgeXmppClient(ClientXMPP):
         reply_to_jid: str = "",
         reply_to_id: str = "",
         reply_quote: str = "",
+        sticker_description: str = "",
+        copy_sticker: bool = False,
+        as_sticker_pack: bool = False,
     ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
 
+        if as_sticker_pack:
+            if as_sticker or view_once or file_path.suffix.lower() != ".canstickers":
+                raise ValueError("El paquete nativo debe ser un archivo .canstickers.")
+            # Re-query: a running client may have just upgraded its local bridge.
+            component = to_jid.split("/", 1)[0].split("@")[-1]
+            info = await self["xep_0030"].get_info(jid=component, cached=False, timeout=10)
+            features = {node.attrib.get("var") for node in
+                        info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")}
+            if "urn:can:sticker-pack:0" not in features:
+                raise ValueError(
+                    "Este puente no permite paquetes nativos. Actualízalo a v30 o posterior; "
+                    "puedes exportar el paquete desde la biblioteca mientras tanto."
+                )
+            if not 0 < file_path.stat().st_size <= 32 * 1024 * 1024:
+                raise ValueError("El paquete nativo no puede superar 32 MiB.")
+
         if is_group:
             self._join_group_chat(to_jid)
         mime = self._mime_type_for_file(file_path)
+        if as_sticker_pack:
+            mime = "application/x-can-sticker-pack"
         media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
         if as_sticker and media_kind != "image":
             raise ValueError("Los stickers deben ser archivos de imagen.")
         source_path = file_path
         if as_sticker:
-            file_path = await asyncio.to_thread(prepare_outgoing_sticker, file_path)
+            file_path = await asyncio.to_thread(
+                prepare_outgoing_sticker, file_path, copy_compatible=copy_sticker
+            )
             mime = "image/webp"
         upload_mime = mime
         if media_kind == "audio":
@@ -4577,6 +4600,7 @@ class BridgeXmppClient(ClientXMPP):
             mime=mime,
             media_kind=media_kind,
             duration=duration,
+            description=sticker_description if as_sticker else "",
         )
         self._append_reply_metadata(
             message,
@@ -4609,6 +4633,7 @@ class BridgeXmppClient(ClientXMPP):
             media_local_path=str(file_path),
             is_sticker=as_sticker,
             message_id=message_id,
+            media_alt_text=sticker_description if as_sticker else "",
             chat_is_group=is_group,
             reply_quote=reply_quote,
             reply_to_jid=reply_to_jid,
@@ -5240,6 +5265,9 @@ class XmppService:
         reply_to_jid: str = "",
         reply_to_id: str = "",
         reply_quote: str = "",
+        sticker_description: str = "",
+        copy_sticker: bool = False,
+        as_sticker_pack: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
@@ -5259,6 +5287,9 @@ class XmppService:
                     reply_to_jid=reply_to_jid,
                     reply_to_id=reply_to_id,
                     reply_quote=reply_quote,
+                    sticker_description=sticker_description,
+                    copy_sticker=copy_sticker,
+                    as_sticker_pack=as_sticker_pack,
                 )
             except Exception as exc:
                 delete_temporary_voice_note(path)

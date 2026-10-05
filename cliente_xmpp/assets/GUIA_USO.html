@@ -48,6 +48,7 @@
       <li><a href="#chats">Lista de chats y búsqueda</a></li>
       <li><a href="#conversacion">Leer y escribir mensajes</a></li>
       <li><a href="#mensajes">Acciones sobre un mensaje</a></li>
+      <li><a href="#stickers">Galería de stickers y paquetes</a></li>
       <li><a href="#grupos">Grupos, menciones y encuestas</a></li>
       <li><a href="#contacto">Información, destacados y archivos</a></li>
       <li><a href="#configuracion">Configuración, estadísticas y almacenamiento</a></li>
@@ -100,7 +101,7 @@
         <li>Usa <kbd>Mayús</kbd>+<kbd>Enter</kbd> para insertar una nueva línea sin enviar.</li>
         <li>Con el cuadro vacío, el botón principal se llama <strong>Grabar audio</strong>. Púlsalo para iniciar; después puedes pausar, cancelar o detener y enviar. La casilla <strong>Audio de una sola escucha</strong> se muestra mientras grabas.</li>
         <li><strong>Adjuntar</strong> permite enviar archivos. También puedes usar <kbd>Ctrl</kbd>+<kbd>V</kbd> para adjuntar archivos o una imagen copiada del portapapeles.</li>
-        <li><strong>Enviar sticker</strong> permite elegir una imagen para mandarla como sticker.</li>
+        <li><strong>Enviar sticker</strong> abre la galería para elegir un sticker guardado o crear uno desde una imagen.</li>
         <li>Con <kbd>Ctrl</kbd>+<kbd>Flecha arriba</kbd>, en un cuadro de texto vacío, puedes editar tu último mensaje de texto si todavía está dentro del tiempo permitido. Pulsa <kbd>Esc</kbd> para cancelar la edición.</li>
       </ul>
     </section>
@@ -118,9 +119,25 @@
         <li><strong>Editar mensaje</strong>: disponible sólo en mensajes de texto tuyos que aún se pueden editar.</li>
         <li><strong>Eliminar mensaje</strong>: solicita eliminar un mensaje propio para todos; la aplicación pide confirmación.</li>
         <li>En fotos, videos, stickers y archivos puedes descargar, abrir, copiar el archivo o, cuando corresponda, describirlo con RayoAI. En un álbum completo puede aparecer <strong>Guardar álbum</strong>.</li>
+        <li><strong>Crear sticker...</strong> aparece en stickers, imágenes y archivos PNG, JPEG o WebP compatibles. Guarda una copia en la biblioteca y pregunta cómo añadirle texto alternativo. Un paquete recibido permite <strong>Importar paquete de stickers...</strong>.</li>
       </ul>
       <p>Para audios seleccionados: <kbd>Espacio</kbd> reproduce o pausa, <kbd>S</kbd> cambia la velocidad, y <kbd>Alt</kbd>+<kbd>Flecha izquierda</kbd> / <kbd>Alt</kbd>+<kbd>Flecha derecha</kbd> retrocede o adelanta cinco por ciento. La velocidad elegida se conserva para próximas reproducciones.</p>
       <p>Para abrir el enlace del mensaje enfocado, pulsa <kbd>L</kbd>. Si hay un mensaje de texto seleccionado, <kbd>Flecha izquierda</kbd> lo lee con el lector integrado.</p>
+    </section>
+
+    <section id="stickers">
+      <h2>Galería de stickers y paquetes</h2>
+      <p>Abre <strong>Enviar sticker</strong> dentro de un chat para elegir y enviar. Para administrar la biblioteca sin enviar, usa <strong>Ver &gt; Galería de stickers</strong> o <kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>S</kbd>; también funciona sin conexión.</p>
+      <ol>
+        <li>Activa <strong>Crear...</strong> y elige una foto PNG, JPEG o WebP. CAN conserva el original y prepara una copia WebP de 512 por 512 píxeles, ajustada al límite de WhatsApp. No recorta la foto ni elimina automáticamente su fondo.</li>
+        <li>Elige <strong>Escribir manualmente</strong>, <strong>Describir con RayoAI</strong> o <strong>Sin descripción</strong>. La opción de usar RayoAI siempre es voluntaria y se desactiva desde <strong>Biblioteca &gt; Preferencias...</strong>.</li>
+        <li>Usa <strong>Mostrar</strong> para filtrar por favoritos o paquete, y <strong>Buscar</strong> para localizar nombres o descripciones. La lista tiene páginas de 100 stickers y miniaturas; los animados muestran un fotograma como vista previa.</li>
+        <li>Con flechas elige un sticker. <kbd>Espacio</kbd> lee su descripción completa; <kbd>Mayús</kbd>+<kbd>F10</kbd>, la tecla de menú o <strong>Acciones...</strong> permite editarla, solicitar otra a RayoAI, renombrar, añadir a favoritos, agrupar o eliminar. <kbd>Enter</kbd> envía cuando abriste la galería desde el chat; <kbd>Esc</kbd> cierra.</li>
+      </ol>
+      <p><strong>Biblioteca...</strong> reúne importación, paquetes, preferencias y ayuda de teclado. Un sticker puede pertenecer a varios paquetes. <strong>Nuevo paquete...</strong> pide nombre y autor; después usa <strong>Añadir a paquete...</strong> en cada sticker. Eliminar un paquete conserva sus stickers; eliminar un sticker de la biblioteca no borra la foto original ni las copias de mensajes enviados.</p>
+      <p>Dentro de <strong>Biblioteca...</strong>, <strong>Exportar paquete...</strong> ofrece <code>.canstickers</code>, que conserva nombres y descripciones para otro CAN, y <code>.wastickers</code>, para importadores móviles compatibles. Este último necesita de 3 a 30 stickers del mismo tipo, estáticos o animados, y no conserva el texto alternativo. No se instala directamente como paquete oficial de WhatsApp. <strong>Compartir paquete en el chat...</strong> envía un paquete nativo con el puente v30 o posterior, con autor, nombre, portada, animaciones y descripciones. Este envío está limitado a 60 stickers y 32 MiB; un puente antiguo muestra un aviso antes de subirlo. Puedes importar desde el menú del archivo recibido o del título <strong>Paquete de stickers: …</strong>.</p>
+      <p><kbd>Ctrl</kbd>+<kbd>F</kbd> enfoca la búsqueda; confirma con <kbd>Enter</kbd>. <strong>Anterior</strong> y <strong>Siguiente</strong> sólo aparecen cuando hay varias páginas; también puedes usar <kbd>Ctrl</kbd>+<kbd>RePág</kbd> / <kbd>AvPág</kbd>.</p>
+      <div class="note"><strong>Privacidad:</strong> RayoAI recibe la imagen y puede usar el proveedor externo configurado. Si falla, el sticker queda guardado y puedes describirlo manualmente. Las descripciones se guardan y se envían por XMPP; que aparezcan como etiqueta accesible en WhatsApp oficial depende del puente, no sólo de esta galería.</div>
     </section>
 
     <section id="grupos">
@@ -171,6 +188,7 @@
           <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Ir a Buscar en la lista de chats.</td></tr>
           <tr><td><kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>F</kbd></td><td>Buscar mensajes sólo en el chat abierto.</td></tr>
           <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>Abrir Nuevo chat.</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>S</kbd></td><td>Abrir la galería de stickers sin enviar.</td></tr>
           <tr><td><kbd>Alt</kbd>+<kbd>M</kbd></td><td>Marcar todos los chats como leídos.</td></tr>
           <tr><td><kbd>F2</kbd></td><td>Cambiar el nombre local del chat seleccionado.</td></tr>
           <tr><td><kbd>Ctrl</kbd>+<kbd>M</kbd></td><td>Silenciar o desilenciar el chat seleccionado.</td></tr>

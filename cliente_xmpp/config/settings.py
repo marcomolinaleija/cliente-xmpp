@@ -49,6 +49,14 @@ class SettingsStore:
         data = self._load_payload()
         return self._connection_from_payload(data.get("connection", {}))
 
+    def load_sticker_auto_describe(self) -> bool:
+        return self._load_payload().get("sticker_auto_describe") is True
+
+    def save_sticker_auto_describe(self, enabled: bool) -> None:
+        payload = self._load_payload()
+        payload["sticker_auto_describe"] = bool(enabled)
+        self._save_payload(payload)
+
     def load_atajos_api_enabled(self) -> bool:
         return self._load_payload().get("atajos_api_enabled") is True
 

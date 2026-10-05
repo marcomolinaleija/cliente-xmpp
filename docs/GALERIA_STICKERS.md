@@ -7,7 +7,8 @@ integrada con F1 incluye el recorrido de uso.
 ## Crear, identificar y agrupar
 
 - Crea desde PNG, JPEG o WebP, o desde **Crear sticker...** en el menú del mensaje
-  enfocado. No aparece para texto, documentos arbitrarios o mensajes retirados.
+  enfocado. Si el mensaje ya es un sticker, la acción se llama **Guardar sticker...**.
+  No aparece para texto, documentos arbitrarios o mensajes retirados.
 - CAN copia el resultado a `~/.cliente-xmpp/stickers/files/` y guarda nombres,
   descripciones, favoritos y paquetes en `stickers/library.sqlite3`. No modifica
   la fuente. Cada envío usa otra copia en descargas: borrar el sticker no rompe
@@ -16,12 +17,19 @@ integrada con F1 incluye el recorrido de uso.
   relleno transparente. No se elimina el fondo. Se intenta codificación sin
   pérdida y se reduce calidad sólo si el límite estático de 100 KB lo exige.
 - WebP animado compatible se conserva sin aplanar: hasta 500 KB, fotogramas de
-  al menos 8 ms y duración total de hasta 10 segundos. Lottie requiere aceptar
+  al menos 8 ms y duración total de hasta 10 segundos. Si sus dimensiones no son
+  512×512, se ajustan todos los fotogramas sin recorte, con relleno transparente y
+  codificación sin pérdida; se conservan tiempos, repeticiones y metadatos. También
+  se intenta recodificar sin pérdida cuando supera 500 KB. Si no cabe en ese límite
+  o requiere demasiada memoria, se informa del error sin degradarlo ni modificar
+  el original. Lottie requiere aceptar
   una imagen fija representativa; el original animado se conserva.
 - Descripción manual, RayoAI o ninguna. Recordar **RayoAI siempre** requiere
   elección explícita y se revierte en **Biblioteca → Preferencias**. RayoAI recibe la imagen y
   puede contactar al proveedor externo configurado; no se envía el chat.
   Si falla la descripción, se conserva el sticker para editarlo manualmente.
+- Si el mensaje ya tiene texto alternativo, se guarda directamente con él, sin
+  preguntar ni consultar RayoAI, incluso con la descripción automática activada.
 - Una descripción manual existente no se sobrescribe al importar el mismo
   contenido. **Describir con RayoAI...** permite revisar el resultado antes de
   reemplazarla. Una revisión tardía no pisa una edición más reciente.
@@ -70,10 +78,14 @@ La pantalla habitual muestra búsqueda, filtro, stickers y vista previa, con
 preferencias. Anterior/Siguiente sólo aparecen cuando hay paginación; Ctrl+F
 enfoca Buscar y Ctrl+RePág/AvPág cambia de página. La lista usa dos columnas;
 favorito y animación se anuncian con el nombre, no en columnas adicionales.
-Flechas seleccionan, Espacio lee la descripción completa, Mayús+F10/tecla de
+El filtro conserva el foco al usar flechas, incluso durante la carga. Los cambios
+rápidos aplican la última selección; Tab permite pasar a la lista.
+Flechas seleccionan, F2 renombra el sticker seleccionado, Espacio lee la descripción
+completa, Mayús+F10/tecla de
 menú/Acciones abre las mismas operaciones. El texto completo también está en
 un control de lectura y copia. Enter envía sólo en el selector abierto desde
-un chat; Escape cierra. Las miniaturas de animaciones muestran un fotograma.
+un chat; al iniciar el envío, el foco vuelve a la lista de mensajes. Escape cierra.
+Las miniaturas de animaciones muestran un fotograma.
 
 Conversión, SQLite, descarga y RayoAI corren en un worker serial, fuera del hilo
 wx. Cerrar no cancela una operación ya iniciada: termina en segundo plano y sus

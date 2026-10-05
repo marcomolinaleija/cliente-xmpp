@@ -4189,6 +4189,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if reply_context is not None:
             self._cancel_reply()
         self._mark_current_chat_displayed(chat.jid)
+        self.conversation.messages.SetFocus()
 
     def _on_manage_stickers(self, _event=None) -> None:
         dialog = StickerGalleryDialog(self, self.sticker_library, self.settings_store)
@@ -4922,7 +4923,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         describe_item: wx.MenuItem | None = None
         save_album_item: wx.MenuItem | None = None
         create_sticker_item = (
-            menu.Append(wx.ID_ANY, "Crear sticker...") if can_create_sticker(message) else None
+            menu.Append(
+                wx.ID_ANY, "Guardar sticker..." if message.is_sticker else "Crear sticker..."
+            )
+            if can_create_sticker(message) else None
         )
         import_sticker_pack_item = None
         pack_message = sticker_pack_from_message(

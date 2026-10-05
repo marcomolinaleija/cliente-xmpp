@@ -21,7 +21,8 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
         return SimpleNamespace(
             current_jid="account@example.test",
             conversation=SimpleNamespace(
-                current_chat=Chat(jid="room@example.test", name="Fixture", is_group=True)
+                current_chat=Chat(jid="room@example.test", name="Fixture", is_group=True),
+                messages=Mock(),
             ),
             _require_whatsapp_connection=Mock(return_value=True),
             _reply_metadata_for_attachment=Mock(
@@ -64,6 +65,7 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
             reply_quote="Quote",
         )
         window._cancel_reply.assert_called_once()
+        window.conversation.messages.SetFocus.assert_called_once()
         gallery.Destroy.assert_called_once()
 
     def test_cancel_or_account_change_never_sends_or_clears_reply(self) -> None:
@@ -85,6 +87,7 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
                     MainWindow._on_send_sticker(window, None)
                 window.xmpp.send_file.assert_not_called()
                 window._cancel_reply.assert_not_called()
+                window.conversation.messages.SetFocus.assert_not_called()
 
     def test_share_pack_uses_explicit_native_send_and_account_guard(self) -> None:
         for switch_account in (False, True):
@@ -124,12 +127,14 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
                     )
 
     def test_context_action_is_conditional_and_bound_to_popup_owner(self) -> None:
-        for kind, filename, withdrawn, expected in (
-            ("image", "photo.png", False, True),
-            ("file", "photo.jpg", False, True),
-            ("file", "document.pdf", False, False),
-            ("image", "photo.png", True, False),
-            ("", "", False, False),
+        for kind, filename, withdrawn, sticker, expected in (
+            ("image", "photo.png", False, False, True),
+            ("file", "photo.jpg", False, False, True),
+            ("image", "reaction.webp", False, True, True),
+            ("image", "reaction.webp", True, True, False),
+            ("file", "document.pdf", False, False, False),
+            ("image", "photo.png", True, False, False),
+            ("", "", False, False, False),
         ):
             with self.subTest(kind=kind, filename=filename, withdrawn=withdrawn):
                 message = Message(
@@ -139,6 +144,7 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
                     media_kind=kind,
                     media_filename=filename,
                     retracted=withdrawn,
+                    is_sticker=sticker,
                     media_url="https://upload.example.test/file" if kind else "",
                 )
                 window = SimpleNamespace(
@@ -154,13 +160,33 @@ class StickerGalleryIntegrationTests(unittest.TestCase):
                 )
                 MainWindow._show_message_context_menu(window, message, popup_parent=owner)
                 labels = [label for label, _ in bindings]
-                self.assertEqual("Crear sticker..." in labels, expected)
+                label = "Guardar sticker..." if sticker else "Crear sticker..."
+                other = "Crear sticker..." if sticker else "Guardar sticker..."
+                self.assertEqual(label in labels, expected)
+                self.assertNotIn(other, labels)
                 if expected:
                     handler = next(
-                        callback for label, callback in bindings if label == "Crear sticker..."
+                        callback for action, callback in bindings if action == label
                     )
                     handler(None)
                     window._create_sticker_from_message.assert_called_once_with(message)
+
+    def test_save_received_sticker_passes_original_alt_text_to_gallery(self) -> None:
+        window, gallery = self.window(), self.gallery()
+        message = Message(
+            chat_jid="chat@example.test", sender_jid="sender@example.test", body="Sticker",
+            is_sticker=True, media_kind="image", media_filename="reaction.webp",
+            media_url="https://upload.example.test/reaction.webp",
+            media_alt_text="Texto alternativo recibido.",
+        )
+        with patch(
+            "cliente_xmpp.ui.main_window.StickerGalleryDialog", return_value=gallery
+        ) as factory:
+            MainWindow._create_sticker_from_message(window, message)
+        self.assertEqual(
+            factory.call_args.kwargs["initial_description"], "Texto alternativo recibido."
+        )
+        gallery.Destroy.assert_called_once()
 
     def test_split_pack_caption_menu_imports_attachment_not_caption(self) -> None:
         from tests.test_sticker_pack_messages import StickerPackMessageTests

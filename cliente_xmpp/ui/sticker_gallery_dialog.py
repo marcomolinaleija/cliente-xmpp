@@ -117,6 +117,7 @@ class StickerGalleryDialog(wx.Dialog):
         self._initial_source, self._initial_description = initial_source, initial_description
         self._initial_pack = initial_pack
         self._active, self._busy = True, False
+        self._reload_pending = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="can-stickers")
         self._entries: list[LibrarySticker] = []
         self._packs: list[StickerPack] = []
@@ -203,7 +204,7 @@ class StickerGalleryDialog(wx.Dialog):
         self.Bind(wx.EVT_CHAR_HOOK, self._shortcut)
         self._enable(True)
 
-    def _enable(self, enabled: bool) -> None:
+    def _enable(self, enabled: bool, *, keep_filters: bool = False) -> None:
         for button in self._buttons:
             button.Enable(enabled)
         if self.send_button:
@@ -211,13 +212,15 @@ class StickerGalleryDialog(wx.Dialog):
         self.previous_button.Enable(enabled and self._offset > 0)
         self.next_button.Enable(enabled and len(self._entries) == PAGE_SIZE)
         for control in (self.groups, self.search):
-            control.Enable(enabled)
+            control.Enable(enabled or keep_filters)
 
-    def _run(self, operation: Callable, finished: Callable | None = None) -> None:
+    def _run(
+        self, operation: Callable, finished: Callable | None = None, *, keep_filters: bool = False
+    ) -> None:
         if self._busy or not self._active:
             return
         self._busy = True
-        self._enable(False)
+        self._enable(False, keep_filters=keep_filters)
         self.status.SetLabel("Procesando...")
 
         def worker() -> None:
@@ -237,6 +240,9 @@ class StickerGalleryDialog(wx.Dialog):
         if error:
             self.status.SetLabel(error)
             wx.MessageBox(error, "Galería de stickers", wx.OK | wx.ICON_WARNING, self)
+            if self._reload_pending:
+                self._reload_pending = False
+                self._reload()
         elif finished:
             finished(result)
         else:
@@ -247,7 +253,10 @@ class StickerGalleryDialog(wx.Dialog):
         return self._packs[index].id if 0 <= index < len(self._packs) else None
 
     def _reload(self) -> None:
-        if not self._active or self._busy:
+        if not self._active:
+            return
+        if self._busy:
+            self._reload_pending = True
             return
         pack_id, favorite, query, offset = (
             self._pack_id(),
@@ -268,15 +277,20 @@ class StickerGalleryDialog(wx.Dialog):
                     pass
             return entries, self.library.packs(), previews, pack_id, favorite
 
-        self._run(load, self._loaded)
+        # Disabling a focused Choice moves keyboard focus to the sticker list.
+        self._run(load, self._loaded, keep_filters=True)
 
     def _loaded(self, result) -> None:
+        if self._reload_pending:
+            self._reload_pending = False
+            self._reload()
+            return
         focused = wx.Window.FindFocus()
         entries, self._packs, self._previews, pack_id, favorite = result
         self._entries = entries
-        self.groups.SetItems(
-            ["Todos", "Favoritos", *[f"{p.name} ({p.count})" for p in self._packs]]
-        )
+        groups = ["Todos", "Favoritos", *[f"{p.name} ({p.count})" for p in self._packs]]
+        if self.groups.GetItems() != groups:
+            self.groups.SetItems(groups)
         selection = next(
             (i + 2 for i, p in enumerate(self._packs) if p.id == pack_id), 1 if favorite else 0
         )
@@ -352,6 +366,8 @@ class StickerGalleryDialog(wx.Dialog):
                 self.speaker.speak(entry.description or entry.name)
         elif code == wx.WXK_DELETE:
             self._delete()
+        elif code == wx.WXK_F2:
+            self._rename()
         elif code == wx.WXK_F10 and event.ShiftDown():
             self._context_menu()
         else:
@@ -402,8 +418,8 @@ class StickerGalleryDialog(wx.Dialog):
 
     def _help(self, _event=None) -> None:
         wx.MessageBox(
-            "Elige un sticker con las flechas. Espacio lee la descripción; Enter envía "
-            "si abriste desde un chat. Mayús+F10 o Acciones muestra su menú.\n\n"
+            "Elige un sticker con las flechas. F2 renombra; Espacio lee la descripción; "
+            "Enter envía si abriste desde un chat. Mayús+F10 o Acciones muestra su menú.\n\n"
             "Crear convierte una foto sin modificar el original. Biblioteca permite "
             "importar, agrupar, exportar, compartir y configurar RayoAI. Ctrl+F busca; "
             "Ctrl+RePág/AvPág cambia de página. Escape cierra.\n\n"
@@ -483,10 +499,11 @@ class StickerGalleryDialog(wx.Dialog):
     def _create(self, source: Callable[[], Path], existing_description: str = "") -> None:
         if self._busy or not self._active:
             return
-        mode, description = "none", existing_description
-        if self._auto_describe:
+        mode, description = "existing", existing_description.strip()
+        # Received alt text is authoritative, even with automatic AI enabled.
+        if not description and self._auto_describe:
             mode = "rayoai"
-        else:
+        elif not description:
             dialog = StickerDescriptionDialog(self)
             try:
                 if dialog.ShowModal() != wx.ID_OK:
@@ -600,6 +617,8 @@ class StickerGalleryDialog(wx.Dialog):
             self._run(lambda: self.library.edit(entry.id, favorite=not entry.favorite))
 
     def _rename(self, _event=None) -> None:
+        if self._busy:
+            return
         if entry := self._selected():
             value = self._text("Nombre del sticker", entry.name)
             if value is not None:

@@ -13,6 +13,7 @@ MAX_STATIC_BYTES = 100 * 1024
 MAX_ANIMATED_BYTES = 500 * 1024
 MAX_SOURCE_BYTES = 20 * 1024 * 1024
 MAX_SOURCE_PIXELS = 16 * 1024 * 1024
+MAX_ANIMATION_PIXELS = 64 * 1024 * 1024
 
 
 def prepare_outgoing_sticker(
@@ -28,21 +29,9 @@ def prepare_outgoing_sticker(
             animated = getattr(image, "n_frames", 1) > 1
             limit = MAX_ANIMATED_BYTES if animated else MAX_STATIC_BYTES
             if animated:
-                # Do not silently turn an animation into its first frame.
-                if image.format != "WEBP" or image.size != STICKER_SIZE:
-                    raise ValueError("El sticker animado debe ser WebP de 512 × 512 píxeles.")
-                if source.stat().st_size > limit:
-                    raise ValueError("El sticker animado supera 500 KB.")
-                elapsed = 0
-                for index in range(image.n_frames):
-                    image.seek(index)
-                    image.load()
-                    duration = image.info.get("duration", 0)
-                    if duration < 8:
-                        raise ValueError("Cada fotograma del sticker debe durar al menos 8 ms.")
-                    elapsed += duration
-                    if elapsed > 10_000:
-                        raise ValueError("El sticker animado supera 10 segundos.")
+                payload = _prepare_animation(image, source)
+                if payload is not None:
+                    return _write_sticker(payload, output_dir)
                 return (
                     _write_sticker(source.read_bytes(), output_dir) if copy_compatible else source
                 )
@@ -80,6 +69,52 @@ def prepare_outgoing_sticker(
         raise ValueError("No se pudo leer la imagen del sticker.") from exc
 
     return _write_sticker(payload.getvalue(), output_dir)
+
+
+def _prepare_animation(image: Image.Image, source: Path) -> bytes | None:
+    """Keep native bytes, or resize every frame without cropping or lossy encoding."""
+    if image.format != "WEBP":
+        raise ValueError("El sticker animado debe ser WebP.")
+    normalize = (
+        image.size != STICKER_SIZE
+        or source.stat().st_size > MAX_ANIMATED_BYTES
+        or source.suffix.lower() != ".webp"
+    )
+    if normalize and image.n_frames * STICKER_SIZE[0] * STICKER_SIZE[1] > MAX_ANIMATION_PIXELS:
+        raise ValueError("El sticker animado necesita demasiada memoria para ajustarlo.")
+    metadata = {key: image.info[key] for key in ("exif", "icc_profile", "xmp") if key in image.info}
+    loop = image.info.get("loop", 0)
+    frames, durations = [], []
+    elapsed = 0
+    try:
+        for index in range(image.n_frames):
+            image.seek(index)
+            image.load()
+            duration = image.info.get("duration", 0)
+            if duration < 8:
+                raise ValueError("Cada fotograma del sticker debe durar al menos 8 ms.")
+            elapsed += duration
+            if elapsed > 10_000:
+                raise ValueError("El sticker animado supera 10 segundos.")
+            if normalize:
+                frames.append(ImageOps.pad(
+                    image.convert("RGBA"), STICKER_SIZE,
+                    method=Image.Resampling.LANCZOS, color=(0, 0, 0, 0),
+                ))
+                durations.append(duration)
+        if not normalize:
+            return None
+        payload = io.BytesIO()
+        frames[0].save(
+            payload, format="WEBP", save_all=True, append_images=frames[1:],
+            duration=durations, loop=loop, lossless=True, method=4, **metadata,
+        )
+        if payload.tell() > MAX_ANIMATED_BYTES:
+            raise ValueError("No se pudo ajustar el sticker animado a 500 KB sin perder calidad.")
+        return payload.getvalue()
+    finally:
+        for frame in frames:
+            frame.close()
 
 
 def _write_sticker(payload: bytes, output_dir: Path | None) -> Path:

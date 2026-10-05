@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageOps
 from slixmpp import Message as StanzaMessage
 
 from cliente_xmpp.media.outgoing_stickers import MAX_STATIC_BYTES, prepare_outgoing_sticker
@@ -83,7 +83,7 @@ class OutgoingStickerTests(unittest.TestCase):
         self.assertEqual(copied.read_bytes(), original)
 
     def test_invalid_animation_is_rejected_without_uploadable_copy(self) -> None:
-        for size, duration in (((32, 32), 100), ((512, 512), 5), ((512, 512), 6000)):
+        for size, duration in (((520, 260), 5), ((512, 512), 5), ((512, 512), 6000)):
             with self.subTest(size=size, duration=duration):
                 source = self.root / "animation.webp"
                 Image.new("RGBA", size, "red").save(
@@ -94,6 +94,80 @@ class OutgoingStickerTests(unittest.TestCase):
                 )
                 with self.assertRaises(ValueError):
                     prepare_outgoing_sticker(source)
+        self.assertFalse(self.destination.exists())
+
+    def test_520_pixel_animation_preserves_design_timing_transparency_and_metadata(self) -> None:
+        source = self.root / "oversize.webp"
+        frames = [Image.new("RGBA", (520, 260), color) for color in ("red", "blue")]
+        frames[0].putpixel((260, 130), (0, 255, 0, 128))
+        frames[0].save(
+            source, save_all=True, append_images=frames[1:], lossless=True,
+            duration=[80, 160], loop=3, exif=b"pack-metadata", xmp=b"accessible-metadata",
+        )
+        original = source.read_bytes()
+        result = prepare_outgoing_sticker(source)
+        self.assertNotEqual(result, source)
+        self.assertEqual(source.read_bytes(), original)
+        with Image.open(source) as native, Image.open(result) as resized:
+            self.assertEqual(resized.size, (512, 512))
+            self.assertEqual(resized.n_frames, native.n_frames)
+            self.assertEqual(resized.info["loop"], 3)
+            self.assertEqual(resized.info["exif"], b"pack-metadata")
+            self.assertEqual(resized.info["xmp"], b"accessible-metadata")
+            for index, duration in enumerate((80, 160)):
+                native.seek(index)
+                resized.seek(index)
+                resized.load()
+                expected = ImageOps.pad(
+                    native.convert("RGBA"), (512, 512),
+                    method=Image.Resampling.LANCZOS, color=(0, 0, 0, 0),
+                )
+                self.assertEqual(resized.info["duration"], duration)
+                decoded = resized.convert("RGBA")
+                self.assertIsNone(
+                    ImageChops.difference(decoded.getchannel("A"), expected.getchannel("A"))
+                    .getbbox()
+                )
+                # RGBA getbbox can ignore RGB errors when the alpha difference is zero.
+                background = Image.new("RGBA", (512, 512), "white")
+                self.assertIsNone(ImageChops.difference(
+                    Image.alpha_composite(background, decoded).convert("RGB"),
+                    Image.alpha_composite(background, expected).convert("RGB"),
+                ).getbbox())
+                self.assertEqual(resized.getpixel((256, 0))[3], 0)
+        entry = StickerLibrary(self.root / "library").add(
+            source, description="Texto alternativo recibido."
+        )
+        self.assertTrue(entry.animated)
+        self.assertEqual(entry.description, "Texto alternativo recibido.")
+        with Image.open(entry.path) as stored:
+            self.assertEqual(stored.size, (512, 512))
+            self.assertEqual(stored.n_frames, 2)
+
+    def test_static_520_pixel_webp_is_adjusted_without_cropping(self) -> None:
+        source = self.image("oversize-static.webp", (520, 260))
+        original = source.read_bytes()
+        with Image.open(prepare_outgoing_sticker(source)) as result:
+            self.assertEqual(result.size, (512, 512))
+            self.assertEqual(result.getpixel((256, 0))[3], 0)
+            self.assertEqual(result.getpixel((256, 256))[3], 128)
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_animation_normalization_respects_memory_and_lossless_size_limits(self) -> None:
+        source = self.root / "oversize.webp"
+        Image.new("RGBA", (520, 260), "red").save(
+            source, save_all=True, append_images=[Image.new("RGBA", (520, 260), "blue")],
+            duration=[100, 100], lossless=True,
+        )
+        original = source.read_bytes()
+        for limit, message in (("MAX_ANIMATION_PIXELS", "memoria"),
+                               ("MAX_ANIMATED_BYTES", "sin perder calidad")):
+            with self.subTest(limit=limit), patch(
+                f"cliente_xmpp.media.outgoing_stickers.{limit}", 1
+            ):
+                with self.assertRaisesRegex(ValueError, message):
+                    prepare_outgoing_sticker(source)
+        self.assertEqual(source.read_bytes(), original)
         self.assertFalse(self.destination.exists())
 
     def test_fake_image_is_rejected(self) -> None:

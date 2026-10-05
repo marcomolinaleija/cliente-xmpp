@@ -125,21 +125,23 @@ class StickerGalleryTests(unittest.TestCase):
         self.dialog._auto_changed()
         self.assertFalse(self.settings.load_sticker_auto_describe())
 
-    def test_rayoai_choice_describes_new_source_instead_of_reusing_message_text(self) -> None:
-        with (
-            patch(
-                "cliente_xmpp.ui.sticker_gallery_dialog.StickerDescriptionDialog",
-                return_value=self.choice(1),
-            ),
-            patch(
-                "cliente_xmpp.ui.sticker_gallery_dialog.rayoai.request_description",
-                return_value="Descripción elegida por AI",
-            ) as ai,
-        ):
-            self.dialog._create(lambda: self.source, "Texto del mensaje original")
-            self.wait(lambda: bool(self.dialog._entries) and not self.dialog._busy)
-        ai.assert_called_once()
-        self.assertEqual(self.dialog.details.GetValue(), "Descripción elegida por AI")
+    def test_existing_description_is_saved_without_question_or_ai_even_when_automatic(self) -> None:
+        for automatic in (False, True):
+            with self.subTest(automatic=automatic):
+                self.dialog._auto_describe = automatic
+                with (
+                    patch(
+                        "cliente_xmpp.ui.sticker_gallery_dialog.StickerDescriptionDialog"
+                    ) as question,
+                    patch(
+                        "cliente_xmpp.ui.sticker_gallery_dialog.rayoai.request_description"
+                    ) as ai,
+                ):
+                    self.dialog._create(lambda: self.source, "  Texto alternativo recibido  ")
+                    self.wait(lambda: bool(self.dialog._entries) and not self.dialog._busy)
+                ai.assert_not_called()
+                question.assert_not_called()
+                self.assertEqual(self.dialog.details.GetValue(), "Texto alternativo recibido")
 
     def test_rayoai_failure_preserves_created_sticker_and_allows_manual_edit(self) -> None:
         self.dialog._auto_describe = True
@@ -387,6 +389,71 @@ class StickerGalleryTests(unittest.TestCase):
             self.dialog._loaded(([first, second], [], {}, None, False))
         self.assertEqual(self.dialog._selected().id, second.id)
         focus.assert_not_called()
+
+    def test_filter_stays_enabled_and_latest_choice_wins_during_slow_reload(self) -> None:
+        entry = self.library.add(self.source, name="Favorite")
+        self.library.edit(entry.id, favorite=True)
+        started, finish = threading.Event(), threading.Event()
+        original = self.library.list_stickers
+        calls = []
+
+        def delayed(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                started.set()
+                finish.wait(3)
+            return original(**kwargs)
+
+        with (
+            patch.object(self.library, "list_stickers", side_effect=delayed),
+            patch(
+                "cliente_xmpp.ui.sticker_gallery_dialog.wx.Window.FindFocus",
+                return_value=self.dialog.groups,
+            ),
+            patch.object(self.dialog.items, "SetFocus") as focus,
+            patch.object(self.dialog.groups, "SetItems") as reset_choices,
+        ):
+            self.dialog._reload()
+            self.assertTrue(started.wait(1))
+            try:
+                self.assertTrue(self.dialog.groups.IsEnabled())
+                self.assertTrue(self.dialog.search.IsEnabled())
+                for selection in (1, 0, 1):
+                    self.dialog.groups.SetSelection(selection)
+                    event = wx.CommandEvent(wx.EVT_CHOICE.typeId, self.dialog.groups.GetId())
+                    self.dialog.groups.GetEventHandler().ProcessEvent(event)
+                self.dialog.search.SetValue("Favorite")
+                self.dialog._search()
+            finally:
+                finish.set()
+            self.wait(lambda: not self.dialog._busy)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[-1]["favorites"])
+        self.assertEqual(calls[-1]["query"], "Favorite")
+        self.assertEqual(self.dialog.groups.GetSelection(), 1)
+        self.assertEqual(self.dialog._selected().id, entry.id)
+        focus.assert_not_called()
+        reset_choices.assert_not_called()
+
+    def test_f2_renames_selected_sticker_and_is_inert_while_busy(self) -> None:
+        entry = self.library.add(self.source, name="Before")
+        self.dialog._reload()
+        self.wait(lambda: bool(self.dialog._entries) and not self.dialog._busy)
+        event = wx.KeyEvent(wx.EVT_KEY_DOWN.typeId)
+        event.SetKeyCode(wx.WXK_F2)
+        with patch.object(self.dialog, "_text", return_value="After") as text:
+            self.dialog.items.GetEventHandler().ProcessEvent(event)
+            self.wait(lambda: not self.dialog._busy)
+            self.assertEqual(self.library.get(entry.id).name, "After")
+            self.assertEqual(self.dialog._selected().id, entry.id)
+            text.assert_called_once_with("Nombre del sticker", "Before")
+        self.dialog._busy = True
+        try:
+            with patch.object(self.dialog, "_text") as text:
+                self.dialog._key(event)
+            text.assert_not_called()
+        finally:
+            self.dialog._busy = False
 
 
 if __name__ == "__main__":

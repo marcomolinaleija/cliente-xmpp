@@ -13,7 +13,9 @@
 - Respaldo privado y rollback a v29:
   `/opt/xmpp/backups/native-sticker-packs-v30-20261005T002118Z/rollback.sh`.
   Conserva compose y fija la imagen anterior; no borra datos ni recrea otros servicios.
-- Validación local: 674 tests, Ruff y `git diff --check`. Imagen: Go tests y race,
+- Checkout limpio de publicación: 671 tests (59,348 s), Ruff y `git diff --check`.
+  El árbol local también pasó 674, incluyendo tres tests independientes no publicados.
+  Imagen: Go tests y race,
   cinco smokes como usuario slidge, y smoke nativo adicional sin red/read-only.
   Fixture sintético Go → receptor → biblioteca CAN conserva dos assets,
   descripciones y animación.

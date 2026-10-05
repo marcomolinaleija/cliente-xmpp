@@ -1,7 +1,11 @@
 # Stickers y paquetes: puente v29
 
-**Estado (4 de octubre de 2026):** v29 publicada en GHCR y promovida en la única
-instancia del VPS. Compose principal y manifest estable apuntan a v29 por digest
+**Actualización:** el VPS y manifest estable ahora usan [v30](PUENTE_WHATSAPP_STICKERS_V30.md).
+La galería ya permite importar desde el adjunto o su título separado. v29 sigue
+disponible; esta página documenta su promoción original, no el estado actual.
+
+**Promoción original (4 de octubre de 2026):** v29 publicada en GHCR y promovida en la única
+instancia del VPS. En esa promoción, compose principal y manifest estable apuntaron a v29 por digest
 `sha256:8db815f9803ec3a980fa8810b22d385b10489a2ddece63005b0354b521518d05`.
 La imagen es descargable sin credenciales. Se preservaron los montajes de datos
 y re-login. Backup: `/opt/xmpp/backups/sticker-delivery-v29-20261004T231537Z`;

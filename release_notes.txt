@@ -20,10 +20,6 @@ Ajuste de stickers WebP animados
 - Las animaciones que ya cumplen los requisitos se conservan sin recodificar. Cuando hace falta ajustarlas, la nueva copia utiliza codificación sin pérdida, sin convertir el sticker en una imagen fija para hacerlo caber.
 - Esto no garantiza la conversión de todos los stickers: la animación debe caber en 500 KB, durar como máximo 10 segundos y respetar los límites de fotogramas y memoria. Si no puede prepararse dentro de esos límites sin una compresión con pérdida, CAN muestra un error y conserva el original.
 
-Alcance de esta actualización
-- Estas mejoras son del cliente CAN y no incorporan una nueva versión del puente.
-- El problema de sincronización del estado leído de grupos con WhatsApp oficial sigue pendiente; esta versión no lo corrige.
-
 WhatsApp CAN 1.4.15
 
 Esta actualización incorpora una biblioteca de stickers con favoritos, paquetes y descripciones editables, corrige el envío de stickers a WhatsApp y permite conectar CAN con el asistente de Atajos. Las novedades siguientes corresponden a los cambios realizados desde la versión 1.4.14.

@@ -1,3 +1,80 @@
+WhatsApp CAN 1.4.15
+
+Esta actualización incorpora una biblioteca de stickers con favoritos, paquetes y descripciones editables, corrige el envío de stickers a WhatsApp y permite conectar CAN con el asistente de Atajos. Las novedades siguientes corresponden a los cambios realizados desde la versión 1.4.14.
+
+Galería de stickers: elegir, buscar y organizar
+- Enviar sticker abre ahora la galería de CAN en lugar del explorador de archivos. Elige un sticker guardado, revisa su descripción y envíalo sin tener que localizar nuevamente la imagen original.
+- También puedes abrirla desde Ver > Galería de stickers o con Ctrl+Mayús+S para administrar la biblioteca sin entrar en un chat y sin estar conectado.
+- La pantalla principal reúne búsqueda, filtro, lista y vista previa. Las operaciones sobre el sticker seleccionado están en Acciones; las opciones de importación, paquetes y preferencias están en Biblioteca. Así se mantienen disponibles sin llenar la pantalla de botones.
+- Busca por nombre o descripción, filtra favoritos y muestra los stickers de un paquete. Marca o quita favoritos desde el menú de acciones; los favoritos son personales y no se incluyen al compartir un paquete.
+- Crea paquetes con nombre y autor, renómbralos y añade un sticker a varios paquetes. Eliminar un paquete quita esa agrupación, pero conserva sus stickers y su pertenencia a otros paquetes.
+- La biblioteca conserva sus propias copias en el equipo. Eliminar un sticker pide confirmación y no borra la foto original ni las copias de archivos que ya se enviaron en mensajes.
+
+Crear stickers a partir de imágenes y mensajes
+- Usa Crear en la galería para elegir una imagen PNG, JPEG o WebP. CAN prepara una copia compatible con WhatsApp, la guarda en la biblioteca y deja intacto el archivo original.
+- Desde el menú contextual de una imagen, sticker o archivo de imagen compatible recibido en un chat, elige Crear sticker... para incorporarlo a la biblioteca. Si hace falta descargarlo, la descarga y conversión se realizan en segundo plano.
+- Las imágenes estáticas se ajustan a 512 por 512 píxeles sin recortar, con relleno transparente y dentro del límite de tamaño del sticker. Esto no elimina automáticamente el fondo de la fotografía.
+- Los WebP animados que ya cumplen los requisitos se conservan como animaciones, sin volverlos una imagen fija ni recodificarlos innecesariamente. Las animaciones incompatibles se rechazan con un aviso; no se presenta una conversión incompleta como un sticker válido.
+- Para un sticker Lottie, CAN solicita aceptar una imagen fija representativa antes de crear el nuevo sticker; el archivo original animado se conserva.
+- Puedes cancelar la creación sin enviar nada. Un mensaje retirado durante la descarga no se incorpora como un nuevo sticker.
+
+Descripciones accesibles: manuales, con RayoAI o sin descripción
+- Al crear un sticker puedes escribir el texto alternativo manualmente, pedir una descripción a RayoAI o guardarlo sin descripción. Si el sticker recibido ya tenía texto alternativo, CAN lo conserva como punto de partida.
+- Si eliges RayoAI, puedes marcar No volver a preguntar: usar RayoAI siempre para nuevos stickers. Esta opción necesita tu elección expresa y se puede desactivar desde Biblioteca > Preferencias.
+- RayoAI recibe la imagen y puede usar el proveedor externo que tengas configurado. Crear o guardar un sticker por sí solo no envía una conversación a RayoAI ni genera descripciones automáticamente sin esa preferencia.
+- Puedes editar el nombre o la descripción después, corregir el resultado de RayoAI o sustituirlo por una descripción que prefieras. Al volver a describir un sticker con RayoAI, puedes revisar el resultado antes de reemplazar el texto existente.
+- Si RayoAI falla, el sticker permanece guardado para que puedas describirlo manualmente. Importar de nuevo el mismo contenido no sobrescribe una descripción existente; una respuesta tardía de RayoAI tampoco reemplaza una edición más reciente sin revisión.
+- La descripción acompaña al sticker al enviarlo y queda disponible localmente para lectura y copia. Con el puente actualizado se transmite también como etiqueta accesible de WhatsApp.
+
+Envío de stickers: corrección de enlaces y conservación de descripciones
+- Se corrige la preparación de imágenes enviadas como stickers: CAN utiliza un WebP compatible en vez de limitarse a identificar una imagen cualquiera como sticker.
+- El puente actualizado corrige el caso en que volver a enviar un sticker ya utilizado terminaba mostrando enlaces de archivo en WhatsApp oficial. Repetir el mismo sticker ya no se trata como un fallo por existir previamente en la caché.
+- Las descripciones se envían por mensaje, incluso al repetir un sticker con otro texto alternativo, sin reemplazar la descripción de otros mensajes que usen la misma imagen.
+- Los stickers individuales conservan las citas de respuesta, también en grupos. Un fallo real de envío se informa como error; no se convierte silenciosamente en un mensaje de texto con un enlace.
+- Estas correcciones requieren el puente v29 o posterior. Actualizar únicamente el cliente no corrige un puente antiguo. El envío individual con descripción ya fue confirmado en WhatsApp oficial; esa confirmación no equivale a validar todos los paquetes o dispositivos.
+
+Importar, exportar y compartir paquetes
+- Un paquete recibido puede incorporarse desde Importar paquete de stickers... en el menú contextual del archivo o de su título Paquete de stickers: ... cuando CAN puede asociarlo de forma inequívoca con el adjunto. También puedes importar un archivo desde Biblioteca.
+- Se corrige el menú del título separado: antes el archivo podía estar recibido correctamente, pero seleccionar el título no ofrecía la acción de importación.
+- Los paquetes recibidos de WhatsApp conservan las descripciones y animaciones que traigan. CAN comprueba los archivos antes de incorporarlos; un paquete dañado o incompatible muestra un error en lugar de completar una importación parcial.
+- Exportar paquete... ofrece .canstickers para intercambio con otro CAN: conserva nombre, autor, nombres de stickers y descripciones, con hasta 200 elementos por paquete.
+- También puedes exportar .wastickers para aplicaciones móviles importadoras compatibles. Este formato admite de 3 a 30 stickers, todos estáticos o todos animados; incluye título, autor y portada, pero no conserva las descripciones. Su importación depende de la aplicación móvil utilizada: el archivo no instala por sí solo un paquete oficial de WhatsApp.
+- Desde el selector abierto en un chat, Biblioteca > Compartir paquete en el chat... utiliza el envío nativo de paquetes del puente v30. Incluye nombre, autor, portada, descripciones y animaciones compatibles; CAN limita este envío a 60 stickers y 32 MiB. Exportar y compartir nativamente son operaciones distintas, con límites distintos.
+- Antes de subir un paquete nativo, CAN comprueba que el puente lo admita. Si es antiguo, muestra un error y puedes exportar el paquete mientras actualizas el puente; no lo envía como un documento disfrazado de paquete.
+- Comprobación pendiente: el envío nativo de paquetes creados en CAN ha pasado las pruebas automatizadas, pero su presentación en WhatsApp oficial todavía necesita verificación en el teléfono. No se garantiza instalación o visualización idéntica en todas las aplicaciones; conserva la opción de exportación si tu receptor no lo admite.
+
+Uso con teclado y lectores de pantalla
+- En la galería, las flechas seleccionan el sticker y Espacio lee su descripción completa. El texto también aparece en un campo de lectura y copia, sin depender de la miniatura.
+- Mayús+F10, la tecla de menú contextual y el botón Acciones ofrecen las mismas operaciones sobre el sticker seleccionado.
+- Ctrl+F enfoca la búsqueda; Enter confirma la búsqueda. Anterior y Siguiente sólo aparecen cuando hay más páginas; Ctrl+RePág y Ctrl+AvPág también permiten cambiar de página.
+- Enter sobre la lista envía el sticker sólo cuando la galería se abrió como selector desde un chat. En el gestor independiente no se envía a una conversación por accidente. Escape cierra la galería.
+- Las listas tienen columnas acotadas y páginas de 100 elementos; favorito y animación se anuncian junto al nombre. La descripción completa sigue disponible aunque el resumen de la lista sea breve.
+- Las descargas, conversiones, importaciones y descripciones se realizan en segundo plano. Cerrar la galería no cancela una operación que ya comenzó: puede terminar de guardar en la biblioteca, pero no envía un sticker por cerrar la ventana.
+
+Integración opcional con el asistente de Atajos
+- En Configuración, activa Permitir integración local con Atajos. Requiere una versión de Atajos que incluya las herramientas de mensajería de CAN; la preferencia se conserva al reiniciar. No se activa una integración externa por instalar esta actualización.
+- Desde Atajos puedes buscar contactos y grupos, solicitar mensajes inmediatos o programados y consultar o cancelar mensajes pendientes sin cambiar el chat abierto, el borrador ni el foco de CAN.
+- La cola de mensajes se guarda localmente y conserva la cuenta y destinatarios originales. Cerrar Atajos no cancela los programados: CAN debe permanecer abierto, con la integración activa y conectado para enviarlos.
+- Si CAN está cerrado o desconectado cuando llega la hora, los programados con envío al reconectar esperan a que vuelva la cuenta original. Desactivar la integración conserva los pendientes sin despacharlos; una solicitud que ya estuviera en proceso puede haberse enviado.
+- En Mensajería... de Atajos puedes habilitar una revisión previa con destinatarios, texto completo y hora. Por defecto, las peticiones de envío del asistente se ejecutan sin esa confirmación adicional; revisa esta preferencia antes de utilizarlo.
+- Puedes pedir contexto de conversaciones guardadas, incluidos los grupos y sus participantes. La lectura se hace por páginas y no abre el chat ni marca mensajes como leídos. Todo el historial significa todo lo guardado en CAN, no mensajes del servidor que aún no se hayan cargado.
+- Un estado guardado o pendiente no significa entregado. Si el resultado de un envío queda incierto, no se repite automáticamente; revisa la conversación o el estado de la solicitud antes de pedir otro envío.
+
+Respuestas autónomas y análisis de adjuntos desde Atajos
+- CAN incorpora el soporte para reglas de respuesta autónoma de Atajos en contactos o grupos elegidos, con alcance, exclusiones, duración e instrucciones definidos por el usuario. Estas reglas necesitan activación expresa desde Atajos; instalar CAN no hace que empiece a responder por su cuenta.
+- Las reglas reaccionan a texto nuevo recibido en vivo, no al historial recuperado. Una respuesta manual, edición, eliminación o cambio relevante del chat puede invalidar una respuesta que se estaba preparando, para evitar enviar un borrador sobre contexto obsoleto.
+- Reiniciar requiere revisar y reactivar las reglas autónomas. Sus permisos caducan si Atajos deja de mantenerlos y no se trasladan a otra cuenta. Esto es independiente de la cola manual de mensajes programados.
+- Con Atajos compatible puedes seleccionar una imagen, audio o vídeo recibido y pedir su análisis al asistente. Se entrega sólo el adjunto elegido; las reglas autónomas no reciben acceso a estas herramientas de archivos.
+- Si el archivo falta localmente, CAN lo descarga en segundo plano con límite de tamaño. Los archivos retirados, eliminados localmente o pertenecientes a otra cuenta no se ofrecen al asistente.
+- Esta consulta de adjuntos no reproduce el archivo, no abre el chat, no marca lectura y no envía respuestas por sí sola. El análisis requiere la versión compatible de Atajos y su configuración de Gemini.
+
+Privacidad, compatibilidad y actualización del puente
+- La biblioteca de stickers, sus favoritos y la cola del asistente se almacenan en el equipo. La integración con Atajos escucha únicamente en este equipo y requiere autenticación local.
+- Si solicitas contexto en Atajos, los textos y nombres necesarios para esa petición se comparten con Gemini. Los adjuntos elegidos para análisis también se envían al proveedor desde Atajos. Esto es distinto de RayoAI y depende de las funciones que actives y solicites.
+- El puente estable anunciado para esta actualización es v30: incluye las correcciones de stickers de v29 y el soporte nuevo de paquetes salientes. En modo Puente local (WSL2), busca e instala la actualización del puente desde su sección de Configuración; actualizar CAN y actualizar el puente son pasos separados.
+- Mantén actualizado también Atajos si deseas usar su integración. El análisis de adjuntos requiere Atajos 1.1.6 o una versión posterior que conserve ese soporte. Las demás funciones dependen de que Atajos incluya las herramientas correspondientes.
+- La guía integrada de CAN incluye las opciones de la galería, sus atajos y los formatos de paquetes. No es necesario activar Atajos ni RayoAI para guardar, organizar, describir manualmente o enviar tus stickers.
+
 WhatsApp CAN 1.4.14
 
 Detección de vinculación en el servidor remoto

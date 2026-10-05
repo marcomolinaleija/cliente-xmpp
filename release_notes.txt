@@ -1,3 +1,29 @@
+WhatsApp CAN 1.4.16
+
+Esta actualización corrige el manejo del foco y los atajos de la galería de stickers, conserva las descripciones recibidas y amplía el ajuste de WebP animados. Los cambios siguientes corresponden a las mejoras realizadas desde la versión 1.4.15.
+
+Galería de stickers: foco y uso con teclado
+- Al cambiar el filtro con las flechas, el foco permanece en el cuadro combinado en lugar de saltar a la lista de stickers. Puedes seguir recorriendo las opciones y usar Tab para pasar al siguiente control.
+- La búsqueda y el filtro permanecen disponibles mientras se actualiza la lista. Si cambias de opción rápidamente, CAN termina mostrando el último filtro elegido, sin sustituirlo por un resultado anterior.
+- F2 sobre un sticker seleccionado abre el diálogo para renombrarlo. La opción de renombrar también sigue disponible en el menú de acciones.
+- Al enviar un sticker desde la galería de un chat, el foco vuelve a la lista de mensajes para continuar la lectura. Este cambio de foco no representa una confirmación de entrega.
+
+Guardar stickers recibidos y conservar su descripción
+- En la lista de mensajes, el menú contextual muestra «Guardar sticker...» cuando CAN identifica el adjunto como un sticker. Para una imagen compatible que no esté identificada como sticker, mantiene «Crear sticker...».
+- Si el sticker recibido ya tiene texto alternativo, CAN lo guarda con esa descripción sin pedir otra ni consultar RayoAI, incluso si está activada la preferencia de usar RayoAI para nuevos stickers.
+- Si no hay una descripción recibida, se mantienen las opciones habituales: escribirla manualmente, solicitarla a RayoAI o guardar sin descripción. Después puedes editar el texto desde la biblioteca.
+- Volver a importar un sticker que ya está en la biblioteca no reemplaza la descripción que habías guardado.
+
+Ajuste de stickers WebP animados
+- CAN intenta preparar una copia compatible de los WebP animados que necesitan ajustar sus dimensiones o tamaño. Ya no se rechaza una animación únicamente por no medir exactamente 512 por 512 píxeles.
+- El ajuste mantiene las proporciones, añade relleno transparente cuando hace falta y no recorta el diseño. Conserva la animación, la duración de los fotogramas, las repeticiones y los metadatos disponibles; el archivo original queda intacto.
+- Las animaciones que ya cumplen los requisitos se conservan sin recodificar. Cuando hace falta ajustarlas, la nueva copia utiliza codificación sin pérdida, sin convertir el sticker en una imagen fija para hacerlo caber.
+- Esto no garantiza la conversión de todos los stickers: la animación debe caber en 500 KB, durar como máximo 10 segundos y respetar los límites de fotogramas y memoria. Si no puede prepararse dentro de esos límites sin una compresión con pérdida, CAN muestra un error y conserva el original.
+
+Alcance de esta actualización
+- Estas mejoras son del cliente CAN y no incorporan una nueva versión del puente.
+- El problema de sincronización del estado leído de grupos con WhatsApp oficial sigue pendiente; esta versión no lo corrige.
+
 WhatsApp CAN 1.4.15
 
 Esta actualización incorpora una biblioteca de stickers con favoritos, paquetes y descripciones editables, corrige el envío de stickers a WhatsApp y permite conectar CAN con el asistente de Atajos. Las novedades siguientes corresponden a los cambios realizados desde la versión 1.4.14.

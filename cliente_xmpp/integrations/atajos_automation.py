@@ -9,7 +9,6 @@ from aiohttp import web
 
 from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.storage.assistant_automation import AssistantAutomationStore
-from cliente_xmpp.storage.scheduled_messages import ScheduledMessageStore
 
 
 class AutomationAPIMixin:
@@ -78,7 +77,11 @@ class AutomationAPIMixin:
 
     def can_dispatch_on_ui(self, row: dict) -> bool:
         if not row.get("rule_id"):
-            return True
+            account, ready, contacts = self._snapshot()
+            return bool(
+                not self._closed.is_set() and ready and account == row["account"]
+                and any(c["jid"] == row["jid"] for c in contacts.values())
+            )
         with self._lock:
             gate = self._dispatch_permissions.get(row["id"])
             chat = next((c for c in self._contacts.values() if c["jid"] == row["jid"]), None)
@@ -118,8 +121,7 @@ class AutomationAPIMixin:
 
     async def _flush_observations(self) -> None:
         async with self._observation_lock:
-            if self._store is None:
-                self._store = await asyncio.to_thread(ScheduledMessageStore)
+            await self._ensure_store()
             if self._automation is None:
                 self._automation = await asyncio.to_thread(
                     AssistantAutomationStore, self._store.path

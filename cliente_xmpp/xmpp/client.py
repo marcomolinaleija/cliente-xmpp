@@ -4861,6 +4861,7 @@ class XmppService:
         expected_account: str = "",
         on_deferred: Callable[[], None] | None = None,
         authorization: Callable[[], bool] | None = None,
+        retry_with_authorization: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             if expected_account and on_deferred:
@@ -4910,11 +4911,25 @@ class XmppService:
                     else:
                         self._append_mentions(msg, mentions or [])
                         self._request_delivery_updates(msg, message_type)
-                        if authorization is None:
+                        if authorization is None or retry_with_authorization:
+                            tracked_client = self._client
+
+                            def retry_send() -> None:
+                                if (
+                                    self._client is not tracked_client
+                                    or expected_account
+                                    and str(tracked_client.boundjid.bare) != expected_account
+                                    or authorization is not None and not authorization()
+                                ):
+                                    raise ValueError(
+                                        "El envío perdió su cuenta, conexión o permiso."
+                                    )
+                                msg.send()
+
                             self._client.track_transient_message_retry(
                                 to_jid,
                                 message_id,
-                                msg.send,
+                                retry_send if retry_with_authorization else msg.send,
                             )
                     if authorization is not None and not authorization():
                         if on_deferred:

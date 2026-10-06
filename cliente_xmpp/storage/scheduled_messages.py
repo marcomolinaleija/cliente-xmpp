@@ -35,6 +35,7 @@ class ScheduledMessageStore:
                 "rule_id": "TEXT NOT NULL DEFAULT ''",
                 "trigger_seq": "INTEGER NOT NULL DEFAULT 0",
                 "auto_expires": "REAL NOT NULL DEFAULT 0",
+                "origin": "TEXT NOT NULL DEFAULT 'atajos'",
             }.items():
                 if name not in columns:
                     connection.execute(
@@ -63,7 +64,11 @@ class ScheduledMessageStore:
         messages: list[dict[str, str]],
         due: float,
         late_policy: str,
+        *,
+        origin: str = "atajos",
     ) -> list[dict[str, object]]:
+        if origin not in {"native", "atajos"}:
+            raise ValueError("Origen no válido.")
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             old = connection.execute(
@@ -77,6 +82,7 @@ class ScheduledMessageStore:
                     and row["body"] == message["text"]
                     and row["due"] == due
                     and row["late_policy"] == late_policy
+                    and row["origin"] == origin
                     and bool(row["is_group"]) == bool(message.get("is_group", False))
                     for row, message in zip(old, messages, strict=True)
                 )
@@ -93,7 +99,7 @@ class ScheduledMessageStore:
                 connection.execute(
                     "INSERT INTO assistant_outbox "
                     "(id,request_id,recipient_index,account,jid,name,body,due,late_policy,is_group,"
-                    "state,detail) VALUES (?,?,?,?,?,?,?,?,?,?,'pending','')",
+                    "origin,state,detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending','')",
                     (
                         str(uuid.uuid4()),
                         request_id,
@@ -105,6 +111,7 @@ class ScheduledMessageStore:
                         due,
                         late_policy,
                         int(bool(message.get("is_group", False))),
+                        origin,
                     ),
                 )
             return [
@@ -115,10 +122,24 @@ class ScheduledMessageStore:
                 )
             ]
 
-    def list(self, account: str, state: str = "all", offset: int = 0) -> tuple[list, int]:
+    def request(self, request_id: str, account: str) -> list[dict]:
+        with closing(self._connect()) as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM assistant_outbox WHERE request_id=? AND account=?",
+                (request_id, account),
+            )]
+
+    def list(
+        self, account: str, state: str = "all", offset: int = 0, *, origin: str | None = None
+    ) -> tuple[list, int]:
         where = "account=?"
         args: list[object] = [account]
-        if state != "all":
+        if origin is not None:
+            where += " AND origin=?"
+            args.append(origin)
+        if state == "active":
+            where += " AND state IN ('pending','held','dispatching','uncertain','failed')"
+        elif state != "all":
             where += " AND state=?"
             args.append(state)
         with closing(self._connect()) as connection:
@@ -131,14 +152,19 @@ class ScheduledMessageStore:
             )
             return [dict(row) for row in rows], total
 
-    def due(self, now: float, account: str) -> list[dict[str, object]]:
+    def due(
+        self, now: float, account: str, origins: tuple[str, ...] = ("native", "atajos")
+    ) -> list[dict[str, object]]:
+        if not origins:
+            return []
+        placeholders = ",".join("?" for _ in origins)
         with closing(self._connect()) as connection:
             return [
                 dict(row)
                 for row in connection.execute(
                     "SELECT * FROM assistant_outbox WHERE state='pending' AND due<=? AND account=? "
-                    "ORDER BY due,id LIMIT 20",
-                    (now, account),
+                    f"AND origin IN ({placeholders}) ORDER BY due,id LIMIT 20",
+                    (now, account, *origins),
                 )
             ]
 
@@ -152,13 +178,14 @@ class ScheduledMessageStore:
                 == 1
             )
 
-    def cancel(self, item_id: str, account: str) -> bool:
+    def cancel(self, item_id: str, account: str, *, origin: str | None = None) -> bool:
+        where = " AND origin=?" if origin is not None else ""
         with closing(self._connect()) as connection, connection:
             return (
                 connection.execute(
                     "UPDATE assistant_outbox SET state='canceled',detail='' "
-                    "WHERE id=? AND account=? AND state IN ('pending','held')",
-                    (item_id, account),
+                    "WHERE id=? AND account=? AND state IN ('pending','held')" + where,
+                    (item_id, account, origin) if origin is not None else (item_id, account),
                 ).rowcount
                 == 1
             )

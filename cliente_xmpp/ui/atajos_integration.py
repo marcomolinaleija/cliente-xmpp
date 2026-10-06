@@ -51,9 +51,11 @@ class AtajosIntegrationMixin:
                 lambda row: wx.CallAfter(self._send_atajos_message, row),
                 read_context=ConversationContextStore(self.message_store.path).read_page,
                 media_store=AssistantMediaStore(self.message_store.path),
+                scheduler=self._scheduled_service,
             )
             self._sync_atajos_api()
             self._atajos_api.start()
+            self._scheduled_service.set_assistant(self._atajos_api)
             self._atajos_timer.Start(3000)
             self.settings_panel.atajos_api_status.SetLabel(
                 "Integración local activada. Atajos detecta la conexión automáticamente."
@@ -81,7 +83,11 @@ class AtajosIntegrationMixin:
             for chat in self.searchable_chats_by_jid.values()
             if chat.is_group or chat.jid in self.roster_jids
         ]
-        ready = bool(self.whatsapp_verified and self.roster_jids)
+        ready = bool(
+            self.whatsapp_verified and self.roster_jids and not self._closing
+            and not getattr(self, "_storage_maintenance_in_progress", False)
+            and not getattr(self, "_storage_reset_in_progress", False)
+        )
         self._atajos_api.update(account, ready, contacts)
         groups = sorted(self._atajos_api.monitored_group_jids(account))
         if groups:
@@ -96,13 +102,22 @@ class AtajosIntegrationMixin:
             )
 
     def _send_atajos_message(self, row: dict[str, object]) -> None:
-        api = self._atajos_api
+        native = row.get("origin") == "native"
+        api = getattr(self, "_scheduled_service", None) if native else self._atajos_api
         if api is None:
+            service = getattr(self, "_scheduled_service", None)
+            if service is not None:
+                service.rejected(str(row["id"]), "Atajos está desactivado; el mensaje espera.",
+                                 wait=True)
             return
         account = self.current_jid.split("/", 1)[0]
         jid = str(row["jid"])
         chat = self.searchable_chats_by_jid.get(jid)
-        if self._closing or account != row["account"] or not self.whatsapp_verified:
+        if (
+            self._closing or account != row["account"] or not self.whatsapp_verified
+            or getattr(self, "_storage_maintenance_in_progress", False)
+            or getattr(self, "_storage_reset_in_progress", False)
+        ):
             api.rejected(
                 str(row["id"]),
                 "Esperando la cuenta y conexión originales.",
@@ -117,8 +132,13 @@ class AtajosIntegrationMixin:
         ):
             api.rejected(str(row["id"]), "El contacto cambió antes del envío; revisa el mensaje.")
             return
-        if row.get("rule_id") and not api.can_dispatch_on_ui(row):
-            api.rejected(str(row["id"]), "La regla se detuvo o el chat cambió antes del envío.")
+        if (native or row.get("rule_id")) and not api.can_dispatch_on_ui(row):
+            api.rejected(
+                str(row["id"]),
+                "La hora o la conexión cambió antes del envío; revisa el mensaje." if native else
+                "La regla se detuvo o el chat cambió antes del envío.",
+                wait=native and row["late_policy"] == "send-when-connected",
+            )
             return
         message_id = "cliente-xmpp-api-" + str(row["id"])
         message = Message(
@@ -142,7 +162,9 @@ class AtajosIntegrationMixin:
                 is_group=chat.is_group,
                 expected_account=account,
                 on_deferred=lambda: wx.CallAfter(self._defer_atajos_message, api, row),
-                authorization=(lambda: api.can_dispatch_on_ui(row)) if row.get("rule_id") else None,
+                authorization=(lambda: api.can_dispatch_on_ui(row))
+                if native or row.get("rule_id") else None,
+                retry_with_authorization=native,
             )
         except Exception:
             api.unconfirmed(str(row["id"]))
@@ -154,6 +176,8 @@ class AtajosIntegrationMixin:
             str(row["id"]),
             "La respuesta automática perdió su permiso, conversación o conexión; no se reintentó."
             if row.get("rule_id")
+            else "La hora o la conexión cambió antes del envío; revisa el mensaje."
+            if row.get("origin") == "native" and row["late_policy"] == "hold"
             else "Esperando la cuenta y conexión originales.",
             wait=row["late_policy"] == "send-when-connected",
         )
@@ -181,6 +205,9 @@ class AtajosIntegrationMixin:
         api.observe_message(self.current_jid.split("/", 1)[0], message, kind)
 
     def _close_atajos_api(self) -> None:
+        service = getattr(self, "_scheduled_service", None)
+        if service is not None:
+            service.set_assistant(None)
         api = getattr(self, "_atajos_api", None)
         if api is not None:
             api.close()

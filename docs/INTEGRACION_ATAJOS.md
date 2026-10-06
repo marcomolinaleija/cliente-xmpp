@@ -6,7 +6,9 @@ Atajos busca contactos y grupos del catálogo cargado. Cada solicitud admite uno
 
 Por defecto Atajos ejecuta las peticiones de envío sin confirmación adicional. En **Mensajería…** puedes activar la revisión accesible con destinatarios, texto completo y hora, y configurar la cantidad inicial de contexto entre 1 y 400 (inicialmente 5). Una cantidad explícita prevalece sobre esa preferencia; todo el chat guardado se recorre por páginas. El cliente persiste la cola en `~/.cliente-xmpp/assistant-outbox.sqlite3`, separada de la base de conversaciones. No se cancela al cerrar Atajos. WhatsApp CAN debe estar abierto, con la integración activada y conectado para despacharla. Al volver a abrirlo o reconectar espera la cuenta original y envía los mensajes vencidos; nunca sustituye una cuenta o contacto. Un contacto retirado queda retenido.
 
-Desactivar la integración conserva los pendientes sin despacharlos. Una solicitud que ya esté en proceso puede haberse enviado. Los mensajes pendientes pueden consultarse y cancelarse desde Atajos. Si el resultado de un envío queda incierto no se repite automáticamente: revisa el chat. El protocolo del cliente conserva sus confirmaciones y mecanismos existentes de reintento con la misma identidad de mensaje.
+Desactivar la integración conserva sus pendientes sin despacharlos. Una solicitud que ya esté en proceso puede haberse enviado. Los mensajes pendientes pueden consultarse y cancelarse desde Atajos. Si el resultado de un envío queda incierto no se repite automáticamente: revisa el chat. El protocolo del cliente conserva sus confirmaciones y mecanismos existentes de reintento con la misma identidad de mensaje.
+
+CAN también permite [programar desde su menú](MENSAJES_PROGRAMADOS.md), sin activar Atajos. Ambas rutas comparten la base y el coordinador, pero conservan su origen: desactivar la integración no pausa mensajes creados directamente en CAN. La API consulta y cancela únicamente sus propios registros; el gestor de CAN muestra ambas rutas. Activar/desactivar la API no reabre ni recupera de nuevo la cola.
 
 ## Contrato versión 1
 

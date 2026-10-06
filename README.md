@@ -37,6 +37,15 @@ python -m cliente_xmpp.app.main
 
 La configuracion local se guarda en `%USERPROFILE%\.cliente-xmpp\settings.json`.
 
+## Mensajes programados
+
+**Mensajes > Programar mensaje...** permite elegir un contacto, texto, fecha y hora
+local sin activar Atajos. La política predeterminada retiene envíos atrasados;
+puedes elegir expresamente enviarlos al reconectar. **Mensajes programados...**
+permite consultar estados y cancelar pendientes. CAN debe estar abierto y el
+equipo despierto para despacharlos. Consulta [la guía de programación](docs/MENSAJES_PROGRAMADOS.md)
+para teclado, límites y resultados inciertos.
+
 ## Integración con el asistente de Atajos
 
 WhatsApp CAN 1.4.15 permite a Atajos 1.1.6 consultar los últimos adjuntos recibidos y obtener la imagen, audio o vídeo elegido para analizarlo con Gemini. Puede descargar la copia que falte, con límite de 100 MiB. Requiere la integración local activada. La consulta no marca leído ni envía respuestas; el contenido elegido se comparte con Google por petición del usuario.

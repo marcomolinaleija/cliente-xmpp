@@ -48,6 +48,7 @@
       <li><a href="#chats">Lista de chats y búsqueda</a></li>
       <li><a href="#conversacion">Leer y escribir mensajes</a></li>
       <li><a href="#mensajes">Acciones sobre un mensaje</a></li>
+      <li><a href="#programados">Programar mensajes</a></li>
       <li><a href="#stickers">Galería de stickers y paquetes</a></li>
       <li><a href="#grupos">Grupos, menciones y encuestas</a></li>
       <li><a href="#contacto">Información, destacados y archivos</a></li>
@@ -125,6 +126,17 @@
       </ul>
       <p>Para audios seleccionados: <kbd>Espacio</kbd> reproduce o pausa, <kbd>S</kbd> cambia la velocidad, y <kbd>Alt</kbd>+<kbd>Flecha izquierda</kbd> / <kbd>Alt</kbd>+<kbd>Flecha derecha</kbd> retrocede o adelanta cinco por ciento. La velocidad elegida se conserva para próximas reproducciones.</p>
       <p>Para abrir el enlace del mensaje enfocado, pulsa <kbd>L</kbd>. Si hay un mensaje de texto seleccionado, <kbd>Flecha izquierda</kbd> lo lee con el lector integrado.</p>
+    </section>
+
+    <section id="programados">
+      <h2>Programar mensajes</h2>
+      <p>Abre <strong>Mensajes &gt; Programar mensaje...</strong>, sin necesitar Atajos. Elige un contacto con las flechas y escribe un texto de hasta 10 000 caracteres. La fecha ya está rellenada como <strong>06/10/26</strong> (día/mes/año) y la hora usa 24 horas, por ejemplo <strong>18:30</strong>. El año 26 significa 2026. Se propone dentro de quince minutos, normalmente hoy o mañana si se cruza la medianoche; el máximo es un año. Revisa destinatario, cuenta, zona horaria, política y texto completo antes de confirmar. No se modifica el borrador del chat.</p>
+      <p>Por defecto, <strong>Retener si no se puede enviar a tiempo</strong> evita envíos tardíos por sorpresa: desconectado al vencer o con más de 30 segundos de atraso, queda retenido. Si eliges <strong>Enviar al volver a conectar</strong>, espera la cuenta original y puede salir mucho después de la fecha.</p>
+      <div class="warning"><strong>Importante:</strong> CAN debe estar abierto, el equipo despierto y la cuenta original conectada para despachar. No es una programación en el servidor. Se guarda un instante fijo; cambiar de zona horaria no mueve el envío. Las horas inexistentes o ambiguas por cambios de horario se rechazan.</div>
+      <p><strong>Mensajes &gt; Mensajes programados...</strong> muestra pendientes y problemas, con filtros y páginas de 50. Usa <kbd>F5</kbd> para actualizar; <kbd>Enter</kbd> en un registro enfoca su texto completo, disponible para lectura/copia. <strong>Cancelar mensaje...</strong> exige confirmación y sólo funciona antes de comenzar el envío. Para cambiar un retenido, cancélalo y programa uno nuevo.</p>
+      <p><strong>Guardado</strong> no significa entregado. Un envío <strong>incierto</strong> no se repite automáticamente: revisa el chat antes de programarlo otra vez. Durante el guardado espera el resultado; si falla, el formulario conserva los datos y permite reintentar con la misma identidad.</p>
+      <p>El menú se abre con <kbd>Alt</kbd>+<kbd>E</kbd>. Dentro del formulario, <kbd>Alt</kbd>+<kbd>B</kbd> busca contactos, <kbd>Alt</kbd>+<kbd>C</kbd> enfoca la lista, <kbd>Alt</kbd>+<kbd>M</kbd> el texto, <kbd>Alt</kbd>+<kbd>F</kbd> la fecha, <kbd>Alt</kbd>+<kbd>H</kbd> la hora y <kbd>Alt</kbd>+<kbd>R</kbd> la política. <kbd>Alt</kbd>+<kbd>P</kbd> enfoca Revisar y programar; Espacio lo activa. En el gestor, <kbd>Alt</kbd>+<kbd>M</kbd> enfoca la lista, <kbd>Alt</kbd>+<kbd>E</kbd> el filtro y <kbd>Alt</kbd>+<kbd>D</kbd> los detalles. Tab y Mayús+Tab recorren los controles; Escape cierra excepto mientras se guarda. Al cerrar se conserva el foco de origen, sin abrir un chat si estabas en la lista.</p>
+      <div class="note"><strong>Privacidad y límites:</strong> sólo texto a un contacto existente, sin adjuntos, grupos ni recurrencias. La cola local guarda texto y destinatarios sin cifrado adicional y conserva el historial de estados. No usa IA. El límite compartido es de 500 pendientes/retenidos/en proceso. Desactivar Atajos sólo pausa sus propios pendientes, no los creados desde este menú.</div>
     </section>
 
     <section id="stickers">

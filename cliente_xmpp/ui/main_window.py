@@ -136,6 +136,7 @@ from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
 from cliente_xmpp.ui.poll_vote_dialog import PollVoteDialog
 from cliente_xmpp.ui.reaction_dialog import EmojiReactionDialog
+from cliente_xmpp.ui.scheduled_messages import ScheduledMessagesMixin
 from cliente_xmpp.ui.settings_panel import SettingsPanel
 from cliente_xmpp.ui.statistics_dialog import StatisticsDialog
 from cliente_xmpp.ui.sticker_gallery_dialog import StickerGalleryDialog
@@ -235,7 +236,7 @@ class ManualHistoryLoad:
         self.bulk = self.remaining is None or self.remaining >= 500
 
 
-class MainWindow(AtajosIntegrationMixin, wx.Frame):
+class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
     def __init__(self, *, development_mode: bool = False) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
@@ -425,6 +426,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         ):
             self._schedule_auto_connect()
         wx.CallLater(UPDATE_CHECK_INITIAL_DELAY_MS, self._start_configured_update_checks)
+        self._initialize_scheduled_messages()
         self._initialize_atajos_integration()
 
     def _layout(self) -> None:
@@ -459,6 +461,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         menu_bar.Append(view_menu, "&Ver")
         gallery_item = view_menu.Append(wx.ID_ANY, "Galería de &stickers...\tCtrl+Shift+S")
         self.Bind(wx.EVT_MENU, self._on_manage_stickers, gallery_item)
+        messages_menu = wx.Menu()
+        schedule_item = messages_menu.Append(wx.ID_ANY, "&Programar mensaje...")
+        scheduled_item = messages_menu.Append(wx.ID_ANY, "Mensajes pro&gramados...")
+        self.Bind(wx.EVT_MENU, self._on_schedule_message, schedule_item)
+        self.Bind(wx.EVT_MENU, self._on_scheduled_messages, scheduled_item)
+        menu_bar.Append(messages_menu, "M&ensajes")
         help_menu = wx.Menu()
         self.documentation_menu_item = help_menu.Append(
             wx.ID_HELP,
@@ -3609,6 +3617,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         callback: Callable[[StorageCleanupResult | None, str], None],
     ) -> None:
         self._storage_reset_in_progress = True
+        # Stop outbox readers/writers before destructive cleanup. Waiting belongs
+        # to the cleanup worker, not wx. Do not recreate a queue during deletion.
+        assistant_api = getattr(self, "_atajos_api", None)
+        self._close_atajos_api()
+        self._close_scheduled_messages()
+        scheduled_service = getattr(self, "_scheduled_service", None)
         self.windows_notification_service.close_all()
         self.conversation.close_audio()
         self.audio_recorder.cancel()
@@ -3619,6 +3633,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
 
         def worker() -> None:
             try:
+                if scheduled_service is not None and not scheduled_service.wait_closed():
+                    raise RuntimeError("La cola todavía está cerrándose; no se borraron datos.")
+                if assistant_api is not None and assistant_api._thread is not None:
+                    assistant_api._thread.join(10)
+                    if assistant_api._thread.is_alive():
+                        raise RuntimeError("La API todavía está cerrándose; no se borraron datos.")
                 result = self.storage_manager.delete_all_data()
                 if not result.failures:
                     for jid in credential_jids:
@@ -6391,6 +6411,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         self._closing = True
         self.manual_history_load = None
         self._close_atajos_api()
+        self._close_scheduled_messages()
         self._stop_bridge_update_feedback()
         update_check_timer = getattr(self, "update_check_timer", None)
         if update_check_timer is not None:
@@ -6658,7 +6679,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 delivery_state=delivery_state,
                 detail=detail,
             ):
-                api = getattr(self, "_atajos_api", None)
+                api = getattr(self, "_scheduled_service", None) or getattr(
+                    self, "_atajos_api", None
+                )
                 if api is not None:
                     api.delivery(message_id, delivery_state)
                 self._handle_message_delivery_updated(

@@ -15,7 +15,9 @@ from aiohttp import web
 
 from cliente_xmpp.integrations.atajos_automation import AutomationAPIMixin
 from cliente_xmpp.integrations.atajos_media import MediaAPIMixin
+from cliente_xmpp.integrations.scheduled_messages import dispatch_due
 from cliente_xmpp.models.local_commands import is_local_bridge_command
+from cliente_xmpp.models.scheduled_message import validate_due, validate_text
 from cliente_xmpp.storage.scheduled_messages import ScheduledMessageStore
 
 PORT = 47843
@@ -80,10 +82,12 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         clock: Callable[[], float] = time.time,
         read_context: Callable | None = None,
         media_store=None,
+        scheduler=None,
     ) -> None:
         self._token = token
         self._send = send
         self._store = store
+        self._scheduler = scheduler
         self._clock = clock
         self._read_context = read_context
         self._context_cursors: dict[str, tuple] = {}
@@ -96,6 +100,7 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         self._stopped: asyncio.Event | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
+        self._dispatch_ready = threading.Event()
         self.error = ""
         self._initialize_automation()
         self._initialize_media(media_store)
@@ -130,6 +135,7 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         self._thread.start()
 
     def close(self) -> None:
+        self._dispatch_ready.clear()
         self._closed.set()
         if self._loop and self._stopped and self._loop.is_running():
             try:
@@ -155,22 +161,33 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stopped = asyncio.Event()
-        if self._store is None:
-            self._store = await asyncio.to_thread(ScheduledMessageStore)
+        await self._ensure_store()
         if self._closed.is_set():
             return
         runner = web.AppRunner(self.application(), access_log=None, shutdown_timeout=3)
         await runner.setup()
         try:
             await web.TCPSite(runner, "127.0.0.1", PORT).start()
+            self._dispatch_ready.set()
             while not self._stopped.is_set() and not self._closed.is_set():
-                await self.tick()
+                if self._scheduler is None:
+                    await self.tick()
+                else:
+                    await self._flush_observations()
                 try:
                     await asyncio.wait_for(self._stopped.wait(), 1)
                 except TimeoutError:
                     pass
         finally:
+            self._dispatch_ready.clear()
             await runner.cleanup()
+
+    async def _ensure_store(self):
+        if self._store is None:
+            if self._scheduler is not None:
+                self._store = await asyncio.shield(asyncio.wrap_future(self._scheduler.ready))
+            else:
+                self._store = await asyncio.to_thread(ScheduledMessageStore)
 
     def application(self) -> web.Application:
         @web.middleware
@@ -358,11 +375,8 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         if parsed.tzinfo is None:
             raise ValueError("Falta zona horaria.")
         due = parsed.timestamp()
-        if due < self._clock() - 30 or due > self._clock() + 366 * 86400:
-            raise ValueError("La hora está fuera del intervalo permitido.")
         policy = body["late_policy"]
-        if policy not in {"hold", "send-when-connected"}:
-            raise ValueError("Política no válida.")
+        validate_due(due, policy, self._clock(), grace=30)
         supplied = body["messages"]
         if not isinstance(supplied, list) or not 1 <= len(supplied) <= 10:
             raise ValueError("Se admiten hasta diez destinatarios.")
@@ -381,7 +395,7 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
                     },
                     status=409,
                 )
-            text = _text(message["text"], 4000)
+            text = validate_text(message["text"], max_length=4000)
             if contact_id in seen or is_local_bridge_command(text):
                 raise ValueError("Destinatario duplicado o comando local no permitido.")
             seen.add(contact_id)
@@ -415,7 +429,9 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         offset = int(request.query.get("offset", "0"))
         if state not in STATES or not 0 <= offset <= 100000:
             raise ValueError("Filtro no válido.")
-        rows, total = await asyncio.to_thread(self._store.list, account, state, offset)
+        rows, total = await asyncio.to_thread(
+            self._store.list, account, state, offset, origin="atajos"
+        )
         return web.json_response(
             {
                 "messages": [self._store.public(row) for row in rows],
@@ -429,76 +445,35 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
         await self._body(request, set())
         account, _, _ = self._snapshot()
         item_id = _uuid(request.match_info["id"])
-        canceled = await asyncio.to_thread(self._store.cancel, item_id, account)
+        canceled = await asyncio.to_thread(self._store.cancel, item_id, account, origin="atajos")
         return web.json_response({"canceled": canceled}, status=200 if canceled else 409)
 
     async def tick(self) -> None:
         await self._flush_observations()
-        account, ready, contacts = self._snapshot()
-        active = {contact["jid"] for contact in contacts.values()}
-        rows = await asyncio.to_thread(self._store.due, self._clock(), account)
-        for row in rows:
-            if self._closed.is_set():
-                break
-            if row["rule_id"] and not await asyncio.to_thread(
-                self._automation.authorized, row, self._clock()
-            ):
-                await asyncio.to_thread(
-                    self._store.transition,
-                    row["id"],
-                    "pending",
-                    "canceled",
-                    "La regla caducó o el chat cambió; no se envió.",
-                )
-                continue
-            if row["late_policy"] == "send-when-connected" and (
-                row["account"] != account or not ready
-            ):
-                continue
-            reason = ""
-            if row["account"] != account:
-                reason = "La cuenta activa es diferente; revisa el mensaje antes de reprogramarlo."
-            elif row["jid"] not in active:
-                reason = "El contacto ya no está disponible; revisa antes de reprogramar."
-            elif not ready:
-                reason = "La conexión no estaba disponible a la hora indicada."
-            elif self._clock() - float(row["due"]) > 30:
-                reason = "La hora pasó mientras el cliente estaba cerrado o no disponible."
-            if reason:
-                if row["late_policy"] == "send-when-connected" and row["account"] == account:
-                    if not ready:
-                        continue
-                    if row["jid"] in active:
-                        reason = ""
-                if reason:
-                    await asyncio.to_thread(
-                        self._store.transition,
-                        row["id"],
-                        "pending",
-                        "held",
-                        reason + " No se envió.",
-                    )
-                    continue
-            claimed = await asyncio.to_thread(
-                self._store.transition, row["id"], "pending", "dispatching"
-            )
-            if claimed:
-                try:
-                    self._send(row)
-                except Exception:
-                    await asyncio.to_thread(
-                        self._store.transition,
-                        row["id"],
-                        "dispatching",
-                        "uncertain",
-                        "No se pudo confirmar el envío. Comprueba el chat antes de repetir.",
-                    )
+
+        def snapshot():
+            account, ready, contacts = self._snapshot()
+            return account, ready, {chat["jid"]: chat for chat in contacts.values()}
+
+        async def authorize(row):
+            return await asyncio.to_thread(self._automation.authorized, row, self._clock())
+
+        await dispatch_due(
+            self._store, snapshot, self._send, self._clock, self._closed.is_set,
+            ("atajos",), authorize,
+        )
 
     def delivery(self, message_id: str, state: str) -> None:
+        if self._scheduler is not None:
+            self._scheduler.delivery(message_id, state)
+            return
         if self._store:
             self._background(self._store.finish_delivery, message_id, state)
 
     def unconfirmed(self, item_id: str) -> None:
+        if self._scheduler is not None:
+            self._scheduler.unconfirmed(item_id)
+            return
         if self._store:
             self._background(
                 self._store.transition,
@@ -509,6 +484,9 @@ class LocalAssistantAPI(AutomationAPIMixin, MediaAPIMixin):
             )
 
     def rejected(self, item_id: str, reason: str, *, wait: bool = False) -> None:
+        if self._scheduler is not None:
+            self._scheduler.rejected(item_id, reason, wait=wait)
+            return
         if self._store:
             self._background(
                 self._store.transition,

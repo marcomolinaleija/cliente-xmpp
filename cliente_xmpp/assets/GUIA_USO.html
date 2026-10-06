@@ -87,7 +87,9 @@
     <section id="conversacion">
       <h2>Leer y escribir en una conversación</h2>
       <h3>Historial</h3>
-      <p>Al abrir un chat se muestra primero la caché local y después se actualiza el historial. Usa <strong>Cargar mensajes anteriores</strong> para recuperar páginas más antiguas. Cada petición manual carga hasta 100 mensajes desde la caché y, si hace falta, desde el servidor.</p>
+      <p>Al abrir un chat se muestra primero la caché local y después se actualiza el historial. Usa <strong>Cargar mensajes anteriores</strong> para elegir cuántos recuperar: el valor predeterminado es 100. Escribe un número entero mayor que cero o <strong>todos</strong> para cargar todo lo restante disponible, primero desde la caché y después desde el servidor. Si pides más de los disponibles, se detiene al terminar el historial.</p>
+      <p>La carga avanza en lotes de hasta 100 mensajes, con pausas entre lotes para mantener la interfaz disponible. A partir de 500 mensajes, las páginas anteriores se insertan sin reconstruir toda la lista cuando su orden lo permite. El botón cambia a <strong>Detener carga</strong> y muestra el progreso; puedes detenerla sin quitar los mensajes ya cargados. Al salir del chat también se detiene. Una petición ya en curso puede completar su último lote.</p>
+      <p>Si solicitas 500 mensajes o más, o eliges <strong>todos</strong>, no se descargan automáticamente los archivos de esas páginas ni se analiza en masa la duración de los audios. Los archivos faltantes se descargan al abrirlos o reproducirlos.</p>
       <p>Dentro de la lista de mensajes, <kbd>Inicio</kbd> también va al primer elemento visible y solicita otra página anterior. Repite la tecla o usa el botón hasta llegar a la fecha que buscas. Si el chat tiene muchísimos mensajes de un mismo día, puede seguir anunciando la misma fecha aunque ya haya añadido mensajes más antiguos de ese día.</p>
       <ul>
         <li>Pulsa <kbd>Enter</kbd> sobre un mensaje para leerlo completo en una ventana.</li>
@@ -154,7 +156,7 @@
       <p>Dentro de un chat, activa el botón con el nombre del contacto o grupo para abrir su información. Ahí puedes consultar el número, el estado disponible, participantes del grupo y, si existe, la foto de perfil.</p>
       <ul>
         <li><strong>Ver mensajes destacados</strong>: muestra los mensajes que marcaste como destacados. Elige uno y usa <strong>Ir al mensaje</strong>.</li>
-        <li><strong>Buscar</strong> o <kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>F</kbd>: busca sólo en ese chat. Puedes combinar texto con un filtro por fecha y saltar al resultado.</li>
+        <li><strong>Buscar</strong> o <kbd>Ctrl</kbd>+<kbd>Mayús</kbd>+<kbd>F</kbd>: busca en todo el historial local de ese chat, no sólo en los mensajes visibles, y devuelve hasta 500 coincidencias recientes. Puedes combinar texto con un filtro por fecha y saltar al resultado.</li>
         <li><strong>Ver archivos</strong>: separa todos los elementos en archivos, enlaces, fotos, videos, audios y stickers. Desde ahí puedes abrir, copiar o borrar una descarga local.</li>
         <li><strong>Estadísticas locales del chat</strong>: muestra actividad, participación, horarios y otros resúmenes basados en los mensajes guardados aquí.</li>
         <li><strong>Describir foto con RayoAI</strong>: disponible cuando la foto de perfil está descargada y RayoAI está configurado.</li>

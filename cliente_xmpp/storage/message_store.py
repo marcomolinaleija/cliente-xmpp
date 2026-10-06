@@ -433,28 +433,48 @@ class MessageStore:
         chat_jid: str,
         before: datetime,
         limit: int = 80,
+        *,
+        before_message: Message | None = None,
     ) -> list[Message]:
-        """Load one local history page strictly older than ``before``.
+        """Load one local history page before a timestamp or exact cached row.
 
         Conversations intentionally open with a bounded cache.  Keeping this
         query separate from ``load_recent_messages`` lets the UI reveal the
         rest of an already-downloaded conversation before asking MAM again.
+        ``before_message`` also retains rows with the same timestamp that
+        precede the boundary row in the cache's stable order.
         """
         if limit <= 0:
             return []
 
         before_value = _datetime_to_db(before)
         with self._connect() as conn:
+            cursor_row = None
+            if before_message is not None and before_message.chat_jid == chat_jid:
+                cursor_row = conn.execute(
+                    "SELECT rowid FROM messages "
+                    "WHERE account_jid = ? AND chat_jid = ? AND message_key = ?",
+                    (account_jid, chat_jid, _message_key(before_message)),
+                ).fetchone()
+            # A timestamp alone skips messages sharing the page boundary.
+            boundary = "julianday(sent_at) < julianday(?)"
+            parameters: tuple[object, ...] = (account_jid, chat_jid, before_value)
+            if cursor_row is not None:
+                boundary = (
+                    "(julianday(sent_at) < julianday(?) OR "
+                    "(julianday(sent_at) = julianday(?) AND rowid < ?))"
+                )
+                parameters += (before_value, cursor_row["rowid"])
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM messages
                 WHERE account_jid = ? AND chat_jid = ?
-                    AND julianday(sent_at) < julianday(?)
+                    AND {boundary}
                 ORDER BY julianday(sent_at) DESC, rowid DESC
                 LIMIT ?
                 """,
-                (account_jid, chat_jid, before_value, limit),
+                (*parameters, limit),
             ).fetchall()
 
         return [_message_from_row(row) for row in reversed(rows)]
@@ -601,7 +621,7 @@ class MessageStore:
         self,
         account_jid: str,
         query: str,
-        limit: int = 200,
+        limit: int = 500,
         *,
         chat_jid: str | None = None,
         sent_on: date | None = None,

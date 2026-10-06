@@ -184,6 +184,7 @@ from cliente_xmpp.xmpp.events import (
 
 HISTORY_PAGE_SIZE = 20
 MANUAL_HISTORY_PAGE_SIZE = 100
+MANUAL_HISTORY_BATCH_DELAY_MS = 100
 CACHED_CONVERSATION_MESSAGE_LIMIT = 500
 MARK_ALL_READ_DELAY_MS = 750
 MARK_ALL_READ_HISTORY_TIMEOUT_MS = 8000
@@ -194,7 +195,8 @@ OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 GROUP_SELF_ECHO_WINDOW_SECONDS = 10
 CLIPBOARD_ATTACHMENTS_DIR = APP_DIR / "clipboard"
 CONTACT_AVATARS_DIR = APP_DIR / "avatars"
-SEARCH_RESULT_LIMIT = 200
+SEARCH_RESULT_LIMIT = 500
+SEARCH_MEMORY_MESSAGE_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
 SEARCH_DEBOUNCE_MS = 250
 WHATSAPP_QR_TIMEOUT_SECONDS = 60
@@ -215,6 +217,22 @@ class ClipboardAttachment:
     paths: list[Path] | None = None
     source_label: str = "archivo"
     message: str = ""
+
+
+@dataclass(slots=True)
+class ManualHistoryLoad:
+    account_jid: str
+    chat_jid: str
+    remaining: int | None
+    loaded: int = 0
+    source: str = ""
+    before: datetime | None = None
+    page_number: int = 0
+    page_size: int = MANUAL_HISTORY_PAGE_SIZE
+    bulk: bool = False
+
+    def __post_init__(self) -> None:
+        self.bulk = self.remaining is None or self.remaining >= 500
 
 
 class MainWindow(AtajosIntegrationMixin, wx.Frame):
@@ -302,7 +320,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         self.history_loading_chats: set[str] = set()
         self.local_history_loading_chats: set[str] = set()
         self.local_history_before_by_chat: dict[str, datetime] = {}
+        self.local_history_cursor_by_chat: dict[str, Message] = {}
         self.local_history_exhausted_chats: set[str] = set()
+        self.manual_history_load: ManualHistoryLoad | None = None
         self.deleted_message_ids_by_chat: dict[tuple[str, str], set[str]] = {}
         self.background_history_queue: deque[str] = deque()
         self.background_history_queued_chats: set[str] = set()
@@ -2473,6 +2493,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         ):
             chat_set.discard(chat_jid)
         self.local_history_before_by_chat.pop(chat_jid, None)
+        getattr(self, "local_history_cursor_by_chat", {}).pop(chat_jid, None)
+        load = getattr(self, "manual_history_load", None)
+        if load is not None and load.chat_jid == chat_jid:
+            self._stop_manual_history_load(load, "Carga detenida")
         self.cached_message_loads = {
             entry for entry in self.cached_message_loads if entry[1] != chat_jid
         }
@@ -3743,7 +3767,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             return
 
         terms = self._search_terms(query)
-        messages_snapshot = tuple(self.messages_by_chat.get(chat_jid, [])[-SEARCH_RESULT_LIMIT:])
+        messages_snapshot = tuple(
+            self.messages_by_chat.get(chat_jid, [])[-SEARCH_MEMORY_MESSAGE_LIMIT:]
+        )
         chat = self._chat_by_jid(chat_jid)
 
         def worker() -> None:
@@ -4111,6 +4137,16 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if not chat:
             return
 
+        load = getattr(self, "manual_history_load", None)
+        if load is not None:
+            self._stop_manual_history_load(load, "Carga detenida")
+            return
+        if (
+            chat.jid in self.history_loading_chats
+            or chat.jid in self.local_history_loading_chats
+        ):
+            return
+
         has_local = bool(
             self.local_history_before_by_chat.get(chat.jid)
             and chat.jid not in self.local_history_exhausted_chats
@@ -4118,7 +4154,127 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if not has_local and not self._require_whatsapp_connection():
             return
 
-        self._request_older_history_page(chat.jid)
+        dialog = wx.TextEntryDialog(
+            self,
+            "¿Cuántos mensajes anteriores quieres cargar?\n"
+            "Escribe un número mayor que cero o «todos» para cargar todo lo restante.\n"
+            "La carga se hace por lotes y puedes detenerla con el mismo botón.",
+            "Cargar mensajes anteriores",
+            str(MANUAL_HISTORY_PAGE_SIZE),
+        )
+        try:
+            while dialog.ShowModal() == wx.ID_OK:
+                try:
+                    amount = self._parse_history_amount(dialog.GetValue())
+                except ValueError:
+                    wx.MessageBox(
+                        "Escribe un número entero mayor que cero o «todos».",
+                        "Cantidad no válida",
+                        wx.OK | wx.ICON_WARNING,
+                        self,
+                    )
+                    continue
+                load = ManualHistoryLoad(self.current_jid, chat.jid, amount)
+                self.manual_history_load = load
+                self._continue_manual_history_load(load)
+                break
+        finally:
+            dialog.Destroy()
+
+    @staticmethod
+    def _parse_history_amount(value: str) -> int | None:
+        value = value.strip().casefold()
+        if value in {"todos", "todo"}:
+            return None
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError("Invalid history amount")
+        amount = int(value)
+        if amount <= 0:
+            raise ValueError("Invalid history amount")
+        return amount
+
+    def _stop_manual_history_load(self, load: ManualHistoryLoad, reason: str) -> None:
+        if getattr(self, "manual_history_load", None) is not load:
+            return
+        self.manual_history_load = None
+        self._refresh_load_older_button(load.chat_jid)
+        if not getattr(self, "_closing", False):
+            message = f"{reason}: {load.loaded} mensajes anteriores cargados"
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+
+    def _continue_manual_history_load(self, load: ManualHistoryLoad) -> None:
+        if getattr(self, "manual_history_load", None) is not load:
+            return
+        chat = self.conversation.current_chat
+        if (
+            getattr(self, "_closing", False)
+            or getattr(self, "_storage_reset_in_progress", False)
+            or getattr(self, "_storage_maintenance_in_progress", False)
+            or self.current_jid != load.account_jid
+            or not self.conversation.IsShown()
+            or chat is None
+            or chat.jid != load.chat_jid
+        ):
+            self._stop_manual_history_load(load, "Carga detenida")
+            return
+        if load.remaining == 0:
+            self._stop_manual_history_load(load, "Carga terminada")
+            return
+        if (
+            load.chat_jid in self.history_loading_chats
+            or load.chat_jid in self.local_history_loading_chats
+        ):
+            self._stop_manual_history_load(load, "Ya hay una petición de historial en curso")
+            return
+        has_local = bool(
+            self.local_history_before_by_chat.get(load.chat_jid)
+            and load.chat_jid not in self.local_history_exhausted_chats
+        )
+        if not has_local and (
+            load.chat_jid in self.history_exhausted_chats or not self.whatsapp_verified
+        ):
+            self._stop_manual_history_load(load, "No hay más historial disponible")
+            return
+        load.before = self._oldest_message_time(load.chat_jid)
+        load.source = "local" if has_local else "remote"
+        load.page_number += 1
+        page_size = min(MANUAL_HISTORY_PAGE_SIZE, load.remaining or MANUAL_HISTORY_PAGE_SIZE)
+        load.page_size = page_size
+        self._request_older_history_page(load.chat_jid, page_size=page_size, manual_load=load)
+        wx.CallLater(60000, self._manual_history_timeout, load, load.page_number)
+
+    def _manual_history_timeout(self, load: ManualHistoryLoad, page_number: int) -> None:
+        if load.source and load.page_number == page_number:
+            self._stop_manual_history_load(load, "La carga tardó demasiado; se detuvo")
+
+    def _advance_manual_history_load(
+        self, load: ManualHistoryLoad, *, loaded: int = 0,
+        complete: bool = False, error: str = ""
+    ) -> None:
+        if getattr(self, "manual_history_load", None) is not load:
+            return
+        load.loaded += loaded
+        if load.remaining is not None:
+            load.remaining = max(0, load.remaining - loaded)
+        oldest = self._oldest_message_time(load.chat_jid)
+        no_remote_progress = load.source == "remote" and (
+            oldest is None or (load.before is not None and oldest >= load.before)
+        )
+        load.source = ""
+        if error or complete or no_remote_progress or load.remaining == 0:
+            reason = error or (
+                "Carga terminada" if load.remaining == 0 else "No hay más mensajes anteriores"
+            )
+            if no_remote_progress and not complete and not error:
+                reason = "El servidor no devolvió mensajes más antiguos; carga detenida"
+            self._stop_manual_history_load(load, reason)
+            return
+        self.status_bar.SetStatusText(
+            f"Cargando mensajes anteriores: {load.loaded} cargados. Puedes detener la carga."
+        )
+        self._refresh_load_older_button(load.chat_jid)
+        wx.CallLater(MANUAL_HISTORY_BATCH_DELAY_MS, self._continue_manual_history_load, load)
 
     def _on_attach_file(self, _event: wx.CommandEvent) -> None:
         if not self._require_whatsapp_connection():
@@ -6233,6 +6389,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             event.Veto()
             return
         self._closing = True
+        self.manual_history_load = None
         self._close_atajos_api()
         self._stop_bridge_update_feedback()
         update_check_timer = getattr(self, "update_check_timer", None)
@@ -6289,6 +6446,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     self._show_chat_placeholder(message)
                     self.status_bar.SetStatusText(message)
             case XmppDisconnected(reason=reason):
+                load = getattr(self, "manual_history_load", None)
+                if load is not None:
+                    self.history_loading_chats.discard(load.chat_jid)
+                    self._stop_manual_history_load(load, "Conexión interrumpida")
                 self.whatsapp_verified = False
                 self.whatsapp_link_status = "unknown"
                 self.whatsapp_pair_phone_pending = ""
@@ -6304,6 +6465,16 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     self.connection_header.set_status("Desconectado (Reconectando...)")
                     self.status_bar.SetStatusText("Desconectado")
             case XmppError(message=message):
+                load = getattr(self, "manual_history_load", None)
+                if (
+                    load is not None
+                    and load.source == "remote"
+                    and message.startswith(f"No se pudo cargar el historial de {load.chat_jid}:")
+                ):
+                    self.history_loading_chats.discard(load.chat_jid)
+                    self._advance_manual_history_load(
+                        load, error="No se pudo cargar el historial remoto"
+                    )
                 self.login_panel.set_connecting(False)
                 if self.startup_panel.IsShown():
                     self._set_connected_ui(False)
@@ -6579,6 +6750,20 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         complete: bool,
         background: bool = False,
     ) -> None:
+        previous_count = len(self.messages_by_chat.get(chat_jid, []))
+        manual_load = getattr(self, "manual_history_load", None)
+        if not (
+            manual_load is not None
+            and manual_load.chat_jid == chat_jid
+            and manual_load.account_jid == self.current_jid
+            and manual_load.source == "remote"
+            and not background
+        ):
+            manual_load = None
+        if manual_load is not None:
+            # Filtered MAM and its fallback can return two overlapping windows.
+            # Keep the requested bound; the next page retrieves the older tail.
+            messages = messages[-manual_load.page_size:]
         if background:
             self.background_history_loading_chat = ""
             self.background_history_queued_chats.discard(chat_jid)
@@ -6599,7 +6784,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             and self.conversation.current_chat
             and self.conversation.current_chat.jid == chat_jid
         )
-        if not background or is_visible_chat:
+        if (not background or is_visible_chat) and not (manual_load and manual_load.bulk):
             self._normalize_audio_metadata_for_messages(messages)
         merged_updates = self._merge_messages(chat_jid, messages)
         self._flush_pending_reaction_updates(chat_jid)
@@ -6622,7 +6807,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if activity_messages:
             self._update_chat_activity_from_messages(chat_jid, activity_messages)
             self._update_chat_preview_from_messages(chat_jid, activity_messages)
-            if not background or is_visible_chat:
+            if (not background or is_visible_chat) and not (manual_load and manual_load.bulk):
                 self._auto_download_media_messages(activity_messages)
         # A synced read marker may arrive before the corresponding history page.
         # Reapply it after merging messages so the marker can now be resolved.
@@ -6636,7 +6821,10 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             self._load_conversation(
                 self.conversation.current_chat,
                 unread_count=self.conversation.unread_marker_count(),
+                **({"incremental_history": True} if manual_load is not None else {}),
             )
+            if manual_load is not None:
+                self._refresh_history_message_rows(messages, merged_updates + corrected_messages)
             self._refresh_load_older_button(chat_jid)
             self._mark_current_chat_displayed(chat_jid)
 
@@ -6647,6 +6835,13 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             wx.CallLater(BACKGROUND_SYNC_DELAY_MS, self._pump_background_history_sync)
             return
 
+        if manual_load is not None:
+            self._advance_manual_history_load(
+                manual_load,
+                loaded=max(0, len(self.messages_by_chat.get(chat_jid, [])) - previous_count),
+                complete=complete,
+            )
+            return
         if older:
             loaded_count = len(messages)
             self.status_bar.SetStatusText(f"{loaded_count} mensajes anteriores cargados")
@@ -6656,6 +6851,18 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             self.status_bar.SetStatusText("Historial reciente precargado")
         else:
             self.status_bar.SetStatusText(f"{len(messages)} mensajes cargados")
+
+    def _refresh_history_message_rows(
+        self, messages: list[Message], updates: list[Message]
+    ) -> None:
+        chat = self.conversation.current_chat
+        if chat is None:
+            return
+        # Merge may retain the original object while enriching its metadata.
+        keys = {self._message_merge_key(message) for message in messages + updates}
+        for message in self.messages_by_chat.get(chat.jid, []):
+            if self._message_merge_key(message) in keys:
+                self.conversation.refresh_message(message)
 
     def _merge_messages(self, chat_jid: str, messages: list[Message]) -> list[Message]:
         message_by_id = getattr(self, "_message_by_id", None)
@@ -7125,9 +7332,19 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             background=background,
         )
 
-    def _request_older_history_page(self, chat_jid: str) -> None:
+    def _request_older_history_page(
+        self,
+        chat_jid: str,
+        page_size: int = MANUAL_HISTORY_PAGE_SIZE,
+        manual_load: ManualHistoryLoad | None = None,
+    ) -> None:
         """Prefer a bounded local page before querying the remote archive."""
-        if chat_jid in self.history_loading_chats:
+        if getattr(self, "manual_history_load", None) is not None and manual_load is None:
+            return
+        if (
+            chat_jid in self.history_loading_chats
+            or chat_jid in getattr(self, "local_history_loading_chats", set())
+        ):
             return
 
         before = self.local_history_before_by_chat.get(chat_jid)
@@ -7138,7 +7355,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             self._request_history_page(
                 chat_jid,
                 older=True,
-                page_size=MANUAL_HISTORY_PAGE_SIZE,
+                page_size=page_size,
             )
             return
 
@@ -7146,11 +7363,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             self._request_history_page(
                 chat_jid,
                 older=True,
-                page_size=MANUAL_HISTORY_PAGE_SIZE,
+                page_size=page_size,
             )
             return
 
         account_jid = self.current_jid
+        cursor = getattr(self, "local_history_cursor_by_chat", {}).get(chat_jid)
         self.local_history_loading_chats.add(chat_jid)
         self._refresh_load_older_button(chat_jid)
         self.status_bar.SetStatusText("Cargando mensajes anteriores de la caché local...")
@@ -7161,7 +7379,8 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     account_jid,
                     chat_jid,
                     before,
-                    limit=MANUAL_HISTORY_PAGE_SIZE,
+                    limit=page_size,
+                    before_message=cursor,
                 )
             except Exception:
                 wx.CallAfter(
@@ -7170,6 +7389,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                     chat_jid,
                     [],
                     "No se pudo consultar el historial local.",
+                    manual_load,
                 )
                 return
             wx.CallAfter(
@@ -7178,6 +7398,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 chat_jid,
                 messages,
                 "",
+                manual_load,
             )
 
         # This is a read-only SQLite query.  It must not wait behind the
@@ -7195,18 +7416,33 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         chat_jid: str,
         messages: list[Message],
         error: str,
+        manual_load: ManualHistoryLoad | None = None,
     ) -> None:
         self.local_history_loading_chats.discard(chat_jid)
-        if account_jid != self.current_jid:
+        if (
+            account_jid != self.current_jid
+            or getattr(self, "_closing", False)
+            or getattr(self, "_storage_reset_in_progress", False)
+        ):
+            if manual_load is not None:
+                self._stop_manual_history_load(manual_load, "Carga detenida")
             return
 
         if messages:
-            self.local_history_before_by_chat[chat_jid] = min(
-                messages,
-                key=self._message_timestamp,
-            ).sent_at
-            self._normalize_audio_metadata_for_messages(messages)
+            previous_count = len(self.messages_by_chat.get(chat_jid, []))
+            previous_objects = {id(message) for message in self.messages_by_chat.get(chat_jid, [])}
+            self.local_history_before_by_chat[chat_jid] = messages[0].sent_at
+            self.local_history_cursor_by_chat[chat_jid] = replace(messages[0])
+            if not (manual_load and manual_load.bulk):
+                self._normalize_audio_metadata_for_messages(messages)
             merged_updates = self._merge_messages(chat_jid, messages)
+            # The local cursor establishes row order even when timestamps tie.
+            # Older cache rows must precede the retained boundary objects.
+            self.messages_by_chat[chat_jid].sort(
+                key=lambda message: (
+                    self._message_timestamp(message), id(message) in previous_objects
+                )
+            )
             self._flush_pending_reaction_updates(chat_jid)
             self._persist_messages(merged_updates)
             current_chat = self.conversation.current_chat
@@ -7214,7 +7450,17 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
                 self._load_conversation(
                     current_chat,
                     unread_count=self.conversation.unread_marker_count(),
+                    **({"incremental_history": True} if manual_load is not None else {}),
                 )
+                if manual_load is not None:
+                    self._refresh_history_message_rows(messages, merged_updates)
+            if manual_load is not None:
+                self._advance_manual_history_load(
+                    manual_load,
+                    loaded=max(0, len(self.messages_by_chat.get(chat_jid, [])) - previous_count),
+                )
+                self._refresh_load_older_button(chat_jid)
+                return
             self.status_bar.SetStatusText(
                 f"{len(messages)} mensajes anteriores cargados de la caché local"
             )
@@ -7226,6 +7472,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if error:
             self.status_bar.SetStatusText(error)
             self._refresh_load_older_button(chat_jid)
+            if manual_load is not None:
+                self._advance_manual_history_load(manual_load, error=error)
+                return
             self._request_history_page(
                 chat_jid,
                 older=True,
@@ -7235,6 +7484,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
 
         self.local_history_exhausted_chats.add(chat_jid)
         self._refresh_load_older_button(chat_jid)
+        if manual_load is not None:
+            self._advance_manual_history_load(manual_load)
+            return
         if chat_jid not in self.history_exhausted_chats:
             self._request_history_page(
                 chat_jid,
@@ -7313,6 +7565,16 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         return min(messages, key=self._message_timestamp).sent_at
 
     def _refresh_load_older_button(self, chat_jid: str) -> None:
+        current_chat = self.conversation.current_chat
+        if current_chat is None or current_chat.jid != chat_jid:
+            return
+        load = getattr(self, "manual_history_load", None)
+        if load is not None and load.chat_jid == chat_jid:
+            self.conversation.load_older_button.Enable(True)
+            self.conversation.load_older_button.SetLabel(
+                f"&Detener carga ({load.loaded} mensajes cargados)"
+            )
+            return
         loading = (
             chat_jid in self.history_loading_chats
             or chat_jid in self.local_history_loading_chats
@@ -7323,7 +7585,7 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             and chat_jid not in self.local_history_exhausted_chats
         )
         self.conversation.load_older_button.Enable(
-            (has_local or self.whatsapp_verified) and not loading and not exhausted
+            (has_local or (self.whatsapp_verified and not exhausted)) and not loading
         )
         if loading:
             self.conversation.load_older_button.SetLabel("Cargando mensajes...")
@@ -8185,13 +8447,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         self.cached_message_loads.add(cache_key)
 
         if len(cached_messages) >= CACHED_CONVERSATION_MESSAGE_LIMIT:
-            self.local_history_before_by_chat[chat_jid] = min(
-                cached_messages,
-                key=self._message_timestamp,
-            ).sent_at
+            self.local_history_before_by_chat[chat_jid] = cached_messages[0].sent_at
+            self.local_history_cursor_by_chat[chat_jid] = replace(cached_messages[0])
             self.local_history_exhausted_chats.discard(chat_jid)
         else:
             self.local_history_before_by_chat.pop(chat_jid, None)
+            self.local_history_cursor_by_chat.pop(chat_jid, None)
             self.local_history_exhausted_chats.add(chat_jid)
 
         if cached_messages:
@@ -8369,7 +8630,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         if changed_messages:
             self._refresh_chat_order()
 
-    def _load_conversation(self, chat: Chat, unread_count: int = 0) -> None:
+    def _load_conversation(
+        self, chat: Chat, unread_count: int = 0, *, incremental_history: bool = False
+    ) -> None:
         started_at = time.perf_counter()
         self._load_cached_messages_for_chat(chat.jid)
         self._load_cached_group_participants(chat)
@@ -8384,10 +8647,12 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
             self.conversation.set_chat(chat)
         self._refresh_conversation_avatar(chat)
         render_started_at = time.perf_counter()
-        self.conversation.set_messages(
-            self.messages_by_chat.get(chat.jid, []),
-            unread_count=unread_count,
-        )
+        messages = self.messages_by_chat.get(chat.jid, [])
+        if not (
+            incremental_history
+            and self.conversation.prepend_history_messages(messages, unread_count=unread_count)
+        ):
+            self.conversation.set_messages(messages, unread_count=unread_count)
         self._debug_perf(
             "_load_conversation.render_messages",
             render_started_at,
@@ -8911,6 +9176,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
         target_message: Message | None = None,
         request_remote_context: bool = True,
     ) -> None:
+        load = getattr(self, "manual_history_load", None)
+        if load is not None and load.chat_jid != chat.jid:
+            self._stop_manual_history_load(load, "Carga detenida")
         if target_message is not None:
             self._merge_messages(chat.jid, [target_message])
             self._update_chat_activity(chat.jid, self._message_timestamp(target_message))
@@ -8950,6 +9218,9 @@ class MainWindow(AtajosIntegrationMixin, wx.Frame):
 
     def _show_chat_list(self) -> str:
         selected_jid = self.conversation.current_chat.jid if self.conversation.current_chat else ""
+        load = getattr(self, "manual_history_load", None)
+        if load is not None:
+            self._stop_manual_history_load(load, "Carga detenida")
         if self.audio_recorder.is_recording:
             self.audio_recorder.cancel()
             self.conversation.set_recording_state(False)

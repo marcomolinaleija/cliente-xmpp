@@ -289,6 +289,91 @@ class ConversationPanel(wx.Panel):
             )
         self._update_message_action_buttons()
 
+    def prepend_history_messages(self, messages: list[Message], unread_count: int = 0) -> bool:
+        """Insert a bounded older page without rebuilding a large native list.
+
+        Keep native selection/focus and scroll anchored to the existing rows.
+        Reordered/replaced histories still use the normal reconciliation path.
+        """
+        added = len(messages) - len(self._messages)
+        if (
+            len(messages) < 500
+            or not self._messages
+            or added < 0
+            or added > 100
+            or unread_count != self._unread_marker_count
+            or any(
+                old is not new for old, new in zip(self._messages, messages[added:], strict=True)
+            )
+        ):
+            return False
+        if added == 0:
+            return True
+
+        prefix: list[Message | str] = []
+        previous_date: date | None = None
+        for message in messages[:added]:
+            message_date = self._message_local_datetime(message).date()
+            if message_date != previous_date:
+                prefix.append(f"{DATE_SEPARATOR_PREFIX}{message_date.isoformat()}")
+                previous_date = message_date
+            prefix.append(message)
+        duplicate_date = bool(
+            self._message_rows
+            and self._message_rows[0] == f"{DATE_SEPARATOR_PREFIX}{previous_date.isoformat()}"
+        )
+        removed_header_state = (
+            self.messages.GetItemState(0, wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED)
+            if duplicate_date else 0
+        )
+        header_index = prefix.index(self._message_rows[0]) if duplicate_date else None
+        top = self.messages.GetTopItem()
+        top_y = self.messages.GetItemRect(top).y if top >= 0 else None
+        removed = int(duplicate_date)
+        shift = len(prefix) - removed
+        self.messages.Freeze()
+        try:
+            if duplicate_date:
+                self.messages.DeleteItem(0)
+            self._messages = list(messages)
+            self._message_rows = prefix + self._message_rows[removed:]
+            self._message_row_indexes = {
+                key: index + shift for key, index in self._message_row_indexes.items()
+            }
+            for name in (
+                "_unread_marker_index", "_focus_target_index", "_focused_message_row_index",
+                "_current_audio_row_index", "_pending_audio_row_index",
+            ):
+                index = getattr(self, name, None)
+                if index is not None:
+                    new_index = header_index if duplicate_date and index == 0 else index + shift
+                    setattr(self, name, new_index)
+            for index, row in enumerate(prefix):
+                if isinstance(row, Message):
+                    self._message_row_indexes[id(row)] = index
+                    self.messages.InsertItem(
+                        index,
+                        self._format_message_row_for_list(index, row),
+                        self._thumbnail_index_for_message(row),
+                    )
+                    self._style_message_item(index)
+                else:
+                    row_date = date.fromisoformat(row.removeprefix(DATE_SEPARATOR_PREFIX))
+                    self.messages.InsertItem(index, self._format_date_separator(row_date), -1)
+                    self.messages.SetItemTextColour(index, YELLOW)
+                    self.messages.SetItemBackgroundColour(index, SECTION_BLUE)
+            if removed_header_state:
+                self.messages.SetItemState(
+                    header_index, removed_header_state,
+                    wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED,
+                )
+            if top_y is not None:
+                self.messages.ScrollList(0, self.messages.GetItemRect(top + shift).y - top_y)
+        finally:
+            self.messages.Thaw()
+        self._update_message_action_buttons()
+        return True
+
     def _restore_message_view_state(
         self,
         selected_keys: set[tuple[object, ...]],

@@ -76,7 +76,9 @@ La pantalla habitual muestra búsqueda, filtro, stickers y vista previa, con
 **Crear**, **Acciones**, **Biblioteca**, **Enviar** (sólo en un chat) y **Cerrar**.
 **Biblioteca** reúne importación, gestión/exportación/envío de paquetes y
 preferencias. Anterior/Siguiente sólo aparecen cuando hay paginación; Ctrl+F
-enfoca Buscar y Ctrl+RePág/AvPág cambia de página. La lista usa dos columnas;
+enfoca Buscar y Ctrl+RePág/AvPág cambia de página. Al abrir, el foco queda en la
+lista de stickers; Alt+M vuelve a ella y Alt+O enfoca el filtro Mostrar.
+Las recargas conservan el foco que hayas elegido. La lista usa dos columnas;
 favorito y animación se anuncian con el nombre, no en columnas adicionales.
 El filtro conserva el foco al usar flechas, incluso durante la carga. Los cambios
 rápidos aplican la última selección; Tab permite pasar a la lista.

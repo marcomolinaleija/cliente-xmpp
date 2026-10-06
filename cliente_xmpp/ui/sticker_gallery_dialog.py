@@ -117,6 +117,7 @@ class StickerGalleryDialog(wx.Dialog):
         self._initial_source, self._initial_description = initial_source, initial_description
         self._initial_pack = initial_pack
         self._active, self._busy = True, False
+        self._initial_list_focus_pending = True
         self._reload_pending = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="can-stickers")
         self._entries: list[LibrarySticker] = []
@@ -133,6 +134,7 @@ class StickerGalleryDialog(wx.Dialog):
         self.SetMinSize((760, 480))
         self.CenterOnParent()
         self.Bind(wx.EVT_CLOSE, self._close)
+        self.Bind(wx.EVT_SHOW, self._shown)
         self.Bind(wx.EVT_BUTTON, self._close, id=wx.ID_CANCEL)
         wx.CallAfter(self._reload)
 
@@ -154,7 +156,7 @@ class StickerGalleryDialog(wx.Dialog):
         self.search.SetName("Buscar stickers por nombre o descripción; Enter para buscar")
         filters.Add(self.search, 2, wx.RIGHT, 12)
         filters.Add(
-            wx.StaticText(self, label="&Mostrar:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6
+            wx.StaticText(self, label="M&ostrar:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6
         )
         self.groups = wx.Choice(self, choices=["Todos", "Favoritos"])
         self.groups.SetSelection(0)
@@ -203,6 +205,32 @@ class StickerGalleryDialog(wx.Dialog):
         self.items.Bind(wx.EVT_KEY_DOWN, self._key)
         self.Bind(wx.EVT_CHAR_HOOK, self._shortcut)
         self._enable(True)
+
+    def _shown(self, event: wx.ShowEvent) -> None:
+        if event.IsShown() and self._initial_list_focus_pending:
+            self._initial_list_focus_pending = False
+            # ShowModal assigns its default focus after the show event.
+            wx.CallAfter(self._focus_initial_list)
+        event.Skip()
+
+    def _focus_initial_list(self) -> None:
+        if not self._active or not self.IsShown():
+            return
+        focused = wx.Window.FindFocus()
+        if focused is None or wx.GetTopLevelParent(focused) is self:
+            self._focus_list()
+
+    def _focus_list(self) -> None:
+        if not self._active:
+            return
+        selected = self.items.GetFirstSelected()
+        if selected == wx.NOT_FOUND and self.items.GetItemCount():
+            selected = 0
+            self.items.Select(selected)
+        if selected != wx.NOT_FOUND:
+            self.items.Focus(selected)
+            self.items.EnsureVisible(selected)
+        self.items.SetFocus()
 
     def _enable(self, enabled: bool, *, keep_filters: bool = False) -> None:
         for button in self._buttons:
@@ -375,7 +403,14 @@ class StickerGalleryDialog(wx.Dialog):
 
     def _shortcut(self, event: wx.KeyEvent) -> None:
         code = event.GetKeyCode()
-        if event.ControlDown() and code == ord("F") and not self._busy:
+        if (
+            code == ord("M")
+            and event.AltDown()
+            and not event.ControlDown()
+            and not event.ShiftDown()
+        ):
+            self._focus_list()
+        elif event.ControlDown() and code == ord("F") and not self._busy:
             self.search.SetFocus()
             self.search.SelectAll()
         elif event.ControlDown() and code == wx.WXK_PAGEUP:
@@ -421,7 +456,8 @@ class StickerGalleryDialog(wx.Dialog):
             "Elige un sticker con las flechas. F2 renombra; Espacio lee la descripción; "
             "Enter envía si abriste desde un chat. Mayús+F10 o Acciones muestra su menú.\n\n"
             "Crear convierte una foto sin modificar el original. Biblioteca permite "
-            "importar, agrupar, exportar, compartir y configurar RayoAI. Ctrl+F busca; "
+            "importar, agrupar, exportar, compartir y configurar RayoAI. "
+            "Alt+M enfoca la lista; Alt+O enfoca Mostrar; Ctrl+F busca; "
             "Ctrl+RePág/AvPág cambia de página. Escape cierra.\n\n"
             "La operación iniciada termina en segundo plano si cierras. "
             "El formato .wastickers necesita un importador móvil compatible.",

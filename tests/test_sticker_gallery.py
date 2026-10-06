@@ -390,6 +390,91 @@ class StickerGalleryTests(unittest.TestCase):
         self.assertEqual(self.dialog._selected().id, second.id)
         focus.assert_not_called()
 
+    def test_first_show_schedules_list_focus_once_after_modal_default_focus(self) -> None:
+        self.dialog._initial_list_focus_pending = True
+        event = SimpleNamespace(IsShown=lambda: True, Skip=Mock())
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.CallAfter") as schedule:
+            self.dialog._shown(event)
+            self.dialog._shown(event)
+        schedule.assert_called_once_with(self.dialog._focus_initial_list)
+        self.assertFalse(self.dialog._initial_list_focus_pending)
+        self.assertEqual(event.Skip.call_count, 2)
+
+    def test_opening_modal_gallery_focuses_the_list_not_search(self) -> None:
+        entry = self.library.add(self.source, name="Sticker de prueba")
+        self.dialog._reload()
+        self.wait(lambda: bool(self.dialog._entries) and not self.dialog._busy)
+        focused = []
+        self.dialog.Move((-10000, -10000))
+
+        def inspect_and_close() -> None:
+            focused.append(wx.Window.FindFocus())
+            self.dialog.EndModal(wx.ID_CANCEL)
+
+        timer = wx.CallLater(100, inspect_and_close)
+        try:
+            self.dialog.ShowModal()
+        finally:
+            timer.Stop()
+        self.assertEqual(focused, [self.dialog.items])
+        self.assertEqual(self.dialog._selected().id, entry.id)
+
+    def test_alt_m_focuses_list_and_keeps_selection_even_during_reload(self) -> None:
+        first = self.library.add(self.source, name="A")
+        second_image = self.root / "focus-second.png"
+        Image.new("RGBA", (32, 32), "blue").save(second_image)
+        second = self.library.add(second_image, name="B")
+        self.dialog._selected_id = second.id
+        self.dialog._loaded(([first, second], [], {}, None, False))
+        self.dialog._busy = True
+        event = SimpleNamespace(
+            GetKeyCode=lambda: ord("M"), AltDown=lambda: True,
+            ControlDown=lambda: False, ShiftDown=lambda: False, Skip=Mock(),
+        )
+        with patch.object(self.dialog.items, "SetFocus") as focus:
+            self.dialog._shortcut(event)
+        focus.assert_called_once_with()
+        self.assertEqual(self.dialog._selected().id, second.id)
+        event.Skip.assert_not_called()
+
+    def test_alt_m_can_focus_an_empty_list_and_does_not_select_a_missing_row(self) -> None:
+        with patch.object(self.dialog.items, "SetFocus") as focus:
+            self.dialog._focus_list()
+        focus.assert_called_once_with()
+        self.assertEqual(self.dialog.items.GetFirstSelected(), wx.NOT_FOUND)
+
+    def test_initial_focus_callback_does_not_touch_controls_after_shutdown(self) -> None:
+        self.dialog._shutdown()
+        with patch.object(self.dialog.items, "SetFocus") as focus:
+            self.dialog._focus_initial_list()
+        focus.assert_not_called()
+
+    def test_initial_focus_does_not_steal_focus_from_an_open_child_dialog(self) -> None:
+        with (
+            patch.object(self.dialog, "IsShown", return_value=True),
+            patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.Window.FindFocus",
+                  return_value=self.dialog.details),
+            patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.GetTopLevelParent",
+                  return_value=Mock()),
+            patch.object(self.dialog.items, "SetFocus") as focus,
+        ):
+            self.dialog._focus_initial_list()
+        focus.assert_not_called()
+
+    def test_alt_m_does_not_handle_unmodified_m_or_ctrl_alt_m(self) -> None:
+        modifiers = ((False, False, False), (True, True, False), (True, False, True))
+        for alt, control, shift in modifiers:
+            with self.subTest(alt=alt, control=control, shift=shift):
+                event = SimpleNamespace(
+                    GetKeyCode=lambda: ord("M"), AltDown=Mock(return_value=alt),
+                    ControlDown=Mock(return_value=control), ShiftDown=Mock(return_value=shift),
+                    Skip=Mock(),
+                )
+                with patch.object(self.dialog.items, "SetFocus") as focus:
+                    self.dialog._shortcut(event)
+                focus.assert_not_called()
+                event.Skip.assert_called_once_with()
+
     def test_filter_stays_enabled_and_latest_choice_wins_during_slow_reload(self) -> None:
         entry = self.library.add(self.source, name="Favorite")
         self.library.edit(entry.id, favorite=True)

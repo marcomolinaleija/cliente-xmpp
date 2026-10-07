@@ -46,6 +46,19 @@ permite consultar estados y cancelar pendientes. CAN debe estar abierto y el
 equipo despierto para despacharlos. Consulta [la guía de programación](docs/MENSAJES_PROGRAMADOS.md)
 para teclado, límites y resultados inciertos.
 
+## Audios adjuntos y notas de voz
+
+Los MP3 adjuntos se envían como audio normal; los demás formatos de audio, como
+archivos, sin recodificarlos. CAN conserva el mismo reproductor para ambos.
+Las grabaciones del micrófono siguen siendo notas de voz.
+
+Este comportamiento requiere un puente con la capacidad de modos de audio v31.
+Si falta, CAN avisa y no envía el adjunto en un formato distinto al solicitado.
+La imagen v31 está **publicada en GHCR y fijada por digest en el manifiesto
+estable**. La VPS utiliza esa misma imagen probada, conservando la sesión y los
+montajes, con respaldo y rollback a v30. Consulta
+[modos de audio y verificación](docs/PUENTE_WHATSAPP_MODOS_AUDIO.md).
+
 ## Integración con el asistente de Atajos
 
 WhatsApp CAN 1.4.15 permite a Atajos 1.1.6 consultar los últimos adjuntos recibidos y obtener la imagen, audio o vídeo elegido para analizarlo con Gemini. Puede descargar la copia que falte, con límite de 100 MiB. Requiere la integración local activada. La consulta no marca leído ni envía respuestas; el contenido elegido se comparte con Google por petición del usuario.

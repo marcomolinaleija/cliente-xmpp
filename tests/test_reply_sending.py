@@ -176,6 +176,7 @@ class ReplySendingTests(unittest.TestCase):
             "ptt.ogg",
             is_group=False,
             view_once=False,
+            as_voice_note=True,
             reply_to_jid=target.sender_jid,
             reply_to_id=target.message_id,
             reply_quote=target.body,

@@ -124,6 +124,7 @@ class FileBatchCompleted:
     total: int
     succeeded: int
     failed: int
+    detail: str = ""
 
 
 @dataclass(slots=True)

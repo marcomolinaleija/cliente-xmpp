@@ -104,6 +104,8 @@ MAM_NS = "urn:xmpp:mam:2"
 FORWARD_NS = "urn:xmpp:forward:0"
 CLIENT_NS = "jabber:client"
 DISCO_INFO_NS = "http://jabber.org/protocol/disco#info"
+CAN_AUDIO_MODE_NS = "urn:can:audio-mode:0"
+MAX_AUDIO_ATTACHMENT_BYTES = 64 * 1024 * 1024
 DISCO_ITEMS_NS = "http://jabber.org/protocol/disco#items"
 MUC_NS = "http://jabber.org/protocol/muc"
 MUC_USER_NS = "http://jabber.org/protocol/muc#user"
@@ -180,6 +182,10 @@ EXPLICIT_MIME_TYPES = {
     ".weba": "audio/webm",
 }
 URL_PATTERN = re.compile(r"https?://\S+")
+
+
+class UnsupportedAudioModeError(ValueError):
+    """Safe, actionable explanation that can be announced once for a file batch."""
 
 
 class BridgeXmppClient(ClientXMPP):
@@ -4529,6 +4535,7 @@ class BridgeXmppClient(ClientXMPP):
         sticker_description: str = "",
         copy_sticker: bool = False,
         as_sticker_pack: bool = False,
+        as_voice_note: bool = False,
     ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
@@ -4556,6 +4563,36 @@ class BridgeXmppClient(ClientXMPP):
         if as_sticker_pack:
             mime = "application/x-can-sticker-pack"
         media_kind = self._media_kind_from_mime_or_url(mime, file_path.name) or "file"
+        if as_voice_note and (media_kind != "audio" or as_sticker or as_sticker_pack):
+            raise ValueError("Las notas de voz deben ser archivos de audio.")
+        if view_once and not as_voice_note:
+            raise ValueError("La reproducción única sólo está disponible para notas de voz.")
+        audio_mode = ""
+        bridge_audio_mode = False
+        if media_kind == "audio":
+            audio_mode = "voice" if as_voice_note else (
+                "audio" if file_path.suffix.lower() == ".mp3" else "document"
+            )
+            if not as_voice_note:
+                if not 0 < file_path.stat().st_size <= MAX_AUDIO_ATTACHMENT_BYTES:
+                    raise ValueError(
+                        "El audio adjunto debe contener datos y no puede superar 64 MiB."
+                    )
+                # Never silently fall back to the bridge's legacy voice conversion.
+                component = to_jid.split("/", 1)[0].split("@")[-1]
+                bridge_audio_mode = BridgeXmppClient._is_probable_whatsapp_bridge_jid(component)
+                if bridge_audio_mode:
+                    info = await self["xep_0030"].get_info(jid=component, cached=False, timeout=10)
+                    features = {
+                        node.attrib.get("var")
+                        for node in info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")
+                    }
+                    if CAN_AUDIO_MODE_NS not in features:
+                        raise UnsupportedAudioModeError(
+                            "Este puente no permite enviar audios adjuntos sin convertirlos "
+                            "en notas de voz. Necesita la actualización de modos de audio v31. "
+                            "El archivo no se ha enviado."
+                        )
         if as_sticker and media_kind != "image":
             raise ValueError("Los stickers deben ser archivos de imagen.")
         source_path = file_path
@@ -4565,13 +4602,16 @@ class BridgeXmppClient(ClientXMPP):
             )
             mime = "image/webp"
         upload_mime = mime
-        if media_kind == "audio":
-            file_path = convert_to_voice_note(file_path)
+        if as_voice_note:
+            file_path = await asyncio.to_thread(convert_to_voice_note, file_path)
             mime = VOICE_NOTE_MIME
             upload_mime = VOICE_NOTE_UPLOAD_MIME
 
         size = file_path.stat().st_size
-        duration = media_duration_seconds(file_path) if media_kind == "audio" else 0.0
+        duration = (
+            await asyncio.to_thread(media_duration_seconds, file_path)
+            if media_kind == "audio" else 0.0
+        )
         try:
             get_url = await self._upload_file(
                 file_path,
@@ -4580,7 +4620,8 @@ class BridgeXmppClient(ClientXMPP):
                 timeout=60,
             )
         except Exception:
-            delete_temporary_voice_note(file_path)
+            if as_voice_note:
+                delete_temporary_voice_note(file_path)
             if as_sticker and file_path != source_path:
                 file_path.unlink(missing_ok=True)
             raise
@@ -4589,6 +4630,8 @@ class BridgeXmppClient(ClientXMPP):
         message = self.make_message(mto=to_jid, mbody=get_url, mtype=message_type)
         if view_once and media_kind == "audio":
             message["thread"] = "urn:marco-ml:whatsapp:view-once:0"
+        elif bridge_audio_mode:
+            message["thread"] = f"{CAN_AUDIO_MODE_NS}:{audio_mode}"
         if as_sticker:
             message.append(ET.Element(f"{{{STICKER_NS}}}sticker"))
         message_id = str(message["id"] or "")
@@ -4601,6 +4644,7 @@ class BridgeXmppClient(ClientXMPP):
             media_kind=media_kind,
             duration=duration,
             description=sticker_description if as_sticker else "",
+            audio_mode=audio_mode,
         )
         self._append_reply_metadata(
             message,
@@ -4769,6 +4813,7 @@ class BridgeXmppClient(ClientXMPP):
         media_kind: str,
         duration: float = 0.0,
         description: str = "",
+        audio_mode: str = "",
     ) -> None:
         oob = ET.Element(f"{{{OOB_NS}}}x")
         url_node = ET.SubElement(oob, f"{{{OOB_NS}}}url")
@@ -4776,6 +4821,9 @@ class BridgeXmppClient(ClientXMPP):
         message.append(oob)
 
         disposition = "inline" if media_kind in {"audio", "image", "video"} else "attachment"
+        if audio_mode == "document":
+            disposition = "attachment"
+        audio_description = "Audio file" if audio_mode in {"audio", "document"} else "Voice message"
         file_sharing = ET.Element(f"{{{SFS_NS}}}file-sharing", {"disposition": disposition})
         file_node = ET.SubElement(file_sharing, f"{{{FILE_METADATA_NS}}}file")
         media_type = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}media-type")
@@ -4784,7 +4832,7 @@ class BridgeXmppClient(ClientXMPP):
         name.text = filename
         if description.strip() or media_kind == "audio":
             desc = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}desc")
-            desc.text = description.strip() or "Voice message"
+            desc.text = description.strip() or audio_description
             if media_kind == "audio" and duration > 0:
                 duration_node = ET.SubElement(file_node, f"{{{FILE_METADATA_NS}}}duration")
                 duration_node.text = str(round(duration, 3))
@@ -4810,7 +4858,7 @@ class BridgeXmppClient(ClientXMPP):
         sims_name.text = filename
         if description.strip() or media_kind == "audio":
             sims_desc = ET.SubElement(sims_file, f"{{{JINGLE_FILE_TRANSFER_NS}}}desc")
-            sims_desc.text = description.strip() or "Voice message"
+            sims_desc.text = description.strip() or audio_description
             if media_kind == "audio" and duration > 0:
                 sims_duration = ET.SubElement(
                     sims_file,
@@ -5283,6 +5331,7 @@ class XmppService:
         sticker_description: str = "",
         copy_sticker: bool = False,
         as_sticker_pack: bool = False,
+        as_voice_note: bool = False,
     ) -> None:
         if not self._client or not self._loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
@@ -5305,9 +5354,11 @@ class XmppService:
                     sticker_description=sticker_description,
                     copy_sticker=copy_sticker,
                     as_sticker_pack=as_sticker_pack,
+                    as_voice_note=as_voice_note,
                 )
             except Exception as exc:
-                delete_temporary_voice_note(path)
+                if as_voice_note:
+                    delete_temporary_voice_note(path)
                 self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
                 return
 
@@ -5344,6 +5395,7 @@ class XmppService:
         async def send() -> None:
             succeeded = 0
             failed = 0
+            failure_detail = ""
             for path in snapshot:
                 if not self._client:
                     failed += 1
@@ -5357,9 +5409,12 @@ class XmppService:
                         reply_to_id=reply_to_id,
                         reply_quote=reply_quote,
                     )
+                except UnsupportedAudioModeError as exc:
+                    failed += 1
+                    failure_detail = str(exc)
+                    continue
                 except Exception:
                     failed += 1
-                    delete_temporary_voice_note(path)
                     continue
                 succeeded += 1
                 self._emit(MessageReceived(message))
@@ -5370,6 +5425,7 @@ class XmppService:
                     total=len(snapshot),
                     succeeded=succeeded,
                     failed=failed,
+                    detail=failure_detail,
                 )
             )
 

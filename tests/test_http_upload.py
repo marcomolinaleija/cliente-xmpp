@@ -189,10 +189,23 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
         service._loop = asyncio.get_running_loop()
 
         with patch("cliente_xmpp.xmpp.client.delete_temporary_voice_note") as delete:
-            service.send_file("contact@example.test", "ptt-test.ogg")
+            service.send_file("contact@example.test", "ptt-test.ogg", as_voice_note=True)
             await self._wait_for_emit(emitted)
 
         delete.assert_called_once_with("ptt-test.ogg")
+        self.assertIsInstance(emitted[0], XmppError)
+
+    async def test_service_does_not_delete_an_attached_old_recording_after_send_error(self) -> None:
+        emitted: list[object] = []
+        service = XmppService(emitted.append)
+        service._client = SimpleNamespace(
+            send_file=AsyncMock(side_effect=RuntimeError("upload failed"))
+        )
+        service._loop = asyncio.get_running_loop()
+        with patch("cliente_xmpp.xmpp.client.delete_temporary_voice_note") as delete:
+            service.send_file("contact@example.test", "ptt-test.ogg")
+            await self._wait_for_emit(emitted)
+        delete.assert_not_called()
         self.assertIsInstance(emitted[0], XmppError)
 
     @staticmethod

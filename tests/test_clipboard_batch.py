@@ -99,6 +99,17 @@ class ClipboardBatchTests(unittest.TestCase):
         window.status_bar.SetStatusText.assert_called_once_with(message)
         window.speaker.speak.assert_called_once_with(message)
 
+    def test_audio_capability_failure_reason_is_announced_once(self) -> None:
+        window = MainWindow.__new__(MainWindow)
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+        window.speaker = SimpleNamespace(speak=Mock())
+        MainWindow._handle_file_batch_completed(
+            window, "chat@example.test", 2, 0, 2, "Actualiza el puente a v31."
+        )
+        message = "Archivos enviados: 0 de 2; fallos: 2. Actualiza el puente a v31."
+        window.status_bar.SetStatusText.assert_called_once_with(message)
+        window.speaker.speak.assert_called_once_with(message)
+
 
 if __name__ == "__main__":
     unittest.main()

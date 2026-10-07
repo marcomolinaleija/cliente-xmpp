@@ -1,0 +1,41 @@
+# Stable v31 recipe; future builds/publication/deployment require separate authorization.
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v30@sha256:88dc92a92e30fc8b57704f0c4d64d392e37d6f917278989f57f5ec3849945adf
+FROM ${BASE_IMAGE} AS patched
+USER root
+COPY patch_slidge_audio_modes_v31.py bridge_audio_modes.py bridge_audio_modes.go /tmp/
+COPY smoke_bridge_audio_modes_runtime.py /opt/can-tests/
+RUN python -B /tmp/patch_slidge_audio_modes_v31.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_audio_modes_v31.py /venv/lib/python3.13/site-packages && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp && \
+    rm /tmp/patch_slidge_audio_modes_v31.py /tmp/bridge_audio_modes.py /tmp/bridge_audio_modes.go
+
+FROM golang:1.25-trixie AS go_builder
+# Keep Go compilation/test parallelism bounded on a shared production host.
+ENV GOMAXPROCS=2 GOFLAGS=-p=2 GOMEMLIMIT=2GiB
+RUN apt-get update -y && apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_audio_modes_test.go /src/slidge_whatsapp/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go audio_modes.go bridge_audio_modes_test.go && \
+    go test -v . && go test -race . && \
+    rm *_test.go && cd generated && \
+    go build -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=go_builder /src/slidge_whatsapp/event.go /src/slidge_whatsapp/audio_modes.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+RUN chmod 0755 /opt/can-tests && chmod 0644 /opt/can-tests/* /venv/lib/python3.13/site-packages/slidge_whatsapp/audio_modes.py
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_audio_modes_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_native_sticker_pack_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

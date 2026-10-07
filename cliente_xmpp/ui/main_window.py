@@ -4522,11 +4522,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         total: int,
         succeeded: int,
         failed: int,
+        detail: str = "",
     ) -> None:
         if failed:
             message = f"Archivos enviados: {succeeded} de {total}; fallos: {failed}"
         else:
             message = f"Archivos enviados: {succeeded} de {total}; sin fallos"
+        if detail:
+            message += f". {detail}"
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
 
@@ -4667,6 +4670,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             str(path),
             is_group=chat.is_group,
             view_once=view_once,
+            as_voice_note=True,
             reply_to_jid=reply_to_jid,
             reply_to_id=reply_to_id,
             reply_quote=reply_quote,
@@ -6695,8 +6699,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 total=total,
                 succeeded=succeeded,
                 failed=failed,
+                detail=detail,
             ):
-                self._handle_file_batch_completed(chat_jid, total, succeeded, failed)
+                self._handle_file_batch_completed(chat_jid, total, succeeded, failed, detail)
             case ChatDisplayedSynced(chat_jid=chat_jid, message_id=message_id):
                 self._handle_synced_chat_displayed(chat_jid, message_id)
             case ContactPresenceUpdated(chat_jid=chat_jid):

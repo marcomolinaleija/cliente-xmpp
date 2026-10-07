@@ -37,13 +37,7 @@ Audio adjunto: MP3 como audio, otros formatos como archivos
 - Las grabaciones del micrófono siguen siendo notas de voz OGG/Opus, incluida la opción de una sola escucha. Imágenes, videos y stickers mantienen su comportamiento anterior.
 - Este cambio requiere el puente v31 o posterior con la capacidad de modos de audio. CAN lo comprueba antes de subir el adjunto; si el puente no lo admite, muestra un error y no lo convierte silenciosamente en una nota de voz. En lotes, el motivo de incompatibilidad se anuncia una vez.
 - La integración admite hasta 64 MiB por audio adjunto; el servidor de subida o WhatsApp pueden imponer límites menores. Un archivo original no se elimina cuando falla su envío.
-- Se aplica a nuevos adjuntos. Reenviar mensajes ya existentes conserva la ruta anterior. No se puede garantizar qué transcribirá un bot externo como Zapia: eso depende de su propio comportamiento.
-
-Puente estable v31
-- La imagen v31 se publica en GHCR y el manifiesto estable del actualizador local fija su digest. Actualizar sólo CAN no actualiza por sí mismo un puente antiguo; usa la actualización del puente local cuando corresponda o solicita la actualización al administrador del remoto.
-- v31 conserva las funciones anteriores de stickers, paquetes nativos, descripciones y sincronización. Se promovió la misma imagen de audio que fue probada y confirmada por el usuario, sin reconstruirla durante la publicación.
-- La VPS queda configurada de forma permanente con v31 por digest, conservando cuenta, sesión y montajes, con rollback a v30 preparado. Esto no cambia la versión del appliance WSL inmutable ni publica un nuevo ejecutable Windows por sí solo.
-
+- Se aplica a nuevos adjuntos. Reenviar mensajes ya existentes conserva la ruta anterior.
 
 WhatsApp CAN 1.4.16
 

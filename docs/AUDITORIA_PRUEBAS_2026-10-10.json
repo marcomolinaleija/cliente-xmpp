@@ -1,0 +1,1958 @@
+{
+  "baseline_revision": "1b98bd2",
+  "python": "3.12.13 (Conda XMPP), Windows",
+  "scope": "All 65 original unittest modules, 1 new tooling module, 20 Go files and 30 bridge smoke/probe/helper scripts; no production/image build executed",
+  "baseline": {
+    "methods": 792,
+    "seconds": 118.02810079994379,
+    "python_output_bytes": 2026,
+    "passed": true
+  },
+  "final_full": {
+    "tests": 800,
+    "subcases": 169,
+    "elapsed": 59.69485289999284,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "full_timing_samples": [
+    {
+      "phase": "earlier isolated snapshot",
+      "methods": 799,
+      "seconds": 70.012
+    },
+    {
+      "phase": "benchmark snapshot",
+      "methods": 800,
+      "seconds": 124.24366670002928
+    },
+    {
+      "phase": "post-semantic-review correctness closure, not paired speed benchmark",
+      "methods": 800,
+      "seconds": 59.69485289999284
+    }
+  ],
+  "fast": {
+    "methods": 506,
+    "subcases": 89,
+    "samples_seconds": [
+      4.14987869997276,
+      3.408829500025604,
+      4.010236900008749
+    ],
+    "median_seconds": 4.010236900008749,
+    "time_reduction_vs_original_full_percent": 96.60230328809064,
+    "method_selection_reduction_vs_original_full_percent": 36.111111111111114,
+    "console_bytes": [
+      214,
+      214,
+      214
+    ]
+  },
+  "paired_samples": [
+    {
+      "sample": 1,
+      "version": "before",
+      "module": "test_manual_history_loading",
+      "seconds": 13.819814199989196,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 1,
+      "version": "before",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 6.078609599964693,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 1,
+      "version": "after",
+      "module": "test_manual_history_loading",
+      "seconds": 2.6478231999790296,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 1,
+      "version": "after",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 0.7799828000133857,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 2,
+      "version": "after",
+      "module": "test_manual_history_loading",
+      "seconds": 4.394616199948359,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 2,
+      "version": "after",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 0.7988529999856837,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 2,
+      "version": "before",
+      "module": "test_manual_history_loading",
+      "seconds": 4.556450300035067,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 2,
+      "version": "before",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 0.8417855000006966,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 3,
+      "version": "before",
+      "module": "test_manual_history_loading",
+      "seconds": 4.536300600040704,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 3,
+      "version": "before",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 0.8488372000283562,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 3,
+      "version": "after",
+      "module": "test_manual_history_loading",
+      "seconds": 2.6598356000031345,
+      "tests": 3,
+      "ok": true
+    },
+    {
+      "sample": 3,
+      "version": "after",
+      "module": "test_bridge_outgoing_sticker_pack",
+      "seconds": 0.7798129000002518,
+      "tests": 3,
+      "ok": true
+    }
+  ],
+  "paired_medians": {
+    "test_bridge_outgoing_sticker_pack": {
+      "before": 0.8488372000283562,
+      "after": 0.7799828000133857,
+      "reduction_percent": 8.111614336962415
+    },
+    "test_manual_history_loading": {
+      "before": 4.556450300035067,
+      "after": 2.6598356000031345,
+      "reduction_percent": 41.62483018891561
+    }
+  },
+  "targeted_mutation_probes": [
+    {
+      "constant": "NEW_ROSTER_SYNC",
+      "mutation": "GetContacts(refresh=True) -> GetContacts(refresh=False)",
+      "failures": 1,
+      "errors": 0,
+      "detected": true
+    },
+    {
+      "constant": "NEW_AUDIO_CASE",
+      "mutation": "a.MIME = msg.GetMimetype() -> a.MIME = \"application/octet-stream\"",
+      "failures": 1,
+      "errors": 0,
+      "detected": true
+    }
+  ],
+  "footprint": {
+    "before_files": 60,
+    "before_lines": 10991,
+    "after_files": 60,
+    "after_lines": 11013,
+    "lost": {},
+    "extra": {
+      "cliente_xmpp/ui/main_window.py": [
+        8587,
+        8588,
+        8589,
+        8590,
+        8591,
+        8592,
+        8594,
+        8595,
+        8596,
+        8597,
+        8598,
+        8602,
+        8604,
+        8609,
+        8610,
+        8611,
+        8613,
+        8629,
+        8630,
+        8631,
+        8632,
+        8633
+      ]
+    }
+  },
+  "limitations": [
+    "Fast excludes integration/contracts; not equal coverage to all.",
+    "Full-suite timing varied 59.695s to 124.244s (800 methods); no guaranteed whole-suite speedup claimed.",
+    "Baseline full single sample, hotspot medians three AB/BA pairs. No simultaneous owned tests in these benchmark samples.",
+    "Executed-line footprint of pre-imported Python functions is not branch/statement/native coverage, and not a mutation proof.",
+    "Subcase counter only counts explicit unittest.subTest events, not every implicit loop path.",
+    "No real APK/WhatsApp, NVDA, Go/race, container smokes, build, commit, push or deployment."
+  ],
+  "footprint_scope": "cliente_xmpp only. Production and all app-importing test modules unchanged since footprint. Later semantic-assert review only affects tool-only patch tests, verified by focused contracts and closure all.",
+  "modules": [
+    {
+      "path": "tests/test_atajos_api.py",
+      "before_methods": 19,
+      "after_methods": 19,
+      "baseline_method_seconds": 1.481387,
+      "layers": {
+        "integration": 19
+      },
+      "areas": [
+        "automation"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.integrations.atajos_api",
+        "cliente_xmpp.integrations.atajos_credentials",
+        "cliente_xmpp.storage.scheduled_messages",
+        "cliente_xmpp.ui.atajos_integration",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 57,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_atajos_automation.py",
+      "before_methods": 21,
+      "after_methods": 21,
+      "baseline_method_seconds": 9.810047,
+      "layers": {
+        "integration": 21
+      },
+      "areas": [
+        "automation"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.integrations.atajos_api",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.assistant_automation",
+        "cliente_xmpp.storage.scheduled_messages",
+        "cliente_xmpp.ui.atajos_integration",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 47,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_atajos_media.py",
+      "before_methods": 11,
+      "after_methods": 11,
+      "baseline_method_seconds": 5.212793,
+      "layers": {
+        "integration": 11
+      },
+      "areas": [
+        "automation"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.integrations.atajos_api",
+        "cliente_xmpp.media.downloads",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.assistant_media",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.storage.scheduled_messages"
+      ],
+      "assertion_calls": 45,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_audio_attachment_modes.py",
+      "before_methods": 13,
+      "after_methods": 13,
+      "baseline_method_seconds": 0.460777,
+      "layers": {
+        "fast": 13
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events"
+      ],
+      "assertion_calls": 67,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_audio_process.py",
+      "before_methods": 10,
+      "after_methods": 10,
+      "baseline_method_seconds": 0.091536,
+      "layers": {
+        "fast": 10
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.audio.duration",
+        "cliente_xmpp.audio.opus",
+        "cliente_xmpp.audio.process",
+        "cliente_xmpp.audio.recorder"
+      ],
+      "assertion_calls": 28,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_bridge_audio_modes.py",
+      "before_methods": 9,
+      "after_methods": 9,
+      "baseline_method_seconds": 0.30147,
+      "layers": {
+        "contracts": 9
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.bridge_audio_modes",
+        "tools.patch_slidge_audio_modes_v31"
+      ],
+      "assertion_calls": 23,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_bridge_outgoing_sticker_pack.py",
+      "before_methods": 3,
+      "after_methods": 3,
+      "baseline_method_seconds": 3.847552,
+      "layers": {
+        "contracts": 3
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools",
+        "tools.smoke_bridge_native_sticker_pack_runtime"
+      ],
+      "assertion_calls": 10,
+      "decision": "Cache immutable input archive once per class, reparse fresh mutation; tested normalizer still called for each case"
+    },
+    {
+      "path": "tests/test_bridge_sticker_pack.py",
+      "before_methods": 5,
+      "after_methods": 5,
+      "baseline_method_seconds": 5.652607,
+      "layers": {
+        "contracts": 5
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.bridge_sticker_pack"
+      ],
+      "assertion_calls": 13,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_calls.py",
+      "before_methods": 14,
+      "after_methods": 14,
+      "baseline_method_seconds": 1.245465,
+      "layers": {
+        "fast": 14
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.calls",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.xmpp.calls"
+      ],
+      "assertion_calls": 67,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_clipboard_batch.py",
+      "before_methods": 4,
+      "after_methods": 4,
+      "baseline_method_seconds": 0.011653,
+      "layers": {
+        "fast": 4
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events"
+      ],
+      "assertion_calls": 10,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_connection_actions.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.003099,
+      "layers": {
+        "fast": 2
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 7,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_conversation_context.py",
+      "before_methods": 7,
+      "after_methods": 7,
+      "baseline_method_seconds": 7.547947,
+      "layers": {
+        "integration": 7
+      },
+      "areas": [
+        "automation"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.integrations.atajos_api",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.conversation_context",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.storage.scheduled_messages"
+      ],
+      "assertion_calls": 34,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_deepgram_transcription.py",
+      "before_methods": 10,
+      "after_methods": 10,
+      "baseline_method_seconds": 1.325177,
+      "layers": {
+        "fast": 10
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "tools.deepgram_transcription"
+      ],
+      "assertion_calls": 42,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_development_mode.py",
+      "before_methods": 4,
+      "after_methods": 4,
+      "baseline_method_seconds": 0.010864,
+      "layers": {
+        "fast": 4
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.app.main",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.xmpp.events"
+      ],
+      "assertion_calls": 14,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_file_transfers.py",
+      "before_methods": 18,
+      "after_methods": 18,
+      "baseline_method_seconds": 10.579101,
+      "layers": {
+        "fast": 17,
+        "integration": 1
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.chat_list_panel",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events",
+        "cliente_xmpp.xmpp.http_upload"
+      ],
+      "assertion_calls": 70,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_formatting.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 0.001324,
+      "layers": {
+        "fast": 6
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.formatting"
+      ],
+      "assertion_calls": 14,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_group_helpers.py",
+      "before_methods": 143,
+      "after_methods": 140,
+      "baseline_method_seconds": 0.800932,
+      "layers": {
+        "fast": 140
+      },
+      "areas": [
+        "connection",
+        "history",
+        "messaging",
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.models.mentions",
+        "cliente_xmpp.models.names",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.whatsapp_link_panel",
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events"
+      ],
+      "assertion_calls": 281,
+      "decision": "Remove dominated file-exists test; retain browser contract; presence-date matrix preserves 3 cases"
+    },
+    {
+      "path": "tests/test_http_upload.py",
+      "before_methods": 5,
+      "after_methods": 5,
+      "baseline_method_seconds": 0.164705,
+      "layers": {
+        "fast": 5
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events",
+        "cliente_xmpp.xmpp.http_upload"
+      ],
+      "assertion_calls": 19,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_local_bridge.py",
+      "before_methods": 32,
+      "after_methods": 32,
+      "baseline_method_seconds": 0.855953,
+      "layers": {
+        "contracts": 32
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.credentials",
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.local_bridge",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.whatsapp_link_panel",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 174,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_local_bridge_commands.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 0.010179,
+      "layers": {
+        "contracts": 6
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.models.local_commands",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 11,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_manual_history_loading.py",
+      "before_methods": 19,
+      "after_methods": 19,
+      "baseline_method_seconds": 27.8354,
+      "layers": {
+        "fast": 14,
+        "integration": 5
+      },
+      "areas": [
+        "history"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 71,
+      "decision": "ALL fixtures: 700->201 old rows, 3 pages incl partial/ties; numeric650 and native5100 stress retained"
+    },
+    {
+      "path": "tests/test_media.py",
+      "before_methods": 21,
+      "after_methods": 21,
+      "baseline_method_seconds": 0.015027,
+      "layers": {
+        "fast": 21
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.integrations",
+        "cliente_xmpp.media",
+        "cliente_xmpp.media.downloads",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.conversation_panel"
+      ],
+      "assertion_calls": 42,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_mentions.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 0.028928,
+      "layers": {
+        "fast": 5,
+        "integration": 1
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.mentions",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 8,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_message_selection_clipboard.py",
+      "before_methods": 19,
+      "after_methods": 19,
+      "baseline_method_seconds": 0.038496,
+      "layers": {
+        "fast": 19
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.media.downloads",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 50,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_message_store.py",
+      "before_methods": 30,
+      "after_methods": 30,
+      "baseline_method_seconds": 0.987519,
+      "layers": {
+        "integration": 30
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.models.mentions",
+        "cliente_xmpp.storage.message_store"
+      ],
+      "assertion_calls": 85,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_migrate_slidge_mexico_aliases.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.02072,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.migrate_slidge_mexico_aliases"
+      ],
+      "assertion_calls": 6,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_mpv_player.py",
+      "before_methods": 5,
+      "after_methods": 5,
+      "baseline_method_seconds": 0.000785,
+      "layers": {
+        "fast": 5
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.audio.player"
+      ],
+      "assertion_calls": 14,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_native_sticker_pack_send.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.025355,
+      "layers": {
+        "fast": 2
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.xmpp.client",
+        "tools.smoke_bridge_native_sticker_pack_runtime"
+      ],
+      "assertion_calls": 11,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_new_chat.py",
+      "before_methods": 28,
+      "after_methods": 28,
+      "baseline_method_seconds": 0.136121,
+      "layers": {
+        "fast": 28
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.models.phone_numbers",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 70,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_outgoing_stickers.py",
+      "before_methods": 15,
+      "after_methods": 15,
+      "baseline_method_seconds": 0.84871,
+      "layers": {
+        "fast": 15
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.media.outgoing_stickers",
+        "cliente_xmpp.storage.sticker_library",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 72,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_admin_commands.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.003986,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_admin_commands"
+      ],
+      "assertion_calls": 10,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_call_routing.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.002377,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_call_routing_v2"
+      ],
+      "assertion_calls": 5,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_contact_names.py",
+      "before_methods": 4,
+      "after_methods": 4,
+      "baseline_method_seconds": 0.012453,
+      "layers": {
+        "contracts": 4
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_contact_names"
+      ],
+      "assertion_calls": 21,
+      "decision": "Remove 5 imported NEW-block comparisons already verified by reapplication (patch_source returns False only if entire new_source present); retain fixed semantic anchors/absenceOLD/rejection"
+    },
+    {
+      "path": "tests/test_patch_slidge_failed_relogin_state.py",
+      "before_methods": 3,
+      "after_methods": 3,
+      "baseline_method_seconds": 0.004788,
+      "layers": {
+        "contracts": 3
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_failed_relogin_state"
+      ],
+      "assertion_calls": 12,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_incoming_ptt.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.002612,
+      "layers": {
+        "contracts": 2
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_incoming_ptt"
+      ],
+      "assertion_calls": 10,
+      "decision": "Retain full audio case and fixed MIME/payload semantic anchors; marker-only idempotence does not imply full case integrity"
+    },
+    {
+      "path": "tests/test_patch_slidge_mentions.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.003725,
+      "layers": {
+        "contracts": 2
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_mentions"
+      ],
+      "assertion_calls": 7,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_message_presence.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.001488,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_message_presence"
+      ],
+      "assertion_calls": 5,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_passive_presence.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.002679,
+      "layers": {
+        "contracts": 2
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_passive_presence"
+      ],
+      "assertion_calls": 9,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_polls.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.009036,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_polls"
+      ],
+      "assertion_calls": 4,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_presence_cache.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.002519,
+      "layers": {
+        "contracts": 2
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_presence_cache"
+      ],
+      "assertion_calls": 5,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_presence_last_seen.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.00146,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_presence_last_seen"
+      ],
+      "assertion_calls": 4,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_presence_sources.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.001522,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_presence_sources"
+      ],
+      "assertion_calls": 6,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_read_sync.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 0.010252,
+      "layers": {
+        "contracts": 6
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_marco_vps_compose_read_sync",
+        "tools.patch_prosody_read_sync_privileges",
+        "tools.patch_slidge_whatsapp_read_sync"
+      ],
+      "assertion_calls": 26,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_roster_sync.py",
+      "before_methods": 2,
+      "after_methods": 2,
+      "baseline_method_seconds": 0.003029,
+      "layers": {
+        "contracts": 2
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_roster_sync"
+      ],
+      "assertion_calls": 9,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_sticker_accessibility.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.006012,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_sticker_accessibility"
+      ],
+      "assertion_calls": 10,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_stickers.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.006598,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_stickers"
+      ],
+      "assertion_calls": 7,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_patch_slidge_transcription.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.003827,
+      "layers": {
+        "contracts": 1
+      },
+      "areas": [
+        "bridge"
+      ],
+      "owner_imports": [
+        "tools.patch_slidge_whatsapp_transcription"
+      ],
+      "assertion_calls": 9,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_reactions.py",
+      "before_methods": 7,
+      "after_methods": 7,
+      "baseline_method_seconds": 0.024179,
+      "layers": {
+        "fast": 7
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.models.reactions",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.reaction_dialog",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 17,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_reply_sending.py",
+      "before_methods": 15,
+      "after_methods": 15,
+      "baseline_method_seconds": 0.004696,
+      "layers": {
+        "fast": 15
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 38,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_scheduled_messages.py",
+      "before_methods": 44,
+      "after_methods": 44,
+      "baseline_method_seconds": 7.848279,
+      "layers": {
+        "fast": 5,
+        "integration": 39
+      },
+      "areas": [
+        "automation"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.integrations.atajos_api",
+        "cliente_xmpp.integrations.scheduled_messages",
+        "cliente_xmpp.models.scheduled_message",
+        "cliente_xmpp.storage.scheduled_messages",
+        "cliente_xmpp.ui.atajos_integration",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.scheduled_message_dialog",
+        "cliente_xmpp.ui.scheduled_messages",
+        "cliente_xmpp.xmpp.client"
+      ],
+      "assertion_calls": 146,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_sentiment.py",
+      "before_methods": 3,
+      "after_methods": 3,
+      "baseline_method_seconds": 0.000216,
+      "layers": {
+        "fast": 3
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.sentiment"
+      ],
+      "assertion_calls": 16,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_settings.py",
+      "before_methods": 33,
+      "after_methods": 33,
+      "baseline_method_seconds": 0.066481,
+      "layers": {
+        "fast": 33
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.settings_panel"
+      ],
+      "assertion_calls": 56,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_single_instance.py",
+      "before_methods": 1,
+      "after_methods": 1,
+      "baseline_method_seconds": 0.000802,
+      "layers": {
+        "integration": 1
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.app.single_instance"
+      ],
+      "assertion_calls": 5,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_starred_messages_dialog.py",
+      "before_methods": 10,
+      "after_methods": 10,
+      "baseline_method_seconds": 0.001563,
+      "layers": {
+        "fast": 10
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.chat_message_dialogs"
+      ],
+      "assertion_calls": 20,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_statistics.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 1.055385,
+      "layers": {
+        "integration": 6
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.message_store"
+      ],
+      "assertion_calls": 64,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_statistics_dialog.py",
+      "before_methods": 7,
+      "after_methods": 7,
+      "baseline_method_seconds": 0.001168,
+      "layers": {
+        "fast": 7
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.statistics",
+        "cliente_xmpp.ui.chat_statistics_dialog",
+        "cliente_xmpp.ui.statistics_dialog"
+      ],
+      "assertion_calls": 40,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_sticker_gallery.py",
+      "before_methods": 23,
+      "after_methods": 23,
+      "baseline_method_seconds": 16.064401,
+      "layers": {
+        "integration": 23
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.storage.sticker_library",
+        "cliente_xmpp.ui.sticker_gallery_dialog"
+      ],
+      "assertion_calls": 89,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_sticker_gallery_integration.py",
+      "before_methods": 6,
+      "after_methods": 6,
+      "baseline_method_seconds": 0.01762,
+      "layers": {
+        "integration": 6
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 17,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_sticker_library.py",
+      "before_methods": 19,
+      "after_methods": 19,
+      "baseline_method_seconds": 5.339052,
+      "layers": {
+        "integration": 19
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.config.settings",
+        "cliente_xmpp.media.sticker_creation",
+        "cliente_xmpp.media.sticker_packs",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.sticker_library"
+      ],
+      "assertion_calls": 73,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_sticker_pack_messages.py",
+      "before_methods": 4,
+      "after_methods": 4,
+      "baseline_method_seconds": 3.712691,
+      "layers": {
+        "integration": 4
+      },
+      "areas": [
+        "media"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.media.sticker_packs",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.sticker_library",
+        "tools.bridge_sticker_pack"
+      ],
+      "assertion_calls": 15,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_storage_manager.py",
+      "before_methods": 12,
+      "after_methods": 12,
+      "baseline_method_seconds": 1.089353,
+      "layers": {
+        "integration": 12
+      },
+      "areas": [
+        "storage"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.media.downloads",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.manager",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.ui.storage_manager_dialog"
+      ],
+      "assertion_calls": 56,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_test_runner.py",
+      "before_methods": 0,
+      "after_methods": 12,
+      "baseline_method_seconds": 0.0,
+      "layers": {
+        "contracts": 1,
+        "fast": 11
+      },
+      "areas": [
+        "platform",
+        "testing"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.names",
+        "tools.run_tests",
+        "tools.test_footprint"
+      ],
+      "assertion_calls": 32,
+      "decision": "Add 12 independent guards: classification, selection, import/error/empty failures, diagnostics, exit status and monitoring cleanup"
+    },
+    {
+      "path": "tests/test_ui_performance.py",
+      "before_methods": 29,
+      "after_methods": 28,
+      "baseline_method_seconds": 0.266271,
+      "layers": {
+        "fast": 28
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.ui.chat_list_panel",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 67,
+      "decision": "Replace constant-only cache-limit test with loader limit/one-load-per-account behavior"
+    },
+    {
+      "path": "tests/test_updates.py",
+      "before_methods": 12,
+      "after_methods": 12,
+      "baseline_method_seconds": 0.281727,
+      "layers": {
+        "fast": 12
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.updates"
+      ],
+      "assertion_calls": 26,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_whatsapp_message_features.py",
+      "before_methods": 32,
+      "after_methods": 32,
+      "baseline_method_seconds": 1.060905,
+      "layers": {
+        "fast": 32
+      },
+      "areas": [
+        "messaging"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.media.downloads",
+        "cliente_xmpp.media.links",
+        "cliente_xmpp.media.stickers",
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.storage.message_store",
+        "cliente_xmpp.ui.conversation_panel",
+        "cliente_xmpp.ui.main_window",
+        "cliente_xmpp.xmpp.client",
+        "cliente_xmpp.xmpp.events"
+      ],
+      "assertion_calls": 119,
+      "decision": "Retain distinct contracts; select by layer/area"
+    },
+    {
+      "path": "tests/test_windows_notifications.py",
+      "before_methods": 9,
+      "after_methods": 9,
+      "baseline_method_seconds": 0.002329,
+      "layers": {
+        "fast": 9
+      },
+      "areas": [
+        "platform"
+      ],
+      "owner_imports": [
+        "cliente_xmpp.models.chat",
+        "cliente_xmpp.notifications.windows",
+        "cliente_xmpp.ui.main_window"
+      ],
+      "assertion_calls": 17,
+      "decision": "Retain distinct contracts; select by layer/area"
+    }
+  ],
+  "image_tests": [
+    {
+      "path": "tools/bridge_audio_modes_test.go",
+      "go_test_functions": 3,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_call_records_v27_test.go",
+      "go_test_functions": 6,
+      "dockerfile_references": [
+        "Dockerfile.bridge-calls-v27"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_calls_contract_test.go",
+      "go_test_functions": 4,
+      "dockerfile_references": [
+        "Dockerfile.bridge-calls-contract-v1"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_contact_name_event_test.go",
+      "go_test_functions": 3,
+      "dockerfile_references": [
+        "Dockerfile.bridge-contact-names.candidate",
+        "Dockerfile.bridge-contact-names.patch"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_contact_name_store_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-contact-names.candidate"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_forwarding_session_test.go",
+      "go_test_functions": 2,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_incoming_ptt_source_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-v12"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_native_sticker_pack_test.go",
+      "go_test_functions": 2,
+      "dockerfile_references": [
+        "Dockerfile.bridge-native-sticker-packs-v30"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_native_sticker_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-polls-v15",
+        "Dockerfile.bridge-sticker-delivery-v29",
+        "Dockerfile.bridge-stickers-v15"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_passive_presence_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-passive-presence-v22"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_poll_results_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_poll_vote_test.go",
+      "go_test_functions": 4,
+      "dockerfile_references": [
+        "Dockerfile.bridge-polls-v15"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_polls_test.go",
+      "go_test_functions": 5,
+      "dockerfile_references": [
+        "Dockerfile.bridge-polls-v16"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_presence_lifecycle_test.go",
+      "go_test_functions": 3,
+      "dockerfile_references": [
+        "Dockerfile.bridge-presence-lifecycle-v14"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_private_replies_test.go",
+      "go_test_functions": 2,
+      "dockerfile_references": [
+        "Dockerfile.bridge-private-replies-v18"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_read_sync_event_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-read-sync.patch"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_reply_attachments_test.go",
+      "go_test_functions": 3,
+      "dockerfile_references": [
+        "Dockerfile.bridge-reply-attachments-test"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_sticker_accessibility_test.go",
+      "go_test_functions": 3,
+      "dockerfile_references": [
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-sticker-accessibility-v25",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/bridge_sticker_delivery_test.go",
+      "go_test_functions": 4,
+      "dockerfile_references": [
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/whatsmeow_sticker_pack_thumbnail_test.go",
+      "go_test_functions": 1,
+      "dockerfile_references": [
+        "Dockerfile.bridge-native-sticker-packs-v30"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_admin_commands_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-sticker-accessibility-v25",
+        "Dockerfile.bridge-transcription-v24"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_attachment_persistence_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_audio_modes_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_calls_contract_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-calls-contract-v1"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_calls_routing_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-calls-routing-v2"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_calls_v27_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-calls-v27"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_contact_name_data.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_contact_names_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-contact-names.candidate"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_detached_room_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-detached-room-v19"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_forwarding_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_incoming_ptt_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-v12"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_mentions_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_message_presence_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_mexico_outbound_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-mexico-outbound-v13"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_native_sticker_pack_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31",
+        "Dockerfile.bridge-native-sticker-packs-v30"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_no_auto_join_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31",
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-no-auto-join-v28",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_passive_presence_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-passive-presence-v22"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_polls_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-polls-v15",
+        "Dockerfile.bridge-polls-v16"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_presence_last_seen_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_presence_lifecycle_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-presence-lifecycle-v14"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_presence_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_presence_sources_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_private_replies_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-private-replies-v18"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_read_sync_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_reply_attachments_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-reply-attachments-test"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_roster_sync_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_sticker_accessibility_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31",
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-sticker-accessibility-v25",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_sticker_delivery_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31",
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_stickers_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-audio-modes-v31",
+        "Dockerfile.bridge-native-sticker-packs-v30",
+        "Dockerfile.bridge-sticker-delivery-v29"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    },
+    {
+      "path": "tools/smoke_bridge_transcription_runtime.py",
+      "go_test_functions": 0,
+      "dockerfile_references": [
+        "Dockerfile.bridge-transcription-v23"
+      ],
+      "decision": "Retain distinct source/binding/runtime/probe contract; not executed in Windows suite"
+    }
+  ],
+  "source_invariant": "No cliente_xmpp production source edits; line positions comparable.",
+  "source_hashes": {
+    "pyproject.toml": "0868e890414bc3447a3dfdabe9b40856f100a762644a30068c1ee25d83a8fc26",
+    "tests/suites.json": "a4e4c293fe408e95a7bb875f2f9d4afd714a7d33b95e508ad1192ee42b32b0e4",
+    "tests/test_atajos_api.py": "25b6e567e510ec673d775bb8e1a6e158c4435538e5c9289b787d79ef13ab9213",
+    "tests/test_atajos_automation.py": "4cbb49b36f27b28cf8feb74dd55bea24c67ebf0457545fdbb4deebb90e9e489e",
+    "tests/test_atajos_media.py": "bf334a3487578c095ecaeab19850fc9c395e3aa5d78e673ca8db4676304c2936",
+    "tests/test_audio_attachment_modes.py": "883f2860539820d43ec9b14c8faa72ccad4991795bf3fa4f82138eff6b3dcd47",
+    "tests/test_audio_process.py": "cc4e0be2b77c0e2f02bbef927b47fb0b9ef460b5350789dc83ec5bdba0ef435d",
+    "tests/test_bridge_audio_modes.py": "b5df63e2b7793d327b208a5bf6538c96f3b58d186f6cba1e86e814018834bf4e",
+    "tests/test_bridge_outgoing_sticker_pack.py": "93684aceb4a0806c5dcf669be58ea29f749dcb3e10260a32a1c30caffca0bb0f",
+    "tests/test_bridge_sticker_pack.py": "9d30c4717c8713a418f7b60021edf2cf3fe4fca99202c890cec3a9b0735da710",
+    "tests/test_calls.py": "c86982bec43cea2dc4033f0860d108d13b0a613dcc271dc9776b682a3315e552",
+    "tests/test_clipboard_batch.py": "a9e6ecbf55314da46a6d0de455f2ead7132bcbcd2d409d31835429662ac2d06e",
+    "tests/test_connection_actions.py": "31a8773e06a2c98cd26de5a0751f618a542bfaca112a6d328fccd9690323eb4d",
+    "tests/test_conversation_context.py": "4c6c1b86b0f49fb78852debf0fec1a80c1c3d02fd44fcfefe8d34f1994e36a60",
+    "tests/test_deepgram_transcription.py": "3cf151e24e1d4e29740ad3f0b5e86b08dad0ebb88daa69c30db0af27d9079ba4",
+    "tests/test_development_mode.py": "7720dc7317f9555fc0d04b51685ef38546faf2c1264dce5d8db6af39b2ca7398",
+    "tests/test_file_transfers.py": "f5df12aa4041244e5d0a702154525dfc07e9a2dd2cc64f91623ba4528a6f6ace",
+    "tests/test_formatting.py": "586bb5b11f4c740cd1e18c59c89e4b03c3094384b299b4206e6bc35d454d5ff3",
+    "tests/test_group_helpers.py": "6670c195fff0112c3736459bf538438a91bdb9c447ad5965959b95937d42f3bf",
+    "tests/test_http_upload.py": "07a3445d434bcbfeec04123633897560f1fddfced6c4954fe7384e6da9a2dbf7",
+    "tests/test_local_bridge.py": "8a281f6c625b682f59f2b270acc6306dbb1361257dae02d79b1f079988ba98b9",
+    "tests/test_local_bridge_commands.py": "db7543776dfd49dfc40a5460f41f3d53ab07ce384382e48e7920c86eeda8c4ab",
+    "tests/test_manual_history_loading.py": "f87a0c2793b624fef65700fce1bc363821a019bff5267d53ffd802a21bbe75c5",
+    "tests/test_media.py": "19c1654f5dd205cd44a4460a876f8b8617f5c9aa473f1fd3d12c0e3fedbb0c30",
+    "tests/test_mentions.py": "2ca4b07d05d6a957f629df2a72ad83e0f483419b289492c7089ce6e115f14960",
+    "tests/test_message_selection_clipboard.py": "98baf515a3cdaab2b17b6806b9b4dc3d00ecb3e0546b3b564cde57f54a39c7f9",
+    "tests/test_message_store.py": "df17b4e6b392174f4632cd20a83400624ece8415ff08aec0198f274b462852e5",
+    "tests/test_migrate_slidge_mexico_aliases.py": "832cfce6d6ad6807abc52385a10e904241df217901cec34265f4239694de6673",
+    "tests/test_mpv_player.py": "28a248a8b4b5b51e2070bfc79386d81f0ebff8dc155ec0dfb97e66dc50338fca",
+    "tests/test_native_sticker_pack_send.py": "d1417a605962795ab8e4f42947ce36e86ff8379349ebc5e8b38f5ecb1c656238",
+    "tests/test_new_chat.py": "5dc5816d6a304f81b673bb6a631f2e15db9050856af583517614e5998a2bc5a6",
+    "tests/test_outgoing_stickers.py": "d96b34cc6da27a908d08dcd51c53e8450c1cf3c771f09413ab88057bb2b8c2ec",
+    "tests/test_patch_slidge_admin_commands.py": "50464fe0b04b5a52652d7a0038150a38ed81064b87c41186cbd69779a59574a2",
+    "tests/test_patch_slidge_call_routing.py": "e2420dc9249aea0674adcdea322676868fdd5b248f48521796c1d344b1c5e836",
+    "tests/test_patch_slidge_contact_names.py": "65595a723de7993e0c4871bbb58a75036974ee61da0159edac5ad849f075d79b",
+    "tests/test_patch_slidge_failed_relogin_state.py": "7997e3aea723f88d40e7a244c37d74100a21bee8a4a8ec7f52be8f5e9b2ecb47",
+    "tests/test_patch_slidge_incoming_ptt.py": "09b0331141d604d7a1f961e96dfad94d9c8636de7b7ecd2028918d2822f7829b",
+    "tests/test_patch_slidge_mentions.py": "4c5fd16b683265c7eb4a844f5f97b938a8c2b3fa9a94dca10f3859f9d1a0c6dc",
+    "tests/test_patch_slidge_message_presence.py": "c7d4a29ee3819e30e36637bee5903495fe459457d4d5628f86ffe6d6dc8dd6aa",
+    "tests/test_patch_slidge_passive_presence.py": "2529fd48e5e50fbe5f4608901ba60b461386300640a1b1f4e1ec851fcd63c229",
+    "tests/test_patch_slidge_polls.py": "3f58b2965ab89b4d6c33b8ef1283a56614c514fde59d4920a11e1ffe9e33dd63",
+    "tests/test_patch_slidge_presence_cache.py": "136f67c3457d80d0c93f77f6bf799f5c31d10d0cd6396ac430ca637fe074db82",
+    "tests/test_patch_slidge_presence_last_seen.py": "e42953220f62482ba2068100c46ebda96bfb5766ef7c6f90a7154be079d128d2",
+    "tests/test_patch_slidge_presence_sources.py": "ff1ed2d07d65d8af5618460ebd15a2df3d1a52ddce9508fa8181bc8e702c63bd",
+    "tests/test_patch_slidge_read_sync.py": "6688f9ca8b9b0be164dc0716e4a49f5b5bd14d029bfd76b279624940e00f703d",
+    "tests/test_patch_slidge_roster_sync.py": "8c33861f030d19d55e97659c64d440e55fd9e3ba7f13aa73542385434b5a6b33",
+    "tests/test_patch_slidge_sticker_accessibility.py": "86c0abbc9692c1454c8fb56504057993b91a52a076aff57d5c38e562e9d806ef",
+    "tests/test_patch_slidge_stickers.py": "a2649df8046c3ffab73ea20ae33ce69288b9f02c27558152baab232057bb9438",
+    "tests/test_patch_slidge_transcription.py": "9e54598530ab7cf9fd609859eb0f616923ea7ef90fc14957d40957ae95cde9b1",
+    "tests/test_reactions.py": "e789ee48cde7e2437fb61df10bbd2053afb2f7e45721d371bfde5aac34dcad11",
+    "tests/test_reply_sending.py": "64a5a0c0172dae4546ecd4d748917b0a1c22bd1da1dc5015048c23a32f13ce56",
+    "tests/test_scheduled_messages.py": "acf3885f57a99518cb6f1fe4e5250355026b83d890b0ed9068b7fb5f947136d7",
+    "tests/test_sentiment.py": "d83f0ed1ed40bc780d77d762b46e044fd320b39bce6bd889153fdcbdddde506e",
+    "tests/test_settings.py": "ad290a51e2fad1ae1ed18ae358800ad0177357f7747e730b1da17fcdf7df8695",
+    "tests/test_single_instance.py": "05e27981c5899199111f083a2018f249f492f7544a50d829108f3cefac350bf1",
+    "tests/test_starred_messages_dialog.py": "3825fffc746f3123e9c953ddfdaf0fd0015f4d8909a7fc7aa87d22acb89c7021",
+    "tests/test_statistics.py": "5dff66fe12e065a7af0a093b1c111a94df0f378c1b86734c001fa6272b594cbd",
+    "tests/test_statistics_dialog.py": "1978f336efa6290274c73adc1dcddfd94605cf9afdcf5006de4e4a06a6dff95b",
+    "tests/test_sticker_gallery.py": "10396d6e6dc150d71964f55810a78bd81e9fcae4f28a967f71a91ec634cefadc",
+    "tests/test_sticker_gallery_integration.py": "6c367512290c5279e0eb04d82e34675b70e53f8811b976fa88fc47247d0f87bf",
+    "tests/test_sticker_library.py": "7ad8775aed22fae1556be4231f5f445c7f6c4298ab620e5300cb14866efe0cee",
+    "tests/test_sticker_pack_messages.py": "7c7725e9189602163ec11b4a3e100490b83686aebe9efb8d274ad1405418032f",
+    "tests/test_storage_manager.py": "b1abb88a7c46d2e418c36a7f6eab0d8d24fc9c35ec07bbcc83ab1dbff96d6a45",
+    "tests/test_test_runner.py": "28a0e591f306c243d6ccbe129b545f01ff959f2ef2c9adc79298a3d9739481ed",
+    "tests/test_ui_performance.py": "98931054981a2eb20e5522fc63846f6fa81fd87da8b66bed45cf133da7b55cfa",
+    "tests/test_updates.py": "272719044e7e96b05154da6a972421956a4a51092b6bb07fb81e89c188d10258",
+    "tests/test_whatsapp_message_features.py": "81530643e79744999b159e4e6247fbae28294e304e8acef7b4a2fa87b74f8e57",
+    "tests/test_windows_notifications.py": "449950193471d5d0efad525c94fce62223099f791f3fd00aa4513b9cb52610f0",
+    "tools/run_tests.py": "df48fdf4bf8aa4b71b68ccc86b10c58858da1469051eaa01935ec877c9343fa0",
+    "tools/test_footprint.py": "de143183e63dd1021584561513d979b1296b275a7e6a702c94208e158f31780b"
+  }
+}

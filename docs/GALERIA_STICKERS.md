@@ -116,8 +116,8 @@ que nunca se recibió.
 Pruebas automatizadas:
 
 ```powershell
-conda run -n XMPP python -m unittest tests.test_sticker_library tests.test_sticker_gallery tests.test_sticker_gallery_integration tests.test_outgoing_stickers
-conda run -n XMPP python -m unittest discover -s tests
+conda run -n XMPP python -m unittest -q -b tests.test_sticker_library tests.test_sticker_gallery tests.test_sticker_gallery_integration tests.test_outgoing_stickers
+conda run -n XMPP python tools/run_tests.py --suite all
 conda run -n XMPP python -m ruff check .
 git diff --check
 ```

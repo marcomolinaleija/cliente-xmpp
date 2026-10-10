@@ -18,8 +18,13 @@ with patch.dict(sys.modules, {"tools.sticker_pack": bridge_sticker_pack}):
 
 
 class OutgoingNativePackTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Immutable archive bytes are safe to reuse; each mutation reparses a fresh dict.
+        cls.fixture_bytes = fixture()
+
     def mutate(self, *, modify_metadata=lambda value: None, replace_files=None):
-        with zipfile.ZipFile(io.BytesIO(fixture())) as archive:
+        with zipfile.ZipFile(io.BytesIO(self.fixture_bytes)) as archive:
             files = {name: archive.read(name) for name in archive.namelist()}
         metadata = json.loads(files["manifest.json"])
         modify_metadata(metadata)
@@ -32,7 +37,7 @@ class OutgoingNativePackTests(unittest.TestCase):
         return output.getvalue()
 
     def test_native_envelope_preserves_all_sticker_bytes_labels_and_animation(self):
-        raw = fixture()
+        raw = self.fixture_bytes
         result = helper.prepare_outgoing_pack_sync(raw)
         with (
             zipfile.ZipFile(io.BytesIO(raw)) as source,

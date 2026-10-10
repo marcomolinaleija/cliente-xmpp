@@ -46,6 +46,14 @@ permite consultar estados y cancelar pendientes. CAN debe estar abierto y el
 equipo despierto para despacharlos. Consulta [la guía de programación](docs/MENSAJES_PROGRAMADOS.md)
 para teclado, límites y resultados inciertos.
 
+## Pruebas de desarrollo
+
+Desde la raíz, usa `conda run -n XMPP python tools/run_tests.py` para iterar con
+pruebas rápidas, o añade `--suite all` para la suite Python local completa.
+El runner conserva los detalles localmente y muestra un resumen breve.
+Consulta [capas, áreas y validación de cambios](docs/PRUEBAS.md); un resultado
+rápido no sustituye integración, pruebas del puente ni validación humana/NVDA.
+
 ## Subida de archivos y reintentos
 
 Al adjuntar un archivo, CAN muestra su nombre, estado y porcentaje en la

@@ -96,8 +96,8 @@ La segunda promoción superó todas las guardas. No se restauró la base de dato
 Comprobaciones locales de Python:
 
 ```powershell
-conda run -n XMPP python -m unittest discover -s tests -p test_audio_attachment_modes.py
-conda run -n XMPP python -m unittest discover -s tests -p test_bridge_audio_modes.py
+conda run -n XMPP python -m unittest discover -s tests -p test_audio_attachment_modes.py -q -b
+conda run -n XMPP python -m unittest discover -s tests -p test_bridge_audio_modes.py -q -b
 conda run -n XMPP python -m ruff check .
 git diff --check
 ```

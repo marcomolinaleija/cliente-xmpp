@@ -93,7 +93,7 @@ if (-not $SkipChecks) {
     if ($LASTEXITCODE -ne 0) { throw "compileall falló." }
     & python -m ruff check .
     if ($LASTEXITCODE -ne 0) { throw "ruff falló." }
-    & python -m unittest discover -s tests
+    & python tools/run_tests.py --suite all
     if ($LASTEXITCODE -ne 0) { throw "Los tests fallaron." }
 }
 

@@ -17,7 +17,7 @@ OK: parsed documented stanza, persisted one call, aggregate duration=120 seconds
 Para la cobertura focalizada completa:
 
 ```powershell
-conda run -n XMPP python -m unittest tests.test_calls
+conda run -n XMPP python -m unittest -q -b tests.test_calls
 ```
 
 Los avisos de texto antiguos se mantienen como fallback visible, pero el runner no los

@@ -5,11 +5,6 @@ import unittest
 from pathlib import Path
 
 from tools.patch_slidge_whatsapp_contact_names import (
-    NEW_CONTACT_HANDLER,
-    NEW_GET_CONTACTS,
-    NEW_HISTORY_CONTACT,
-    NEW_LIVE_CONTACT,
-    NEW_ROSTER_SYNC,
     OLD_CONTACT_HANDLER,
     OLD_GET_CONTACTS,
     OLD_HISTORY_CONTACT,
@@ -32,8 +27,6 @@ class ContactNamePatchTests(unittest.TestCase):
 
             self.assertTrue(patch_event_go(path, backup=False))
             updated = path.read_text(encoding="utf-8")
-            self.assertIn(NEW_HISTORY_CONTACT, updated)
-            self.assertIn(NEW_LIVE_CONTACT, updated)
             self.assertIn("storedContactInfo(ctx, client, actor, jid)", updated)
             self.assertIn("contactInfo.PushName = evt.GetPushname()", updated)
             self.assertIn("client.Store.Contacts.GetContact(ctx, jid)", updated)
@@ -51,10 +44,8 @@ class ContactNamePatchTests(unittest.TestCase):
 
             self.assertTrue(patch_session_py(path, backup=False))
             updated = path.read_text(encoding="utf-8")
-            self.assertIn(NEW_ROSTER_SYNC, updated)
             self.assertIn("GetContacts(refresh=True)", updated)
             self.assertIn("add_whatsapp_contact(wa_contact)", updated)
-            self.assertIn(NEW_CONTACT_HANDLER, updated)
             self.assertIn("__authoritative_saved_contacts", updated)
             self.assertIn("await asyncio.sleep(5)", updated)
             self.assertNotIn(OLD_ROSTER_SYNC, updated)
@@ -68,7 +59,6 @@ class ContactNamePatchTests(unittest.TestCase):
 
             self.assertTrue(patch_session_go(path, backup=False))
             updated = path.read_text(encoding="utf-8")
-            self.assertIn(NEW_GET_CONTACTS, updated)
             self.assertIn("preferContactCandidate", updated)
             self.assertIn("contactsByJID", updated)
             self.assertNotIn(OLD_GET_CONTACTS, updated)

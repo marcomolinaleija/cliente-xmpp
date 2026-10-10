@@ -1,0 +1,354 @@
+{
+  "version": 1,
+  "modules": {
+    "test_atajos_api": {
+      "area": "automation",
+      "layer": "integration"
+    },
+    "test_atajos_automation": {
+      "area": "automation",
+      "layer": "integration"
+    },
+    "test_atajos_media": {
+      "area": "automation",
+      "layer": "integration"
+    },
+    "test_audio_attachment_modes": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_audio_process": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_bridge_audio_modes": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_bridge_outgoing_sticker_pack": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_bridge_sticker_pack": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_calls": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_clipboard_batch": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_connection_actions": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_conversation_context": {
+      "area": "automation",
+      "layer": "integration"
+    },
+    "test_deepgram_transcription": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_development_mode": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_file_transfers": {
+      "area": "media",
+      "layer": "fast",
+      "overrides": {
+        "HttpStreamingTests.test_real_http_streams_91_mib_and_reports_progress_without_iq_put_timeout": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_formatting": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_group_helpers": {
+      "area": "messaging",
+      "layer": "fast",
+      "overrides": {
+        "HistoryPaginationTests": {
+          "area": "history"
+        },
+        "ChatSearchRankingTests": {
+          "area": "history"
+        },
+        "ContactPresenceLabelTests": {
+          "area": "connection"
+        },
+        "PresenceTimeFormattingTests": {
+          "area": "connection"
+        },
+        "WhatsAppPairingCodeTests": {
+          "area": "connection"
+        },
+        "InitialConnectionFlowTests": {
+          "area": "connection"
+        },
+        "WhatsAppPairingCodeContinuationTests": {
+          "area": "connection"
+        },
+        "PendingWhatsAppUiTests": {
+          "area": "connection"
+        },
+        "WhatsAppRegistrationTests": {
+          "area": "connection"
+        },
+        "ContactStateTests": {
+          "area": "connection"
+        },
+        "UserDocumentationTests": {
+          "area": "platform"
+        },
+        "ChatListFocusTests": {
+          "area": "platform"
+        },
+        "IncomingMessageSoundTests": {
+          "area": "platform"
+        }
+      }
+    },
+    "test_http_upload": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_local_bridge": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_local_bridge_commands": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_manual_history_loading": {
+      "area": "history",
+      "layer": "fast",
+      "overrides": {
+        "ManualHistoryLoadingTests.test_large_numeric_load_is_sequential_and_honors_the_last_partial_page": {
+          "layer": "integration"
+        },
+        "ManualHistoryLoadingTests.test_all_drains_local_history_before_requesting_remote_and_stops_on_empty": {
+          "layer": "integration"
+        },
+        "ManualHistoryLoadingTests.test_all_preserves_messages_sharing_the_local_page_boundary_timestamp": {
+          "layer": "integration"
+        },
+        "ManualHistoryLoadingTests.test_search_limit_is_five_hundred_without_enlarging_python_memory_scan": {
+          "layer": "integration"
+        },
+        "HistoryPrependTests.test_prepend_keeps_native_windows_list_selection_without_showing_a_window": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_media": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_mentions": {
+      "area": "storage",
+      "layer": "fast",
+      "overrides": {
+        "GroupParticipantStoreTests": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_message_selection_clipboard": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_message_store": {
+      "area": "storage",
+      "layer": "integration"
+    },
+    "test_migrate_slidge_mexico_aliases": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_mpv_player": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_native_sticker_pack_send": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_new_chat": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_outgoing_stickers": {
+      "area": "media",
+      "layer": "fast"
+    },
+    "test_patch_slidge_admin_commands": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_call_routing": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_contact_names": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_failed_relogin_state": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_incoming_ptt": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_mentions": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_message_presence": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_passive_presence": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_polls": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_presence_cache": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_presence_last_seen": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_presence_sources": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_read_sync": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_roster_sync": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_sticker_accessibility": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_stickers": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_transcription": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_reactions": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_reply_sending": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_scheduled_messages": {
+      "area": "automation",
+      "layer": "fast",
+      "overrides": {
+        "OutboxTests": {
+          "layer": "integration"
+        },
+        "NativeServiceTests": {
+          "layer": "integration"
+        },
+        "ScheduledUITests": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_sentiment": {
+      "area": "storage",
+      "layer": "fast"
+    },
+    "test_settings": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_single_instance": {
+      "area": "platform",
+      "layer": "integration"
+    },
+    "test_starred_messages_dialog": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_statistics": {
+      "area": "storage",
+      "layer": "integration"
+    },
+    "test_statistics_dialog": {
+      "area": "storage",
+      "layer": "fast"
+    },
+    "test_sticker_gallery": {
+      "area": "media",
+      "layer": "integration"
+    },
+    "test_sticker_gallery_integration": {
+      "area": "media",
+      "layer": "integration"
+    },
+    "test_sticker_library": {
+      "area": "media",
+      "layer": "integration"
+    },
+    "test_sticker_pack_messages": {
+      "area": "media",
+      "layer": "integration"
+    },
+    "test_storage_manager": {
+      "area": "storage",
+      "layer": "integration"
+    },
+    "test_test_runner": {
+      "area": "platform",
+      "layer": "fast",
+      "overrides": {
+        "CatalogContractTests": {
+          "layer": "contracts",
+          "area": "testing"
+        }
+      }
+    },
+  "test_ui_performance": {
+    "area": "platform",
+    "layer": "fast"
+    },
+    "test_updates": {
+      "area": "platform",
+      "layer": "fast"
+    },
+    "test_whatsapp_message_features": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_windows_notifications": {
+      "area": "platform",
+      "layer": "fast"
+    }
+  }
+}

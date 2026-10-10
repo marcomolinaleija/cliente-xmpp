@@ -16,7 +16,6 @@ from cliente_xmpp.ui.conversation_panel import (
 )
 from cliente_xmpp.ui.main_window import (
     BACKGROUND_SYNC_DELAY_MS,
-    CACHED_CONVERSATION_MESSAGE_LIMIT,
     PRELOAD_CHAT_LIMIT,
     MainWindow,
 )
@@ -476,12 +475,25 @@ class MainWindowPerformanceTests(unittest.TestCase):
     def test_cached_messages_are_loaded_only_once_per_account_and_chat(self) -> None:
         window = MainWindow.__new__(MainWindow)
         window.current_jid = "me@example.test"
-        window.cached_message_loads = {(window.current_jid, "chat@example.test")}
+        window.cached_message_loads = set()
+        window.local_history_before_by_chat = {}
+        window.local_history_cursor_by_chat = {}
+        window.local_history_exhausted_chats = set()
+        window._debug_perf = Mock()
         window.message_store = SimpleNamespace(
-            load_recent_messages=lambda *_args, **_kwargs: self.fail("lectura repetida")
+            load_recent_messages=Mock(return_value=[]),
         )
-
         window._load_cached_messages_for_chat("chat@example.test")
+        window._load_cached_messages_for_chat("chat@example.test")
+        window.message_store.load_recent_messages.assert_called_once_with(
+            "me@example.test", "chat@example.test", limit=500,
+        )
+        window.current_jid = "other@example.test"
+        window._load_cached_messages_for_chat("chat@example.test")
+        self.assertEqual(window.message_store.load_recent_messages.call_count, 2)
+        window.message_store.load_recent_messages.assert_called_with(
+            "other@example.test", "chat@example.test", limit=500,
+        )
 
     def test_async_message_persistence_uses_an_immutable_snapshot(self) -> None:
         stored: list[Message] = []
@@ -580,9 +592,6 @@ class MainWindowPerformanceTests(unittest.TestCase):
 
         self.assertIsNone(result)
         compare.assert_not_called()
-
-    def test_cached_conversation_message_limit_is_bounded_to_five_hundred(self) -> None:
-        self.assertEqual(CACHED_CONVERSATION_MESSAGE_LIMIT, 500)
 
     def test_preload_chat_limit_and_sync_delay_are_bounded(self) -> None:
         self.assertEqual(PRELOAD_CHAT_LIMIT, 10)

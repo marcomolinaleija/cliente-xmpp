@@ -116,7 +116,10 @@ class ManualHistoryLoadingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = self.make_window()
             window.message_store = MessageStore(Path(temp_dir) / "messages.sqlite3")
-            messages = make_messages(1200, same_time=same_time)
+            # Numeric 650 exercises the >500 bulk boundary; ALL needs three pages,
+            # not seven copies of the same transition. Native 5000-row stress stays below.
+            older_count = 700 if requested is not None else 201
+            messages = make_messages(500 + older_count, same_time=same_time)
             window.message_store.upsert_messages(window.current_jid, messages)
             recent = window.message_store.load_recent_messages(
                 window.current_jid, messages[0].chat_jid, limit=500
@@ -168,8 +171,8 @@ class ManualHistoryLoadingTests(unittest.TestCase):
                 window.xmpp.load_history.assert_not_called()
                 self.assertEqual(page_sizes[-1], requested % 100 or 100)
             else:
-                self.assertEqual(load.loaded, 700)
-                self.assertEqual(len(window.messages_by_chat[chat_jid]), 1200)
+                self.assertEqual(load.loaded, older_count)
+                self.assertEqual(len(window.messages_by_chat[chat_jid]), 500 + older_count)
                 window.xmpp.load_history.assert_called_once()
                 window._handle_message_history_loaded(chat_jid, [], older=True, complete=True)
                 self.assertIsNone(window.manual_history_load)

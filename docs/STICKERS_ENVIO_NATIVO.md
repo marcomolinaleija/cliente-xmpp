@@ -89,7 +89,7 @@ respuesta citada e importación del paquete recibido.
 - [XEP-0449](https://xmpp.org/extensions/xep-0449.html): marcador sticker, SFS y descripción textual.
 - [Pillow WebP](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#webp): codificación y animaciones.
 
-Pruebas: `conda run -n XMPP python -m unittest tests.test_outgoing_stickers
+Pruebas: `conda run -n XMPP python -m unittest -q -b tests.test_outgoing_stickers
 tests.test_whatsapp_message_features tests.test_http_upload` (una sola línea).
 Rollback local: retirar `outgoing_stickers.py` y los cambios relacionados de
 cliente, UI, dependencia y tests; no revertir el trabajo previo de re-login.

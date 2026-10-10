@@ -11,6 +11,7 @@ settings.local.*
 cliente_xmpp/lib/
 
 # Build artifacts
+.test-results/
 build/
 dist/
 release/

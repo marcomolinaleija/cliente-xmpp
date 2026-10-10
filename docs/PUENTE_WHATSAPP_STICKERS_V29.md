@@ -72,7 +72,7 @@ no-auto-join. Las pruebas no usan cuentas, conversaciones ni archivos reales.
 Prueba local de interoperabilidad:
 
 ```powershell
-conda run -n XMPP python -m unittest tests.test_bridge_sticker_pack
+conda run -n XMPP python -m unittest -q -b tests.test_bridge_sticker_pack
 ```
 
 Comprobaciones humanas complementarias:

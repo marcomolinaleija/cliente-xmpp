@@ -36,11 +36,17 @@ Cliente Windows Python/wxPython para XMPP y el puente de WhatsApp. Estas reglas 
 
 `pyproject.toml` declara Python, dependencias y Ruff. El entorno local documentado es `XMPP`; confirma su disponibilidad sin instalar nada automáticamente.
 
-- Suite: `conda run -n XMPP python -m unittest discover -s tests`.
+- Iteración rápida: `conda run -n XMPP python tools/run_tests.py` (capa `fast`, no es validación completa).
+- Cambio focalizado: `conda run -n XMPP python tools/run_tests.py --suite all --area history` (repite `--area` para unir áreas relacionadas).
+- Cierre cruzado/release: `conda run -n XMPP python tools/run_tests.py --suite all`.
 - Lint: `conda run -n XMPP python -m ruff check .`.
 - Estructura: `git diff --check`.
 - Lanzamiento real, sólo cuando corresponda: `conda run -n XMPP python -m cliente_xmpp.app.main`.
 - Ejecuta pruebas focalizadas durante cambios y la suite completa antes de entregar una release, salvo límite explícito del usuario. Las pruebas no sustituyen validación real de conexión, MAM, envío/recepción, multimedia y NVDA. No uses datos del usuario para pruebas destructivas.
+- Estructura lógica: `tests/suites.json` asigna cada módulo y sus excepciones de clase/método a `fast`, `integration` o `contracts`, y a un área. Registra pruebas nuevas allí; un archivo/selector ausente u obsoleto, import fallido o selección vacía debe fallar, nunca contar como aprobado.
+- El runner guarda diagnóstico completo y JSON de tiempos en `.test-results/` (ignorado) y muestra sólo resumen/fallos acotados. No leas ni pegues logs exitosos; usa `--profile` sólo para medir lentitud. No repitas una suite aprobada sin cambios relevantes de código, pruebas, dependencias o entorno.
+- Reduce preparación repetida y comprueba el mínimo número de páginas que cruza cada límite; conserva un stress representativo, casos negativos, aislamiento y teclado/nativo. No borres por antigüedad ni por alcanzar una cuota; documenta la comprobación más fuerte que sustituye cada redundancia. Una matriz mantiene sus subcasos: menos métodos no significa menos escenarios.
+- Consulta [pruebas por capa y área](docs/PRUEBAS.md) y [auditoría medida](docs/AUDITORIA_PRUEBAS_2026-10-10.md). Los Go/race/smokes de imagen permanecen separados y requieren el entorno/autorización de bridge correspondiente; `all` aquí significa toda la suite Python local, no producción ni imagen Docker.
 
 ## Consulta por tema y entrega
 

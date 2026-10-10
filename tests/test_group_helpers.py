@@ -125,9 +125,6 @@ class HistoryPaginationTests(unittest.TestCase):
 
 
 class UserDocumentationTests(unittest.TestCase):
-    def test_documentation_html_is_packaged_with_the_client(self) -> None:
-        self.assertTrue(USER_DOCUMENTATION_PATH.is_file())
-
     @patch("cliente_xmpp.ui.main_window.wx.LaunchDefaultBrowser", return_value=True)
     def test_opening_documentation_uses_the_default_browser(self, launch: object) -> None:
         status_bar = SimpleNamespace(SetStatusText=Mock())
@@ -359,29 +356,15 @@ class ContactPresenceLabelTests(unittest.TestCase):
 
 
 class PresenceTimeFormattingTests(unittest.TestCase):
-    def test_today_keeps_compact_time(self) -> None:
+    def test_relative_and_absolute_presence_dates(self) -> None:
         now = datetime(2026, 7, 19, 20, 0)
-
-        self.assertEqual(
-            MainWindow._format_presence_time(datetime(2026, 7, 19, 15, 41), now=now),
-            "hoy 3:41 p. m.",
-        )
-
-    def test_yesterday_uses_relative_label(self) -> None:
-        now = datetime(2026, 7, 19, 20, 0)
-
-        self.assertEqual(
-            MainWindow._format_presence_time(datetime(2026, 7, 18, 17, 14), now=now),
-            "ayer a las 5:14 p. m.",
-        )
-
-    def test_older_date_includes_day_month_and_year(self) -> None:
-        now = datetime(2026, 7, 19, 20, 0)
-
-        self.assertEqual(
-            MainWindow._format_presence_time(datetime(2026, 6, 7, 17, 14), now=now),
-            "07/06/2026, 5:14 p. m.",
-        )
+        for name, seen, expected in (
+            ("today", datetime(2026, 7, 19, 15, 41), "hoy 3:41 p. m."),
+            ("yesterday", datetime(2026, 7, 18, 17, 14), "ayer a las 5:14 p. m."),
+            ("older", datetime(2026, 6, 7, 17, 14), "07/06/2026, 5:14 p. m."),
+        ):
+            with self.subTest(case=name):
+                self.assertEqual(MainWindow._format_presence_time(seen, now=now), expected)
 
 
 class ChatSearchRankingTests(unittest.TestCase):

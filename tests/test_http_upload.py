@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from aiohttp.client_exceptions import ClientConnectorError
 
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
-from cliente_xmpp.xmpp.events import XmppError
+from cliente_xmpp.xmpp.events import FileTransferUpdated, XmppError
 from cliente_xmpp.xmpp.http_upload import (
     is_dns_resolution_error,
     upload_file_with_system_resolver,
@@ -55,12 +55,13 @@ class _Session:
         *,
         data: object,
         headers: dict[str, str],
-        timeout: int,
     ) -> _Response:
         self.put_url = url
         self.put_headers = headers
-        self.uploaded = data.read()
-        self.timeout = timeout
+        class Writer:
+            async def write(_self, chunk: bytes) -> None:
+                self.uploaded += chunk
+        await data.write(Writer())
         return self.response
 
 
@@ -164,7 +165,9 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "cliente_xmpp.xmpp.client.upload_file_with_system_resolver",
-                    new=AsyncMock(return_value="https://xmpp.example.test/file/token"),
+                    new=AsyncMock(side_effect=[
+                        _dns_connector_error(), "https://xmpp.example.test/file/token",
+                    ]),
                 ) as fallback,
                 patch("cliente_xmpp.xmpp.client.asyncio.sleep", new=AsyncMock()) as sleep,
             ):
@@ -177,7 +180,8 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(get_url, "https://xmpp.example.test/file/token")
-            fallback.assert_awaited_once()
+            self.assertEqual(fallback.await_count, 2)
+            self.assertFalse(fallback.call_args_list[0].kwargs["system_resolver"])
             sleep.assert_awaited_once_with(0.5)
 
     async def test_service_deletes_temporary_voice_note_after_final_send_error(self) -> None:
@@ -206,7 +210,14 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
             service.send_file("contact@example.test", "ptt-test.ogg")
             await self._wait_for_emit(emitted)
         delete.assert_not_called()
-        self.assertIsInstance(emitted[0], XmppError)
+        for _ in range(100):
+            if any(isinstance(event, FileTransferUpdated) and event.state == "failed"
+                   for event in emitted):
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(any(
+            isinstance(event, FileTransferUpdated) and event.state == "failed" for event in emitted
+        ))
 
     @staticmethod
     async def _wait_for_emit(emitted: list[object]) -> None:

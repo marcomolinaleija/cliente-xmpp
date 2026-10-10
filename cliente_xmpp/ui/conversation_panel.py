@@ -1710,6 +1710,19 @@ class ConversationPanel(wx.Panel):
     def _format_delivery_state(message: Message) -> str:
         if message.retracted:
             return "Eliminado"
+        if message.upload_id:
+            if message.upload_state == "failed":
+                return (
+                    "Archivo no enviado. Pulsa Enter o haz doble clic para reintentar. "
+                    + message.upload_detail
+                )
+            if message.upload_state == "uncertain":
+                return message.upload_detail
+            if message.upload_state == "queued":
+                return "En cola para subir, 0 %"
+            if message.upload_state == "sending":
+                return "Subido, 100 %. Enviando"
+            return f"Enviando archivo, subiendo {message.upload_percent} %"
         if message.delivery_state == "pending":
             return "Enviando"
         if message.delivery_state == "failed":

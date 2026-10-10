@@ -128,6 +128,22 @@ class FileBatchCompleted:
 
 
 @dataclass(slots=True)
+class FileTransferUpdated:
+    chat_jid: str
+    transfer_id: str
+    filename: str
+    state: str
+    percent: int = 0
+    size: int = 0
+    detail: str = ""
+    is_group: bool = False
+    account_jid: str = ""
+    reply_to_jid: str = ""
+    reply_to_id: str = ""
+    reply_quote: str = ""
+
+
+@dataclass(slots=True)
 class ChatDisplayedSynced:
     chat_jid: str
     message_id: str
@@ -195,6 +211,7 @@ XmppEvent = (
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
     | FileBatchCompleted
+    | FileTransferUpdated
     | ChatDisplayedSynced
     | ContactPresenceUpdated
     | ContactAvatarReceived

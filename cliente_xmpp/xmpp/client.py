@@ -15,9 +15,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
-from aiohttp.client_exceptions import ClientConnectorError
+from aiohttp.client_exceptions import ClientConnectorError, ClientError
 from slixmpp import ClientXMPP
 from slixmpp.exceptions import IqError, IqTimeout
+from slixmpp.plugins.xep_0363.http_upload import FileTooBig, HTTPError
 
 from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.opus import (
@@ -56,6 +57,7 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
     FileBatchCompleted,
+    FileTransferUpdated,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -75,6 +77,7 @@ from cliente_xmpp.xmpp.events import (
     XmppEvent,
 )
 from cliente_xmpp.xmpp.http_upload import (
+    UploadProgress,
     is_dns_resolution_error,
     upload_file_with_system_resolver,
 )
@@ -96,6 +99,20 @@ class _PendingTransientMessageRetry:
     send: Callable[[], None]
     attempts: int = 0
     cleanup_handle: asyncio.TimerHandle | None = None
+
+
+@dataclass(slots=True)
+class _FileTransfer:
+    transfer_id: str
+    chat_jid: str
+    path: str
+    options: dict[str, object]
+    account: tuple[str, str, int]
+    state: str = "queued"
+    size: int = 0
+    fingerprint: tuple[int, int, int, int] | None = None
+    detail: str = ""
+    submitted: bool = False
 
 
 INBOX_NS = "urn:xmpp:inbox:1"
@@ -4536,6 +4553,9 @@ class BridgeXmppClient(ClientXMPP):
         copy_sticker: bool = False,
         as_sticker_pack: bool = False,
         as_voice_note: bool = False,
+        message_id: str = "",
+        upload_progress: UploadProgress | None = None,
+        before_submit: Callable[[], None] | None = None,
     ) -> Message:
         file_path = Path(path)
         if not file_path.exists():
@@ -4613,13 +4633,11 @@ class BridgeXmppClient(ClientXMPP):
             if media_kind == "audio" else 0.0
         )
         try:
+            upload_options = {"progress": upload_progress} if upload_progress else {}
             get_url = await self._upload_file(
-                file_path,
-                size=size,
-                content_type=upload_mime,
-                timeout=60,
+                file_path, size=size, content_type=upload_mime, timeout=60, **upload_options,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if as_voice_note:
                 delete_temporary_voice_note(file_path)
             if as_sticker and file_path != source_path:
@@ -4628,6 +4646,8 @@ class BridgeXmppClient(ClientXMPP):
 
         message_type = "groupchat" if is_group else "chat"
         message = self.make_message(mto=to_jid, mbody=get_url, mtype=message_type)
+        if message_id:
+            message["id"] = message_id
         if view_once and media_kind == "audio":
             message["thread"] = "urn:marco-ml:whatsapp:view-once:0"
         elif bridge_audio_mode:
@@ -4652,6 +4672,8 @@ class BridgeXmppClient(ClientXMPP):
             reply_to_id=reply_to_id,
             reply_quote=reply_quote,
         )
+        if before_submit:
+            before_submit()
         message.send()
         body = self._message_body_for_display(
             "",
@@ -4737,6 +4759,7 @@ class BridgeXmppClient(ClientXMPP):
         size: int,
         content_type: str,
         timeout: int,
+        progress: UploadProgress | None = None,
     ) -> str:
         upload = self["xep_0363"]
         if upload.upload_service is None:
@@ -4749,6 +4772,7 @@ class BridgeXmppClient(ClientXMPP):
                 size=size,
                 content_type=content_type,
                 timeout=timeout,
+                progress=progress,
             )
         except ClientConnectorError as exc:
             if not is_dns_resolution_error(exc):
@@ -4763,6 +4787,7 @@ class BridgeXmppClient(ClientXMPP):
                     size=size,
                     content_type=content_type,
                     timeout=timeout,
+                    progress=progress,
                 )
             except (IqError, IqTimeout):
                 if attempt > 0:
@@ -4782,17 +4807,14 @@ class BridgeXmppClient(ClientXMPP):
         size: int,
         content_type: str,
         timeout: int,
+        progress: UploadProgress | None = None,
     ) -> str:
         for attempt in range(2):
             try:
-                with file_path.open("rb") as input_file:
-                    return await upload.upload_file(
-                        file_path,
-                        size=size,
-                        content_type=content_type,
-                        input_file=input_file,
-                        timeout=timeout,
-                    )
+                return await upload_file_with_system_resolver(
+                    upload, file_path, size=size, content_type=content_type,
+                    timeout=timeout, progress=progress, system_resolver=False,
+                )
             except (IqError, IqTimeout):
                 if attempt > 0:
                     raise
@@ -4882,8 +4904,13 @@ class XmppService:
         self._client: BridgeXmppClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._file_transfers: dict[str, _FileTransfer] = {}
+        self._file_transfer_tasks: set[asyncio.Task] = set()
+        self._file_transfer_lock: asyncio.Lock | None = None
+        self._file_transfer_profile: tuple[str, str, int] | None = None
 
     def connect(self, settings: ConnectionSettings, password: str) -> None:
+        self._file_transfer_profile = (settings.jid, settings.host, settings.port)
         if self._thread and self._thread.is_alive():
             self.disconnect()
 
@@ -4896,7 +4923,158 @@ class XmppService:
 
     def disconnect(self) -> None:
         if self._client and self._loop:
+            self._loop.call_soon_threadsafe(self._cancel_file_transfers)
             self._loop.call_soon_threadsafe(self._client.request_disconnect)
+
+    def _cancel_file_transfers(self) -> None:
+        for task in tuple(self._file_transfer_tasks):
+            task.cancel()
+
+    @staticmethod
+    def _file_transfer_account(client: object) -> tuple[str, str, int]:
+        settings = getattr(client, "settings", None)
+        return (
+            str(getattr(settings, "jid", "")),
+            str(getattr(settings, "host", "")),
+            int(getattr(settings, "port", 0)),
+        )
+
+    def _emit_file_transfer(self, transfer: _FileTransfer, percent: int = 0) -> None:
+        self._emit(FileTransferUpdated(
+            chat_jid=transfer.chat_jid, transfer_id=transfer.transfer_id,
+            filename=Path(transfer.path).name, state=transfer.state, percent=percent,
+            size=transfer.size, detail=transfer.detail,
+            is_group=bool(transfer.options.get("is_group")), account_jid=transfer.account[0],
+            reply_to_jid=str(transfer.options.get("reply_to_jid", "")),
+            reply_to_id=str(transfer.options.get("reply_to_id", "")),
+            reply_quote=str(transfer.options.get("reply_quote", "")),
+        ))
+
+    def _new_file_transfer(
+        self, chat_jid: str, path: str, options: dict[str, object],
+    ) -> _FileTransfer:
+        transfer = _FileTransfer(
+            uuid.uuid4().hex, chat_jid, str(Path(path).absolute()), options,
+            self._file_transfer_account(self._client),
+        )
+        self._file_transfers[transfer.transfer_id] = transfer
+        self._file_transfer_profile = transfer.account
+        self._emit_file_transfer(transfer)
+        return transfer
+
+    async def _send_file_transfer(self, transfer: _FileTransfer, client: object) -> bool:
+        if self._file_transfer_lock is None:
+            self._file_transfer_lock = asyncio.Lock()
+        try:
+            async with self._file_transfer_lock:
+                if client is not self._client or not client:
+                    raise ConnectionError("La conexión cambió antes del envío.")
+                if hasattr(client, "is_connected") and not client.is_connected():
+                    raise ConnectionError("No hay conexión XMPP.")
+                stat = await asyncio.to_thread(Path(transfer.path).stat)
+                fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                if transfer.fingerprint is not None and transfer.fingerprint != fingerprint:
+                    raise ValueError("El archivo cambió; adjúntalo de nuevo para enviarlo.")
+                transfer.fingerprint = fingerprint
+                transfer.size = stat.st_size
+                transfer.state, transfer.detail = "uploading", ""
+                self._emit_file_transfer(transfer)
+
+                def progress(sent: int, total: int) -> None:
+                    percent = min(99, sent * 100 // max(1, total))
+                    self._emit_file_transfer(transfer, percent)
+
+                def before_submit() -> None:
+                    if client is not self._client or (
+                        hasattr(client, "is_connected") and not client.is_connected()
+                    ):
+                        raise ConnectionError("La conexión cambió antes del envío.")
+                    current = Path(transfer.path).stat()
+                    if (
+                        current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns,
+                    ) != transfer.fingerprint:
+                        raise ValueError("El archivo cambió; adjúntalo de nuevo para enviarlo.")
+                    transfer.submitted = True
+                    transfer.state = "sending"
+                    self._emit_file_transfer(transfer, 100)
+
+                message = await client.send_file(
+                    transfer.chat_jid, transfer.path, **transfer.options,
+                    message_id=transfer.transfer_id, upload_progress=progress,
+                    before_submit=before_submit,
+                )
+                transfer.state = "sent"
+                self._file_transfers.pop(transfer.transfer_id, None)
+                self._emit(MessageReceived(message))
+                return True
+        except (Exception, asyncio.CancelledError) as exc:
+            transfer.state = "uncertain" if transfer.submitted else "failed"
+            transfer.detail = (
+                "No se pudo confirmar el envío. Comprueba WhatsApp antes de reenviar."
+                if transfer.submitted else _format_file_send_error(exc)
+            )
+            self._emit_file_transfer(transfer)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return False
+
+    def file_transfer_is_current(self, transfer_id: str) -> bool:
+        transfer = self._file_transfers.get(transfer_id)
+        profile = (
+            self._file_transfer_account(self._client)
+            if self._client else self._file_transfer_profile
+        )
+        return bool(
+            transfer and transfer.account == profile
+        )
+
+    def retry_file_transfer(self, transfer_id: str) -> bool:
+        transfer = self._file_transfers.get(transfer_id)
+        client, loop = self._client, self._loop
+        if (
+            not transfer or transfer.state != "failed" or not client or not loop
+            or transfer.account != self._file_transfer_account(client)
+            or (hasattr(client, "is_connected") and not client.is_connected())
+        ):
+            return False
+        transfer.state, transfer.detail = "queued", ""
+        self._emit_file_transfer(transfer)
+        self._schedule_file_transfers([transfer], client, loop, batch=False)
+        return True
+
+    def _schedule_file_transfers(
+        self, transfers: list[_FileTransfer], client: object, loop: object, *, batch: bool,
+    ) -> None:
+        async def send() -> None:
+            succeeded = 0
+            try:
+                for transfer in transfers:
+                    succeeded += await self._send_file_transfer(transfer, client)
+            except asyncio.CancelledError:
+                for transfer in transfers:
+                    if transfer.state == "queued":
+                        transfer.state = "failed"
+                        transfer.detail = "La subida se canceló al desconectar."
+                        self._emit_file_transfer(transfer)
+            if batch:
+                detail = next((item.detail for item in transfers if item.detail), "")
+                self._emit(FileBatchCompleted(
+                    transfers[0].chat_jid, len(transfers), succeeded,
+                    len(transfers) - succeeded, detail,
+                ))
+
+        def schedule() -> None:
+            task = loop.create_task(send())
+            if task is not None:
+                self._file_transfer_tasks.add(task)
+                task.add_done_callback(self._file_transfer_tasks.discard)
+
+        try:
+            loop.call_soon_threadsafe(schedule)
+        except RuntimeError:
+            for transfer in transfers:
+                transfer.state, transfer.detail = "failed", "La conexión terminó antes del envío."
+                self._emit_file_transfer(transfer)
 
     def send_message(
         self,
@@ -5333,42 +5511,33 @@ class XmppService:
         as_sticker_pack: bool = False,
         as_voice_note: bool = False,
     ) -> None:
-        if not self._client or not self._loop:
+        client, loop = self._client, self._loop
+        if not client or not loop:
             self._emit(XmppError("No hay una conexión XMPP activa."))
             return
-
-        async def send() -> None:
-            if not self._client:
-                return
-
-            try:
-                message = await self._client.send_file(
-                    to_jid,
-                    path,
-                    is_group=is_group,
-                    view_once=view_once,
-                    as_sticker=as_sticker,
-                    reply_to_jid=reply_to_jid,
-                    reply_to_id=reply_to_id,
-                    reply_quote=reply_quote,
-                    sticker_description=sticker_description,
-                    copy_sticker=copy_sticker,
-                    as_sticker_pack=as_sticker_pack,
-                    as_voice_note=as_voice_note,
-                )
-            except Exception as exc:
-                if as_voice_note:
+        options = dict(
+            is_group=is_group, view_once=view_once, as_sticker=as_sticker,
+            reply_to_jid=reply_to_jid, reply_to_id=reply_to_id, reply_quote=reply_quote,
+            sticker_description=sticker_description, copy_sticker=copy_sticker,
+            as_sticker_pack=as_sticker_pack, as_voice_note=as_voice_note,
+        )
+        if as_voice_note:
+            # Recordings retain their established temporary-file cleanup lifecycle.
+            async def send_recording() -> None:
+                try:
+                    message = await client.send_file(to_jid, path, **options)
+                except Exception as exc:
                     delete_temporary_voice_note(path)
-                self._emit(XmppError(f"No se pudo enviar el archivo: {_format_xmpp_error(exc)}"))
-                return
+                    self._emit(XmppError(
+                        f"No se pudo enviar el archivo: {_format_file_send_error(exc)}"
+                    ))
+                    return
+                self._emit(MessageReceived(message))
 
-            self._emit(MessageReceived(message))
-
-        def schedule() -> None:
-            if self._loop:
-                self._loop.create_task(send())
-
-        self._loop.call_soon_threadsafe(schedule)
+            loop.call_soon_threadsafe(lambda: loop.create_task(send_recording()))
+            return
+        transfer = self._new_file_transfer(to_jid, path, options)
+        self._schedule_file_transfers([transfer], client, loop, batch=False)
 
     def send_files_serial(
         self,
@@ -5379,61 +5548,22 @@ class XmppService:
         reply_to_id: str = "",
         reply_quote: str = "",
     ) -> None:
-        """Upload a stable file snapshot in order and report one aggregate result."""
+        """Queue one transient row per file and upload a stable snapshot serially."""
+        client, loop = self._client, self._loop
         snapshot = tuple(paths)
-        if not self._client or not self._loop:
-            self._emit(
-                FileBatchCompleted(
-                    chat_jid=to_jid,
-                    total=len(snapshot),
-                    succeeded=0,
-                    failed=len(snapshot),
-                )
-            )
+        if not snapshot:
             return
-
-        async def send() -> None:
-            succeeded = 0
-            failed = 0
-            failure_detail = ""
-            for path in snapshot:
-                if not self._client:
-                    failed += 1
-                    continue
-                try:
-                    message = await self._client.send_file(
-                        to_jid,
-                        path,
-                        is_group=is_group,
-                        reply_to_jid=reply_to_jid,
-                        reply_to_id=reply_to_id,
-                        reply_quote=reply_quote,
-                    )
-                except UnsupportedAudioModeError as exc:
-                    failed += 1
-                    failure_detail = str(exc)
-                    continue
-                except Exception:
-                    failed += 1
-                    continue
-                succeeded += 1
-                self._emit(MessageReceived(message))
-
-            self._emit(
-                FileBatchCompleted(
-                    chat_jid=to_jid,
-                    total=len(snapshot),
-                    succeeded=succeeded,
-                    failed=failed,
-                    detail=failure_detail,
-                )
-            )
-
-        def schedule() -> None:
-            if self._loop:
-                self._loop.create_task(send())
-
-        self._loop.call_soon_threadsafe(schedule)
+        if not client or not loop:
+            self._emit(FileBatchCompleted(
+                to_jid, len(snapshot), 0, len(snapshot), "No hay una conexión XMPP activa.",
+            ))
+            return
+        options = dict(
+            is_group=is_group, reply_to_jid=reply_to_jid,
+            reply_to_id=reply_to_id, reply_quote=reply_quote,
+        )
+        transfers = [self._new_file_transfer(to_jid, path, options.copy()) for path in snapshot]
+        self._schedule_file_transfers(transfers, client, loop, batch=True)
 
     def send_forward(
         self,
@@ -5755,6 +5885,7 @@ class XmppService:
             )
 
     def _run_client(self, settings: ConnectionSettings, password: str) -> None:
+        self._file_transfer_lock = None
         try:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
@@ -5807,8 +5938,43 @@ class XmppService:
         except Exception as exc:
             self._emit(XmppError(f"Error en la conexión XMPP: {exc}"))
         finally:
+            if self._loop and self._file_transfer_tasks:
+                tasks = tuple(self._file_transfer_tasks)
+                self._cancel_file_transfers()
+                self._loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
             self._client = None
             self._loop = None
+
+
+def _format_file_send_error(exc: BaseException) -> str:
+    """Actionable transfer errors without signed URLs, response bodies or local paths."""
+    if isinstance(exc, asyncio.CancelledError):
+        return "La subida se canceló al desconectar."
+    if isinstance(exc, IqTimeout):
+        return "El servidor no respondió a la solicitud de espacio para subir el archivo."
+    if isinstance(exc, TimeoutError):
+        return "Tiempo agotado: la subida dejó de avanzar o el servidor no respondió."
+    if isinstance(exc, FileNotFoundError):
+        return "El archivo original ya no existe; vuelve a adjuntarlo."
+    if isinstance(exc, PermissionError):
+        return "No hay permiso para leer el archivo original."
+    if isinstance(exc, FileTooBig):
+        return f"El archivo supera el límite del servidor: {exc.args[1] / 1024**2:g} MiB."
+    if isinstance(exc, HTTPError):
+        return f"El servidor rechazó la subida (HTTP {exc.args[0]})."
+    if is_dns_resolution_error(exc):
+        return "No se pudo resolver la dirección del servidor de subida."
+    if isinstance(exc, (ClientConnectorError, ConnectionError)):
+        return "Se perdió la conexión con el servidor de subida."
+    if isinstance(exc, ClientError):
+        return f"Falló la conexión HTTP de subida ({type(exc).__name__})."
+    if isinstance(exc, (UnsupportedAudioModeError, ValueError)):
+        return str(exc)
+    if isinstance(exc, IqError):
+        return f"El servidor rechazó la solicitud de subida ({exc.iq['error']['condition']})."
+    if isinstance(exc, OSError):
+        return "No se pudo leer o transferir el archivo."
+    return f"No se pudo enviar el archivo ({type(exc).__name__})."
 
 
 def _format_xmpp_error(exc: Exception) -> str:

@@ -18,13 +18,13 @@ class ClipboardBatchTests(unittest.TestCase):
 
         class Client:
             async def send_file(self, _to_jid: str, path: str, **_kwargs: object) -> Message:
-                order.append(path)
-                if path == "second.pdf":
+                order.append(Path(path).name)
+                if Path(path).name == "second.pdf":
                     raise OSError("fallo de prueba")
                 return Message(
                     chat_jid="chat@example.test",
                     sender_jid="me@example.test",
-                    body=path,
+                    body=Path(path).name,
                     outgoing=True,
                 )
 
@@ -41,10 +41,12 @@ class ClipboardBatchTests(unittest.TestCase):
         service._client = Client()
         service._loop = Loop()
 
-        service.send_files_serial(
-            "chat@example.test",
-            ["first.jpg", "second.pdf", "third.png"],
-        )
+        stat = SimpleNamespace(st_dev=1, st_ino=1, st_size=100, st_mtime_ns=1)
+        with patch.object(Path, "stat", return_value=stat):
+            service.send_files_serial(
+                "chat@example.test",
+                ["first.jpg", "second.pdf", "third.png"],
+            )
 
         self.assertEqual(order, ["first.jpg", "second.pdf", "third.png"])
         self.assertEqual(
@@ -53,7 +55,8 @@ class ClipboardBatchTests(unittest.TestCase):
         )
         self.assertEqual(
             [event for event in events if isinstance(event, FileBatchCompleted)],
-            [FileBatchCompleted("chat@example.test", 3, 2, 1)],
+            [FileBatchCompleted("chat@example.test", 3, 2, 1,
+                                "No se pudo leer o transferir el archivo.")],
         )
         self.assertFalse(any(isinstance(event, XmppError) for event in events))
 

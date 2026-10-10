@@ -31,6 +31,7 @@ class ChatListPanel(wx.Panel):
         self._updating = False
         self._searching = False
         self._visible_stale = False
+        self._file_transfer_previews: dict[str, str] = {}
 
         self.search_label = wx.StaticText(self, label="Buscar:")
         self.search_ctrl = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
@@ -75,6 +76,8 @@ class ChatListPanel(wx.Panel):
         preserve_focused_order: bool = True,
     ) -> None:
         self._chats = list(chats)
+        if not chats:
+            getattr(self, "_file_transfer_previews", {}).clear()
         self._rebuild_chat_indexes()
         if self._searching:
             return
@@ -345,10 +348,21 @@ class ChatListPanel(wx.Panel):
 
         return self._format_chat_row(item.chat)
 
+    def set_file_transfer_preview(self, chat_jid: str, preview: str) -> None:
+        """Update only the native label, never order, unread counts or stored summaries."""
+        if preview:
+            self._file_transfer_previews[chat_jid] = preview
+        else:
+            self._file_transfer_previews.pop(chat_jid, None)
+        for index, item in enumerate(self._items):
+            if item.chat.jid == chat_jid and item.message is None:
+                self.list_box.SetString(index, self._format_chat_row(item.chat))
+
     def _format_chat_row(self, chat: Chat) -> str:
         name = chat.name
         status = self._format_status(chat)
-        preview = self._format_preview(chat.last_message_preview)
+        transfer_preview = getattr(self, "_file_transfer_previews", {}).get(chat.jid, "")
+        preview = self._format_preview(transfer_preview or chat.last_message_preview)
         time = self._format_time(chat.last_message_at)
         details = " | ".join(part for part in (status, preview, time) if part)
         if not details:

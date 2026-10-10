@@ -46,6 +46,26 @@ permite consultar estados y cancelar pendientes. CAN debe estar abierto y el
 equipo despierto para despacharlos. Consulta [la guía de programación](docs/MENSAJES_PROGRAMADOS.md)
 para teclado, límites y resultados inciertos.
 
+## Subida de archivos y reintentos
+
+Al adjuntar un archivo, CAN muestra su nombre, estado y porcentaje en la
+conversación y un indicador en la lista de chats. Si la subida falla, la fila
+muestra **Archivo no enviado** y el motivo. Pulsa **Enter**, **Espacio**, haz doble
+clic o usa **Reintentar envío** en su menú contextual para intentar de nuevo.
+El reintento conserva el destinatario y la cita; no cambia al chat que abras después.
+
+El plazo HTTP se recalcula con la velocidad observada: tiempo restante estimado
+más 50 % de margen y 40 segundos. Por separado, CAN limita a 90 segundos la
+inactividad, a 24 horas una transferencia y a 60 segundos la solicitud de espacio
+al servidor. El porcentaje corresponde a bytes escritos al transporte HTTP;
+100 % requiere que el servidor acepte la subida, no confirma recepción en WhatsApp.
+
+Los pendientes y reintentos pertenecen a la sesión abierta de CAN: no se restauran
+al cerrar la aplicación. Conserva el archivo original; si cambió o se borró,
+vuelve a adjuntarlo. No se reintenta desde otro perfil/cuenta ni cuando el envío
+XMPP quedó sin confirmar: en ese caso, comprueba WhatsApp antes de reenviar para
+evitar duplicados. Las grabaciones del micrófono conservan su ciclo de temporales.
+
 ## Audios adjuntos y notas de voz
 
 Los MP3 adjuntos se envían como audio normal; los demás formatos de audio, como

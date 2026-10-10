@@ -194,6 +194,52 @@ class AudioAttachmentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(stanza["thread"])
                 client.disco.get_info.assert_not_awaited()
 
+    async def test_file_transfer_identity_progress_and_submit_hook_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.apk"
+            path.write_bytes(b"fixture")
+            client, stanza = self.client()
+            progress, before_submit = Mock(), Mock()
+            sent = await BridgeXmppClient.send_file(
+                client, "contact@example.test", str(path), message_id="transfer-fixture",
+                upload_progress=progress, before_submit=before_submit,
+            )
+            self.assertEqual(sent.message_id, "transfer-fixture")
+            self.assertEqual(str(stanza["id"]), "transfer-fixture")
+            self.assertIs(client._upload_file.call_args.kwargs["progress"], progress)
+            before_submit.assert_called_once_with()
+            stanza.send.assert_called_once_with()
+
+    async def test_failed_upload_never_reaches_submit_hook_or_stanza_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.apk"
+            path.write_bytes(b"fixture")
+            client, stanza = self.client()
+            client._upload_file.side_effect = TimeoutError()
+            before_submit = Mock()
+            with self.assertRaises(TimeoutError):
+                await BridgeXmppClient.send_file(
+                    client, "contact@example.test", str(path), before_submit=before_submit,
+                )
+            before_submit.assert_not_called()
+            stanza.send.assert_not_called()
+
+    async def test_cancelled_sticker_upload_cleans_only_prepared_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, prepared = Path(directory) / "fixture.png", Path(directory) / "prepared.webp"
+            path.write_bytes(b"original fixture")
+            prepared.write_bytes(b"prepared fixture")
+            client, stanza = self.client()
+            client._upload_file.side_effect = asyncio.CancelledError()
+            with patch("cliente_xmpp.xmpp.client.prepare_outgoing_sticker", return_value=prepared):
+                with self.assertRaises(asyncio.CancelledError):
+                    await BridgeXmppClient.send_file(
+                        client, "contact@example.test", str(path), as_sticker=True,
+                    )
+            self.assertTrue(path.exists())
+            self.assertFalse(prepared.exists())
+            stanza.send.assert_not_called()
+
     async def test_native_xmpp_audio_uses_standard_metadata_without_private_thread(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fixture.wav"
@@ -245,11 +291,20 @@ class AudioModeServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_single_send_propagates_explicit_recording_flag(self):
         for voice in (False, True):
             completion = asyncio.get_running_loop().create_future()
-            service = XmppService(completion.set_result)
+
+            def emit(event, completion=completion):
+                if isinstance(event, MessageReceived):
+                    completion.set_result(event)
+
+            service = XmppService(emit)
             service._loop = asyncio.get_running_loop()
             service._client = SimpleNamespace(send_file=AsyncMock(return_value="fixture-message"))
-            service.send_file("contact@whatsapp.example.test", "fixture.ogg", as_voice_note=voice)
-            event = await asyncio.wait_for(completion, timeout=2)
+            stat = SimpleNamespace(st_dev=1, st_ino=1, st_size=100, st_mtime_ns=1)
+            with patch.object(Path, "stat", return_value=stat):
+                service.send_file(
+                    "contact@whatsapp.example.test", "fixture.ogg", as_voice_note=voice,
+                )
+                event = await asyncio.wait_for(completion, timeout=2)
             self.assertIsInstance(event, MessageReceived)
             self.assertEqual(service._client.send_file.call_args.kwargs["as_voice_note"], voice)
 
@@ -273,7 +328,12 @@ class AudioModeServiceTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         )
-        with patch("cliente_xmpp.xmpp.client.delete_temporary_voice_note") as cleanup:
+        with (
+            patch("cliente_xmpp.xmpp.client.delete_temporary_voice_note") as cleanup,
+            patch.object(Path, "stat", return_value=SimpleNamespace(
+                st_dev=1, st_ino=1, st_size=100, st_mtime_ns=1,
+            )),
+        ):
             service.send_files_serial(
                 "contact@whatsapp.example.test", ["one.wav", "two.txt", "three.mp3"]
             )
@@ -283,7 +343,7 @@ class AudioModeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.detail, "Actualiza el puente a v31.")
         cleanup.assert_not_called()
         self.assertEqual(
-            [call.args[1] for call in service._client.send_file.call_args_list],
+            [Path(call.args[1]).name for call in service._client.send_file.call_args_list],
             ["one.wav", "two.txt", "three.mp3"],
         )
         self.assertTrue(

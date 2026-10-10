@@ -182,3 +182,8 @@ class Message:
     edited: bool = False
     replaces_id: str = ""
     call: CallEvent | None = None
+    # Session-only transfer UI; never persist an unsubmitted attachment as a message.
+    upload_id: str = ""
+    upload_state: str = ""
+    upload_percent: int = 0
+    upload_detail: str = ""

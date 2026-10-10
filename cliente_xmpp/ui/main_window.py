@@ -164,6 +164,7 @@ from cliente_xmpp.xmpp.events import (
     ContactAvatarUnavailable,
     ContactPresenceUpdated,
     FileBatchCompleted,
+    FileTransferUpdated,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -616,6 +617,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.conversation.messages.Bind(wx.EVT_KEY_DOWN, self._on_messages_key_down)
         self.conversation.messages.Bind(wx.EVT_CONTEXT_MENU, self._on_message_context_menu)
         self.conversation.messages.Bind(wx.EVT_LIST_ITEM_RIGHT_CLICK, self._on_message_right_click)
+        self.conversation.messages.Bind(
+            wx.EVT_LIST_ITEM_ACTIVATED, self._on_file_transfer_activated,
+        )
         self.Bind(wx.EVT_CHAR_HOOK, self._on_key_down)
         self.Bind(wx.EVT_TIMER, self._on_update_check_timer, self.update_check_timer)
         self.Bind(EVT_XMPP_EVENT, self._on_xmpp_event)
@@ -4533,6 +4537,86 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
 
+    def _handle_file_transfer_updated(self, event: FileTransferUpdated) -> None:
+        if event.account_jid and event.account_jid != self.current_jid:
+            return
+        if not self.xmpp.file_transfer_is_current(event.transfer_id):
+            return
+        messages = self.messages_by_chat.setdefault(event.chat_jid, [])
+        message = next((item for item in messages if item.message_id == event.transfer_id), None)
+        added = message is None
+        if added:
+            if event.state != "queued":
+                return
+            message = Message(
+                chat_jid=event.chat_jid, sender_jid="Yo", outgoing=True,
+                body=f"Archivo: {event.filename}", message_id=event.transfer_id,
+                media_filename=event.filename, delivery_state="pending",
+                upload_id=event.transfer_id, chat_is_group=event.is_group,
+                reply_to_jid=event.reply_to_jid, reply_to_id=event.reply_to_id,
+                reply_quote=event.reply_quote,
+            )
+            messages.append(message)
+        if not message.upload_id:
+            return  # A real echo/receipt already promoted this row.
+        previous_state = message.upload_state
+        message.upload_state = event.state
+        message.upload_percent = event.percent
+        message.upload_detail = event.detail
+        message.media_size = event.size
+        self._refresh_file_transfer_preview(event.chat_jid)
+        chat = self.conversation.current_chat
+        if chat is not None and chat.jid == event.chat_jid:
+            if added:
+                self.conversation.insert_message_sorted(message)
+            else:
+                self.conversation.refresh_message(message)
+        if event.state in {"failed", "uncertain"} and event.state != previous_state:
+            detail = f"{event.filename}: {event.detail}"
+            self.status_bar.SetStatusText(detail)
+            self.speaker.speak(detail)
+
+    def _refresh_file_transfer_preview(self, chat_jid: str) -> None:
+        setter = getattr(getattr(self, "chat_list", None), "set_file_transfer_preview", None)
+        if not callable(setter):
+            return
+        pending = [item for item in self.messages_by_chat.get(chat_jid, []) if item.upload_id]
+        active = next((item for item in pending if item.upload_state == "uploading"), None)
+        message = active or (pending[-1] if pending else None)
+        preview = ""
+        if message:
+            state = {
+                "queued": "En cola, 0 %", "uploading": f"Subiendo {message.upload_percent} %",
+                "sending": "Subido, 100 %. Enviando", "failed": "Archivo no enviado",
+                "uncertain": "Envío sin confirmar",
+            }.get(message.upload_state, "Subiendo")
+            preview = f"{state}: {message.media_filename}"
+        setter(chat_jid, preview)
+
+    def _retry_file_transfer(self, message: Message) -> bool:
+        if not message.upload_id or message.upload_state != "failed":
+            return False
+        if not self._require_whatsapp_connection():
+            return True
+        if self.xmpp.retry_file_transfer(message.upload_id):
+            # Gate a second activation before the queued event reaches wx.
+            message.upload_state, message.upload_percent = "queued", 0
+            message.upload_detail = ""
+            self.conversation.refresh_message(message)
+            self.status_bar.SetStatusText(f"Reintentando {message.media_filename}...")
+        else:
+            self.status_bar.SetStatusText(
+                "No se puede reintentar en esta conexión; vuelve a adjuntar el archivo."
+            )
+        return True
+
+    def _on_file_transfer_activated(self, event: wx.ListEvent) -> None:
+        message = self.conversation.selected_message()
+        if message and message.upload_id:
+            self._retry_file_transfer(message)
+            return
+        event.Skip()
+
     @classmethod
     def _clipboard_attachment_paths(cls) -> ClipboardAttachment:
         if not wx.TheClipboard.Open():
@@ -4894,6 +4978,16 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     def _on_messages_key_down(self, event: wx.KeyEvent) -> None:
         key_code = event.GetKeyCode()
+        selected_message = getattr(self.conversation, "selected_message", None)
+        message = selected_message() if callable(selected_message) else None
+        if (
+            message and message.upload_id
+            and key_code in (wx.WXK_SPACE, wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER)
+            and not event.AltDown() and not event.ControlDown() and not event.ShiftDown()
+            and not getattr(self.conversation, "message_selection_mode", False)
+        ):
+            self._retry_file_transfer(message)
+            return
         if key_code == wx.WXK_ESCAPE and getattr(
             self.conversation,
             "message_selection_mode",
@@ -5078,6 +5172,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
         menu_owner = popup_parent or self
         menu = wx.Menu()
+        if message.upload_id:
+            retry_item = menu.Append(wx.ID_ANY, "Reintentar envío")
+            retry_item.Enable(message.upload_state == "failed")
+            menu_owner.Bind(wx.EVT_MENU, lambda _event: self._retry_file_transfer(message),
+                            retry_item)
+            menu_owner.PopupMenu(menu)
+            menu.Destroy()
+            return
         reply_item = menu.Append(wx.ID_ANY, "Responder")
         copy_item = menu.Append(
             wx.ID_ANY,
@@ -5471,6 +5573,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     @staticmethod
     def _reply_target_error(message: Message, chat: Chat | None) -> str:
+        if message.upload_id:
+            return "Ese archivo todavía no se ha enviado; espera a que se confirme para responder"
         if chat is None or message.chat_jid != chat.jid:
             return "El mensaje que intentas responder ya no pertenece al chat abierto"
         if message.retracted:
@@ -5681,6 +5785,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
     def _message_can_be_deleted(self, message: Message) -> bool:
         return bool(
             message.outgoing
+            and not message.upload_id
             and message.message_id
             and message.delivery_state not in {"pending", "failed"}
             and not message.retracted
@@ -5785,6 +5890,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             source
             for source in sources
             if not source.retracted and (source.body or source.media_url or source.audio_url)
+            and not source.upload_id
             ],
             key=self._message_timestamp,
         )
@@ -6594,6 +6700,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 if message.poll_update is not None:
                     self._handle_poll_update(message)
                     return
+                completed_upload = bool(
+                    message.outgoing and message.media_url and any(
+                        item.upload_id and item.message_id == message.message_id
+                        for item in self.messages_by_chat.get(message.chat_jid, [])
+                    )
+                )
                 message, added_message, hydrated_replies = self._store_message(message)
                 if not message.outgoing:
                     self._set_chat_state(message.chat_jid, "")
@@ -6614,7 +6726,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
                 self._ensure_chat_for_message(message)
                 self._observe_atajos_message(
-                    message, live=not suppress_notification, added=added_message
+                    message, live=not suppress_notification,
+                    added=added_message or completed_upload,
                 )
                 current_chat_is_open = (
                     self.conversation.IsShown()
@@ -6641,7 +6754,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                             self.conversation.refresh_message(hydrated_reply)
                 self._auto_download_media_message(message)
                 self._select_first_chat_if_needed()
-                if added_message and not suppress_notification:
+                if (added_message or completed_upload) and not suppress_notification:
                     windows_notification_shown = self._show_windows_notification(
                         message,
                         current_chat_is_open=current_chat_is_open,
@@ -6702,6 +6815,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 detail=detail,
             ):
                 self._handle_file_batch_completed(chat_jid, total, succeeded, failed, detail)
+            case FileTransferUpdated():
+                self._handle_file_transfer_updated(event)
             case ChatDisplayedSynced(chat_jid=chat_jid, message_id=message_id):
                 self._handle_synced_chat_displayed(chat_jid, message_id)
             case ContactPresenceUpdated(chat_jid=chat_jid):
@@ -6953,6 +7068,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
         hydrated_replies = MainWindow._hydrate_reply_quotes(unique_messages)
         self.messages_by_chat[chat_jid] = unique_messages
+        refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+        if callable(refresh_preview):
+            refresh_preview(chat_jid)
         return hydrated_replies + updated_polls
 
     @staticmethod
@@ -7148,6 +7266,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
     ) -> int | None:
         for index in indexes_by_content.get(cls._message_content_key(message), []):
             candidate = unique_messages[index]
+            if candidate.upload_id or message.upload_id:
+                continue  # Pending files have identity, not a remote message body.
             if cls._messages_are_distinct_local_outgoing(candidate, message):
                 continue
             if not message.message_id and not candidate.message_id:
@@ -7250,6 +7370,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
         if target.retracted:
             return
+        if target.upload_id and incoming.media_url and incoming.message_id == target.message_id:
+            target.upload_id = target.upload_state = target.upload_detail = ""
+            target.upload_percent = 0
+            target.body = incoming.body
+            target.sent_at = incoming.sent_at
+            target.media_filename = incoming.media_filename
+            target.media_size = incoming.media_size
         if incoming.message_id and (
             not target.message_id or MainWindow._message_has_local_pending_id(target)
         ):
@@ -8566,6 +8693,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         )
 
     def _persist_messages(self, messages: list[Message]) -> None:
+        messages = [message for message in messages if not message.upload_id]
         if not self.current_jid or not messages:
             return
 
@@ -8770,7 +8898,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     def _latest_message_timestamp(self, chat_jid: str) -> float | None:
         latest = self.latest_message_timestamps_by_chat.get(chat_jid)
-        messages = self.messages_by_chat.get(chat_jid, [])
+        messages = [item for item in self.messages_by_chat.get(chat_jid, []) if not item.upload_id]
         if not messages:
             return latest
 
@@ -8788,6 +8916,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return 0
 
     def _update_chat_activity_from_messages(self, chat_jid: str, messages: list[Message]) -> None:
+        messages = [message for message in messages if not message.upload_id]
         if not messages:
             return
 
@@ -8802,6 +8931,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.latest_message_timestamps_by_chat[chat_jid] = timestamp
 
     def _update_chat_preview_from_messages(self, chat_jid: str, messages: list[Message]) -> None:
+        messages = [message for message in messages if not message.upload_id]
         if not messages:
             return
 
@@ -8810,7 +8940,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     def _recompute_chat_summary_from_messages(self, chat_jid: str) -> None:
         """Replace an in-memory chat summary after local message removal."""
-        messages = self.messages_by_chat.get(chat_jid, [])
+        messages = [item for item in self.messages_by_chat.get(chat_jid, []) if not item.upload_id]
         latest_message = self._latest_message_from_sequence(messages) if messages else None
         latest_timestamps = getattr(self, "latest_message_timestamps_by_chat", None)
         if latest_timestamps is None:

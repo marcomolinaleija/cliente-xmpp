@@ -1,3 +1,25 @@
+WhatsApp CAN 1.4.18
+
+Esta actualización mejora la subida de archivos, muestra su progreso y permite reintentar los envíos fallidos. Las novedades siguientes reúnen todos los cambios desde la versión 1.4.17.
+
+Subida de archivos con tiempo de espera adaptable
+- CAN ajusta el tiempo de espera según la velocidad de subida y añade un margen para completar la transferencia. Así, los archivos grandes o las conexiones lentas no quedan limitados al mismo plazo fijo que una subida pequeña.
+- Una transferencia sin progreso sigue teniendo un límite de espera. Los límites de tamaño del servidor o de WhatsApp continúan aplicándose; este cambio no garantiza el envío de cualquier archivo.
+
+Nombre y progreso visibles
+- Al adjuntar un archivo, la conversación y la lista de chats muestran su nombre, estado y porcentaje de subida.
+- Al terminar correctamente, el archivo queda como un mensaje enviado normal. Las actualizaciones de progreso conservan el foco y la posición de lectura.
+- Completar la subida no confirma que el destinatario haya recibido o leído el archivo.
+
+Reintentar archivos no enviados
+- Si falla la subida, CAN muestra «Archivo no enviado» y el motivo. Puedes pulsar Enter o Espacio sobre la fila, hacer doble clic o elegir «Reintentar envío» en el menú contextual.
+- El reintento conserva el destinatario y la respuesta citada, aunque hayas abierto otro chat. Activarlo varias veces no inicia envíos simultáneos del mismo pendiente.
+- Los pendientes se mantienen mientras CAN está abierto. Si cierras la aplicación, cambias de cuenta o el archivo original se modifica o desaparece, vuelve a adjuntarlo cuando corresponda.
+- Si no se puede confirmar el resultado de un envío ya iniciado, CAN no ofrece repetirlo a ciegas: comprueba el chat o WhatsApp antes de reenviar para evitar duplicados.
+
+Mejoras internas
+- Se hicieron cambios internos para agilizar el desarrollo.
+
 WhatsApp CAN 1.4.17
 
 Esta actualización amplía la búsqueda y la carga del historial, mejora el acceso por teclado a los stickers, permite programar mensajes desde CAN y distingue los audios adjuntos de las notas de voz. Las novedades siguientes reúnen todos los cambios desde la versión 1.4.16.

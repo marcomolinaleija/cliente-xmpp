@@ -80,12 +80,21 @@ Los MP3 adjuntos se envían como audio normal; los demás formatos de audio, com
 archivos, sin recodificarlos. CAN conserva el mismo reproductor para ambos.
 Las grabaciones del micrófono siguen siendo notas de voz.
 
-Este comportamiento requiere un puente con la capacidad de modos de audio v31.
+Este comportamiento requiere un puente con la capacidad de modos de audio v31 o posterior.
 Si falta, CAN avisa y no envía el adjunto en un formato distinto al solicitado.
-La imagen v31 está **publicada en GHCR y fijada por digest en el manifiesto
-estable**. La VPS utiliza esa misma imagen probada, conservando la sesión y los
-montajes, con respaldo y rollback a v30. Consulta
+La imagen estable v32 está **publicada en GHCR y fijada por digest en el manifiesto
+estable**. Conserva los modos de audio de v31 y protege la foto propia de WhatsApp.
+La VPS utiliza esa misma imagen probada, conservando la sesión y los montajes,
+con respaldo y rollback a v31. Consulta
 [modos de audio y verificación](docs/PUENTE_WHATSAPP_MODOS_AUDIO.md).
+
+## Foto propia de WhatsApp
+
+El puente v32 impide que la ausencia de un avatar XMPP borre la foto propia de
+WhatsApp y desactiva esa sincronización para las cuentas existentes. La foto propia
+se administra en WhatsApp; las fotos de contactos y grupos siguen disponibles.
+Los puentes locales reciben la protección al actualizar su imagen desde CAN.
+Consulta [protección de fotos y verificación de v32](docs/PUENTE_WHATSAPP_FOTO_PERFIL_V32.md).
 
 ## Integración con el asistente de Atajos
 

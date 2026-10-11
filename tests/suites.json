@@ -25,6 +25,10 @@
       "area": "bridge",
       "layer": "contracts"
     },
+    "test_bridge_avatar_safety": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_bridge_outgoing_sticker_pack": {
       "area": "bridge",
       "layer": "contracts"

@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v31@sha256:46346cd8cd13e69bd9d4808027366fd92ebde23157b4ec1ebb90106d9a6d4cd5
+FROM ${BASE_IMAGE}
+USER root
+COPY patch_slidge_avatar_safety_v32.py bridge_avatar_safety.py /tmp/
+COPY smoke_bridge_avatar_safety_runtime.py /opt/can-tests/
+RUN python -B /tmp/patch_slidge_avatar_safety_v32.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_avatar_safety_v32.py /venv/lib/python3.13/site-packages && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp && \
+    rm /tmp/patch_slidge_avatar_safety_v32.py /tmp/bridge_avatar_safety.py && \
+    chmod 0644 /opt/can-tests/smoke_bridge_avatar_safety_runtime.py \
+      /venv/lib/python3.13/site-packages/slidge_whatsapp/avatar_safety.py
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_avatar_safety_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_audio_modes_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_native_sticker_pack_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

@@ -113,7 +113,10 @@ class WslApplianceBuildTests(unittest.TestCase):
             (appliance_root / "release-manifest.json").read_text(encoding="utf-8")
         )
         installer_path = appliance_root / "install-appliance.ps1"
-        installer_hash = hashlib.sha256(installer_path.read_bytes()).hexdigest()
+        # The published PowerShell asset uses CRLF, as required by .gitattributes.
+        # A checkout can contain LF; hash the canonical asset bytes in either case.
+        installer_bytes = installer_path.read_bytes().replace(b"\r\n", b"\n")
+        installer_hash = hashlib.sha256(installer_bytes.replace(b"\n", b"\r\n")).hexdigest()
 
         self.assertEqual(manifest["appliance_version"], "1.1.0")
         self.assertEqual(

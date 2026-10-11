@@ -2098,6 +2098,11 @@ class BridgeXmppClient(ClientXMPP):
             variable = field.attrib.get("var", "").strip()
             if not variable:
                 continue
+            if variable == "sync_avatar":
+                # CAN has no own XMPP avatar; propagating an empty one can delete
+                # the WhatsApp profile picture on older bridges.
+                values[variable] = "false"
+                continue
             defaults = [
                 value.text or ""
                 for value in field.findall(f"{{{DATA_FORMS_NS}}}value")

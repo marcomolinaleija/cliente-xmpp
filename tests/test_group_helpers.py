@@ -1880,6 +1880,7 @@ class WhatsAppRegistrationTests(unittest.TestCase):
         preferences_form = """
             <x xmlns='jabber:x:data' type='form'>
               <field var='sync_presence' type='boolean'><value>true</value></field>
+              <field var='sync_avatar' type='boolean'><value>true</value></field>
               <field var='reaction_fallback' type='boolean'><value>false</value></field>
             </x>
         """
@@ -1900,7 +1901,7 @@ class WhatsAppRegistrationTests(unittest.TestCase):
         submitted_preferences = plugin.calls[2]["payload"]
         self.assertEqual(
             submitted_preferences["values"],
-            {"sync_presence": "true", "reaction_fallback": "false"},
+            {"sync_presence": "true", "sync_avatar": "false", "reaction_fallback": "false"},
         )
         self.assertEqual(client.statuses[-1][1], "needs_qr")
         self.assertFalse(client.events)

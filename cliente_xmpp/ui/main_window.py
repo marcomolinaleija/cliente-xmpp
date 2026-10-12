@@ -95,6 +95,7 @@ from cliente_xmpp.models.mentions import (
     matching_mention_candidates,
     mention_references_in_text,
 )
+from cliente_xmpp.models.message_info import GroupMessageInfo
 from cliente_xmpp.models.names import (
     display_label_from_jid,
     is_fallback_chat_name,
@@ -131,6 +132,7 @@ from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
+from cliente_xmpp.ui.message_info_dialog import InfoCallback, MessageInfoDialog
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
@@ -165,6 +167,7 @@ from cliente_xmpp.xmpp.events import (
     ContactPresenceUpdated,
     FileBatchCompleted,
     FileTransferUpdated,
+    GroupMessageInfoLoaded,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -3722,6 +3725,113 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         except RuntimeError:
             wx.CallAfter(callback, None, "La aplicación se está cerrando.")
 
+    def _open_message_info(self, message: Message, parent: wx.Window | None = None) -> None:
+        account = self.current_jid
+        dialog = MessageInfoDialog(
+            parent or self,
+            lambda callback: self._load_message_info_async(account, message, callback),
+        )
+        try:
+            dialog.ShowModal()
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+    def _load_message_info_async(
+        self, account: str, message: Message, callback: InfoCallback,
+    ) -> None:
+        if not account or account != self.current_jid:
+            callback(None, "La cuenta activa cambió.", True)
+            return
+        requests = getattr(self, "_message_info_requests", None)
+        if requests is None:
+            requests = self._message_info_requests = {}
+        request_id = uuid.uuid4().hex
+        requests[request_id] = (account, message.chat_jid, message.message_id, callback)
+        # Network work must not wait behind history writes in the storage queue.
+        self.xmpp.load_group_message_info(
+            message.chat_jid, message.message_id, request_id, message.displayed_marker_id,
+        )
+
+        def worker() -> None:
+            try:
+                cached = self.message_store.load_group_message_info(
+                    account, message.chat_jid, message.message_id, message.displayed_marker_id,
+                )
+            except Exception:
+                cached = None
+            wx.CallAfter(self._show_cached_message_info, request_id, cached)
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+        else:
+            try:
+                executor.submit(worker)
+            except RuntimeError:
+                pass  # The network result can still be displayed without a local cache.
+
+    def _show_cached_message_info(
+        self, request_id: str, cached: GroupMessageInfo | None,
+    ) -> None:
+        request = getattr(self, "_message_info_requests", {}).get(request_id)
+        if request is None:
+            return
+        account, _chat, _message, callback = request
+        if self.current_jid != account:
+            self._message_info_requests.pop(request_id, None)
+            callback(None, "La cuenta activa cambió.", True)
+            return
+        callback(cached, "", False)
+
+    def _handle_group_message_info_loaded(self, event: GroupMessageInfoLoaded) -> None:
+        request = getattr(self, "_message_info_requests", {}).pop(event.request_id, None)
+        if request is None:
+            return
+        account, chat_jid, message_id, callback = request
+        if account != self.current_jid:
+            callback(None, "La cuenta activa cambió.", True)
+            return
+        if event.info is not None and (
+            event.info.chat_jid, event.info.message_id
+        ) != (chat_jid, message_id):
+            callback(None, "El puente devolvió información de otro mensaje.", True)
+            return
+        # Show the live response now; persist and enrich it off the wx thread.
+        callback(event.info, event.error, True)
+
+        def worker() -> None:
+            try:
+                info = event.info
+                if info is not None:
+                    if (info.chat_jid, info.message_id) != (chat_jid, message_id):
+                        raise ValueError("Unrelated info response")
+                    info = self.message_store.save_group_message_info(account, info)
+                else:
+                    info = self.message_store.load_group_message_info(account, chat_jid, message_id)
+                error = event.error
+            except Exception:
+                info = event.info
+                error = "No se pudo guardar la información local."
+            wx.CallAfter(self._finish_message_info, account, callback, info, error)
+
+        executor = getattr(self, "storage_executor", None)
+        if executor is None:
+            threading.Thread(target=worker, daemon=True).start()
+        else:
+            try:
+                executor.submit(worker)
+            except RuntimeError:
+                callback(None, "La aplicación se está cerrando.", True)
+
+    def _finish_message_info(
+        self, account: str, callback: InfoCallback, info: GroupMessageInfo | None, error: str,
+    ) -> None:
+        if account != self.current_jid:
+            callback(None, "La cuenta activa cambió.", True)
+        else:
+            callback(info, error, True)
+
     def _open_chat_statistics(self, chat: Chat) -> None:
         parent = self.contact_info_dialog or self
         dialog = ChatStatisticsDialog(
@@ -5187,6 +5297,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         )
         forward_item = menu.Append(wx.ID_ANY, "Reenviar...")
         select_item = menu.Append(wx.ID_ANY, "Iniciar selección de mensajes...")
+        if message.outgoing and message.chat_is_group:
+            info_item = menu.Append(wx.ID_ANY, "Info...")
+            info_item.Enable(
+                bool(message.message_id) and message.delivery_state not in {"pending", "failed"}
+            )
+            menu_owner.Bind(
+                wx.EVT_MENU, lambda _event: self._open_message_info(message, menu_owner), info_item,
+            )
         select_item.Enable(
             not getattr(self.conversation, "message_selection_mode", False)
         )
@@ -6752,6 +6870,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     for hydrated_reply in hydrated_replies:
                         if hydrated_reply is not message:
                             self.conversation.refresh_message(hydrated_reply)
+                    if notify and not message.outgoing:
+                        self._mark_current_chat_displayed(message.chat_jid)
                 self._auto_download_media_message(message)
                 self._select_first_chat_if_needed()
                 if (added_message or completed_upload) and not suppress_notification:
@@ -6790,6 +6910,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     if message.retracted or message.edited:
                         self._observe_atajos_message(message, live=False, added=False)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
+            case GroupMessageInfoLoaded():
+                self._handle_group_message_info_loaded(event)
             case MessageDeliveryUpdated(
                 chat_jid=chat_jid,
                 message_id=message_id,
@@ -9208,6 +9330,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         if chat is None or chat.jid != chat_jid:
             return
 
+        if chat.unread_count:
+            self._update_chat_summary(chat_jid, mark_read=True)
         self._mark_chat_displayed(chat)
 
     def _handle_synced_chat_displayed(self, chat_jid: str, marker_id: str) -> None:

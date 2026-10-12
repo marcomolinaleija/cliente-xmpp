@@ -58,6 +58,7 @@ from cliente_xmpp.xmpp.events import (
     ContactPresenceUpdated,
     FileBatchCompleted,
     FileTransferUpdated,
+    GroupMessageInfoLoaded,
     GroupParticipantsLoaded,
     GroupParticipantUpdated,
     MessageDeliveryUpdated,
@@ -81,6 +82,7 @@ from cliente_xmpp.xmpp.http_upload import (
     is_dns_resolution_error,
     upload_file_with_system_resolver,
 )
+from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
 
 EventHandler = Callable[[XmppEvent], None]
 
@@ -2861,6 +2863,43 @@ class BridgeXmppClient(ClientXMPP):
 
         if chats:
             self._emit(ChatsDiscovered(chats))
+
+    async def load_group_message_info(
+        self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
+    ) -> None:
+        try:
+            iq = self.Iq()
+            iq["type"] = "get"
+            iq["to"] = chat_jid
+            attrs = {"id": message_id}
+            if reference_id:
+                attrs["reference"] = reference_id
+            iq.append(ET.Element(f"{{{MESSAGE_INFO_NS}}}info", attrs))
+            result = await iq.send(timeout=15)
+            if str(result["from"].bare) != chat_jid:
+                raise ValueError("La respuesta procede de otro chat.")
+            info = parse_message_info(result.xml, chat_jid, message_id)
+        except IqError as exc:
+            condition = str(exc.iq["error"]["condition"])
+            errors = {
+                "feature-not-implemented": "Este puente no admite información de mensajes.",
+                "service-unavailable": "Este puente no admite información de mensajes.",
+                "item-not-found": "Todavía no hay información disponible para este mensaje.",
+                "forbidden": "Sólo se puede consultar información de mensajes propios.",
+            }
+            self._emit(GroupMessageInfoLoaded(
+                request_id, error=errors.get(condition, "No se pudo consultar al puente."),
+            ))
+            return
+        except IqTimeout:
+            self._emit(GroupMessageInfoLoaded(request_id, error="El puente no respondió a tiempo."))
+            return
+        except Exception:
+            self._emit(GroupMessageInfoLoaded(
+                request_id, error="No se pudo leer la información del mensaje.",
+            ))
+            return
+        self._emit(GroupMessageInfoLoaded(request_id, info))
 
     async def load_history(
         self,
@@ -5794,6 +5833,25 @@ class XmppService:
                 self._client.request_contact_presence_subscription(chat_jid)
 
         self._loop.call_soon_threadsafe(request)
+
+    def load_group_message_info(
+        self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(GroupMessageInfoLoaded(
+                request_id, error="Sin conexión; se muestra la copia local.",
+            ))
+            return
+
+        def load() -> None:
+            if self._client:
+                self._loop.create_task(self._client.load_group_message_info(
+                    chat_jid, message_id, request_id, reference_id,
+                ))
+            else:
+                self._emit(GroupMessageInfoLoaded(request_id, error="La conexión se cerró."))
+
+        self._loop.call_soon_threadsafe(load)
 
     def load_history(
         self,

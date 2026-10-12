@@ -82,10 +82,10 @@ Las grabaciones del micrófono siguen siendo notas de voz.
 
 Este comportamiento requiere un puente con la capacidad de modos de audio v31 o posterior.
 Si falta, CAN avisa y no envía el adjunto en un formato distinto al solicitado.
-La imagen estable v32 está **publicada en GHCR y fijada por digest en el manifiesto
-estable**. Conserva los modos de audio de v31 y protege la foto propia de WhatsApp.
+La imagen estable v33 está **publicada en GHCR y fijada por digest en el manifiesto
+estable**. Conserva los modos de audio de v31 y la protección de la foto propia de v32.
 La VPS utiliza esa misma imagen probada, conservando la sesión y los montajes,
-con respaldo y rollback a v31. Consulta
+con respaldo y rollback. Consulta
 [modos de audio y verificación](docs/PUENTE_WHATSAPP_MODOS_AUDIO.md).
 
 ## Foto propia de WhatsApp
@@ -95,6 +95,25 @@ WhatsApp y desactiva esa sincronización para las cuentas existentes. La foto pr
 se administra en WhatsApp; las fotos de contactos y grupos siguen disponibles.
 Los puentes locales reciben la protección al actualizar su imagen desde CAN.
 Consulta [protección de fotos y verificación de v32](docs/PUENTE_WHATSAPP_FOTO_PERFIL_V32.md).
+
+## Info de mensajes, lectura y llamadas — CAN 1.4.19 / puente v33
+
+El menú contextual de tus mensajes enviados a grupos incluye **Info…**, con
+secciones Leído, Entregado y Sin entrega confirmada, y horas disponibles por persona.
+La información guardada aparece primero y se actualiza sin perder la selección.
+Un acuse ausente no demuestra que el mensaje no haya llegado.
+
+Abrir un chat marca sus pendientes leídos; los mensajes nuevos que llegan mientras
+ese chat está visible también adelantan la lectura. El puente sincroniza el estado
+leído del grupo con WhatsApp oficial sin marcar un historial ilimitado.
+
+El puente conserva registros históricos de llamadas y reconoce voz/vídeo desde
+las ofertas que contienen ese dato. **Contestar en WhatsApp móvil puede no aportar
+el final ni la duración al puente**: en ese caso la llamada cuenta, pero su tiempo
+permanece desconocido. La recuperación acotada no garantiza completar esos datos.
+
+Consulta [Info y sincronización](docs/PUENTE_WHATSAPP_INFO_MENSAJES_V33.md) y
+[llamadas y límites](docs/PUENTE_WHATSAPP_LLAMADAS_ENTRANTES_V33.md).
 
 ## Integración con el asistente de Atajos
 

@@ -507,6 +507,69 @@ class CallContractTests(unittest.TestCase):
             )
             self.assertEqual((calls.duration_total_seconds, calls.duration_count), (37, 1))
 
+    def test_incoming_authoritative_duration_counts_globally_daily_and_per_chat(self) -> None:
+        at = datetime(2026, 8, 31, 12, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as directory:
+            store = MessageStore(Path(directory) / "fixture.sqlite3")
+            store.upsert_chat(self.account_jid, Chat(jid=self.contact_jid, name="Fixture contact"))
+            accepted = self._event("incoming-record", 2, "accepted", at=at, answered_at=at)
+            completed = self._event(
+                "incoming-record", 4, "ended", at=at, direction="incoming",
+                duration_seconds=73, outcome="connected", source="history_sync",
+            )
+            outgoing = self._event(
+                "outgoing-record", 4, "ended", at=at, direction="outgoing",
+                duration_seconds=37, outcome="connected", source="app_state",
+            )
+            for i, event in enumerate((accepted, completed, completed, outgoing, accepted)):
+                store.upsert_messages(
+                    self.account_jid, [self._message(event, message_id=f"id-{i}")],
+                )
+            stats = store.load_statistics(
+                self.account_jid, 7, now=datetime(2026, 8, 31, 23, tzinfo=UTC),
+            )
+            for scope, calls in (("global", stats.calls), ("daily", stats.daily[-1].calls),
+                                 ("chat", stats.chats[0].calls)):
+                with self.subTest(scope=scope):
+                    self.assertEqual((calls.incoming, calls.outgoing, calls.answered), (1, 1, 2))
+                    self.assertEqual((calls.duration_total_seconds, calls.duration_count), (110, 2))
+            self.assertEqual(len(store.load_recent_messages(self.account_jid, self.contact_jid)), 2)
+
+    def test_offer_kind_survives_unknown_acceptance_and_late_record(self) -> None:
+        at = datetime(2026, 8, 31, 12, tzinfo=UTC)
+        for kind in ("voice", "video"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                store = MessageStore(Path(directory) / "fixture.sqlite3")
+                store.upsert_chat(self.account_jid, Chat(jid=self.contact_jid, name="Fixture"))
+                offer = self._event("fixture-kind", 1, "offered", at=at, kind=kind)
+                accepted = self._event(
+                    "fixture-kind", 2, "accepted", at=at + timedelta(seconds=8),
+                    kind="unknown", answered_at=at + timedelta(seconds=8),
+                )
+                for i, event in enumerate((offer, accepted, accepted)):
+                    store.upsert_messages(
+                        self.account_jid, [self._message(event, message_id=f"signal-{i}")],
+                    )
+                call = store.load_recent_messages(self.account_jid, self.contact_jid)[0].call
+                self.assertEqual(call.kind, kind)
+                self.assertIsNone(call.effective_duration_seconds)
+                record = self._event(
+                    "fixture-kind", 4, "ended", at=at, kind="unknown",
+                    duration_seconds=73, outcome="connected", source="app_state",
+                )
+                for i, event in enumerate((record, accepted)):
+                    store.upsert_messages(
+                        self.account_jid, [self._message(event, message_id=f"late-{i}")],
+                    )
+                calls = store.load_statistics(
+                    self.account_jid, 7, now=at + timedelta(minutes=5),
+                ).calls
+                self.assertEqual((calls.total, calls.incoming, calls.answered), (1, 1, 1))
+                self.assertEqual(
+                    (calls.voice, calls.video), (int(kind == "voice"), int(kind == "video")),
+                )
+                self.assertEqual(calls.duration_total_seconds, 73)
+
     def test_authoritative_outcomes_keep_cancellation_failure_and_ongoing_distinct(self) -> None:
         at = datetime(2026, 8, 31, 12, tzinfo=UTC)
         with tempfile.TemporaryDirectory() as directory:

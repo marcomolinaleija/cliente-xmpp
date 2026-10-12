@@ -1,3 +1,29 @@
+WhatsApp CAN 1.4.19
+
+Esta actualización añade información de entrega y lectura para tus mensajes de grupos, mejora la sincronización de chats leídos y conserva más datos de llamadas. Las novedades siguientes reúnen los cambios desde la versión 1.4.18. Las funciones del puente descritas aquí requieren v33; actualizar sólo el cliente no sustituye la imagen del puente.
+
+Info de tus mensajes en grupos
+- El menú contextual de un mensaje propio enviado a un grupo de WhatsApp incluye «Info…». No aparece para mensajes ajenos ni para envíos pendientes o fallidos.
+- La lista reúne tres secciones: Leído, Entregado y Sin entrega confirmada. Cada persona muestra las horas de entrega y lectura cuando WhatsApp las proporciona; Enter sobre una persona abre sus detalles y Escape cierra el diálogo.
+- «Sin entrega confirmada» no significa necesariamente que el mensaje no haya llegado. No se inventan horas ni se sustituye la lista original de destinatarios por los miembros actuales del grupo.
+- La información guardada aparece antes de consultar la red. El diálogo actualiza los acuses mientras permanece abierto y conserva la selección al cambiar el estado de una persona. Si hay un error, permite reintentar expresamente.
+
+Lectura al abrir y permanecer en una conversación
+- Abrir un chat marca como leídos sus mensajes pendientes. Los mensajes nuevos que llegan mientras ese chat está visible también se marcan como leídos, sin tener que salir y volver a entrar.
+- El historial cargado, los mensajes propios y los mensajes de otros chats no adelantan esa lectura automáticamente.
+- El puente sincroniza además el estado leído del grupo con WhatsApp oficial usando el mensaje y su fecha originales. Un acuse fallido no se descarta como si hubiera llegado correctamente; no se marca leído un historial completo sin conocer el límite.
+
+Llamadas: tipo, historial y duración disponible
+- El puente reconoce voz o vídeo cuando la oferta de la llamada incluye esa información; conserva el tipo aunque después llegue una aceptación sin ese dato.
+- Se conservan los registros de llamadas recibidos en el historial de chats individuales, incluida su duración explícita. También se corrigen la dirección y el contacto de determinadas aceptaciones que llegan desde el teléfono propio.
+- Tras aceptar una llamada entrante se realizan consultas acotadas para intentar recuperar su registro final. Esto no garantiza que WhatsApp proporcione la duración.
+- Al contestar desde WhatsApp móvil puede llegar la aceptación sin el final ni la duración. La prueba real confirmó esa limitación en el enlace actual: la llamada cuenta como contestada, pero queda sin tiempo registrado. Aceptación en otro dispositivo no significa que la llamada terminó.
+- Las estadísticas suman llamadas entrantes y salientes cuando tienen duración válida. Las llamadas incompletas se cuentan, pero no se incluyen en el tiempo total ni en la duración habitual; no se estima el tiempo desde que empezó a sonar.
+
+Protección de la foto propia y puente estable
+- Se evita que la ausencia de un avatar XMPP borre la foto propia de WhatsApp. Esa foto se administra desde WhatsApp; las fotos de contactos y grupos mantienen su comportamiento habitual.
+- El puente v33 conserva esta protección de v32, los modos de audio y las funciones anteriores. El manifiesto estable queda fijado al digest de la imagen publicada; el appliance WSL y el actualizador conservan sus versiones independientes.
+
 WhatsApp CAN 1.4.18
 
 Esta actualización mejora la subida de archivos, muestra su progreso y permite reintentar los envíos fallidos. Las novedades siguientes reúnen todos los cambios desde la versión 1.4.17.

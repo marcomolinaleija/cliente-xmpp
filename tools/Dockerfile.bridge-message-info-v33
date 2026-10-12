@@ -1,0 +1,52 @@
+# Candidate only. Publish v33 after explicit human validation.
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v32@sha256:c400f25c58c14ca9ce129b7b8f9091954da76154df445242319e59ddff4b1a2f
+FROM ${BASE_IMAGE} AS patched
+USER root
+COPY patch_slidge_message_info_v33.py bridge_message_info.py patch_slidge_read_state_v33.py bridge_read_state.py patch_slidge_call_duration_v33.py patch_slidge_call_recovery_v33.py bridge_call_recovery_v33.go /tmp/
+RUN python -B /tmp/patch_slidge_message_info_v33.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -B /tmp/patch_slidge_message_info_v33.py /venv/lib/python3.13/site-packages --no-backup && \
+    python -B /tmp/patch_slidge_read_state_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_call_duration_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_call_duration_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_call_recovery_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_call_recovery_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/patch_slidge_read_state_v33.py /venv/lib/python3.13/site-packages && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp && \
+    rm /tmp/patch_slidge_message_info_v33.py /tmp/bridge_message_info.py
+
+FROM golang:1.25-trixie AS go_builder
+ENV GOMAXPROCS=2 GOFLAGS=-p=2 GOMEMLIMIT=2GiB
+RUN apt-get update -y && apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_message_info_test.go bridge_read_state_test.go bridge_call_records_v27_test.go bridge_call_duration_v33_test.go bridge_call_recovery_v33_test.go /src/slidge_whatsapp/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go session.go can_call_recovery.go generated/whatsapp.go *_test.go && \
+    CAN_CALL_FIXTURE=/tmp/call-history-fixture.json go test -v . && go test -race . && \
+    rm *_test.go && cd generated && \
+    go build -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY smoke_bridge_message_info_runtime.py smoke_bridge_read_state_runtime.py smoke_bridge_call_duration_v33_runtime.py /opt/can-tests/
+COPY --from=go_builder /tmp/call-history-fixture.json /opt/can-tests/
+COPY --from=go_builder /src/slidge_whatsapp/event.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=go_builder /src/slidge_whatsapp/session.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+RUN chmod 0644 /opt/can-tests/call-history-fixture.json /opt/can-tests/smoke_bridge_message_info_runtime.py /venv/lib/python3.13/site-packages/slidge_whatsapp/message_info.py
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_message_info_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_read_state_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_call_duration_v33_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_avatar_safety_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_audio_modes_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_native_sticker_pack_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

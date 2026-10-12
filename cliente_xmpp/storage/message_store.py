@@ -10,7 +10,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
@@ -24,6 +24,11 @@ from cliente_xmpp.models.calls import CallEvent, CallSummary, aggregate_call_eve
 from cliente_xmpp.models.chat import Chat, Message, Poll, PollVote
 from cliente_xmpp.models.local_commands import is_local_bridge_command
 from cliente_xmpp.models.mentions import GroupParticipant
+from cliente_xmpp.models.message_info import (
+    GroupMessageInfo,
+    ParticipantReceipt,
+    merge_message_info,
+)
 from cliente_xmpp.models.names import is_fallback_chat_name
 from cliente_xmpp.models.reactions import ReactionState, flattened_reactions
 from cliente_xmpp.models.sentiment import sentiment_weights
@@ -39,7 +44,7 @@ from cliente_xmpp.models.statistics import (
 )
 
 DATABASE_PATH = APP_DIR / "messages.sqlite3"
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 MESSAGE_DUPLICATE_WINDOW_SECONDS = 3
 OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS = 120
 PHRASE_WORD_PATTERN = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
@@ -1338,6 +1343,10 @@ class MessageStore:
         now = _datetime_to_db(datetime.now())
         with self._connect() as conn:
             conn.execute(
+                "DELETE FROM group_message_info WHERE account_jid = ? AND chat_jid = ?",
+                (account_jid, chat_jid),
+            )
+            conn.execute(
                 "DELETE FROM group_participants WHERE account_jid = ? AND group_jid = ?",
                 (account_jid, chat_jid),
             )
@@ -1870,6 +1879,7 @@ class MessageStore:
                 (account_jid, chat_jid, message_id),
             )
             if cursor.rowcount > 0:
+                self._delete_message_info(conn, account_jid, chat_jid, message_id)
                 self._rebuild_chat_summary(conn, account_jid, chat_jid)
 
     def delete_cached_message(self, account_jid: str, chat_jid: str, message_id: str) -> None:
@@ -1878,6 +1888,7 @@ class MessageStore:
             return
 
         with self._connect() as conn:
+            self._delete_message_info(conn, account_jid, chat_jid, message_id)
             conn.execute(
                 """
                 INSERT OR IGNORE INTO deleted_messages (
@@ -1911,9 +1922,86 @@ class MessageStore:
             ).fetchall()
         return {str(row["message_id"]) for row in rows if str(row["message_id"])}
 
+    def load_group_message_info(
+        self, account_jid: str, chat_jid: str, message_id: str, reference_id: str = "",
+    ) -> GroupMessageInfo | None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT data FROM group_message_info "
+                "WHERE account_jid=? AND chat_jid=? "
+                "AND (message_id IN (?, ?) OR legacy_id IN (?, ?)) "
+                "ORDER BY message_id=? DESC",
+                (account_jid, chat_jid, message_id, reference_id,
+                 message_id, reference_id or message_id, message_id),
+            ).fetchall()
+        info = None
+        for row in rows:
+            value = replace(self._group_message_info_from_json(row[0]), message_id=message_id)
+            info = merge_message_info(info, value)
+        return info
+
+    @staticmethod
+    def _delete_message_info(
+        conn: sqlite3.Connection, account_jid: str, chat_jid: str, message_id: str,
+    ) -> None:
+        conn.execute(
+            "DELETE FROM group_message_info WHERE account_jid=? AND chat_jid=? AND "
+            "(message_id=? OR legacy_id=? OR legacy_id IN ("
+            "SELECT legacy_id FROM group_message_info WHERE account_jid=? AND chat_jid=? "
+            "AND message_id=? AND legacy_id!=''))",
+            (account_jid, chat_jid, message_id, message_id, account_jid, chat_jid, message_id),
+        )
+
+    @staticmethod
+    def _group_message_info_from_json(data: str) -> GroupMessageInfo:
+        value = json.loads(data)
+        value["participants"] = tuple(ParticipantReceipt(**row) for row in value["participants"])
+        return GroupMessageInfo(**value)
+
+    def save_group_message_info(self, account_jid: str, info: GroupMessageInfo) -> GroupMessageInfo:
+        with self._connect() as conn:
+            # Reserve the writer before reading so concurrent refreshes cannot lose an acuse.
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT data FROM group_message_info WHERE account_jid=? AND chat_jid=? "
+                "AND (message_id=? OR (legacy_id!='' AND legacy_id=?))",
+                (account_jid, info.chat_jid, info.message_id, info.legacy_id),
+            ).fetchall()
+            previous = None
+            for record in rows:
+                value = replace(
+                    self._group_message_info_from_json(record[0]), message_id=info.message_id,
+                )
+                previous = merge_message_info(previous, value)
+            merged = merge_message_info(previous, info)
+            conn.execute(
+                "INSERT OR REPLACE INTO group_message_info "
+                "(account_jid, chat_jid, message_id, data, legacy_id) VALUES (?, ?, ?, ?, ?)",
+                (account_jid, info.chat_jid, info.message_id,
+                 json.dumps(asdict(merged)), merged.legacy_id),
+            )
+        return merged
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS group_message_info (
+                    account_jid TEXT NOT NULL, chat_jid TEXT NOT NULL,
+                    message_id TEXT NOT NULL, data TEXT NOT NULL,
+                    PRIMARY KEY (account_jid, chat_jid, message_id)
+                )
+            """)
+            if "legacy_id" not in {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(group_message_info)")
+            }:
+                conn.execute(
+                    "ALTER TABLE group_message_info ADD COLUMN legacy_id TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_group_message_info_native "
+                "ON group_message_info(account_jid, chat_jid, legacy_id)"
+            )
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(
                 """

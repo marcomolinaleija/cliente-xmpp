@@ -353,6 +353,34 @@
     "test_windows_notifications": {
       "area": "platform",
       "layer": "fast"
+    },
+    "test_message_info": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_open_chat_reads": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_message_info_ui": {
+      "area": "messaging",
+      "layer": "integration"
+    },
+    "test_bridge_message_info": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_bridge_read_state": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_call_recovery": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_patch_slidge_call_duration": {
+      "area": "bridge",
+      "layer": "contracts"
     }
   }
 }

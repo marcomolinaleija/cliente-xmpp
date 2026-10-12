@@ -5,6 +5,7 @@ from datetime import datetime
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
+from cliente_xmpp.models.message_info import GroupMessageInfo
 from cliente_xmpp.models.reactions import ReactionUpdate
 
 
@@ -119,6 +120,13 @@ class MessageDeliveryUpdated:
 
 
 @dataclass(slots=True)
+class GroupMessageInfoLoaded:
+    request_id: str
+    info: GroupMessageInfo | None = None
+    error: str = ""
+
+
+@dataclass(slots=True)
 class FileBatchCompleted:
     chat_jid: str
     total: int
@@ -210,6 +218,7 @@ XmppEvent = (
     | MessageReactionReceived
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
+    | GroupMessageInfoLoaded
     | FileBatchCompleted
     | FileTransferUpdated
     | ChatDisplayedSynced

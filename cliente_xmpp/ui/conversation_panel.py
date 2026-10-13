@@ -609,10 +609,19 @@ class ConversationPanel(wx.Panel):
         self.mention_suggestions.SetSelection(selected)
         return selected
 
+    def mention_insertion_point(self) -> int:
+        # wx/MSW offsets include UTF-16 surrogate pairs and CRLF line endings;
+        # Python slices and XMPP mention ranges use Unicode code points instead.
+        return len(self.compose.GetRange(0, self.compose.GetInsertionPoint()))
+
     def replace_mention_query(self, start: int, end: int, value: str) -> None:
         text = self.compose.GetValue()
         self.compose.SetValue(f"{text[:start]}{value}{text[end:]}")
-        self.compose.SetInsertionPoint(start + len(value))
+        prefix = text[:start] + value
+        position = len(prefix)
+        if wx.Platform == "__WXMSW__":
+            position = len(prefix.encode("utf-16-le")) // 2 + prefix.count("\n")
+        self.compose.SetInsertionPoint(position)
         self.compose.SetFocus()
         self.hide_mention_suggestions()
 

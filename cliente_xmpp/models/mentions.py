@@ -17,6 +17,7 @@ class MentionCandidate:
     participant_jid: str
     display_name: str
     mention_text: str
+    raw_mention_text: str = ""
 
     @property
     def label(self) -> str:
@@ -30,6 +31,31 @@ class MentionReference:
     participant_jid: str
     start: int
     end: int
+
+
+def readable_mention_nick(nick: str, display_name: str = "") -> str:
+    """Decode symbol-bearing MUC Punycode for presentation, never for identity."""
+    if not nick.isascii():
+        return nick
+    # A known contact name also disambiguates emoji-only encoded nicknames.
+    known_name = bool(
+        display_name and not display_name.isascii()
+        and display_name.encode("punycode").decode("ascii") == nick
+    )
+    prefix, separator, suffix = nick.rpartition("-")
+    if not known_name and (not separator or not prefix or not suffix or not suffix.isalnum()):
+        return nick
+    try:
+        decoded = nick.encode("ascii").decode("punycode")
+    except UnicodeError:
+        return nick
+    if decoded.encode("punycode").decode("ascii") != nick:
+        return nick
+    if any(unicodedata.category(char) in {"Cc", "Cs"} for char in decoded):
+        return nick
+    if not any(ord(char) > 127 and unicodedata.category(char).startswith("S") for char in decoded):
+        return nick
+    return decoded
 
 
 def active_mention_query(text: str, insertion_point: int) -> tuple[int, int, str] | None:
@@ -82,13 +108,22 @@ def mention_references_in_text(
     for candidate in sorted(candidates, key=lambda item: len(item.mention_text), reverse=True):
         if not candidate.mention_text:
             continue
-        for match in finditer(escape(candidate.mention_text), text):
-            start, end = match.span()
-            if start and not (text[start - 1].isspace() or text[start - 1] in boundary_characters):
+        # Keep old drafts with the encoded nick mentionable as well. New drafts
+        # use the readable name, with ranges computed from that exact text.
+        for value in dict.fromkeys((candidate.mention_text, candidate.raw_mention_text)):
+            if not value:
                 continue
-            if end < len(text) and not (text[end].isspace() or text[end] in boundary_characters):
-                continue
-            matches.append((start, end, candidate))
+            for match in finditer(escape(value), text):
+                start, end = match.span()
+                if start and not (
+                    text[start - 1].isspace() or text[start - 1] in boundary_characters
+                ):
+                    continue
+                if end < len(text) and not (
+                    text[end].isspace() or text[end] in boundary_characters
+                ):
+                    continue
+                matches.append((start, end, candidate))
 
     references: list[MentionReference] = []
     occupied_until = 0

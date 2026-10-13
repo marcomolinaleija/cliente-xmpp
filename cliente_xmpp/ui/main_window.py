@@ -94,6 +94,7 @@ from cliente_xmpp.models.mentions import (
     active_mention_query,
     matching_mention_candidates,
     mention_references_in_text,
+    readable_mention_nick,
 )
 from cliente_xmpp.models.message_info import GroupMessageInfo
 from cliente_xmpp.models.names import (
@@ -506,6 +507,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.content_panel = wx.Panel(self.workspace_panel)
         self.content_box = wx.BoxSizer(wx.VERTICAL)
         self.chat_list = ChatListPanel(self.content_panel)
+        self.connection_header.follow_chat_list_visibility(self.chat_list)
         self.conversation = ConversationPanel(
             self.content_panel,
             self._display_name_for_jid,
@@ -3287,7 +3289,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
 
         if self._is_mark_all_chats_read_shortcut(event):
-            self._mark_all_chats_read()
+            if self.chat_list.IsShown():
+                self._mark_all_chats_read()
+            else:
+                event.Skip()
             return
 
         if key_code == wx.WXK_F5:
@@ -4060,7 +4065,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.Layout()
 
     def _on_mark_all_chats_read(self, _event: wx.CommandEvent) -> None:
-        self._mark_all_chats_read()
+        if self.chat_list.IsShown():
+            self._mark_all_chats_read()
 
     def _mark_all_chats_read(self) -> None:
         if not self._require_whatsapp_connection():
@@ -4945,7 +4951,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
         mention_query = active_mention_query(
             self.conversation.compose.GetValue(),
-            self.conversation.compose.GetInsertionPoint(),
+            self.conversation.mention_insertion_point(),
         )
         if mention_query is None:
             self.conversation.hide_mention_suggestions()
@@ -4970,7 +4976,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
         mention_query = active_mention_query(
             self.conversation.compose.GetValue(),
-            self.conversation.compose.GetInsertionPoint(),
+            self.conversation.mention_insertion_point(),
         )
         if mention_query is None:
             self.conversation.hide_mention_suggestions()
@@ -4993,13 +4999,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             if participant.jid.split("/", 1)[0] == self.current_jid.split("/", 1)[0]:
                 continue
             display_name = self._display_name_for_jid(participant.jid)
+            mention_text = readable_mention_nick(participant.nick, display_name)
             if display_name == self._fallback_display_name_for_jid(participant.jid):
-                display_name = participant.nick
+                display_name = mention_text
             candidates.append(
                 MentionCandidate(
                     participant_jid=participant.jid,
                     display_name=display_name,
-                    mention_text=participant.nick,
+                    mention_text=mention_text,
+                    raw_mention_text=participant.nick,
                 )
             )
         return candidates

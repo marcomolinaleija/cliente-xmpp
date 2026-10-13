@@ -22,6 +22,16 @@ class ConnectionHeaderPanel(wx.Panel):
     def set_status(self, status: str) -> None:
         self.status_label.SetLabel(status)
 
+    def follow_chat_list_visibility(self, chat_list: wx.Window) -> None:
+        chat_list.Bind(wx.EVT_SHOW, self._on_chat_list_show)
+        self.mark_all_read_button.Show(chat_list.IsShown())
+        self.Layout()
+
+    def _on_chat_list_show(self, event: wx.ShowEvent) -> None:
+        self.mark_all_read_button.Show(event.IsShown())
+        self.Layout()
+        event.Skip()
+
     def _layout(self) -> None:
         box = wx.BoxSizer(wx.HORIZONTAL)
         box.Add(self.account_label, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)

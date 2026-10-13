@@ -358,6 +358,10 @@
       "area": "messaging",
       "layer": "fast"
     },
+    "test_mobile_own_messages": {
+      "area": "messaging",
+      "layer": "fast"
+    },
     "test_open_chat_reads": {
       "area": "messaging",
       "layer": "fast"

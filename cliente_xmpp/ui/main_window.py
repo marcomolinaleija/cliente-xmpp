@@ -132,7 +132,11 @@ from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
-from cliente_xmpp.ui.message_info_dialog import InfoCallback, MessageInfoDialog
+from cliente_xmpp.ui.message_info_dialog import (
+    DirectMessageInfoDialog,
+    InfoCallback,
+    MessageInfoDialog,
+)
 from cliente_xmpp.ui.new_chat_dialog import NewChatDialog
 from cliente_xmpp.ui.notification_sound_dialog import NotificationSoundDialog
 from cliente_xmpp.ui.poll_results_dialog import PollResultsDialog
@@ -3727,15 +3731,29 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     def _open_message_info(self, message: Message, parent: wx.Window | None = None) -> None:
         account = self.current_jid
-        dialog = MessageInfoDialog(
-            parent or self,
-            lambda callback: self._load_message_info_async(account, message, callback),
-        )
+        if message.chat_is_group:
+            dialog = MessageInfoDialog(
+                parent or self,
+                lambda callback: self._load_message_info_async(account, message, callback),
+            )
+        else:
+            dialog = DirectMessageInfoDialog(
+                parent or self, lambda: self._local_direct_message_info(account, message),
+                self._display_name_for_jid(message.chat_jid),
+            )
         try:
             dialog.ShowModal()
         finally:
             dialog.deactivate()
             dialog.Destroy()
+
+    def _local_direct_message_info(
+        self, account: str, message: Message,
+    ) -> tuple[Message | None, str]:
+        if not account or account != self.current_jid:
+            return None, "La cuenta activa cambió."
+        current = self._message_by_id(message.chat_jid, message.message_id) or message
+        return current, ""
 
     def _load_message_info_async(
         self, account: str, message: Message, callback: InfoCallback,
@@ -5297,10 +5315,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         )
         forward_item = menu.Append(wx.ID_ANY, "Reenviar...")
         select_item = menu.Append(wx.ID_ANY, "Iniciar selección de mensajes...")
-        if message.outgoing and message.chat_is_group:
+        if message.outgoing:
             info_item = menu.Append(wx.ID_ANY, "Info...")
             info_item.Enable(
-                bool(message.message_id) and message.delivery_state not in {"pending", "failed"}
+                not message.chat_is_group or (
+                    bool(message.message_id) and message.delivery_state not in {"pending", "failed"}
+                )
             )
             menu_owner.Bind(
                 wx.EVT_MENU, lambda _event: self._open_message_info(message, menu_owner), info_item,
@@ -7447,6 +7467,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
     @staticmethod
     def _merge_message_metadata(target: Message, incoming: Message) -> None:
+        # History can supply the real author missing from the live MUC stanza.
+        # Promote only the very same remote message, never a body/time match.
+        if (incoming.outgoing and not target.outgoing
+                and incoming.chat_jid == target.chat_jid
+                and incoming.message_id and incoming.message_id == target.message_id):
+            target.outgoing = True
+            target.sender_jid = incoming.sender_jid
+            target.sender_name = ""
         if target.call is not None and incoming.call is not None:
             if target.call.call_id == incoming.call.call_id:
                 incoming_preference = MainWindow._call_phase_preference(incoming.call)

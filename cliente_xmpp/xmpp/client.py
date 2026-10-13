@@ -215,6 +215,7 @@ class BridgeXmppClient(ClientXMPP):
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
+        self._own_group_occupants: dict[str, tuple[str, str]] = {}
         self._group_roster_requests: set[str] = set()
         self._group_participant_cache_enabled: set[str] = set()
         self._group_rejoin_scheduled: set[str] = set()
@@ -260,6 +261,8 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("presence_unavailable", self._on_presence_debug)
         self.add_event_handler("presence_error", self._on_presence_debug)
         self.add_event_handler("changed_status", self._on_presence_debug)
+        # MUC occupants suppress generic roster presence events in slixmpp.
+        self.add_event_handler("groupchat_presence", self._on_presence_debug)
 
     async def _on_session_start(self, _event: object) -> None:
         self._session_generation += 1
@@ -271,6 +274,7 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._clear_transient_message_retries()
         self._joined_group_chat_jids.clear()
+        getattr(self, "_own_group_occupants", {}).clear()
         getattr(self, "_group_roster_requests", set()).clear()
         getattr(self, "_group_participant_cache_enabled", set()).clear()
         self._group_rejoin_scheduled.clear()
@@ -329,6 +333,7 @@ class BridgeXmppClient(ClientXMPP):
 
     def _on_disconnected(self, _event: object) -> None:
         self._whatsapp_session_ready = False
+        getattr(self, "_own_group_occupants", {}).clear()
         getattr(self, "_pending_poll_votes", {}).clear()
         self._clear_transient_message_retries()
         self._stop_group_membership_watchdog()
@@ -414,6 +419,13 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         if message_type not in ("chat", "normal"):
+            return
+
+        # A reflected own send may arrive without a carbon wrapper. Its XMPP
+        # author is still authoritative; never count it as an incoming message.
+        if bare_jid == str(self.boundjid.bare):
+            self._emit_synced_displayed_from_outgoing_stanza(msg)
+            self._emit_message_from_stanza(msg, outgoing=True)
             return
 
         retraction = self._message_retraction_from_stanza(msg, outgoing=False)
@@ -989,12 +1001,25 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         if presence_type in {"unavailable", "error"}:
+            getattr(self, "_own_group_occupants", {}).pop(group_jid, None)
             self._joined_group_chat_jids.discard(group_jid)
             self._group_rejoin_scheduled.discard(group_jid)
             if not status_codes.intersection({301, 307, 321, 322}):
                 self._schedule_group_rejoin(group_jid)
             return
 
+        # Status 110 identifies *this account's* occupant, including a nickname
+        # assigned by the bridge. Display names alone are not proof of authorship.
+        if xml is not None:
+            full_jid = xml.attrib.get("from", "")
+            if (BridgeXmppClient._bare_jid(full_jid) == group_jid
+                    and BridgeXmppClient._jid_resource(full_jid)):
+                occupants = getattr(self, "_own_group_occupants", None)
+                if occupants is None:
+                    occupants = self._own_group_occupants = {}
+                occupants[group_jid] = (
+                    full_jid, BridgeXmppClient._occupant_id_from_xml(xml),
+                )
         self._joined_group_chat_jids.add(group_jid)
         self._group_rejoin_scheduled.discard(group_jid)
 
@@ -1053,7 +1078,9 @@ class BridgeXmppClient(ClientXMPP):
 
         try:
             await self["xep_0199"].ping(
-                f"{group_jid}/{self._muc_nick()}",
+                getattr(self, "_own_group_occupants", {}).get(
+                    group_jid, (f"{group_jid}/{self._muc_nick()}", ""),
+                )[0],
                 timeout=GROUP_MEMBERSHIP_PING_TIMEOUT_SECONDS,
             )
         except IqError as exc:
@@ -3833,6 +3860,8 @@ class BridgeXmppClient(ClientXMPP):
             if self._group_sender_matches_local(
                 self._muc_user_item_jid(message),
                 self._jid_resource(from_jid),
+                group_jid=self._bare_jid(from_jid),
+                occupant_id=self._occupant_id_from_xml(message),
             ):
                 return True
 
@@ -3884,6 +3913,13 @@ class BridgeXmppClient(ClientXMPP):
             return ""
 
         return item.attrib.get("jid", "").strip()
+
+    @staticmethod
+    def _occupant_id_from_xml(xml: ET.Element | None) -> str:
+        if xml is None:
+            return ""
+        occupant = xml.find("{urn:xmpp:occupant-id:0}occupant-id")
+        return occupant.attrib.get("id", "").strip() if occupant is not None else ""
 
     @staticmethod
     def _bare_jid(jid: str) -> str:
@@ -4175,15 +4211,28 @@ class BridgeXmppClient(ClientXMPP):
             return self._group_sender_matches_local(
                 sender_jid,
                 self._group_sender_nick_from_stanza(stanza),
+                group_jid=str(stanza["from"].bare),
+                occupant_id=self._occupant_id_from_xml(getattr(stanza, "xml", None)),
             )
 
         return str(stanza["from"].bare) == self.boundjid.bare
 
-    def _group_sender_matches_local(self, sender_jid: str, sender_nick: str) -> bool:
+    def _group_sender_matches_local(
+        self, sender_jid: str, sender_nick: str, *, group_jid: str = "", occupant_id: str = "",
+    ) -> bool:
         local_bare = str(self.boundjid.bare)
         if sender_jid and self._bare_jid(sender_jid) == local_bare:
             return True
 
+        # A real, different JID wins over any coincidentally matching nickname.
+        if sender_jid and "@" in sender_jid and self._bare_jid(sender_jid) != group_jid:
+            return False
+        own = getattr(self, "_own_group_occupants", {}).get(group_jid)
+        if own is not None:
+            full_jid, own_id = own
+            if occupant_id and own_id:
+                return occupant_id == own_id
+            return sender_nick == self._jid_resource(full_jid)
         return BridgeXmppClient._same_display_label(sender_nick, self._muc_nick())
 
     @staticmethod

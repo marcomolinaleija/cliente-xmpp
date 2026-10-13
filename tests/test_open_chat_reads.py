@@ -114,6 +114,22 @@ class OpenChatReadTests(unittest.TestCase):
         self.assertEqual(chat.unread_count, 3)
         window._update_chat_summary.assert_not_called()
 
+    def test_phone_own_text_and_audio_do_not_increase_closed_chat_unread(self):
+        for group in (False, True):
+            for media in (False, True):
+                with self.subTest(group=group, audio=media):
+                    window, chat = self.window(group)
+                    window.conversation.IsShown.return_value = False
+                    message = self.message(
+                        chat, 4, outgoing=True,
+                        media_kind="audio" if media else "",
+                        audio_url="https://example.test/fixture.ogg" if media else "",
+                    )
+                    MainWindow._handle_xmpp_event(window, MessageReceived(message))
+                    self.assertEqual(chat.unread_count, 3)
+                    self.assertFalse(window._update_chat_from_message.call_args.kwargs["mark_unread"])
+                    window.xmpp.mark_chat_displayed.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

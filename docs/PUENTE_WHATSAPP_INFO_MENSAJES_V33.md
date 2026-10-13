@@ -19,6 +19,30 @@ ordenadas por nombre dentro de esa sección. Los encabezados vacíos permanecen
 visibles y Enter sobre ellos no abre un detalle de persona. Cada persona conserva
 las columnas de hora de entrega y lectura, sin deducir una hora faltante.
 
+## Ajustes locales del cliente (sin cambiar el puente)
+
+El código del cliente también ofrece **Info...** en mensajes propios de chats
+individuales. Esta vista muestra destinatario, fecha del mensaje y estado local
+(enviando, no enviado, enviado, entregado o leído); se actualiza cada dos segundos
+desde la memoria de CAN, sin consultas nuevas al puente. Las horas de entrega y
+lectura figuran como **No registrada en CAN**: el estado no proporciona esos
+horarios. Escape cierra el diálogo. Un cambio de cuenta detiene la actualización
+y retira la información anterior. La ausencia de un acuse no demuestra un fallo.
+
+Para mensajes de grupos enviados desde el teléfono, CAN conserva por sala la
+identidad propia anunciada por la presencia MUC (estado 110 y occupant-id), aunque
+el apodo asignado sea diferente del usuario XMPP. Estas presencias se reciben por
+el evento nativo `groupchat_presence`: Slixmpp suprime los eventos genéricos de
+presencia para los ocupantes MUC. No es necesario igualar el nombre ni las tildes
+con el perfil de WhatsApp. Los mensajes propios no deben
+incrementar no leídos y habilitan las acciones propias, incluida Info. Una copia
+de historial con autoría confirmada puede corregir la clasificación previa del
+mismo ID; no se reclasifica por coincidencia de texto ni se borran mensajes o
+contadores antiguos de forma masiva. No hay migración sobre conversaciones reales.
+
+Estos ajustes son cambios de fuente del cliente, no una publicación de binarios
+ni una actualización del puente.
+
 ## Prueba manual
 
 1. Ejecutar CAN desde el código actualizado con el entorno `XMPP`.
@@ -27,8 +51,12 @@ las columnas de hora de entrega y lectura, sin deducir una hora faltante.
    se actualiza cada dos segundos mientras el diálogo esté abierto, sin consultas superpuestas.
 4. Cerrar y abrir el diálogo; desconectar CAN y comprobar que conserva la copia
    local. Confirmar teclado, foco y lectura con NVDA.
-5. Confirmar que mensajes entrantes no ofrecen Info, que los chats individuales
-   siguen funcionando y que texto, archivos, respuestas y stickers no regresaron.
+5. Confirmar que mensajes entrantes no ofrecen Info. En un mensaje propio de chat
+   individual, comprobar el estado local y el aviso de horas no registradas.
+6. Enviar desde el teléfono texto y audio a un grupo de prueba: deben aparecer
+   como propios sin sumar no leídos. Comprobar Info y Eliminar sin efectuar una
+   eliminación real salvo autorización. Revisar también texto, archivos,
+   respuestas y stickers, con el foco conservado.
 
 No hay mensajes automáticos de prueba enviados a grupos reales. La validación
 humana de acuses nuevos y NVDA es independiente de las pruebas automatizadas.

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import wx
 
+from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.message_info import GroupMessageInfo, ParticipantReceipt
+from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.message_info_dialog import (
     REFRESH_INTERVAL_MS,
     SECTION_TITLES,
+    DirectMessageInfoDialog,
     MessageInfoDialog,
     receipt_time,
 )
@@ -200,6 +204,101 @@ class MessageInfoNativeTests(unittest.TestCase):
             callbacks[-1](None, "Sin conexión", True)
             self.assertEqual(dialog.people.GetItemCount(), 4)
             self.assertTrue(dialog.refresh_button.IsEnabled())
+            self.assertFalse(dialog.timer.IsRunning())
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+
+class DirectMessageInfoNativeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = wx.App.Get() or wx.App(False)
+
+    def test_context_menu_offers_own_direct_info_and_preserves_group_and_foreign_guards(self):
+        window = MainWindow.__new__(MainWindow)
+        window.conversation = SimpleNamespace(selected_messages=lambda: [])
+        window._private_message_recipient = Mock(return_value=None)
+        window._message_can_be_edited = Mock(return_value=False)
+        window._message_can_be_deleted = Mock(return_value=True)
+        for group, own, state, expected in (
+            (False, True, "sent", True), (False, True, "pending", True),
+            (False, True, "failed", True), (False, False, "", None),
+            (True, True, "sent", True), (True, True, "pending", False),
+        ):
+            with self.subTest(group=group, own=own, state=state):
+                items = {}
+
+                def popup(menu, items=items):
+                    items.update({i.GetItemLabelText(): i.IsEnabled() for i in menu.GetMenuItems()})
+
+                owner = SimpleNamespace(Bind=Mock(), PopupMenu=popup)
+                message = Message("chat@example.test", "Yo", "Fixture", message_id="id",
+                                  chat_is_group=group, outgoing=own, delivery_state=state)
+                MainWindow._show_message_context_menu(window, message, popup_parent=owner)
+                self.assertEqual(items.get("Info..."), expected)
+                self.assertEqual("Eliminar mensaje" in items, own)
+
+    def test_individual_info_dispatch_never_calls_group_loader(self):
+        window = MainWindow.__new__(MainWindow)
+        window.current_jid = "owner@example.test"
+        window._display_name_for_jid = Mock(return_value="Fixture recipient")
+        window.xmpp = SimpleNamespace(load_group_message_info=Mock())
+        message = Message("contact@example.test", "Yo", "Fixture", message_id="id", outgoing=True)
+        window.messages_by_chat = {message.chat_jid: [message]}
+        with (
+            patch("cliente_xmpp.ui.main_window.DirectMessageInfoDialog") as direct,
+            patch("cliente_xmpp.ui.main_window.MessageInfoDialog") as group,
+        ):
+            window._open_message_info(message)
+            group.assert_not_called()
+            loader = direct.call_args.args[1]
+            self.assertEqual(loader(), (message, ""))
+            direct.return_value.ShowModal.assert_called_once()
+            direct.return_value.deactivate.assert_called_once()
+            direct.return_value.Destroy.assert_called_once()
+            window.xmpp.load_group_message_info.assert_not_called()
+
+    def test_local_refresh_preserves_selection_and_escape_stops_updates(self):
+        message = Message("contact@example.test", "Yo", "Fixture", outgoing=True,
+                          message_id="id", delivery_state="sent")
+        calls = []
+
+        def load():
+            calls.append(True)
+            return message, ""
+
+        dialog = DirectMessageInfoDialog(None, load, "Fixture recipient")
+        try:
+            self.assertIn("Estado: Enviado", dialog.details.GetValue())
+            self.assertIn("Hora de lectura: No registrada", dialog.details.GetValue())
+            self.assertEqual(dialog.timer.GetInterval(), REFRESH_INTERVAL_MS)
+            dialog.details.SetSelection(0, 10)
+            message.delivery_state = "read"
+            dialog.refresh()
+            self.assertIn("Estado: Leído", dialog.details.GetValue())
+            self.assertEqual(dialog.details.GetSelection(), (0, 10))
+            with patch.object(dialog, "Hide") as hide:
+                event = wx.KeyEvent(wx.wxEVT_CHAR_HOOK)
+                event.SetKeyCode(wx.WXK_ESCAPE)
+                dialog._key(event)
+                hide.assert_called_once()
+            self.assertFalse(dialog.timer.IsRunning())
+            count = len(calls)
+            dialog.refresh()
+            self.assertEqual(len(calls), count)
+        finally:
+            dialog.deactivate()
+            dialog.Destroy()
+
+    def test_account_switch_hides_old_information_and_stops_timer(self):
+        message = Message("contact@example.test", "Yo", "Fixture", outgoing=True)
+        result = [message, ""]
+        dialog = DirectMessageInfoDialog(None, lambda: tuple(result), "Fixture recipient")
+        try:
+            result[:] = [None, "La cuenta activa cambió."]
+            dialog.refresh()
+            self.assertEqual(dialog.details.GetValue(), "La cuenta activa cambió.")
             self.assertFalse(dialog.timer.IsRunning())
         finally:
             dialog.deactivate()

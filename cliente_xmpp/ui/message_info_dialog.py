@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import wx
 
+from cliente_xmpp.models.chat import Message
 from cliente_xmpp.models.message_info import (
     GroupMessageInfo,
     ParticipantReceipt,
@@ -39,6 +40,91 @@ def receipt_time(value: int) -> str:
             return stamp.strftime("%d/%m/%Y %H:%M:%S UTC")
     except (OSError, OverflowError, ValueError):
         return "Fecha no disponible"
+
+
+def direct_message_info_text(message: Message, recipient: str) -> str:
+    """Report only local evidence; receipt arrival is not a WhatsApp timestamp."""
+    state = {
+        "pending": "Enviando", "failed": "No enviado", "sent": "Enviado",
+        "received": "Entregado", "delivered": "Entregado",
+        "displayed": "Leído", "read": "Leído",
+    }.get(message.delivery_state, "Sin confirmación")
+    if message.retracted:
+        state = "Eliminado"
+    return (
+        f"Destinatario: {recipient}\n"
+        f"Fecha del mensaje: {receipt_time(int(message.sent_at.timestamp()))}\n"
+        f"Estado: {state}\n"
+        "Hora de entrega: No registrada en CAN.\n"
+        "Hora de lectura: No registrada en CAN.\n\n"
+        "Información local: se actualiza con las confirmaciones que recibe CAN. "
+        "La falta de una confirmación no demuestra que el mensaje no haya llegado."
+    )
+
+
+class DirectMessageInfoDialog(wx.Dialog):
+    """Read an individual message from the wx-side cache, without bridge queries."""
+
+    def __init__(
+        self, parent: wx.Window,
+        loader: Callable[[], tuple[Message | None, str]], recipient: str,
+    ) -> None:
+        super().__init__(
+            parent, title="Información del mensaje", size=(650, 400),
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self._loader = loader
+        self._recipient = recipient
+        self._active = True
+        self.details = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY)
+        self.details.SetName("Información local del mensaje individual")
+        close = wx.Button(self, wx.ID_CANCEL, "&Cerrar")
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self.details, 1, wx.ALL | wx.EXPAND, 12)
+        box.Add(close, 0, wx.ALL | wx.ALIGN_RIGHT, 12)
+        self.SetSizer(box)
+        self.SetMinSize((450, 300))
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, lambda _event: self.refresh(), self.timer)
+        self.Bind(wx.EVT_BUTTON, self._close, close)
+        self.Bind(wx.EVT_CLOSE, self._close)
+        self.Bind(wx.EVT_CHAR_HOOK, self._key)
+        apply_theme(self)
+        self.refresh()
+        if self._active:
+            self.timer.Start(REFRESH_INTERVAL_MS)
+        self.details.SetFocus()
+
+    def refresh(self) -> None:
+        if not self._active:
+            return
+        message, error = self._loader()
+        if error or message is None:
+            self.details.ChangeValue(error or "El mensaje ya no está disponible.")
+            self.deactivate()
+            return
+        text = direct_message_info_text(message, self._recipient)
+        if text != self.details.GetValue():
+            selection = self.details.GetSelection()
+            self.details.ChangeValue(text)
+            self.details.SetSelection(*selection)
+
+    def deactivate(self) -> None:
+        self._active = False
+        self.timer.Stop()
+
+    def _close(self, _event: wx.Event) -> None:
+        self.deactivate()
+        if self.IsModal():
+            self.EndModal(wx.ID_CANCEL)
+        else:
+            self.Hide()
+
+    def _key(self, event: wx.KeyEvent) -> None:
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self._close(event)
+        else:
+            event.Skip()
 
 
 class MessageInfoDialog(wx.Dialog):

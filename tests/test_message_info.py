@@ -17,6 +17,7 @@ from cliente_xmpp.models.message_info import (
 )
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.ui.main_window import MainWindow
+from cliente_xmpp.ui.message_info_dialog import direct_message_info_text
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import GroupMessageInfoLoaded
 from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
@@ -88,6 +89,25 @@ class MessageInfoLatencyTests(unittest.TestCase):
 
 
 class MessageInfoModelTests(unittest.TestCase):
+    def test_direct_info_reports_known_state_without_inventing_receipt_times(self):
+        states = {
+            "": "Sin confirmación", "pending": "Enviando", "failed": "No enviado",
+            "sent": "Enviado", "received": "Entregado", "delivered": "Entregado",
+            "displayed": "Leído", "read": "Leído",
+        }
+        for state, label in states.items():
+            with self.subTest(state=state):
+                message = Message("contact@example.test", "Yo", "Private fixture body",
+                                  outgoing=True, delivery_state=state)
+                text = direct_message_info_text(message, "Fixture recipient")
+                self.assertIn(f"Estado: {label}", text)
+                self.assertIn("Hora de entrega: No registrada", text)
+                self.assertIn("Hora de lectura: No registrada", text)
+                self.assertNotIn(message.body, text)
+                self.assertNotIn("Consultando al puente", text)
+        message.retracted = True
+        self.assertIn("Estado: Eliminado", direct_message_info_text(message, "Fixture recipient"))
+
     def test_all_states_do_not_infer_delivery_from_absence_or_read_time(self):
         self.assertEqual(ParticipantReceipt(lid="1@lid").state, "Sin entrega confirmada")
         self.assertEqual(

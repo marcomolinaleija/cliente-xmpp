@@ -1346,6 +1346,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
                 _session_generation=0,
                 _pending_transient_message_retries={},
                 _joined_group_chat_jids={"#room@example.org"},
+                _own_group_occupants={"#room@example.org": ("#room@example.org/OldOwner", "old")},
                 _group_rejoin_scheduled={"#room@example.org"},
                 _presence_subscription_jids={"contact@example.org"},
                 send_presence=lambda: calls.append("presence"),
@@ -1367,6 +1368,7 @@ class InitialConnectionFlowTests(unittest.TestCase):
             self.assertFalse(client._whatsapp_session_ready)
             self.assertFalse(client._initial_remote_sync_started)
             self.assertFalse(client._joined_group_chat_jids)
+            self.assertFalse(client._own_group_occupants)
             self.assertFalse(client._group_rejoin_scheduled)
             self.assertFalse(client._presence_subscription_jids)
 

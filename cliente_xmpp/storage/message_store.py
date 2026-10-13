@@ -2719,7 +2719,9 @@ class MessageStore:
                     NULLIF(excluded.displayed_marker_id, ''),
                     messages.displayed_marker_id
                 ),
-                sender_jid = excluded.sender_jid,
+                sender_jid = CASE
+                    WHEN messages.outgoing = 1 AND excluded.outgoing = 0
+                    THEN messages.sender_jid ELSE excluded.sender_jid END,
                 sender_name = COALESCE(NULLIF(excluded.sender_name, ''), messages.sender_name),
                 body = CASE
                     WHEN excluded.retracted = 1 THEN ''
@@ -2729,7 +2731,7 @@ class MessageStore:
                     ELSE excluded.body
                 END,
                 sent_at = excluded.sent_at,
-                outgoing = excluded.outgoing,
+                outgoing = MAX(messages.outgoing, excluded.outgoing),
                 audio_url = CASE
                     WHEN excluded.retracted = 1 OR messages.retracted = 1 THEN ''
                     ELSE COALESCE(NULLIF(excluded.audio_url, ''), messages.audio_url)

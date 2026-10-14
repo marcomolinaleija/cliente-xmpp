@@ -2,6 +2,12 @@ name: Probar notificaciones Telegram
 
 on:
   workflow_dispatch:
+    inputs:
+      recipient:
+        description: Destino según el orden de TELEGRAM_CHAT_IDS
+        type: choice
+        options: [all, '1', '2']
+        default: all
 
 permissions:
   contents: read
@@ -24,5 +30,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
           TELEGRAM_NOTIFICATION_TEST: '1'
+          TELEGRAM_TEST_RECIPIENT: ${{ inputs.recipient }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python tools/ci/notify_telegram.py

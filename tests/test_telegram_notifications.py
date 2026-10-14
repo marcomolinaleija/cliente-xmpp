@@ -54,6 +54,33 @@ class TelegramNotificationTests(unittest.TestCase):
                 self.assertIn(environment["RUN_URL"], text)
                 self.assertNotIn(environment["RELEASE_URL"], text)
 
+    def test_selected_recipient_does_not_repeat_the_other_notification(self):
+        environment = {**self.environment(), "TELEGRAM_NOTIFICATION_TEST": "1",
+                       "TELEGRAM_TEST_RECIPIENT": "1"}
+        with patch.object(telegram, "send_message") as send, redirect_stdout(io.StringIO()):
+            telegram.notify(environment)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[1], "101")
+
+    def test_api_rejections_have_fixed_diagnostics_without_private_response_content(self):
+        for status, description, expected in (
+            (400, "Bad Request: chat not found", "chat no encontrado"),
+            (403, "Forbidden: bot was blocked by the user", "bloqueó"),
+            (403, "Forbidden: bot can't initiate conversation with a user", "iniciar"),
+        ):
+            with self.subTest(status=status, description=description):
+                body = io.BytesIO(json.dumps({
+                    "description": description + " fixture-private-id-and-name",
+                }).encode())
+                error = HTTPError("https://api.telegram.org/bot123:fixture-token/sendMessage",
+                                  status, "fixture-private-reason", {}, body)
+                with patch.object(telegram, "urlopen", side_effect=error):
+                    with self.assertRaises(telegram.TelegramDeliveryError) as result:
+                        telegram.send_message("123:fixture-token", "101", "Fixture")
+                text = str(result.exception)
+                self.assertIn(expected, text)
+                self.assertNotIn("fixture-", text)
+
     def test_bad_configuration_fails_without_any_request_and_missing_secrets_skip(self):
         with patch.object(telegram, "send_message") as send, redirect_stdout(io.StringIO()):
             self.assertEqual(telegram.notify({}), 0)

@@ -21,6 +21,10 @@
       "area": "platform",
       "layer": "fast"
     },
+    "test_telegram_notifications": {
+      "area": "platform",
+      "layer": "fast"
+    },
     "test_bridge_audio_modes": {
       "area": "bridge",
       "layer": "contracts"

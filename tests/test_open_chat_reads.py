@@ -3,14 +3,36 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 from types import MethodType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.main_window import MainWindow
-from cliente_xmpp.xmpp.events import MessageReceived
+from cliente_xmpp.xmpp.events import ChatReadFailed, MessageReceived
 
 
 class OpenChatReadTests(unittest.TestCase):
+    def test_read_failure_keeps_local_state_and_allows_marker_retry_without_modal(self):
+        window, chat = self.window(group=True)
+        window.displayed_marker_ids_by_chat[chat.jid] = "fixture-marker"
+        window.displayed_marker_ids_by_chat["other@example.test"] = "other-marker"
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+        window.speaker = SimpleNamespace(speak=Mock())
+        event = ChatReadFailed(chat.jid, "Lectura pendiente")
+        with patch("cliente_xmpp.ui.main_window.wx.MessageBox") as modal, \
+                patch("cliente_xmpp.ui.main_window.time.monotonic", return_value=100):
+            MainWindow._handle_xmpp_event(window, event)
+            MainWindow._handle_xmpp_event(window, event)
+        modal.assert_not_called()
+        self.assertEqual(
+            window.displayed_marker_ids_by_chat, {"other@example.test": "other-marker"}
+        )
+        self.assertEqual(chat.unread_count, 3)
+        self.assertEqual(window.status_bar.SetStatusText.call_count, 2)
+        window.status_bar.SetStatusText.assert_called_with("Lectura pendiente")
+        window.speaker.speak.assert_called_once_with(
+            "La sincronización de lectura con WhatsApp está pendiente."
+        )
+
     def window(self, group: bool = False):
         chat = Chat(jid="chat@example.test", name="Fixture", is_group=group, unread_count=3)
         window = SimpleNamespace(

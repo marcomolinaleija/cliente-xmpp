@@ -42,9 +42,18 @@ func (s *Session) MarkChatRead(receipt Receipt) error {
     }
     patch, err := canGroupReadPatch(receipt)
     if err != nil { return err }
-    ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+    ctx, cancel := context.WithTimeout(s.ctx, 45*time.Second)
     defer cancel()
-    return client.SendAppState(ctx, patch)
+    return canSendGroupReadWithRecovery(ctx, patch, client.SendAppState, func(ctx context.Context, name appstate.WAPatchName, full, onlyNew bool) error {
+        s.gateway.logger.Infof("CAN_READ_STATE stage=recover collection=%s", name)
+        err := client.FetchAppState(ctx, name, full, onlyNew)
+        if err != nil {
+            s.gateway.logger.Warnf("CAN_READ_STATE stage=recovery_failed collection=%s", name)
+        } else {
+            s.gateway.logger.Infof("CAN_READ_STATE stage=recovered collection=%s", name)
+        }
+        return err
+    })
 }
 '''
 
@@ -83,12 +92,12 @@ def patch_marker(source):
         "        if isinstance(recipient, LegacyMUC):\n"
         "            hook = getattr(recipient, 'on_chat_read', None)\n"
         "            if hook is not None:\n"
-        "                await hook(self._xmpp_msg_id_to_legacy(msg['displayed']['id'], recipient))\n"
+                "                await hook(msg['displayed']['id'])\n"
         "            await recipient.echo(msg, None)\n")
     return source + ("\n        # Do not feed reflected app-state publications back into WhatsApp.\n"
         "        hook = getattr(recipient, 'on_chat_read', None)\n"
         "        if to_mark and hook is not None:\n"
-        "            await hook(self._xmpp_msg_id_to_legacy(stanza_id, recipient))\n")
+        "            await hook(stanza_id)\n")
 
 
 def clone_binding(source, kind):
@@ -133,7 +142,35 @@ def patch_package(site_packages: Path):
         marker_text = "canGroupReadPatch" if path.name == "session.go" else (
             "can_ack_read" if path.name in ("mixins.py", "marker.py") else "MarkChatRead"
         )
-        if marker_text not in source:
+        if path.name == "session.go" and marker_text in source:
+            old = re.sub(
+                r"    return canSendGroupReadWithRecovery\(ctx, patch,.*?\n    \}\)",
+                "    return client.SendAppState(ctx, patch)",
+                NATIVE_METHOD.replace("45*time.Second", "15*time.Second"), flags=re.S,
+            )
+            # Existing Go sources are gofmt'd; compare a whitespace-independent
+            # anchor, then replace exactly that one method, never generated ABI.
+            if "canSendGroupReadWithRecovery(ctx, patch" not in source:
+                pattern = r"func \(s \*Session\) MarkChatRead\(receipt Receipt\) error \{.*?^\}"
+                matches = list(re.finditer(pattern, source, re.M | re.S))
+                expected = old[old.index("func (s *Session) MarkChatRead"):].strip()
+                if len(matches) != 1 or re.sub(r"\s+", "", matches[0].group()) != re.sub(r"\s+", "", expected):
+                    raise ValueError("Unexpected installed MarkChatRead; refusing replacement")
+                method = NATIVE_METHOD[NATIVE_METHOD.index("func (s *Session) MarkChatRead"):].strip()
+                outputs[path] = source[:matches[0].start()] + method + source[matches[0].end():]
+        elif path == marker and marker_text in source:
+            updated = source
+            for old, new in (
+                ("await hook(self._xmpp_msg_id_to_legacy(msg['displayed']['id'], recipient))",
+                 "await hook(msg['displayed']['id'])"),
+                ("await hook(self._xmpp_msg_id_to_legacy(stanza_id, recipient))",
+                 "await hook(stanza_id)"),
+            ):
+                if old in updated:
+                    updated = replace(updated, old, new)
+            if updated != source:
+                outputs[path] = updated
+        elif marker_text not in source:
             outputs[path] = transform(source)
     # Validate all anchors before writing any files; generated bindings stay ABI-compatible.
     for path, source in outputs.items():
@@ -143,7 +180,12 @@ def patch_package(site_packages: Path):
     changed = not target.exists() or target.read_bytes() != module.read_bytes()
     if changed:
         shutil.copy2(module, target)
-    return bool(outputs) or changed
+    helper = Path(__file__).with_name("bridge_read_state_recovery.go")
+    helper_target = package / "can_read_state_recovery.go"
+    helper_changed = not helper_target.exists() or helper_target.read_bytes() != helper.read_bytes()
+    if helper_changed:
+        shutil.copy2(helper, helper_target)
+    return bool(outputs) or changed or helper_changed
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # Información de mensajes propios en grupos — v33 publicada
 
-Publicado el 12 de octubre de 2026 en GHCR y activo en el VPS:
+Versión estable publicada el 12 de octubre de 2026 en GHCR. La prueba privada
+de recuperación descrita abajo usa otra imagen candidata:
 
 ```text
 ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v33@sha256:3f588f68247239a08c991c08eeb8195ff361cd887053a9c046fb60946ae555fa
@@ -18,6 +19,58 @@ La lista contiene tres encabezados, en orden: **Leído**, **Entregado** y
 ordenadas por nombre dentro de esa sección. Los encabezados vacíos permanecen
 visibles y Enter sobre ellos no abre un detalle de persona. Cada persona conserva
 las columnas de hora de entrega y lectura, sin deducir una hora faltante.
+
+## v34: corrección de lectura grupal (14 de octubre de 2026)
+
+Tras la validación del usuario se publicó la segunda candidata como `v34`, sin
+reconstruir la imagen probada. El manifiesto estable del puente fija:
+
+```text
+ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v34@sha256:9efc875341933962a29a5ce1b0e233cac4e59e8c65463fed079c9ab5018c9114
+```
+
+CAN 1.4.21 incluye la clasificación de avisos de lectura descrita aquí. El detalle
+de candidatos siguiente conserva el proceso de construcción y sus límites.
+
+La lectura automática se conserva. El candidato privado construido con
+`tools/Dockerfile.bridge-read-recovery-candidate` parte de la v33 publicada y
+intenta recuperar únicamente la colección de estado afectada cuando Whatsmeow devuelve
+`ErrMismatchingLTHash`: descarga un snapshot con verificación de integridad y
+reintenta una vez el mismo horizonte de lectura. El flujo nativo tiene un plazo
+de 45 segundos. No cambia dependencias, claves, vinculación ni otras colecciones;
+no desactiva validaciones MAC/hash ni envía notificaciones de reset de dispositivos.
+
+Si falla, la lectura remota sigue pendiente y se aplica una pausa de 60 segundos
+por cuenta, sin bloquear otras cuentas. El siguiente marcador después de esa
+pausa vuelve a intentarlo; no existe un reintento automático por temporizador.
+Los privados no ejecutan esta operación de estado grupal.
+
+El cliente desde el código distingue errores de marcadores de lectura de los
+errores de envío real: muestra el detalle en la barra de estado y anuncia la
+lectura pendiente como máximo una vez por minuto, sin diálogo modal ni retirar
+mensajes optimistas. Esta corrección del cliente no modifica un EXE ya instalado.
+
+La validación aislada usa `tools/bridge_read_state_recovery_test.go` (Go/race),
+`tools/smoke_bridge_read_state_runtime.py` (ORM y binding instalados) y las pruebas
+Python registradas en `tests/suites.json`. No acredita lectura real en WhatsApp:
+la prueba humana debe abrir grupos y verificar el estado en el teléfono, junto
+con recepción nueva. Construir o probar una candidata no equivale por sí solo
+a una publicación estable; v34 se promovió después de la autorización explícita.
+
+La segunda candidata usa `tools/Dockerfile.bridge-read-horizon-candidate` y
+conserva el código nativo de la primera. Corrige dos casos detectados en la prueba
+real: Slixmpp elimina por defecto el marcador de las respuestas de error, y Slidge
+puede guardar la identidad nativa en `group_msg` mientras MAM conserva sólo el ID
+XMPP y la fecha. Las respuestas de lectura conservan ahora el marcador; además,
+el cliente correlaciona ID del sobre y destinatario durante 120 segundos, con un
+máximo de 256 entradas y limpieza al desconectar. Un cuerpo de mensaje real o
+un destinatario distinto nunca se clasifica como lectura por esa correlación.
+
+El horizonte se resuelve por las identidades y mapas de la misma sala; IDs
+desconocidos o contradictorios siguen pendientes, sin convertirlos en «leer todo».
+La recuperación de snapshot falló en la prueba humana de la primera candidata:
+no se presenta como resuelta. `CAN_READ_STATE ... error_kind=...` informa sólo una
+categoría acotada de fallo, sin mensajes, IDs, claves ni errores completos.
 
 ## Ajustes locales del cliente (sin cambiar el puente)
 

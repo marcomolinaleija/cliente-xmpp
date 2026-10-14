@@ -645,42 +645,35 @@ class DisplayedMarkerTests(unittest.TestCase):
 
     def test_bridge_sends_displayed_marker_for_individual_chat(self) -> None:
         calls: list[dict[str, str]] = []
-        requested_plugins: list[str] = []
+        constructed = []
 
-        class ChatMarkers:
-            def send_marker(self, **kwargs: str) -> None:
-                calls.append(kwargs)
+        class Marker(dict):
+            def send(self):
+                calls.append(self)
 
         class Client:
-            def __getitem__(self, key: str) -> ChatMarkers:
-                requested_plugins.append(key)
-                return ChatMarkers()
+            def make_message(self, **kwargs):
+                constructed.append(kwargs)
+                return Marker(displayed={})
 
         BridgeXmppClient.send_displayed_marker(Client(), "contact@example.org", "incoming-id")
 
-        self.assertEqual(requested_plugins, ["xep_0333"])
-        self.assertEqual(
-            calls,
-            [
-                {
-                    "mto": "contact@example.org",
-                    "id": "incoming-id",
-                    "marker": "displayed",
-                    "mtype": "chat",
-                }
-            ],
-        )
+        self.assertEqual(constructed, [{"mto": "contact@example.org", "mtype": "chat"}])
+        self.assertEqual(calls[0]["displayed"]["id"], "incoming-id")
+        self.assertTrue(calls[0]["id"].startswith("can-read-"))
 
     def test_bridge_sends_groupchat_displayed_marker_for_group(self) -> None:
         calls: list[dict[str, str]] = []
+        constructed = []
 
-        class ChatMarkers:
-            def send_marker(self, **kwargs: str) -> None:
-                calls.append(kwargs)
+        class Marker(dict):
+            def send(self):
+                calls.append(self)
 
         class Client:
-            def __getitem__(self, _key: str) -> ChatMarkers:
-                return ChatMarkers()
+            def make_message(self, **kwargs):
+                constructed.append(kwargs)
+                return Marker(displayed={})
 
         BridgeXmppClient.send_displayed_marker(
             Client(),
@@ -689,8 +682,8 @@ class DisplayedMarkerTests(unittest.TestCase):
             is_group=True,
         )
 
-        self.assertEqual(calls[0]["mtype"], "groupchat")
-        self.assertEqual(calls[0]["id"], "room-stanza-id")
+        self.assertEqual(constructed, [{"mto": "#group@example.org", "mtype": "groupchat"}])
+        self.assertEqual(calls[0]["displayed"]["id"], "room-stanza-id")
 
     def test_service_schedules_displayed_marker(self) -> None:
         calls: list[tuple[str, str, bool]] = []

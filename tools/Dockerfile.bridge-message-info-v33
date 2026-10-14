@@ -2,7 +2,7 @@
 ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v32@sha256:c400f25c58c14ca9ce129b7b8f9091954da76154df445242319e59ddff4b1a2f
 FROM ${BASE_IMAGE} AS patched
 USER root
-COPY patch_slidge_message_info_v33.py bridge_message_info.py patch_slidge_read_state_v33.py bridge_read_state.py patch_slidge_call_duration_v33.py patch_slidge_call_recovery_v33.py bridge_call_recovery_v33.go /tmp/
+COPY patch_slidge_message_info_v33.py bridge_message_info.py patch_slidge_read_state_v33.py bridge_read_state.py bridge_read_state_recovery.go patch_slidge_call_duration_v33.py patch_slidge_call_recovery_v33.py bridge_call_recovery_v33.go /tmp/
 RUN python -B /tmp/patch_slidge_message_info_v33.py /venv/lib/python3.13/site-packages --no-backup && \
     python -B /tmp/patch_slidge_message_info_v33.py /venv/lib/python3.13/site-packages --no-backup && \
     python -B /tmp/patch_slidge_read_state_v33.py /venv/lib/python3.13/site-packages && \
@@ -22,7 +22,7 @@ COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
 COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
 RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
 COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
-COPY bridge_message_info_test.go bridge_read_state_test.go bridge_call_records_v27_test.go bridge_call_duration_v33_test.go bridge_call_recovery_v33_test.go /src/slidge_whatsapp/
+COPY bridge_message_info_test.go bridge_read_state_test.go bridge_read_state_recovery_test.go bridge_call_records_v27_test.go bridge_call_duration_v33_test.go bridge_call_recovery_v33_test.go /src/slidge_whatsapp/
 COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
 WORKDIR /src/slidge_whatsapp
 RUN gofmt -w event.go session.go can_call_recovery.go generated/whatsapp.go *_test.go && \

@@ -1,3 +1,17 @@
+WhatsApp CAN 1.4.21
+
+Esta actualización corrige los avisos de error que aparecían al abrir grupos aunque el envío y la recepción de mensajes funcionaran.
+
+Lectura de grupos y avisos
+- Los errores al sincronizar la lectura de un chat ya no se presentan como «No se pudo enviar el mensaje» ni marcan mensajes propios como fallidos.
+- Si la lectura de WhatsApp queda pendiente, CAN muestra el detalle en la barra de estado y lo anuncia como máximo una vez por minuto, sin abrir un diálogo modal ni interrumpir la conversación.
+- Se conserva la lectura automática al abrir un chat y al recibir mensajes nuevos mientras está visible. Los errores reales de envío y los avisos de vinculación mantienen su funcionamiento.
+
+Corrección del puente
+- El puente v34 resuelve la lectura grupal usando los IDs XMPP y WhatsApp del mismo chat y la fecha del mensaje original. No marca todo el historial como leído cuando falta una identidad válida.
+- Ante un desajuste del estado de lectura, intenta una recuperación acotada sin desactivar las comprobaciones de integridad ni desvincular WhatsApp. Si no puede completarla, conserva la lectura pendiente y evita reintentos continuos.
+- Esta parte requiere el puente v34 en el servidor correspondiente. Actualizar CAN no actualiza por sí solo un servidor remoto.
+
 WhatsApp CAN 1.4.20
 
 Esta actualización añade un selector de emojis, convierte emoticonos al escribir o enviarlos y mejora la lectura de texto largo. Incluye también las mejoras recientes de mensajes individuales, menciones y selección de stickers.

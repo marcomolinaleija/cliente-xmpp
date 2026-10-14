@@ -167,6 +167,7 @@ from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
     ChatDisplayedSynced,
+    ChatReadFailed,
     ChatsDiscovered,
     ChatStateUpdated,
     ContactAvatarReceived,
@@ -6796,6 +6797,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 else:
                     self.connection_header.set_status("Desconectado (Reconectando...)")
                     self.status_bar.SetStatusText("Desconectado")
+            case ChatReadFailed(chat_jid=chat_jid, detail=detail):
+                # Keep local read state, but allow the remote marker to be retried
+                # on the next read. Never remove an optimistic outgoing message.
+                self.displayed_marker_ids_by_chat.pop(chat_jid, None)
+                self.status_bar.SetStatusText(detail)
+                now = time.monotonic()
+                if now - getattr(self, "_last_read_error_announcement", -60) >= 60:
+                    self._last_read_error_announcement = now
+                    self.speaker.speak("La sincronización de lectura con WhatsApp está pendiente.")
             case XmppError(message=message):
                 load = getattr(self, "manual_history_load", None)
                 if (

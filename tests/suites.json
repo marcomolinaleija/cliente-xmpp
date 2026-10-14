@@ -1,6 +1,15 @@
 {
   "version": 1,
   "modules": {
+    "test_read_marker_errors": {
+      "area": "connection",
+      "layer": "fast",
+      "overrides": {
+        "NativeReadMarkerErrorTests": {
+          "layer": "integration"
+        }
+      }
+    },
     "test_atajos_api": {
       "area": "automation",
       "layer": "integration"

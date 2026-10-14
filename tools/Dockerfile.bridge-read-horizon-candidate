@@ -1,0 +1,21 @@
+# Second private trial: native code/dependencies remain exactly as in the first candidate.
+ARG BASE_IMAGE=cliente-xmpp-bridge:read-recovery-candidate-20261014t155835z
+FROM ${BASE_IMAGE}
+USER root
+COPY patch_slidge_read_state_v33.py patch_slidge_message_info_v33.py bridge_read_state.py bridge_read_state_recovery.go /tmp/read-horizon/
+RUN python -B /tmp/read-horizon/patch_slidge_read_state_v33.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/read-horizon/patch_slidge_read_state_v33.py /venv/lib/python3.13/site-packages
+COPY smoke_bridge_read_state_runtime.py /opt/can-tests/
+RUN chmod 0644 /opt/can-tests/smoke_bridge_read_state_runtime.py && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_read_state_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_message_info_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_call_duration_v33_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_avatar_safety_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_audio_modes_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_native_sticker_pack_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

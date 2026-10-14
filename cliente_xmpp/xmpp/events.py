@@ -25,6 +25,12 @@ class XmppError:
 
 
 @dataclass(slots=True)
+class ChatReadFailed:
+    chat_jid: str
+    detail: str
+
+
+@dataclass(slots=True)
 class WhatsAppBridgeStatus:
     status: str
     component_jid: str = ""
@@ -204,6 +210,7 @@ XmppEvent = (
     XmppConnected
     | XmppDisconnected
     | XmppError
+    | ChatReadFailed
     | WhatsAppBridgeStatus
     | WhatsAppPairingCodeReceived
     | WhatsAppLinkSessionStarted

@@ -6,6 +6,7 @@ import binascii
 import mimetypes
 import re
 import threading
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Iterable
@@ -51,6 +52,7 @@ from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
     ChatActivityLoadFinished,
     ChatDisplayedSynced,
+    ChatReadFailed,
     ChatsDiscovered,
     ChatStateUpdated,
     ContactAvatarReceived,
@@ -233,6 +235,7 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_remote_sync_started = False
         self._session_generation = 0
         self._pending_poll_votes: dict[str, _PendingPollVote] = {}
+        self._pending_read_markers: dict[str, tuple[str, float]] = {}
         self._pending_transient_message_retries: dict[
             str, _PendingTransientMessageRetry
         ] = {}
@@ -273,6 +276,7 @@ class BridgeXmppClient(ClientXMPP):
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
         self._clear_transient_message_retries()
+        getattr(self, "_pending_read_markers", {}).clear()
         self._joined_group_chat_jids.clear()
         getattr(self, "_own_group_occupants", {}).clear()
         getattr(self, "_group_roster_requests", set()).clear()
@@ -336,6 +340,7 @@ class BridgeXmppClient(ClientXMPP):
         getattr(self, "_own_group_occupants", {}).clear()
         getattr(self, "_pending_poll_votes", {}).clear()
         self._clear_transient_message_retries()
+        getattr(self, "_pending_read_markers", {}).clear()
         self._stop_group_membership_watchdog()
         getattr(self, "_group_roster_requests", set()).clear()
         getattr(self, "_group_participant_cache_enabled", set()).clear()
@@ -666,6 +671,18 @@ class BridgeXmppClient(ClientXMPP):
             else:
                 unauthenticated_whatsapp_session = False
 
+        xml = getattr(msg, "xml", None)
+        BridgeXmppClient._prune_read_markers(self)
+        pending_marker = getattr(self, "_pending_read_markers", {}).get(message_id)
+        tracked_marker = bool(pending_marker and pending_marker[0] == from_jid.split("/", 1)[0])
+        if BridgeXmppClient._is_read_marker_error(xml, tracked=tracked_marker):
+            if not unauthenticated_whatsapp_session:
+                self._emit(ChatReadFailed(
+                    chat_jid=from_jid,
+                    detail=f"No se pudo sincronizar la lectura con WhatsApp: {reason}",
+                ))
+            return
+
         if self._retry_legacy_session_message(message_id, error_text):
             return
         if LEGACY_SESSION_NOT_READY_TEXT in error_text.casefold():
@@ -694,6 +711,29 @@ class BridgeXmppClient(ClientXMPP):
             )
         if not unauthenticated_whatsapp_session:
             self._emit(XmppError(detail))
+
+    @staticmethod
+    def _is_read_marker_error(xml: ET.Element | None, *, tracked: bool = False) -> bool:
+        if xml is None or (not tracked and xml.find(f"{{{CHAT_MARKERS_NS}}}displayed") is None):
+            return False
+        # A marker is a <message> stanza too, but is not a user message.
+        # Restrict this to standalone markers; mixed payloads keep send errors.
+        allowed = {
+            f"{{{CHAT_MARKERS_NS}}}displayed",
+            "{urn:xmpp:hints}store", "{urn:xmpp:hints}no-store",
+            f"{{{STANZA_ID_NS}}}origin-id", f"{{{STANZA_ID_NS}}}stanza-id",
+            "{jabber:client}error", "{jabber:component:accept}error", "error",
+        }
+        return all(child.tag in allowed for child in xml)
+
+    def _prune_read_markers(self) -> None:
+        pending = getattr(self, "_pending_read_markers", {})
+        now = time.monotonic()
+        for marker_id, (_chat, expires) in tuple(pending.items()):
+            if expires <= now:
+                pending.pop(marker_id, None)
+        while len(pending) > 256:
+            pending.pop(next(iter(pending)))
 
     def track_transient_message_retry(
         self,
@@ -867,12 +907,21 @@ class BridgeXmppClient(ClientXMPP):
         if not to_jid or not message_id:
             return
 
-        self["xep_0333"].send_marker(
-            mto=to_jid,
-            id=message_id,
-            marker="displayed",
-            mtype="groupchat" if is_group else "chat",
-        )
+        envelope_id = "can-read-" + uuid.uuid4().hex
+        pending = getattr(self, "_pending_read_markers", None)
+        if pending is None:
+            pending = self._pending_read_markers = {}
+        BridgeXmppClient._prune_read_markers(self)
+        pending[envelope_id] = (to_jid.split("/", 1)[0], time.monotonic() + 120)
+        try:
+            marker = self.make_message(mto=to_jid, mtype="groupchat" if is_group else "chat")
+            marker["id"] = envelope_id
+            marker["displayed"]["id"] = message_id
+            marker.send()
+        except Exception:
+            pending.pop(envelope_id, None)
+            raise
+        BridgeXmppClient._prune_read_markers(self)
 
     def _emit_delivery_update_from_marker(self, msg: object, delivery_state: str) -> None:
         message_id = self._delivery_marker_id(msg)

@@ -1,9 +1,13 @@
 """Send release workflow results to private chats using GitHub Actions secrets."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -84,6 +88,41 @@ def send_message(token: str, destination: str, text: str) -> None:
         raise RuntimeError("Telegram no confirmó el envío")
 
 
+def encrypted_chat_identity(token: str, destination: str, position: int, public_key: str) -> str:
+    """Return only encrypted names; no chat IDs, tokens or plaintext reach public logs."""
+    if not public_key.startswith("-----BEGIN PUBLIC KEY-----"):
+        raise ValueError("La consulta de identidad requiere una clave pública PEM")
+    request = Request(
+        f"https://api.telegram.org/bot{token}/getChat",
+        data=json.dumps({"chat_id": destination}).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            result = json.loads(response.read(65536))
+    except HTTPError as exc:
+        raise delivery_error(exc) from None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("Telegram no confirmó la consulta del chat")
+    chat = result.get("result", {})
+    name = " ".join(str(chat.get(key) or "") for key in ("first_name", "last_name")).strip()
+    name = name or str(chat.get("title") or "Sin nombre disponible")
+    data = json.dumps({"position": position, "name": name}, ensure_ascii=False).encode("utf-8")
+    blocks = []
+    with tempfile.TemporaryDirectory(prefix="telegram-public-key-") as folder:
+        key_path = Path(folder) / "public.pem"
+        key_path.write_text(public_key, encoding="ascii")
+        for offset in range(0, len(data), 128):
+            process = subprocess.run([
+                "openssl", "pkeyutl", "-encrypt", "-pubin", "-inkey", str(key_path),
+                "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha256",
+            ], input=data[offset:offset + 128], capture_output=True, timeout=15)
+            if process.returncode != 0:
+                raise RuntimeError("No se pudo cifrar el nombre del chat")
+            blocks.append(base64.b64encode(process.stdout).decode("ascii"))
+    return json.dumps(blocks)
+
+
 def notify(environment: dict[str, str]) -> int:
     token = environment.get("TELEGRAM_BOT_TOKEN", "").strip()
     destinations = environment.get("TELEGRAM_CHAT_IDS", "").strip()
@@ -101,6 +140,14 @@ def notify(environment: dict[str, str]) -> int:
             raise ValueError("El destinatario de prueba debe ser all, 1 o 2 y estar configurado")
     else:
         only = "all"
+    public_key = environment.get("TELEGRAM_IDENTITY_PUBLIC_KEY", "").strip()
+    if public_key:
+        if environment.get("TELEGRAM_NOTIFICATION_TEST") != "1" or only == "all":
+            raise ValueError("Selecciona un único destinatario para consultar su identidad")
+        position = int(only)
+        result = encrypted_chat_identity(token, recipients[position - 1], position, public_key)
+        print(f"TELEGRAM_CHAT_IDENTITY_ENCRYPTED={result}")
+        return 0
     text = notification_text(environment)
     failures = []
     attempted = 0

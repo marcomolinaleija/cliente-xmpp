@@ -81,6 +81,40 @@ class TelegramNotificationTests(unittest.TestCase):
                 self.assertIn(expected, text)
                 self.assertNotIn("fixture-", text)
 
+    def test_identity_lookup_emits_only_encrypted_names_and_sends_no_message(self):
+        environment = {**self.environment(), "TELEGRAM_NOTIFICATION_TEST": "1",
+                       "TELEGRAM_TEST_RECIPIENT": "2", "TELEGRAM_IDENTITY_PUBLIC_KEY": "key"}
+        output = io.StringIO()
+        with (
+            patch.object(telegram, "encrypted_chat_identity", return_value='["ciphertext"]')
+            as identity,
+            patch.object(telegram, "send_message") as send,
+            redirect_stdout(output),
+        ):
+            self.assertEqual(telegram.notify(environment), 0)
+        identity.assert_called_once_with("123:fixture-token", "202", 2, "key")
+        send.assert_not_called()
+        self.assertIn('TELEGRAM_CHAT_IDENTITY_ENCRYPTED=["ciphertext"]', output.getvalue())
+        self.assertNotIn("202", output.getvalue())
+
+    def test_private_name_and_ids_are_never_printed_or_passed_as_command_arguments(self):
+        response = MagicMock()
+        response.read.return_value = json.dumps({"ok": True, "result": {
+            "id": 202, "first_name": "Persona", "last_name": "ficticia",
+        }}).encode()
+        process = MagicMock(returncode=0, stdout=b"fixture-ciphertext")
+        key = "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----"
+        with patch.object(telegram, "urlopen") as open_request, \
+                patch.object(telegram.subprocess, "run", return_value=process) as encrypt:
+            open_request.return_value.__enter__.return_value = response
+            result = telegram.encrypted_chat_identity("123:fixture-token", "202", 2, key)
+        self.assertNotIn("Persona", result)
+        self.assertNotIn("202", result)
+        self.assertTrue(open_request.call_args.args[0].full_url.endswith("/getChat"))
+        self.assertNotIn("Persona", str(encrypt.call_args.args[0]))
+        plaintext = json.loads(encrypt.call_args.kwargs["input"])
+        self.assertEqual(plaintext, {"position": 2, "name": "Persona ficticia"})
+
     def test_bad_configuration_fails_without_any_request_and_missing_secrets_skip(self):
         with patch.object(telegram, "send_message") as send, redirect_stdout(io.StringIO()):
             self.assertEqual(telegram.notify({}), 0)

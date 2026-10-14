@@ -8,6 +8,10 @@ on:
         type: choice
         options: [all, '1', '2']
         default: all
+      identity_public_key:
+        description: Clave pública PEM opcional para consultar el nombre cifrado sin enviar mensajes
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -31,5 +35,6 @@ jobs:
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
           TELEGRAM_NOTIFICATION_TEST: '1'
           TELEGRAM_TEST_RECIPIENT: ${{ inputs.recipient }}
+          TELEGRAM_IDENTITY_PUBLIC_KEY: ${{ inputs.identity_public_key }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python tools/ci/notify_telegram.py

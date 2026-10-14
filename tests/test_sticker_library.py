@@ -81,6 +81,76 @@ class StickerLibraryTests(unittest.TestCase):
             self.library.edit(entry.id, description="Late AI", expected_revision=entry.revision)
         self.assertEqual(self.library.get(entry.id).description, "Manual")
 
+    def test_batch_memberships_move_only_source_and_keep_files_and_other_packs(self) -> None:
+        entries = [self.library.add(self.image(f"{color}.png", color))
+                   for color in ("red", "blue", "green")]
+        source, target, other = [self.library.create_pack(name)
+                                 for name in ("Source", "Target", "Other")]
+        ids = [entry.id for entry in entries[:2]]
+        for entry in entries:
+            self.library.assign_pack(entry.id, source)
+            self.library.assign_pack(entry.id, other)
+        self.library.assign_many_pack([*ids, ids[0]], target, source_pack_id=source)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids],
+                         [(target, other)] * 2)
+        self.assertEqual(self.library.get(entries[2].id).pack_ids, (source, other))
+        self.library.assign_many_pack(ids, target, source_pack_id=target)
+        self.library.assign_many_pack(ids, target, remove=True)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids], [(other,)] * 2)
+        self.library.assign_many_pack(ids, source)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids],
+                         [(source, other)] * 2)
+        self.assertTrue(all(Path(entry.path).exists() for entry in entries))
+
+    def test_batch_membership_invalid_target_stale_sticker_and_midway_failure_are_atomic(self):
+        entries = [self.library.add(self.image(f"{color}.png", color))
+                   for color in ("red", "blue")]
+        source, target = [self.library.create_pack(name) for name in ("Source", "Target")]
+        ids = [entry.id for entry in entries]
+        self.library.assign_many_pack(ids, source)
+        for selected, destination, origin in ((ids, -1, source),
+                                               ([ids[0], "missing"], target, source),
+                                               (ids, target, -1)):
+            with self.subTest(destination=destination, origin=origin, stale="missing" in selected):
+                with self.assertRaises(ValueError):
+                    self.library.assign_many_pack(selected, destination, source_pack_id=origin)
+                self.assertEqual([self.library.get(value).pack_ids for value in ids],
+                                 [(source,)] * 2)
+        with closing(sqlite3.connect(self.library.path)) as conn, conn:
+            conn.execute(
+                "CREATE TRIGGER fail_membership BEFORE INSERT ON membership "
+                "WHEN NEW.sticker_id=? BEGIN SELECT RAISE(ABORT, 'fixture failure'); END"
+                .replace("?", "'" + ids[1] + "'")
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.library.assign_many_pack(ids, target, source_pack_id=source)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids], [(source,)] * 2)
+
+    def test_batch_delete_partial_failure_keeps_failed_record_for_retry_and_originals(self):
+        originals = [self.image(f"{color}.png", color) for color in ("red", "blue", "green")]
+        entries = [self.library.add(path) for path in originals]
+        pack = self.library.create_pack("Fixture")
+        ids = [entry.id for entry in entries]
+        self.library.assign_many_pack(ids, pack)
+        unlink = Path.unlink
+
+        def fail_one(path, *args, **kwargs):
+            if path == Path(entries[1].path):
+                raise PermissionError("fixture file in use")
+            return unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_one), self.assertRaisesRegex(
+            ValueError, "Eliminados 2 de 3"
+        ):
+            self.library.delete_many([*ids, ids[0]])
+        self.assertEqual([entry.id for entry in self.library.list_stickers()], [ids[1]])
+        self.assertEqual(self.library.get(ids[1]).pack_ids, (pack,))
+        self.assertTrue(Path(entries[1].path).exists())
+        self.assertTrue(all(path.exists() for path in originals))
+        self.assertEqual(self.library.delete_many([ids[1]]), 1)
+        self.assertEqual(self.library.list_stickers(), [])
+        self.assertEqual(self.library.packs()[0].count, 0)
+
     def test_failed_batch_import_rolls_back_records_and_new_files(self) -> None:
         first = self.image()
         invalid = self.root / "invalid.png"

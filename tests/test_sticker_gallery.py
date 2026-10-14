@@ -63,6 +63,238 @@ class StickerGalleryTests(unittest.TestCase):
             always=SimpleNamespace(GetValue=lambda: False),
         )
 
+    def batch_entries(self):
+        entries = []
+        for index, color in enumerate(("red", "blue", "green", "yellow")):
+            path = self.root / f"batch-{index}.png"
+            Image.new("RGBA", (32, 32), color).save(path)
+            entries.append(self.library.add(path, name=f"Fixture {index}"))
+        self.dialog._reload()
+        self.wait(lambda: len(self.dialog._entries) == 4 and not self.dialog._busy)
+        return entries
+
+    def key(self, code, *, control=False, shift=False, hook=False):
+        event = wx.KeyEvent(wx.EVT_CHAR_HOOK.typeId if hook else wx.EVT_KEY_DOWN.typeId)
+        event.SetKeyCode(code)
+        event.SetControlDown(control)
+        event.SetShiftDown(shift)
+        owner = self.dialog if hook else self.dialog.items
+        owner.GetEventHandler().ProcessEvent(event)
+
+    def test_native_shift_range_shrinks_and_ctrl_space_marks_without_losing_other_rows(self):
+        entries = self.batch_entries()
+        self.dialog.items.Select(0, False)
+        self.dialog.items.Select(1)
+        self.dialog.items.Focus(1)
+        for key, indices in ((wx.WXK_DOWN, (1, 2)), (wx.WXK_DOWN, (1, 2, 3)),
+                             (wx.WXK_UP, (1, 2)), (wx.WXK_UP, (1,))):
+            with self.subTest(key=key, indices=indices):
+                self.key(key, shift=True)
+                self.assertEqual(self.dialog._selected_entries(), [entries[i] for i in indices])
+                self.assertEqual(self.dialog.items.GetSelectedItemCount(), len(indices))
+        self.key(wx.WXK_DOWN)
+        self.assertEqual(self.dialog.items.GetFocusedItem(), 2)
+        self.assertEqual(self.dialog._selected_entries(), [entries[1]])
+        self.key(wx.WXK_SPACE, control=True)
+        self.assertEqual(self.dialog._selected_entries(), entries[1:3])
+        self.assertTrue(self.dialog.items.GetItemText(2).startswith("Seleccionado."))
+        self.assertTrue(self.dialog.items.GetItemText(0).startswith("No seleccionado."))
+        self.key(wx.WXK_SPACE)
+        self.assertEqual(self.dialog._selected_entries(), [entries[1]])
+        self.assertEqual(self.dialog.details.GetValue(), entries[2].description)
+        self.key(wx.WXK_ESCAPE)
+        self.assertFalse(self.dialog._selection_mode)
+        self.assertEqual(self.dialog._selected(), entries[2])
+        self.assertTrue(self.dialog._active)
+        self.assertFalse(self.dialog.items.GetItemText(0).startswith("No seleccionado."))
+
+    def test_char_hook_consumes_marking_and_enter_never_sends_a_batch(self):
+        entries = self.batch_entries()
+        with patch.object(self.dialog.items, "HasFocus", return_value=True):
+            self.key(wx.WXK_SPACE, control=True, hook=True)
+            self.key(wx.WXK_DOWN, hook=True)
+            self.key(wx.WXK_SPACE, control=True, hook=True)
+        self.assertEqual(self.dialog._selected_entries(), entries[:2])
+        self.assertFalse(self.dialog.send_button.IsEnabled())
+        with patch.object(self.dialog, "EndModal") as end, patch.object(
+            self.dialog, "_context_menu"
+        ) as menu:
+            self.key(wx.WXK_RETURN)
+            self.dialog._send()
+        menu.assert_called_once_with()
+        end.assert_not_called()
+        self.assertIsNone(self.dialog.selected_sticker)
+        self.key(wx.WXK_UP)
+        self.key(wx.WXK_SPACE, control=True)
+        self.key(wx.WXK_DOWN)
+        self.key(wx.WXK_SPACE, control=True)
+        self.assertEqual(self.dialog._selected_entries(), [])
+        self.assertTrue(self.dialog._selection_mode)
+        with patch.object(self.dialog, "PopupMenu") as popup:
+            self.dialog._context_menu()
+        popup.assert_not_called()
+
+    def test_selection_survives_reload_but_filters_and_pages_cancel_hidden_marks(self):
+        entries = self.batch_entries()
+        self.dialog._set_selection({entries[0].id, entries[2].id}, 2)
+        self.dialog._reload()
+        self.wait(lambda: not self.dialog._busy)
+        self.assertEqual(self.dialog._selected_entries(), [entries[0], entries[2]])
+        self.assertEqual(self.dialog.items.GetFocusedItem(), 2)
+        self.dialog.search.SetValue("Fixture 3")
+        self.dialog._search()
+        self.wait(lambda: not self.dialog._busy)
+        self.assertFalse(self.dialog._selection_mode)
+        self.assertEqual(self.dialog._selected(), entries[3])
+        self.dialog._set_selection({entries[3].id}, 0)
+        self.dialog._offset = 100
+        self.dialog._previous()
+        self.wait(lambda: not self.dialog._busy)
+        self.assertFalse(self.dialog._selection_mode)
+        self.assertEqual(self.dialog._marked_ids, set())
+
+    def test_native_mouse_multiselection_uses_counted_menu_and_single_actions_are_absent(self):
+        entries = self.batch_entries()
+        self.dialog.items.Select(2)
+        self.assertEqual(self.dialog._selected_entries(), [entries[0], entries[2]])
+        actions = {}
+        with patch.object(self.dialog, "PopupMenu", side_effect=lambda menu: actions.update({
+            item.GetItemLabelText(): item.IsEnabled() for item in menu.GetMenuItems()
+        })):
+            self.dialog._context_menu()
+        self.assertTrue(actions["Eliminar de la biblioteca (2)..."])
+        self.assertFalse(actions["Mover a paquete (2)..."])
+        self.assertFalse(actions["Quitar de este paquete (2)"])
+        self.assertNotIn("Enviar sticker", actions)
+        self.assertNotIn("Describir con RayoAI...", actions)
+        self.dialog._busy = True
+        try:
+            with patch.object(self.dialog, "PopupMenu") as popup:
+                self.dialog._context_menu()
+            popup.assert_not_called()
+        finally:
+            self.dialog._busy = False
+
+    def test_selection_navigation_bounds_select_page_and_escape_from_search(self):
+        entries = self.batch_entries()
+        with patch.object(self.dialog.speaker, "speak") as speak:
+            self.key(wx.WXK_SPACE, control=True)
+            speak.assert_called_once_with("Seleccionado. Fixture 0. 1 stickers seleccionados")
+        for code, index in ((wx.WXK_UP, 0), (wx.WXK_END, 3), (wx.WXK_DOWN, 3),
+                            (wx.WXK_HOME, 0), (wx.WXK_RIGHT, 1), (wx.WXK_LEFT, 0),
+                            (wx.WXK_PAGEDOWN, 3), (wx.WXK_PAGEUP, 0)):
+            with self.subTest(code=code, index=index):
+                self.key(code)
+                self.assertEqual(self.dialog.items.GetFocusedItem(), index)
+                self.assertEqual(self.dialog._selected_entries(), [entries[0]])
+        self.key(ord("A"), control=True)
+        self.assertEqual(self.dialog._selected_entries(), entries)
+        with patch.object(self.dialog.items, "HasFocus", return_value=False):
+            self.key(wx.WXK_ESCAPE, hook=True)
+        self.assertFalse(self.dialog._selection_mode)
+        self.assertTrue(self.dialog._active)
+        self.dialog._loaded(([], self.dialog._packs, {}, None, False))
+        for code, control, shift in ((wx.WXK_SPACE, True, False),
+                                     (wx.WXK_DOWN, False, True), (ord("A"), True, False)):
+            with self.subTest(code=code):
+                self.key(code, control=control, shift=shift)
+        self.assertEqual(self.dialog._marked_ids, set())
+
+    def test_queued_package_operation_uses_snapshot_not_later_marks(self):
+        entries = self.batch_entries()
+        target = self.library.create_pack("Fixture pack")
+        self.dialog._reload()
+        self.wait(lambda: not self.dialog._busy)
+        ids = {entries[0].id, entries[2].id}
+        self.dialog._set_selection(ids, 0)
+        chooser = SimpleNamespace(ShowModal=lambda: wx.ID_OK, GetSelection=lambda: 0,
+                                  Destroy=Mock())
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.SingleChoiceDialog",
+                   return_value=chooser), patch.object(self.dialog, "_run") as run:
+            self.dialog._assign()
+        self.dialog._set_selection({entries[1].id}, 1)
+        run.call_args.args[0]()
+        self.assertEqual({entry.id for entry in self.library.list_stickers(pack_id=target)}, ids)
+
+    def test_batch_add_move_unassign_preserves_other_memberships_and_selection_snapshot(self):
+        entries = self.batch_entries()
+        source, target, other = [self.library.create_pack(name)
+                                 for name in ("A Source", "B Target", "C Other")]
+        ids = [entries[i].id for i in (0, 2)]
+        self.library.assign_many_pack(ids, source)
+        self.library.assign_many_pack(ids, other)
+        self.dialog._reload()
+        self.wait(lambda: not self.dialog._busy)
+        self.dialog._set_selection(set(ids), 2)
+        chooser = SimpleNamespace(ShowModal=lambda: wx.ID_OK, GetSelection=lambda: 1,
+                                  Destroy=Mock())
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.SingleChoiceDialog",
+                   return_value=chooser):
+            self.dialog._assign()
+            self.wait(lambda: not self.dialog._busy)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids],
+                         [(source, target, other)] * 2)
+        self.dialog.groups.SetSelection(2)
+        self.dialog._search()
+        self.wait(lambda: not self.dialog._busy)
+        self.dialog._set_selection(set(ids), 0)
+        chooser.GetSelection = lambda: 0
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.SingleChoiceDialog",
+                   return_value=chooser):
+            self.dialog._move()
+            self.wait(lambda: not self.dialog._busy)
+        self.assertEqual(self.dialog._entries, [])
+        self.assertEqual([self.library.get(value).pack_ids for value in ids],
+                         [(target, other)] * 2)
+        self.dialog.groups.SetSelection(3)
+        self.dialog._search()
+        self.wait(lambda: not self.dialog._busy)
+        self.dialog._set_selection(set(ids), 0)
+        self.dialog._unassign()
+        self.wait(lambda: not self.dialog._busy)
+        self.assertEqual([self.library.get(value).pack_ids for value in ids], [(other,)] * 2)
+        self.assertEqual(self.library.get(entries[1].id).pack_ids, ())
+        self.assertTrue(all(Path(entry.path).exists() for entry in entries))
+
+    def test_batch_dialog_cancellation_and_delete_partial_failure_refresh_for_retry(self):
+        entries = self.batch_entries()
+        self.library.create_pack("Fixture pack")
+        self.dialog._reload()
+        self.wait(lambda: not self.dialog._busy)
+        ids = {entries[0].id, entries[2].id}
+        self.dialog._set_selection(ids, 0)
+        chooser = SimpleNamespace(ShowModal=lambda: wx.ID_CANCEL, Destroy=Mock())
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.SingleChoiceDialog",
+                   return_value=chooser), patch.object(self.dialog, "_run") as run:
+            self.dialog._assign()
+        run.assert_not_called()
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.MessageBox",
+                   return_value=wx.NO), patch.object(self.dialog, "_run") as run:
+            self.dialog._delete()
+        run.assert_not_called()
+        original_delete = self.library.delete
+
+        def fail_one(value):
+            if value == entries[2].id:
+                raise PermissionError("fixture in use")
+            original_delete(value)
+
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.MessageBox",
+                   return_value=wx.YES) as warning, patch.object(
+                       self.library, "delete", side_effect=fail_one
+                   ):
+            self.dialog._delete()
+            self.wait(lambda: not self.dialog._busy)
+        self.assertEqual(warning.call_count, 2)
+        self.assertIn("Eliminados 1 de 2", warning.call_args.args[0])
+        self.assertEqual(self.dialog._marked_ids, {entries[2].id})
+        self.assertEqual(self.dialog._selected_entries(), [entries[2]])
+        self.assertEqual(len(self.dialog._entries), 3)
+        with patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.MessageBox", return_value=wx.YES):
+            self.dialog._delete()
+            self.wait(lambda: not self.dialog._busy)
+        self.assertEqual(len(self.dialog._entries), 2)
+
     def test_manual_creation_gallery_preview_and_context_actions(self) -> None:
         with (
             patch(

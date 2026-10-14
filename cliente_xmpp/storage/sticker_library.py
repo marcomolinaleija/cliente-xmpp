@@ -183,6 +183,41 @@ class StickerLibrary:
             else:
                 conn.execute("INSERT OR IGNORE INTO membership VALUES(?,?)", (pack_id, sticker_id))
 
+    def assign_many_pack(
+        self, sticker_ids: list[str], pack_id: int, *,
+        remove: bool = False, source_pack_id: int | None = None,
+    ) -> None:
+        """Change memberships atomically; moving removes only the source membership."""
+        ids = list(dict.fromkeys(sticker_ids))
+        if not ids:
+            return
+        with self._connect() as conn:
+            for value in (pack_id, source_pack_id):
+                if value is not None and conn.execute(
+                    "SELECT 1 FROM packs WHERE id=?", (value,)
+                ).fetchone() is None:
+                    raise ValueError("El paquete ya no está en la biblioteca.")
+            for sticker_id in ids:
+                if conn.execute(
+                    "SELECT 1 FROM stickers WHERE id=?", (sticker_id,)
+                ).fetchone() is None:
+                    raise ValueError("Un sticker ya no está en la biblioteca; recarga la lista.")
+            for sticker_id in ids:
+                if remove:
+                    conn.execute(
+                        "DELETE FROM membership WHERE pack_id=? AND sticker_id=?",
+                        (pack_id, sticker_id),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO membership VALUES(?,?)", (pack_id, sticker_id)
+                    )
+                    if source_pack_id is not None and source_pack_id != pack_id:
+                        conn.execute(
+                            "DELETE FROM membership WHERE pack_id=? AND sticker_id=?",
+                            (source_pack_id, sticker_id),
+                        )
+
     def add(self, source: Path, *, name: str = "", description: str = "") -> LibrarySticker:
         return self.add_many([(source, name or source.stem, description)])[0]
 
@@ -295,3 +330,23 @@ class StickerLibrary:
             # A failure removing a file must leave metadata available for retry.
             path.unlink(missing_ok=True)
             conn.execute("DELETE FROM stickers WHERE id=?", (sticker_id,))
+
+    def delete_many(self, sticker_ids: list[str]) -> int:
+        """Keep successful removals; failed file removals retain metadata for retry."""
+        ids = list(dict.fromkeys(sticker_ids))
+        removed, failures, reason = 0, 0, ""
+        for sticker_id in ids:
+            try:
+                self.delete(sticker_id)
+                removed += 1
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                failures += 1
+                if not reason:
+                    reason = str(exc)
+        if failures:
+            raise ValueError(
+                f"Eliminados {removed} de {len(ids)} stickers. "
+                f"No se pudieron eliminar {failures}; permanecen en la biblioteca. "
+                f"Motivo: {reason}. Revisa los permisos o archivos en uso y vuelve a intentarlo."
+            )
+        return removed

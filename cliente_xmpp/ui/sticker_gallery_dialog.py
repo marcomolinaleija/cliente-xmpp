@@ -125,6 +125,11 @@ class StickerGalleryDialog(wx.Dialog):
         self._previews: dict[str, bytes] = {}
         self._offset = 0
         self._selected_id = ""
+        self._selection_mode = False
+        self._marked_ids: set[str] = set()
+        self._selection_anchor: int | None = None
+        self._range_base: set[str] = set()
+        self._updating_selection = False
         self.selected_sticker: LibrarySticker | None = None
         self.speaker = NvdaSpeaker()
         self._buttons: list[wx.Button] = []
@@ -163,7 +168,7 @@ class StickerGalleryDialog(wx.Dialog):
         filters.Add(self.groups, 1)
         box.Add(filters, 0, wx.EXPAND | wx.ALL, 12)
         content = wx.BoxSizer(wx.HORIZONTAL)
-        self.items = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.items = wx.ListCtrl(self, style=wx.LC_REPORT)
         self.items.SetName("Stickers")
         for index, (label, width) in enumerate((("Sticker", 220), ("Descripción", 270))):
             self.items.InsertColumn(index, label, width=width)
@@ -200,6 +205,8 @@ class StickerGalleryDialog(wx.Dialog):
         self.search.Bind(wx.EVT_TEXT_ENTER, self._search)
         self.search.Bind(wx.EVT_SEARCHCTRL_SEARCH_BTN, self._search)
         self.items.Bind(wx.EVT_LIST_ITEM_SELECTED, self._select)
+        self.items.Bind(wx.EVT_LIST_ITEM_DESELECTED, self._select)
+        self.items.Bind(wx.EVT_LIST_ITEM_FOCUSED, self._focused)
         self.items.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._send)
         self.items.Bind(wx.EVT_CONTEXT_MENU, self._context_menu)
         self.items.Bind(wx.EVT_KEY_DOWN, self._key)
@@ -223,10 +230,11 @@ class StickerGalleryDialog(wx.Dialog):
     def _focus_list(self) -> None:
         if not self._active:
             return
-        selected = self.items.GetFirstSelected()
+        selected = self.items.GetFocusedItem()
         if selected == wx.NOT_FOUND and self.items.GetItemCount():
             selected = 0
-            self.items.Select(selected)
+            if not self._selection_mode:
+                self.items.Select(selected)
         if selected != wx.NOT_FOUND:
             self.items.Focus(selected)
             self.items.EnsureVisible(selected)
@@ -236,7 +244,9 @@ class StickerGalleryDialog(wx.Dialog):
         for button in self._buttons:
             button.Enable(enabled)
         if self.send_button:
-            self.send_button.Enable(enabled and self._selected() is not None)
+            self.send_button.Enable(
+                enabled and not self._selection_mode and self._selected() is not None
+            )
         self.previous_button.Enable(enabled and self._offset > 0)
         self.next_button.Enable(enabled and len(self._entries) == PAGE_SIZE)
         for control in (self.groups, self.search):
@@ -315,6 +325,7 @@ class StickerGalleryDialog(wx.Dialog):
             return
         focused = wx.Window.FindFocus()
         entries, self._packs, self._previews, pack_id, favorite = result
+        marked_ids = self._marked_ids & {entry.id for entry in entries}
         self._entries = entries
         groups = ["Todos", "Favoritos", *[f"{p.name} ({p.count})" for p in self._packs]]
         if self.groups.GetItems() != groups:
@@ -325,6 +336,7 @@ class StickerGalleryDialog(wx.Dialog):
         self.groups.SetSelection(selection)
         images = wx.ImageList(48, 48)
         self.items.Freeze()
+        self._updating_selection = True
         try:
             self.items.DeleteAllItems()
             for index, entry in enumerate(entries):
@@ -342,22 +354,24 @@ class StickerGalleryDialog(wx.Dialog):
                 self.items.SetItem(index, 1, " ".join(entry.description.split())[:100])
             self.items.AssignImageList(images, wx.IMAGE_LIST_SMALL)
             selected = next((i for i, e in enumerate(entries) if e.id == self._selected_id), 0)
+            self._marked_ids = marked_ids
+            self._selection_anchor = None
             if entries:
-                self.items.Select(selected)
+                for index, entry in enumerate(entries):
+                    self.items.Select(
+                        index, entry.id in marked_ids if self._selection_mode else index == selected
+                    )
                 self.items.Focus(selected)
                 self.items.EnsureVisible(selected)
         finally:
+            self._updating_selection = False
             self.items.Thaw()
         paged = self._offset > 0 or len(entries) == PAGE_SIZE
         self.previous_button.Show(paged)
         self.next_button.Show(paged)
         self._enable(True)
         self.Layout()
-        self.status.SetLabel(
-            f"Página {self._offset // PAGE_SIZE + 1} · {len(entries)} stickers"
-            if paged
-            else f"{len(entries)} stickers"
-        )
+        self._refresh_selection_labels()
         self._show_details()
         if self._initial_source is not None:
             source, self._initial_source = self._initial_source, None
@@ -369,18 +383,94 @@ class StickerGalleryDialog(wx.Dialog):
             self.items.SetFocus()
 
     def _selected(self) -> LibrarySticker | None:
+        entries = self._selected_entries()
+        return entries[0] if len(entries) == 1 else None
+
+    def _selected_entries(self) -> list[LibrarySticker]:
+        if self._selection_mode:
+            return [entry for entry in self._entries if entry.id in self._marked_ids]
         index = self.items.GetFirstSelected()
-        return self._entries[index] if 0 <= index < len(self._entries) else None
+        return [self._entries[index]] if 0 <= index < len(self._entries) else []
+
+    def _focused_entry(self) -> LibrarySticker | None:
+        index = self.items.GetFocusedItem()
+        return self._entries[index] if 0 <= index < len(self._entries) else self._selected()
 
     def _select(self, _event: wx.ListEvent) -> None:
+        if self._updating_selection:
+            return
+        ids = set()
+        index = self.items.GetFirstSelected()
+        while index != wx.NOT_FOUND:
+            ids.add(self._entries[index].id)
+            index = self.items.GetNextSelected(index)
+        self._marked_ids = ids
+        self._selection_mode = self._selection_mode or len(ids) > 1
+        self._selection_anchor = None
+        self._refresh_selection_labels()
+        self._show_details()
+
+    def _focused(self, event: wx.ListEvent) -> None:
+        if not self._updating_selection:
+            self._show_details()
+        event.Skip()
+
+    def _refresh_selection_labels(self) -> None:
+        for index, entry in enumerate(self._entries):
+            qualifiers = [word for word, present in (
+                ("favorito", entry.favorite), ("animado", entry.animated)
+            ) if present]
+            label = ", ".join([entry.name[:100], *qualifiers])
+            if self._selection_mode:
+                state = "Seleccionado" if entry.id in self._marked_ids else "No seleccionado"
+                label = f"{state}. {label}"
+            self.items.SetItem(index, 0, label)
+        page = f"Página {self._offset // PAGE_SIZE + 1} · " if (
+            self._offset > 0 or len(self._entries) == PAGE_SIZE
+        ) else ""
+        selection = f" · {len(self._marked_ids)} seleccionados" if self._selection_mode else ""
+        self.status.SetLabel(f"{page}{len(self._entries)} stickers{selection}")
+
+    def _set_selection(self, ids: set[str], focused: int) -> None:
+        self._selection_mode = True
+        self._marked_ids = ids
+        self._updating_selection = True
+        try:
+            for index, entry in enumerate(self._entries):
+                self.items.Select(index, entry.id in ids)
+            self.items.Focus(focused)
+            self.items.EnsureVisible(focused)
+        finally:
+            self._updating_selection = False
+        self._refresh_selection_labels()
+        self._show_details()
+        entry = self._entries[focused]
+        state = "Seleccionado" if entry.id in ids else "No seleccionado"
+        self.speaker.speak(f"{state}. {entry.name[:100]}. {len(ids)} stickers seleccionados")
+
+    def _cancel_selection(self) -> None:
+        focused = self.items.GetFocusedItem()
+        self._selection_mode = False
+        self._marked_ids.clear()
+        self._selection_anchor = None
+        self._range_base.clear()
+        self._updating_selection = True
+        try:
+            for index in range(self.items.GetItemCount()):
+                self.items.Select(index, index == focused)
+        finally:
+            self._updating_selection = False
+        self._refresh_selection_labels()
         self._show_details()
 
     def _show_details(self) -> None:
-        entry = self._selected()
+        entry = self._focused_entry()
         self._selected_id = entry.id if entry else ""
         self.details.ChangeValue(entry.description if entry else "")
         if self.send_button:
-            self.send_button.Enable(not self._busy and entry is not None)
+            self.send_button.Enable(
+                not self._busy and not self._selection_mode and self._selected() is not None
+            )
         if entry and entry.id in self._previews:
             self.preview.SetBitmap(wx.Bitmap(wx.Image(io.BytesIO(self._previews[entry.id]))))
         else:
@@ -388,8 +478,10 @@ class StickerGalleryDialog(wx.Dialog):
 
     def _key(self, event: wx.KeyEvent) -> None:
         code = event.GetKeyCode()
+        if self._selection_key(event):
+            return
         if code == wx.WXK_SPACE:
-            entry = self._selected()
+            entry = self._focused_entry()
             if entry:
                 self.speaker.speak(entry.description or entry.name)
         elif code == wx.WXK_DELETE:
@@ -401,8 +493,64 @@ class StickerGalleryDialog(wx.Dialog):
         else:
             event.Skip()
 
+    def _selection_key(self, event: wx.KeyEvent) -> bool:
+        code = event.GetKeyCode()
+        control = getattr(event, "ControlDown", lambda: False)()
+        shift = getattr(event, "ShiftDown", lambda: False)()
+        if getattr(event, "AltDown", lambda: False)():
+            return False
+        if code == wx.WXK_ESCAPE and self._selection_mode:
+            self._cancel_selection()
+            self.speaker.speak("Selección de stickers cancelada")
+            return True
+        if code in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and self._selection_mode:
+            self._context_menu()
+            return True
+        navigation = {
+            wx.WXK_UP: -1, wx.WXK_LEFT: -1, wx.WXK_DOWN: 1, wx.WXK_RIGHT: 1,
+            wx.WXK_PAGEUP: -max(1, self.items.GetCountPerPage()),
+            wx.WXK_PAGEDOWN: max(1, self.items.GetCountPerPage()),
+        }
+        toggling = code == wx.WXK_SPACE and not shift and (control or self._selection_mode)
+        navigating = code in (*navigation, wx.WXK_HOME, wx.WXK_END) and (
+            shift or self._selection_mode
+        ) and not control
+        select_all = control and not shift and code == ord("A")
+        if not (toggling or navigating or select_all):
+            return False
+        if not self._entries:
+            return True
+        focused = max(0, self.items.GetFocusedItem())
+        ids = set(self._marked_ids) if self._selection_mode else set()
+        if toggling:
+            sticker_id = self._entries[focused].id
+            ids.symmetric_difference_update({sticker_id})
+            self._selection_anchor = None
+        elif select_all:
+            ids = {entry.id for entry in self._entries}
+            self._selection_anchor = None
+        else:
+            target = 0 if code == wx.WXK_HOME else len(self._entries) - 1 if (
+                code == wx.WXK_END
+            ) else max(0, min(len(self._entries) - 1, focused + navigation[code]))
+            if shift:
+                if self._selection_anchor is None:
+                    self._selection_anchor = focused
+                    self._range_base = ids.copy()
+                start, end = sorted((self._selection_anchor, target))
+                ids = self._range_base | {entry.id for entry in self._entries[start:end + 1]}
+            else:
+                self._selection_anchor = None
+            focused = target
+        self._set_selection(ids, focused)
+        return True
+
     def _shortcut(self, event: wx.KeyEvent) -> None:
         code = event.GetKeyCode()
+        if code == wx.WXK_ESCAPE and self._selection_mode and self._selection_key(event):
+            return
+        if self.items.HasFocus() and self._selection_key(event):
+            return
         if (
             code == ord("M")
             and event.AltDown()
@@ -421,17 +569,20 @@ class StickerGalleryDialog(wx.Dialog):
             event.Skip()
 
     def _search(self, _event=None) -> None:
+        self._cancel_selection()
         self._offset = 0
         self._reload()
 
     def _previous(self, _event=None) -> None:
         if self._busy:
             return
+        self._cancel_selection()
         self._offset = max(0, self._offset - PAGE_SIZE)
         self._reload()
 
     def _next(self, _event=None) -> None:
         if not self._busy and len(self._entries) == PAGE_SIZE:
+            self._cancel_selection()
             self._offset += PAGE_SIZE
             self._reload()
 
@@ -455,6 +606,12 @@ class StickerGalleryDialog(wx.Dialog):
         wx.MessageBox(
             "Elige un sticker con las flechas. F2 renombra; Espacio lee la descripción; "
             "Enter envía si abriste desde un chat. Mayús+F10 o Acciones muestra su menú.\n\n"
+            "Mayús+flechas selecciona un rango; Ctrl+Espacio activa la selección y marca "
+            "o desmarca. En ese modo las flechas conservan las marcas y Espacio las cambia. "
+            "Ctrl+A selecciona la página. Enter abre las acciones del lote, no envía. "
+            "Escape cancela la selección; otro Escape cierra. Cambiar filtro o página "
+            "cancela las marcas. Puedes añadir a un paquete, mover desde el paquete "
+            "actual, quitar sólo de ese paquete o eliminar de la biblioteca.\n\n"
             "Crear convierte una foto sin modificar el original. Biblioteca permite "
             "importar, agrupar, exportar, compartir y configurar RayoAI. "
             "Alt+M enfoca la lista; Alt+O enfoca Mostrar; Ctrl+F busca; "
@@ -588,20 +745,25 @@ class StickerGalleryDialog(wx.Dialog):
         self._run(create, created)
 
     def _context_menu(self, _event=None) -> None:
-        entry = self._selected()
-        if entry is None or self._busy:
+        entries = self._selected_entries()
+        if not entries or self._busy:
             return
         menu = wx.Menu()
-        actions = [
+        entry = entries[0]
+        actions = [] if self._selection_mode or len(entries) > 1 else [
             ("Editar descripción...", self._edit_description),
             ("Describir con RayoAI...", self._describe),
             ("Quitar de favoritos" if entry.favorite else "Añadir a favoritos", self._favorite),
             ("Renombrar sticker...", self._rename),
-            ("Añadir a paquete...", self._assign),
-            ("Quitar de este paquete", self._unassign),
-            ("Eliminar de la biblioteca...", self._delete),
         ]
-        if self._can_send:
+        suffix = f" ({len(entries)})" if self._selection_mode else ""
+        actions.extend([
+            (f"Añadir a paquete{suffix}...", self._assign),
+            (f"Mover a paquete{suffix}...", self._move),
+            (f"Quitar de este paquete{suffix}", self._unassign),
+            (f"Eliminar de la biblioteca{suffix}...", self._delete),
+        ])
+        if self._can_send and not self._selection_mode:
             actions.insert(0, ("Enviar sticker", self._send))
         bindings = []
         try:
@@ -609,8 +771,10 @@ class StickerGalleryDialog(wx.Dialog):
                 item = menu.Append(wx.ID_ANY, label)
                 self.Bind(wx.EVT_MENU, handler, id=item.GetId())
                 bindings.append(item.GetId())
-                if label == "Quitar de este paquete":
+                if handler in (self._unassign, self._move):
                     item.Enable(self._pack_id() is not None)
+                elif handler == self._assign:
+                    item.Enable(bool(self._packs))
             self.PopupMenu(menu)
         finally:
             for item_id in bindings:
@@ -660,37 +824,71 @@ class StickerGalleryDialog(wx.Dialog):
             if value is not None:
                 self._run(lambda: self.library.edit(entry.id, name=value))
 
-    def _assign(self, _event=None) -> None:
-        if not (entry := self._selected()) or not self._packs:
+    def _assign(self, _event=None, *, move: bool = False) -> None:
+        if self._busy or not (entries := self._selected_entries()):
+            return
+        source = self._pack_id() if move else None
+        if move and source is None:
+            return
+        packs = [pack for pack in self._packs if pack.id != source]
+        if not packs:
+            self.status.SetLabel("Crea un paquete de destino desde Biblioteca.")
             return
         dialog = wx.SingleChoiceDialog(
-            self, "Elige un paquete", "Agrupar sticker", [p.name for p in self._packs]
+            self, f"Elige un paquete para {len(entries)} stickers",
+            "Mover stickers" if move else "Añadir stickers a paquete", [p.name for p in packs]
         )
         try:
-            pack = self._packs[dialog.GetSelection()] if dialog.ShowModal() == wx.ID_OK else None
+            pack = packs[dialog.GetSelection()] if dialog.ShowModal() == wx.ID_OK else None
         finally:
             dialog.Destroy()
         if pack:
-            self._run(lambda: self.library.assign_pack(entry.id, pack.id))
+            ids = [entry.id for entry in entries]
+            self._run(lambda: self.library.assign_many_pack(ids, pack.id, source_pack_id=source))
+
+    def _move(self, _event=None) -> None:
+        self._assign(move=True)
 
     def _unassign(self, _event=None) -> None:
-        if (entry := self._selected()) and (pack_id := self._pack_id()) is not None:
-            self._run(lambda: self.library.assign_pack(entry.id, pack_id, remove=True))
+        if self._busy:
+            return
+        if (entries := self._selected_entries()) and (pack_id := self._pack_id()) is not None:
+            ids = [entry.id for entry in entries]
+            self._run(lambda: self.library.assign_many_pack(ids, pack_id, remove=True))
 
     def _delete(self, _event=None) -> None:
-        if not (entry := self._selected()):
+        if self._busy or not (entries := self._selected_entries()):
             return
+        question = (
+            "¿Eliminar este sticker de la biblioteca y de sus paquetes?"
+            if len(entries) == 1 else
+            f"¿Eliminar {len(entries)} stickers de la biblioteca y de sus paquetes?"
+        )
         if (
             wx.MessageBox(
-                "¿Eliminar este sticker de la biblioteca y de sus paquetes?\n"
-                "No se elimina la foto original ni los mensajes enviados.",
+                question + "\nNo se elimina la foto original ni los mensajes enviados.",
                 "Eliminar sticker",
                 wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
                 self,
             )
             == wx.YES
         ):
-            self._run(lambda: self.library.delete(entry.id))
+            ids = [entry.id for entry in entries]
+
+            def delete():
+                try:
+                    self.library.delete_many(ids)
+                    return ""
+                except Exception as exc:
+                    return str(exc)
+
+            self._run(delete, self._deleted)
+
+    def _deleted(self, error: str) -> None:
+        if error:
+            wx.MessageBox(error, "Galería de stickers", wx.OK | wx.ICON_WARNING, self)
+        # File removals can partially succeed; refresh even on failure for retry.
+        self._reload()
 
     def _new_pack(self, _event=None) -> None:
         name = self._text("Nombre del nuevo paquete")
@@ -798,7 +996,10 @@ class StickerGalleryDialog(wx.Dialog):
             self._run(lambda: import_pack(self.library, source))
 
     def _send(self, _event=None) -> None:
-        if self._can_send and not self._busy and (entry := self._selected()):
+        if (
+            self._can_send and not self._busy and not self._selection_mode
+            and (entry := self._selected())
+        ):
             self.selected_sticker = entry
             self._shutdown()
             self.EndModal(wx.ID_OK)

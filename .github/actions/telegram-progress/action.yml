@@ -1,0 +1,21 @@
+name: Avisar del progreso por Telegram
+description: Notifica una fase sin interrumpir el trabajo si Telegram falla
+inputs:
+  phase:
+    description: Fase actual del workflow
+    required: true
+  token:
+    description: Token del bot desde un secret
+    required: false
+  chat_ids:
+    description: Destinatarios desde un secret
+    required: false
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ inputs.token }}
+        TELEGRAM_CHAT_IDS: ${{ inputs.chat_ids }}
+        TELEGRAM_PROGRESS_PHASE: ${{ inputs.phase }}
+      run: python "$GITHUB_WORKSPACE/tools/ci/notify_telegram.py" --phase "$TELEGRAM_PROGRESS_PHASE"

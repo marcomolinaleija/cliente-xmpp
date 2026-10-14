@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
 from cliente_xmpp.ui.conversation_panel import (
+    MESSAGE_ROW_READ_MORE_HINT,
     MESSAGE_ROW_TEXT_LIMIT,
     UNREAD_MARKER_ROW,
     ConversationPanel,
@@ -293,7 +294,20 @@ class ConversationPerformanceTests(unittest.TestCase):
 
         self.assertLess(len(row), MESSAGE_ROW_TEXT_LIMIT + 100)
         self.assertIn("...", row)
+        self.assertIn(MESSAGE_ROW_READ_MORE_HINT, row)
         self.assertIn(body, reader)
+        self.assertEqual(message.body, body)
+
+        for length in (MESSAGE_ROW_TEXT_LIMIT - 1, MESSAGE_ROW_TEXT_LIMIT,
+                       MESSAGE_ROW_TEXT_LIMIT + 1):
+            for outgoing in (False, True):
+                with self.subTest(length=length, outgoing=outgoing):
+                    message.body = "x" * length
+                    message.outgoing = outgoing
+                    preview = panel._format_message_row(message)
+                    self.assertEqual(MESSAGE_ROW_READ_MORE_HINT in preview,
+                                     length > MESSAGE_ROW_TEXT_LIMIT)
+                    self.assertIn(message.body, panel._format_message_for_reader(message))
 
     def test_left_arrow_reader_announces_reply_after_sender_body_and_time(self) -> None:
         message = Message(

@@ -41,6 +41,24 @@
       "area": "bridge",
       "layer": "contracts"
     },
+    "test_ci_release_windows": {
+      "area": "platform",
+      "layer": "fast",
+      "overrides": {
+        "ReleaseProgressNativeTests": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_windows_release_smoke": {
+      "area": "platform",
+      "layer": "fast",
+      "overrides": {
+        "NativeStartupSmokeTests": {
+          "layer": "integration"
+        }
+      }
+    },
     "test_calls": {
       "area": "messaging",
       "layer": "fast"
@@ -56,6 +74,24 @@
     "test_conversation_context": {
       "area": "automation",
       "layer": "integration"
+    },
+    "test_emoji_picker": {
+      "area": "messaging",
+      "layer": "fast",
+      "overrides": {
+        "NativeEmojiPickerTests": {
+          "layer": "integration"
+        }
+      }
+    },
+    "test_emoticons": {
+      "area": "messaging",
+      "layer": "fast",
+      "overrides": {
+        "NativeEmoticonComposerTests": {
+          "layer": "integration"
+        }
+      }
     },
     "test_deepgram_transcription": {
       "area": "media",

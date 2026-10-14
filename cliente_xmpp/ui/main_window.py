@@ -131,6 +131,8 @@ from cliente_xmpp.ui.chat_message_dialogs import (
 from cliente_xmpp.ui.chat_statistics_dialog import ChatStatisticsDialog
 from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
+from cliente_xmpp.ui.emoji_picker_dialog import EmojiPickerDialog
+from cliente_xmpp.ui.emoticons import convert_standalone_emoticon
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.message_info_dialog import (
@@ -246,7 +248,7 @@ class ManualHistoryLoad:
 
 
 class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
-    def __init__(self, *, development_mode: bool = False) -> None:
+    def __init__(self, *, development_mode: bool = False, startup_checks: bool = True) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
         self.development_mode = development_mode
@@ -409,6 +411,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             on_show=self._restore_from_tray,
             on_exit=self._exit_from_tray,
         )
+        if not startup_checks:
+            self._set_connected_ui(False)
+            self.status_bar.SetStatusText("Desconectado")
+            return
         self._load_saved_password()
         local_bridge_scheduled = False
         if self.development_mode:
@@ -569,6 +575,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
         self.conversation.search_button.Bind(wx.EVT_BUTTON, self._on_open_chat_message_search)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
+        self.conversation.emoji_button.Bind(wx.EVT_BUTTON, self._on_open_emoji_picker)
         self.conversation.attach_button.Bind(wx.EVT_BUTTON, self._on_attach_file)
         self.conversation.sticker_button.Bind(wx.EVT_BUTTON, self._on_send_sticker)
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
@@ -3264,6 +3271,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self._open_user_documentation()
             return
 
+        if (
+            event.ControlDown() and event.ShiftDown() and not event.AltDown()
+            and key_code == ord("E") and self.conversation.IsShown()
+        ):
+            self._on_open_emoji_picker(wx.CommandEvent())
+            return
+
         if self._is_alt_f4_shortcut(event) and self.minimize_to_tray_on_alt_f4:
             self._minimize_to_tray()
             return
@@ -4164,6 +4178,46 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         if chat_jids:
             self.xmpp.preload_histories(chat_jids, limit=HISTORY_PAGE_SIZE)
 
+    def _on_open_emoji_picker(self, _event: wx.CommandEvent) -> None:
+        compose = self.conversation.compose
+        chat = self.conversation.current_chat
+        if chat is None or not compose.IsEnabled() or not compose.IsEditable():
+            return
+        selection = compose.GetSelection()
+        original = compose.GetValue()
+        try:
+            dialog = EmojiPickerDialog(self, self.settings_store)
+        except (OSError, ValueError):
+            self.status_bar.SetStatusText("No se pudo cargar el catálogo de emojis")
+            compose.SetFocus()
+            return
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                if self.conversation.current_chat is chat and compose.GetValue() == original:
+                    compose.SetSelection(*selection)
+                return
+            if (
+                self.conversation.current_chat is not chat or not compose.IsEnabled()
+                or compose.GetValue() != original
+            ):
+                self.status_bar.SetStatusText(
+                    "El borrador cambió; vuelve a abrir el selector de emojis"
+                )
+                return
+            value = dialog.selected_emoji()
+            if not value:
+                return
+            compose.replace_text_range(*selection, value)
+            try:
+                dialog.remember_selection(value)
+            except OSError:
+                self.status_bar.SetStatusText(
+                    "Emoji insertado; no se pudieron guardar los recientes"
+                )
+        finally:
+            dialog.Destroy()
+            compose.SetFocus()
+
     def _on_primary_send_action(self, _event: wx.CommandEvent) -> None:
         if not self._require_whatsapp_connection():
             return
@@ -4209,6 +4263,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         if not chat or not body:
             return
 
+        body = convert_standalone_emoticon(body)
         if self.edit_context is not None:
             self._send_message_correction(self.edit_context, body)
             return

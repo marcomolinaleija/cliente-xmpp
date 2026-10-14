@@ -1,0 +1,200 @@
+name: Publicar actualización Windows
+run-name: Publicar ${{ github.ref_name }}
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-stable-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_MODE: ${{ vars.WINDOWS_RELEASE_MODE || 'installer' }}
+  RELEASE_TAG: ${{ github.ref_name }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  TELEGRAM_PROGRESS_ENABLED: '1'
+
+jobs:
+  build:
+    if: github.repository == 'marcomolinaleija/cliente-xmpp' && github.event.created && !github.event.deleted
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      commit: ${{ steps.preflight.outputs.commit }}
+      phase: ${{ steps.state.outputs.phase }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Avisar de la validación
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: validation
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - name: Validar etiqueta, versiones y release nueva
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python tools/ci/release_windows.py preflight --tag "$env:RELEASE_TAG" --mode "$env:RELEASE_MODE" --output "$env:GITHUB_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { throw "La validación previa falló" }
+      - name: Avisar de la preparación del entorno
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: environment
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - name: Preparar entorno XMPP y herramientas multimedia
+        run: |
+          & "$env:CONDA/Scripts/conda.exe" create -n XMPP --override-channels -c conda-forge python=3.12 ffmpeg -y
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo crear XMPP" }
+          & "$env:CONDA/Scripts/conda.exe" run -n XMPP --no-capture-output python -m pip install -e ".[build]" "ruff==0.15.21"
+          if ($LASTEXITCODE -ne 0) { throw "No se pudieron preparar las dependencias" }
+      - name: Avisar de la preparación de DLL
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: runtime
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - name: Obtener runtime verificado
+        run: |
+          python tools/ci/prepare_windows_runtime.py
+          if ($LASTEXITCODE -ne 0) { throw "El runtime no pasó su validación" }
+      - name: Pruebas completas, compilación y checksums
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: |
+          & "$env:CONDA/Scripts/conda.exe" run -n XMPP --no-capture-output pwsh -File ./build_release.ps1 -ReleaseMode "$env:RELEASE_MODE"
+          if ($LASTEXITCODE -ne 0) { throw "La compilación o validación falló" }
+      - name: Avisar de la prueba del ejecutable
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: smoke
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - name: Ejecutar el cliente desde el ZIP final
+        run: |
+          & "$env:CONDA/Scripts/conda.exe" run -n XMPP --no-capture-output python tools/ci/smoke_windows_release.py --tag "$env:RELEASE_TAG" --report .test-results/windows-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw "El ZIP no pasó la prueba de ejecución" }
+      - name: Conservar diagnóstico de ejecución
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-smoke-diagnostic
+          path: .test-results/windows-smoke.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Avisar de la conservación de artefactos
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: artifacts
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-release
+          path: release/WhatsApp-CAN-*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Registrar última fase de compilación
+        id: state
+        if: always()
+        run: '"phase=$env:TELEGRAM_CURRENT_PHASE" >> $env:GITHUB_OUTPUT'
+
+  publish:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+      phase: ${{ steps.state.outputs.phase }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Avisar de la validación de artefactos
+        uses: ./.github/actions/telegram-progress
+        with:
+          phase: publication_validation
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_ids: ${{ secrets.TELEGRAM_CHAT_IDS }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release
+          path: release
+      - name: Preparar validador del actualizador
+        run: |
+          $wxRequirement = python -c "import tomllib; print(next(dep for dep in tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies'] if dep.startswith('wxPython')))"
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo leer la dependencia wxPython" }
+          python -m pip install "$wxRequirement"
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo preparar el validador" }
+      - name: Publicar y verificar la actualización estable
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT_COMMIT: ${{ needs.build.outputs.commit }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: |
+          python tools/ci/release_windows.py publish --tag "$env:RELEASE_TAG" --mode "$env:RELEASE_MODE" --commit "$env:BUILT_COMMIT" --output "$env:GITHUB_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { throw "La publicación o su verificación falló" }
+      - name: Resumen de publicación
+        env:
+          RELEASE_URL: ${{ steps.publish.outputs.url }}
+        run: |
+          "Actualización publicada y verificada: $env:RELEASE_URL" >> $env:GITHUB_STEP_SUMMARY
+      - name: Registrar última fase de publicación
+        id: state
+        if: always()
+        run: '"phase=$env:TELEGRAM_CURRENT_PHASE" >> $env:GITHUB_OUTPUT'
+
+  notify_telegram:
+    needs: [build, publish]
+    if: always() && github.repository == 'marcomolinaleija/cliente-xmpp' && github.event.created && !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Avisar a los chats de Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          LAST_PHASE: ${{ needs.build.result != 'success' && needs.build.outputs.phase || needs.publish.outputs.phase }}
+          RELEASE_URL: ${{ needs.publish.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python tools/ci/notify_telegram.py

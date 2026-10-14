@@ -1,0 +1,14 @@
+{
+  "url": "https://github.com/marcomolinaleija/cliente-xmpp/releases/download/v1.4.19/WhatsApp-CAN-1.4.19.zip",
+  "sha256": "3f34ce82f4a2d08f20f9a42fc496464bc9ddd9270df34be9437672d5a7984d4a",
+  "files": {
+    "libmpv-2.dll": {
+      "member": "WhatsApp-CAN/_internal/cliente_xmpp/lib/libmpv-2.dll",
+      "sha256": "def236ea990491efb1f973fc219b70d35bc673886b70e539aa81b6fd20defc74"
+    },
+    "nvdaControllerClient64.dll": {
+      "member": "WhatsApp-CAN/_internal/cliente_xmpp/lib/nvdaControllerClient64.dll",
+      "sha256": "41c1f5df5997e798fcfbf7c8f2589de811e768b069a60710600cf57cb23a0b09"
+    }
+  }
+}

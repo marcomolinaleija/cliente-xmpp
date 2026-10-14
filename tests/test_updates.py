@@ -203,16 +203,30 @@ class UpdateExecutableTests(unittest.TestCase):
             root = Path(temp_dir)
             extracted = root / "extracted"
             payload = extracted / "WhatsApp-CAN"
-            (payload / "_internal").mkdir(parents=True)
-            (payload / "WhatsApp-CAN.exe").write_bytes(b"new-app")
-            (payload / "update.exe").write_bytes(b"new-updater")
+            files = {
+                "WhatsApp-CAN.exe": b"new-app",
+                "update.exe": b"new-updater",
+                "_internal/cliente_xmpp/lib/libmpv-2.dll": b"fixture-mpv",
+                "_internal/cliente_xmpp/lib/nvdaControllerClient64.dll": b"fixture-nvda",
+                "_internal/imageio_ffmpeg/binaries/ffmpeg-fixture.exe": b"fixture-ffmpeg",
+                "_internal/cliente_xmpp/assets/emojis/catalog.json": b"[]",
+            }
+            archive = root / "WhatsApp-CAN-1.2.4.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                for name, content in files.items():
+                    output.writestr("WhatsApp-CAN/" + name, content)
+            extracted.mkdir()
+            update.safe_extract(archive, extracted)
             self.assertEqual(update.payload_root(extracted, "WhatsApp-CAN.exe"), payload)
 
             installation = root / "installed" / "WhatsApp-CAN"
             installation.mkdir(parents=True)
             (installation / "old.txt").write_text("old", encoding="utf-8")
             update.replace_installation(payload, installation)
-            self.assertEqual((installation / "WhatsApp-CAN.exe").read_bytes(), b"new-app")
+            for name, content in files.items():
+                with self.subTest(name=name):
+                    self.assertEqual((installation / name).read_bytes(), content)
+            self.assertFalse((installation / "WhatsApp-CAN").exists())
             self.assertFalse((installation / "old.txt").exists())
 
 

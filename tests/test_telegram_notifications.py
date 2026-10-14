@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from tools.ci import notify_telegram as telegram
 
@@ -29,6 +31,38 @@ class TelegramNotificationTests(unittest.TestCase):
         self.assertEqual(send.call_args_list[0].args[2], send.call_args_list[1].args[2])
         self.assertIn("actualización publicada", send.call_args_list[0].args[2])
         self.assertIn(environment["RELEASE_URL"], send.call_args_list[0].args[2])
+
+    def test_progress_names_each_phase_and_final_failure_keeps_the_last_phase(self):
+        for phase, label in telegram.PROGRESS_PHASES.items():
+            with self.subTest(phase=phase):
+                environment = {**self.environment(), "TELEGRAM_PROGRESS_PHASE": phase}
+                text = telegram.notification_text(environment)
+                self.assertIn(label, text)
+                self.assertIn("v1.2.4", text)
+                self.assertIn(environment["RUN_URL"], text)
+                self.assertNotIn("actualización publicada", text)
+        text = telegram.notification_text({**self.environment(), "BUILD_RESULT": "failure",
+                                           "PUBLISH_RESULT": "skipped", "LAST_PHASE": "client"})
+        self.assertIn("Última fase: Compilando el cliente Windows", text)
+
+    def test_progress_is_opt_in_and_notification_errors_do_not_interrupt_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder) / "github-env"
+            state.write_text("FIXTURE=retained\n")
+            environment = {**self.environment(), "TELEGRAM_PROGRESS_ENABLED": "1",
+                           "GITHUB_ENV": str(state)}
+            output = io.StringIO()
+            with patch.dict(telegram.os.environ, environment, clear=True), \
+                    patch.object(telegram, "notify", side_effect=URLError("fixture-token")), \
+                    redirect_stdout(output):
+                self.assertEqual(telegram.main(["--phase", "client"]), 0)
+            self.assertEqual(state.read_text(), "FIXTURE=retained\nTELEGRAM_CURRENT_PHASE=client\n")
+            self.assertIn("::warning::", output.getvalue())
+            self.assertNotIn("fixture-token", output.getvalue())
+            with patch.dict(telegram.os.environ, {}, clear=True), \
+                    patch.object(telegram, "notify") as notify:
+                telegram.report_progress("client")
+                notify.assert_not_called()
 
     def test_manual_probe_is_labeled_as_a_test_and_requires_configured_secrets(self):
         environment = {**self.environment(), "TELEGRAM_NOTIFICATION_TEST": "1"}
@@ -137,7 +171,7 @@ class TelegramNotificationTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(telegram, "send_message", side_effect=[error, None]) as send, \
                 patch.dict(telegram.os.environ, environment, clear=True), redirect_stdout(output):
-            self.assertEqual(telegram.main(), 1)
+            self.assertEqual(telegram.main([]), 1)
         self.assertEqual(send.call_count, 2)
         self.assertIn("1 de 2", output.getvalue())
         for secret in ("fixture-token", "101", "202", "fixture-secret-body"):

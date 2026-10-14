@@ -506,6 +506,7 @@ class RecordingControlsTests(unittest.TestCase):
         view_once = Control()
         panel = SimpleNamespace(
             compose=compose,
+            emoji_button=Control(),
             attach_button=attach,
             sticker_button=sticker,
             pause_recording_button=pause,
@@ -519,12 +520,14 @@ class RecordingControlsTests(unittest.TestCase):
         self.assertTrue(view_once.visible)
         self.assertFalse(view_once.value)
         self.assertFalse(sticker.enabled)
+        self.assertFalse(panel.emoji_button.enabled)
 
         view_once.value = True
         ConversationPanel.set_recording_state(panel, False)
         self.assertFalse(view_once.visible)
         self.assertFalse(view_once.value)
         self.assertTrue(sticker.enabled)
+        self.assertTrue(panel.emoji_button.enabled)
 
 
 if __name__ == "__main__":

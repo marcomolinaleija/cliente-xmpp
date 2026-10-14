@@ -58,11 +58,16 @@ def _parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=SUPPORTED_CONNECTION_MODES,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument("--smoke-test", type=str, metavar="REPORT", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = _parse_arguments(argv)
+    if arguments.smoke_test:
+        from cliente_xmpp.app.smoke_test import run_smoke_test
+
+        raise SystemExit(run_smoke_test(arguments.smoke_test))
     if arguments.set_connection_mode:
         SettingsStore().save_connection_mode(arguments.set_connection_mode)
         return

@@ -9,6 +9,19 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path $PSScriptRoot).Path
 Set-Location $projectRoot
 
+function Send-ReleaseProgress {
+    param([string]$Phase)
+    if ($env:TELEGRAM_PROGRESS_ENABLED -ne '1') { return }
+    $telegramPreviousExitCode = $global:LASTEXITCODE
+    try {
+        & python tools\ci\notify_telegram.py --phase $Phase
+    } catch {
+        Write-Warning 'No se pudo emitir el progreso de Telegram; la compilación continúa.'
+    } finally {
+        $global:LASTEXITCODE = $telegramPreviousExitCode
+    }
+}
+
 if (-not $ReleaseMode) {
     Write-Host "Elige el tipo de actualización:"
     Write-Host "  1. Parcial: ZIP y firma SHA-256, sin instalador"
@@ -89,17 +102,33 @@ foreach ($field in @("filevers", "prodvers")) {
 }
 
 if (-not $SkipChecks) {
+    Send-ReleaseProgress -Phase 'checks'
     & python -m compileall cliente_xmpp tests update.py
     if ($LASTEXITCODE -ne 0) { throw "compileall falló." }
     & python -m ruff check .
     if ($LASTEXITCODE -ne 0) { throw "ruff falló." }
-    & python tools/run_tests.py --suite all
-    if ($LASTEXITCODE -ne 0) { throw "Los tests fallaron." }
+    $telegramTestVariables = @('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_IDS', 'TELEGRAM_PROGRESS_ENABLED')
+    $telegramTestEnvironment = @{}
+    foreach ($telegramTestVariable in $telegramTestVariables) {
+        $telegramTestEnvironment[$telegramTestVariable] = [Environment]::GetEnvironmentVariable($telegramTestVariable, 'Process')
+        [Environment]::SetEnvironmentVariable($telegramTestVariable, $null, 'Process')
+    }
+    try {
+        & python tools/run_tests.py --suite all
+        $telegramTestExitCode = $LASTEXITCODE
+    } finally {
+        foreach ($telegramTestVariable in $telegramTestVariables) {
+            [Environment]::SetEnvironmentVariable($telegramTestVariable, $telegramTestEnvironment[$telegramTestVariable], 'Process')
+        }
+    }
+    if ($telegramTestExitCode -ne 0) { throw "Los tests fallaron." }
 }
 
+Send-ReleaseProgress -Phase 'updater'
 & python -m PyInstaller --clean --noconfirm update.spec
 if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar update.exe." }
 
+Send-ReleaseProgress -Phase 'client'
 & python -m PyInstaller --clean --noconfirm WhatsApp-CAN.spec
 if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar WhatsApp CAN." }
 
@@ -115,6 +144,7 @@ if (-not (Test-Path -LiteralPath $updaterExe -PathType Leaf)) {
 }
 
 $releaseDir = Join-Path $projectRoot "release"
+Send-ReleaseProgress -Phase 'zip'
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 $zipName = "WhatsApp-CAN-$version.zip"
 $zipPath = Join-Path $releaseDir $zipName
@@ -148,6 +178,7 @@ if (-not $iscc) {
 }
 
 $installerName = "WhatsApp-CAN-$version-Setup.exe"
+Send-ReleaseProgress -Phase 'installer'
 $installerPath = Join-Path $releaseDir $installerName
 $installerChecksumPath = "$installerPath.sha256"
 Remove-Item -LiteralPath $installerPath, $installerChecksumPath -Force -ErrorAction SilentlyContinue

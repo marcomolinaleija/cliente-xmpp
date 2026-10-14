@@ -67,6 +67,11 @@ binaries = [
     (str(libmpv), "cliente_xmpp/lib"),
     (str(nvda_controller), "cliente_xmpp/lib"),
 ]
+datas += [
+    (str(path), "cliente_xmpp/assets/emojis")
+    for path in (ROOT / "cliente_xmpp" / "assets" / "emojis").iterdir()
+    if path.is_file()
+]
 
 a = Analysis(
     [str(ROOT / "cliente_xmpp" / "app" / "main.py")],

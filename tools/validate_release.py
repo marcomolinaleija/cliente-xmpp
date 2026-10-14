@@ -22,6 +22,21 @@ def expected_hash(checksum_path: Path) -> str:
     return match.group(1).lower()
 
 
+def validate_runtime(payload: Path) -> None:
+    libraries = payload / "_internal" / "cliente_xmpp" / "lib"
+    for name in ("libmpv-2.dll", "nvdaControllerClient64.dll"):
+        path = libraries / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"El paquete final no contiene {name}.")
+
+    ffmpeg_candidates = [payload / "bin" / "ffmpeg.exe"]
+    ffmpeg_candidates.extend(
+        (payload / "_internal" / "imageio_ffmpeg" / "binaries").glob("ffmpeg*.exe")
+    )
+    if not any(path.is_file() and path.stat().st_size > 0 for path in ffmpeg_candidates):
+        raise RuntimeError("El paquete final no contiene un ejecutable FFmpeg para Windows.")
+
+
 def validate_release(zip_path: Path, checksum_path: Path) -> None:
     if checksum_path.name != f"{zip_path.name}.sha256":
         raise RuntimeError("El checksum debe llamarse <ZIP>.sha256.")
@@ -35,6 +50,7 @@ def validate_release(zip_path: Path, checksum_path: Path) -> None:
         payload = update.payload_root(extracted, "WhatsApp-CAN.exe")
         if not (payload / "update.exe").is_file():
             raise RuntimeError("El paquete final no contiene update.exe.")
+        validate_runtime(payload)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

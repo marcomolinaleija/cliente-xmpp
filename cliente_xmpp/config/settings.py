@@ -18,6 +18,7 @@ DEFAULT_NEW_CHAT_COUNTRY = "MX"
 DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES = 20
 UPDATE_CHECK_INTERVAL_CHOICES = (20, 30, 60, 300)
 MAX_PINNED_CHATS = 4
+MAX_RECENT_EMOJIS = 30
 CONNECTION_MODE_LOCAL = "local"
 CONNECTION_MODE_REMOTE = "remote"
 SUPPORTED_CONNECTION_MODES = (CONNECTION_MODE_LOCAL, CONNECTION_MODE_REMOTE)
@@ -48,6 +49,31 @@ class SettingsStore:
     def load_connection(self) -> ConnectionSettings:
         data = self._load_payload()
         return self._connection_from_payload(data.get("connection", {}))
+
+    @staticmethod
+    def _clean_emoji_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return list(dict.fromkeys(
+            item for item in value if isinstance(item, str) and 0 < len(item) <= 64
+        ))
+
+    def load_emoji_preferences(self) -> tuple[list[str], list[str]]:
+        data = self._load_payload().get("emojis", {})
+        if not isinstance(data, dict):
+            return [], []
+        return (
+            self._clean_emoji_list(data.get("favorites")),
+            self._clean_emoji_list(data.get("recent"))[:MAX_RECENT_EMOJIS],
+        )
+
+    def save_emoji_preferences(self, favorites: list[str], recent: list[str]) -> None:
+        payload = self._load_payload()
+        payload["emojis"] = {
+            "favorites": self._clean_emoji_list(favorites),
+            "recent": self._clean_emoji_list(recent)[:MAX_RECENT_EMOJIS],
+        }
+        self._save_payload(payload)
 
     def load_sticker_auto_describe(self) -> bool:
         return self._load_payload().get("sticker_auto_describe") is True

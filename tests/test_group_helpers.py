@@ -1755,6 +1755,7 @@ class PendingWhatsAppUiTests(unittest.TestCase):
             _remote_actions_enabled=True,
             pause_recording_button=self.Control(),
             compose=self.Control(),
+            emoji_button=self.Control(),
             send_button=self.Control(),
             attach_button=self.Control(),
             sticker_button=self.Control(),
@@ -1766,6 +1767,7 @@ class PendingWhatsAppUiTests(unittest.TestCase):
 
         self.assertFalse(panel._remote_actions_enabled)
         self.assertFalse(panel.compose.enabled)
+        self.assertFalse(panel.emoji_button.enabled)
         self.assertFalse(panel.send_button.enabled)
         self.assertFalse(panel.attach_button.enabled)
         self.assertFalse(panel.sticker_button.enabled)

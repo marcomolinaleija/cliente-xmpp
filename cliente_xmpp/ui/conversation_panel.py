@@ -12,12 +12,14 @@ from cliente_xmpp.formatting import format_call_body
 from cliente_xmpp.media.downloads import (
     audio_description,
     format_duration,
+    has_media,
     local_media_path,
     media_description,
 )
 from cliente_xmpp.media.links import is_link_preview
 from cliente_xmpp.models.chat import Chat, Message, Poll, poll_display_text
 from cliente_xmpp.models.names import display_label_from_jid
+from cliente_xmpp.ui.emoticons import EmoticonTextCtrl
 from cliente_xmpp.ui.theme import (
     INCOMING_MESSAGE_BLUE,
     OUTGOING_MESSAGE_BLUE,
@@ -30,6 +32,7 @@ from cliente_xmpp.ui.theme import (
 DATE_SEPARATOR_PREFIX = "date:"
 UNREAD_MARKER_ROW = "unread"
 MESSAGE_ROW_TEXT_LIMIT = 500
+MESSAGE_ROW_READ_MORE_HINT = "Pulsa Enter para leer el mensaje completo."
 MESSAGE_ROW_REPLY_LIMIT = 240
 MONTH_NAMES = (
     "enero",
@@ -133,6 +136,7 @@ class ConversationPanel(wx.Panel):
         )
         self.vote_in_poll_button.Hide()
         self.compose: wx.TextCtrl
+        self.emoji_button: wx.Button
         self.mention_suggestions: wx.ListBox
         self.attach_button: wx.Button
         self.sticker_button: wx.Button
@@ -450,6 +454,7 @@ class ConversationPanel(wx.Panel):
         self._remote_actions_enabled = enabled
         recording = self.pause_recording_button.IsShown()
         self.compose.Enable(enabled and not recording)
+        self.emoji_button.Enable(enabled and not recording)
         self.send_button.Enable(enabled)
         self.attach_button.Enable(enabled and not recording)
         self.sticker_button.Enable(enabled and not recording)
@@ -642,6 +647,7 @@ class ConversationPanel(wx.Panel):
     def set_recording_state(self, recording: bool, paused: bool = False) -> None:
         actions_enabled = getattr(self, "_remote_actions_enabled", True)
         self.compose.Enable(actions_enabled and not recording)
+        self.emoji_button.Enable(actions_enabled and not recording)
         send_button = getattr(self, "send_button", None)
         if send_button is not None:
             send_button.Enable(actions_enabled)
@@ -1377,12 +1383,18 @@ class ConversationPanel(wx.Panel):
         box.Add(self.mention_suggestions, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 12)
 
         composer = wx.BoxSizer(wx.HORIZONTAL)
-        self.compose = wx.TextCtrl(self, style=wx.TE_MULTILINE)
+        self.compose = EmoticonTextCtrl(self, style=wx.TE_MULTILINE)
         self.compose.SetToolTip("Escribe el mensaje para el chat seleccionado.")
         composer.Add(self.compose, 1, wx.EXPAND | wx.RIGHT, 8)
 
+        self.emoji_button = wx.Button(self, label="&Emojis…")
+        self.emoji_button.SetName("Insertar emoji")
+        self.emoji_button.SetToolTip("Busca emojis, favoritos y recientes. Control+Mayús+E.")
+        self.emoji_button.Enable(False)
+        composer.Add(self.emoji_button, 0, wx.EXPAND | wx.RIGHT, 8)
         self.send_button = wx.Button(self, label="Enviar")
         self.send_button.Enable(False)
+        composer.Add(self.send_button, 0, wx.EXPAND | wx.RIGHT, 8)
         self.attach_button = wx.Button(self, label="&Adjuntar")
         self.attach_button.Enable(False)
         self.sticker_button = wx.Button(self, label="Enviar &sticker...")
@@ -1402,7 +1414,6 @@ class ConversationPanel(wx.Panel):
         composer.Add(self.pause_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.cancel_recording_button, 0, wx.EXPAND | wx.RIGHT, 8)
         composer.Add(self.view_once_audio, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-        composer.Add(self.send_button, 0, wx.EXPAND)
 
         box.Add(composer, 0, wx.ALL | wx.EXPAND, 12)
         self.SetSizer(box)
@@ -1672,7 +1683,10 @@ class ConversationPanel(wx.Panel):
 
     def _format_message_row(self, message: Message) -> str:
         timestamp = "" if message.call is not None else self._format_message_time(message)
-        body = self._truncate_row_text(self._format_message_body(message))
+        body = self._truncate_row_text(
+            self._format_message_body(message),
+            read_more_hint=not has_media(message) or is_link_preview(message),
+        )
         starred = "Destacado. " if message.starred else ""
         edited = "Editado. " if message.edited else ""
         forwarded = "Reenviado. " if message.is_forwarded else ""
@@ -1708,12 +1722,15 @@ class ConversationPanel(wx.Panel):
         return f"{starred}{edited}{forwarded}{sender} {body}.{reactions}"
 
     @staticmethod
-    def _truncate_row_text(text: str, max_length: int = MESSAGE_ROW_TEXT_LIMIT) -> str:
+    def _truncate_row_text(
+        text: str, max_length: int = MESSAGE_ROW_TEXT_LIMIT, *, read_more_hint: bool = False,
+    ) -> str:
         normalized = " ".join(text.split())
         if len(normalized) <= max_length:
             return normalized
 
-        return f"{normalized[: max_length - 3]}..."
+        suffix = f"... {MESSAGE_ROW_READ_MORE_HINT}" if read_more_hint else "..."
+        return normalized[:max(0, max_length - len(suffix))] + suffix
 
     @staticmethod
     def _format_delivery_state(message: Message) -> str:

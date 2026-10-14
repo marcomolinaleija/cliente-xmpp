@@ -1,6 +1,7 @@
 """Send release workflow results to private chats using GitHub Actions secrets."""
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import os
@@ -10,6 +11,23 @@ import tempfile
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+PROGRESS_PHASES = {
+    "validation": "Validando etiqueta, versiones y release nueva",
+    "environment": "Preparando Python y dependencias",
+    "runtime": "Verificando las DLL de NVDA y libmpv",
+    "checks": "Ejecutando pruebas completas y Ruff",
+    "updater": "Compilando el actualizador",
+    "client": "Compilando el cliente Windows",
+    "zip": "Empaquetando y verificando el ZIP de actualización",
+    "installer": "Generando el instalador con Inno Setup",
+    "smoke": "Ejecutando el cliente desde el ZIP final",
+    "artifacts": "Guardando ZIP, instalador y checksums",
+    "publication_validation": "Validando los artefactos antes de publicar",
+    "draft": "Subiendo los archivos a una release en borrador",
+    "asset_verification": "Verificando los archivos descargados desde GitHub",
+    "publishing": "Publicando la actualización estable",
+}
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -48,6 +66,14 @@ def chat_ids(value: str) -> list[str]:
 
 
 def notification_text(environment: dict[str, str]) -> str:
+    phase = environment.get("TELEGRAM_PROGRESS_PHASE", "")
+    if phase:
+        label = PROGRESS_PHASES[phase]
+        return (
+            f"⏳ WhatsApp CAN {environment.get('RELEASE_TAG', '')}\n"
+            f"{label}\n"
+            f"Ejecución y logs: {environment.get('RUN_URL', '')}"
+        )
     if environment.get("TELEGRAM_NOTIFICATION_TEST") == "1":
         return (
             "🧪 Prueba de notificaciones de WhatsApp CAN.\n"
@@ -66,6 +92,9 @@ def notification_text(environment: dict[str, str]) -> str:
     else:
         title = f"❌ WhatsApp CAN {tag}: falló el job de publicación"
     lines = [title]
+    last_phase = environment.get("LAST_PHASE", "")
+    if (build != "success" or publish != "success") and last_phase in PROGRESS_PHASES:
+        lines.append(f"Última fase: {PROGRESS_PHASES[last_phase]}")
     if publish == "success" and environment.get("RELEASE_URL"):
         lines.append(f"Descargas: {environment['RELEASE_URL']}")
     lines.append(f"Ejecución y logs: {environment.get('RUN_URL', '')}")
@@ -171,7 +200,28 @@ def notify(environment: dict[str, str]) -> int:
     return 0
 
 
-def main() -> int:
+def report_progress(phase: str) -> None:
+    if os.environ.get("TELEGRAM_PROGRESS_ENABLED") != "1":
+        return
+    if phase not in PROGRESS_PHASES:
+        raise ValueError("Fase de progreso desconocida")
+    github_env = os.environ.get("GITHUB_ENV", "")
+    try:
+        if github_env:
+            with Path(github_env).open("a", encoding="utf-8") as output:
+                output.write(f"TELEGRAM_CURRENT_PHASE={phase}\n")
+        notify({**os.environ, "TELEGRAM_PROGRESS_PHASE": phase})
+    except (OSError, ValueError, RuntimeError):
+        print("::warning::No se pudo enviar el aviso de progreso de Telegram; el trabajo continúa")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", choices=PROGRESS_PHASES)
+    arguments = parser.parse_args(argv)
+    if arguments.phase:
+        report_progress(arguments.phase)
+        return 0
     try:
         return notify(dict(os.environ))
     except (ValueError, RuntimeError) as exc:

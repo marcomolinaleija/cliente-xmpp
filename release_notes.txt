@@ -1,3 +1,24 @@
+WhatsApp CAN 1.4.20
+
+Esta actualización añade un selector de emojis, convierte emoticonos al escribir o enviarlos y mejora la lectura de texto largo. Incluye también las mejoras recientes de mensajes individuales, menciones y selección de stickers.
+
+Emojis y escritura
+- Nuevo botón de emojis entre el cuadro de edición y Grabar audio. Incluye buscador en español, categorías, favoritos y emojis recientes; también se abre con Ctrl+Shift+E desde la conversación.
+- El panel muestra los emojis por páginas para abrirse con mayor rapidez. Puedes cargar más sin perder la selección; la búsqueda abarca todo el catálogo.
+- Los emoticonos se convierten al escribir un espacio después. Si el mensaje contiene únicamente un emoticono, también se convierte al enviarlo con Enter o Enviar. Se reconocen las variantes de llanto :'( y ;(.
+- Elegir un emoji lo inserta en la posición de edición y conserva el borrador; no envía el mensaje automáticamente.
+
+Lectura, mensajes y stickers
+- Los previews de mensajes largos indican «Pulsa Enter para leer el mensaje completo». El texto completo sigue disponible en el lector y al copiar.
+- La información de entrega y lectura de mensajes propios también admite conversaciones individuales cuando el puente dispone de esos datos.
+- Se corrigen menciones con emojis y nombres internacionales, y la lectura masiva se limita a los chats de la lista actual.
+- La galería de stickers permite seleccionar varios elementos y aplicar acciones por lote, conservando el uso por teclado.
+
+Publicación y actualizaciones
+- Las etiquetas nuevas vX.Y.Z activan la compilación del ZIP de actualización y del instalador existente de Inno Setup, con sus checksums SHA-256.
+- Antes de publicar se ejecutan las pruebas completas y una prueba del cliente extraído del ZIP que comprueba interfaz, emojis, SQLite, recursos y dependencias nativas.
+- Los avisos de Telegram muestran la fase actual de la preparación, compilación y publicación. El aviso final incluye enlaces de descarga o la fase donde se produjo un fallo.
+
 WhatsApp CAN 1.4.19
 
 Esta actualización añade información de entrega y lectura para tus mensajes de grupos, mejora la sincronización de chats leídos y conserva más datos de llamadas. Las novedades siguientes reúnen los cambios desde la versión 1.4.18. Las funciones del puente descritas aquí requieren v33; actualizar sólo el cliente no sustituye la imagen del puente.

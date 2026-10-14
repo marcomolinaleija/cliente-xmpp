@@ -115,6 +115,30 @@ permanece desconocido. La recuperación acotada no garantiza completar esos dato
 Consulta [Info y sincronización](docs/PUENTE_WHATSAPP_INFO_MENSAJES_V33.md) y
 [llamadas y límites](docs/PUENTE_WHATSAPP_LLAMADAS_ENTRANTES_V33.md).
 
+## Emoticonos al escribir
+
+Después del cuadro de edición, antes de **Grabar audio/Enviar**, el botón **Emojis…**
+abre el selector. También puedes abrirlo con **Control+Mayús+E**. Busca por nombre
+o palabra clave en español, filtra por categoría y guarda favoritos con el botón
+correspondiente o **Control+D**. Los últimos 30 emojis insertados aparecen en Recientes.
+El catálogo de Emojibase está incluido y funciona sin conexión.
+El selector muestra primero 100 resultados. Usa **Cargar más emojis** o continúa
+con flecha abajo desde el último resultado para cargar otro bloque. El buscador
+consulta todo el catálogo, incluso los emojis que todavía no aparecen en la lista.
+
+Usa las flechas para recorrer los resultados y **Enter** para insertar en el cursor
+o sustituir el texto seleccionado. **Escape** cierra el selector y conserva el borrador.
+La inserción vuelve al editor y se puede deshacer con **Control+Z**.
+
+En el editor, escribe un emoticono y pulsa espacio para convertirlo en emoji:
+`:)` → 🙂, `;)` → 😉, `:D` → 😃, `:(` → 🙁 y `<3` → ❤️.
+También se reconocen las variantes con guion. La conversión conserva el espacio
+y permite deshacer con Control+Z. Durante la escritura sólo actúa sobre emoticonos
+separados por espacios; no transforma texto pegado, enlaces ni fragmentos
+delimitados con acentos graves.
+Si el mensaje completo es un único emoticono, también se convierte al enviarlo
+con Enter o con el botón Enviar, aunque no hayas escrito el espacio.
+
 ## Integración con el asistente de Atajos
 
 WhatsApp CAN 1.4.15 permite a Atajos 1.1.6 consultar los últimos adjuntos recibidos y obtener la imagen, audio o vídeo elegido para analizarlo con Gemini. Puede descargar la copia que falte, con límite de 100 MiB. Requiere la integración local activada. La consulta no marca leído ni envía respuestas; el contenido elegido se comparte con Google por petición del usuario.
@@ -124,6 +148,11 @@ En Configuración activa **Permitir integración local con Atajos**. Permite bus
 Atajos 1.1.3 ofrece **Mensajería…** para conmutar la confirmación (desactivada inicialmente) y configurar el contexto inicial entre 1 y 400 mensajes (cinco por defecto). Las cantidades explícitas prevalecen y todo el chat guardado se recorre por páginas. Los textos consultados se comparten con Gemini. Consulta [Integración local con Atajos](docs/INTEGRACION_ATAJOS.md) para el contrato, ejemplos y límites.
 
 ## Compilacion de Windows
+
+También puedes automatizar las actualizaciones subiendo una etiqueta nueva
+`vX.Y.Z`: GitHub Actions valida, compila y publica la release, con avisos de
+progreso por Telegram y avisos por correo configurados en GitHub. Consulta
+[publicación automática y notificaciones](docs/RELEASES_GITHUB_ACTIONS.md).
 
 La configuracion reproducible de PyInstaller vive en `WhatsApp-CAN.spec`. El build necesita el
 entorno Conda `XMPP`, los dos DLL de `cliente_xmpp/lib` y `ffprobe` disponible en `PATH`.

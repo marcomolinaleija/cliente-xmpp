@@ -4,6 +4,11 @@ Usa el runner desde la raíz con el entorno Conda `XMPP`. No instala dependencia
 no abre CAN, no construye binarios/imágenes ni se conecta a una cuenta real.
 Las integraciones locales pueden abrir puertos **loopback**, controles wx ocultos
 o primitivas Windows; sus archivos y bases de datos son fixtures temporales.
+La integración `NativeStartupSmokeTests` ejecuta el modo de diagnóstico del
+cliente desde el código fuente con un perfil temporal, FFmpeg de `imageio-ffmpeg`
+y las DLL locales de `cliente_xmpp/lib` (NVDA y libmpv). En Actions esas DLL se
+preparan antes de la suite. La prueba del ejecutable empaquetado se ejecuta aparte,
+después de construir el ZIP, como indica [la guía de releases](RELEASES_GITHUB_ACTIONS.md).
 
 ## Ruta rápida
 

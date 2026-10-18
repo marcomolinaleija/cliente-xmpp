@@ -1,0 +1,38 @@
+ARG BASE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v34@sha256:9efc875341933962a29a5ce1b0e233cac4e59e8c65463fed079c9ab5018c9114
+ARG GO_CACHE_IMAGE=cliente-xmpp-bridge:call-duration-v33-go-cache
+FROM ${BASE_IMAGE} AS patched
+USER root
+COPY patch_slidge_number_change.py /tmp/number-change/
+RUN python -B /tmp/number-change/patch_slidge_number_change.py /venv/lib/python3.13/site-packages && \
+    python -B /tmp/number-change/patch_slidge_number_change.py /venv/lib/python3.13/site-packages
+COPY bridge_number_change.go /venv/lib/python3.13/site-packages/slidge_whatsapp/can_number_change.go
+
+FROM ${GO_CACHE_IMAGE} AS go_builder
+ENV GOMAXPROCS=2 GOFLAGS=-p=2 GOMEMLIMIT=2GiB
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /src/slidge_whatsapp
+COPY bridge_number_change_test.go bridge_call_duration_v33_test.go bridge_call_recovery_v33_test.go bridge_read_state_test.go bridge_read_state_recovery_test.go bridge_read_sync_event_test.go bridge_message_info_test.go bridge_private_replies_test.go /src/slidge_whatsapp/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /src/slidge_whatsapp
+RUN gofmt -w event.go can_number_change.go *_test.go && \
+    go test . && go test -race . && cd generated && \
+    go build -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=go_builder /src/slidge_whatsapp/event.go /src/slidge_whatsapp/can_number_change.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=go_builder /src/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY smoke_bridge_number_change_runtime.py /opt/can-tests/
+RUN chmod 0644 /opt/can-tests/smoke_bridge_number_change_runtime.py
+USER slidge
+RUN python -B /opt/can-tests/smoke_bridge_number_change_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_read_state_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_message_info_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_call_duration_v33_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_avatar_safety_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_audio_modes_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_native_sticker_pack_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_delivery_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_sticker_accessibility_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_stickers_runtime.py && \
+    python -B /opt/can-tests/smoke_bridge_no_auto_join_runtime.py

@@ -2565,6 +2565,11 @@ class BridgeXmppClient(ClientXMPP):
             return "needs_relogin"
         if "did not flash the qr code in time" in normalized:
             return "needs_relogin"
+        if normalized.startswith("re-login failed:"):
+            if "unauthenticated session" in normalized or "logged out" in normalized:
+                return "needs_relogin"
+            # A post-authentication roster/group failure does not prove unlinking.
+            return "connection_error"
         if "logged out" in normalized or "re-login" in normalized or "re-scan" in normalized:
             return "logged_out"
         if "connection error" in normalized:

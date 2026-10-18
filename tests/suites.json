@@ -445,6 +445,10 @@
     "test_patch_slidge_call_duration": {
       "area": "bridge",
       "layer": "contracts"
+    },
+    "test_patch_slidge_number_change": {
+      "area": "bridge",
+      "layer": "contracts"
     }
   }
 }

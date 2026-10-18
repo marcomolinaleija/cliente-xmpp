@@ -1306,6 +1306,18 @@ class WhatsAppPairingCodeTests(unittest.TestCase):
                     "connecting",
                 )
 
+    def test_relogin_sync_error_does_not_claim_whatsapp_is_unlinked(self) -> None:
+        for detail, expected in (
+            ("Multiple rows were found when one or none was required", "connection_error"),
+            ("roster synchronization failed", "connection_error"),
+            ("unauthenticated session", "needs_relogin"),
+            ("Logged out", "needs_relogin"),
+        ):
+            with self.subTest(detail=detail):
+                self.assertEqual(
+                    BridgeXmppClient._whatsapp_state_hint(f"Re-login failed: {detail}"), expected
+                )
+
     def test_component_status_message_is_admin_message(self) -> None:
         self.assertTrue(
             BridgeXmppClient._is_whatsapp_component_admin_message(

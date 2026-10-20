@@ -1,0 +1,49 @@
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:linking-20261020
+ARG BUILD_IMAGE=cliente-xmpp-bridge:linking-builder-20261020
+FROM ${BRIDGE_IMAGE} AS patched
+USER root
+COPY bridge_inbound.go bridge_inbound.py patch_slidge_inbound.py /opt/inbound-tools/
+RUN python -B /opt/inbound-tools/patch_slidge_inbound.py /venv/lib/python3.13/site-packages /opt/inbound-tools && \
+    python -B /opt/inbound-tools/patch_slidge_inbound.py /venv/lib/python3.13/site-packages /opt/inbound-tools
+
+FROM ${BUILD_IMAGE} AS builder
+ENV GOMAXPROCS=2
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /integration/slidge_whatsapp
+COPY bridge_inbound_test.go bridge_inbound_probe.go bridge_linking_test.go bridge_voice_lifecycle_test.go /integration/slidge_whatsapp/
+COPY check_bridge_go_report.py /opt/inbound-tools/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /integration/slidge_whatsapp
+RUN go mod edit -go=1.26.4 -require=github.com/pion/webrtc/v4@v4.2.15 -replace=go.mau.fi/whatsmeow=/opt/bridge-whatsmeow && \
+    go mod tidy && gofmt -w session.go event.go can_inbound.go bridge_inbound_test.go bridge_inbound_probe.go && \
+    (go test -p 2 -json -mod=mod . ./voicecore/... >/tmp/inbound-go.jsonl; echo $? >/tmp/inbound-go.status) && \
+    python3 /opt/inbound-tools/check_bridge_go_report.py /tmp/inbound-go.jsonl "$(cat /tmp/inbound-go.status)" && \
+    (go test -p 2 -json -mod=mod -race . ./voicecore/... >/tmp/inbound-race.jsonl; echo $? >/tmp/inbound-race.status) && \
+    python3 /opt/inbound-tools/check_bridge_go_report.py /tmp/inbound-race.jsonl "$(cat /tmp/inbound-race.status)"
+# Probe uses identical generated bindings and dispatcher, injecting events only in
+# a temporary, build-tagged variant of SetEventHandler. Restore source before final build.
+RUN cp session.go /tmp/session.safe && python3 -c 'from pathlib import Path; p=Path("session.go");s=p.read_text();a="s.eventHandler = h";assert s.count(a)==1;p.write_text(s.replace(a,a+"\n s.canInboundOfflineProbe()"))' && \
+    cd generated && go build -p 2 -mod=mod -buildmode=c-shared -tags "mupdf extlib can_inbound_probe" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so . && \
+    mv /tmp/session.safe ../session.go
+
+FROM patched AS probe
+COPY --from=builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY smoke_bridge_inbound_runtime.py /opt/inbound-tools/
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_inbound_runtime.py >/opt/inbound-tools/callback-smoke.json
+
+FROM builder AS release-builder
+RUN cd generated && go build -p 2 -mod=mod -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=release-builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=release-builder /tmp/inbound-go.jsonl /tmp/inbound-race.jsonl /opt/inbound-tools/
+COPY --from=probe /opt/inbound-tools/callback-smoke.json /opt/inbound-tools/
+COPY smoke_bridge_linking_runtime.py /opt/inbound-tools/
+COPY smoke_bridge_muc_history_runtime.py /opt/inbound-tools/
+LABEL org.can.whatsapp.inbound="1"
+USER slidge
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_linking_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_muc_history_runtime.py >/tmp/can-muc-smoke.json

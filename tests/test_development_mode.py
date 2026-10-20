@@ -67,6 +67,7 @@ class DevelopmentModeTests(unittest.TestCase):
             pending_roster_chats=[],
             _set_whatsapp_remote_actions_enabled=Mock(),
             _show_chat_placeholder=Mock(),
+            _close_whatsapp_qr_dialog=Mock(),
             login_panel=Mock(),
             connection_header=Mock(),
             status_bar=Mock(),

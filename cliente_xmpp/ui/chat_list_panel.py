@@ -31,6 +31,7 @@ class ChatListPanel(wx.Panel):
         self._updating = False
         self._searching = False
         self._visible_stale = False
+        self._update_batch_depth = 0
         self._file_transfer_previews: dict[str, str] = {}
 
         self.search_label = wx.StaticText(self, label="Buscar:")
@@ -81,7 +82,8 @@ class ChatListPanel(wx.Panel):
         self._rebuild_chat_indexes()
         if self._searching:
             return
-        if not self.IsShown() or (self.list_box.HasFocus() and self._items):
+        if (getattr(self, "_update_batch_depth", 0) or not self.IsShown()
+                or (self.list_box.HasFocus() and self._items)):
             self._visible_stale = True
             return
 
@@ -124,13 +126,28 @@ class ChatListPanel(wx.Panel):
 
         self.force_refresh_visible()
 
-    def force_refresh_visible(self, selected_jid: str = "") -> None:
+    def begin_update_batch(self) -> None:
+        self._update_batch_depth = getattr(self, "_update_batch_depth", 0) + 1
+
+    def end_update_batch(self) -> None:
+        self._update_batch_depth -= 1
+        if (self._update_batch_depth or not self._visible_stale
+                or not self.IsShown() or self._searching):
+            return
+        self.force_refresh_visible(preserve_focused_order=True)
+
+    def force_refresh_visible(
+        self, selected_jid: str = "", *, preserve_focused_order: bool = False,
+    ) -> None:
+        if getattr(self, "_update_batch_depth", 0):
+            self._visible_stale = True
+            return
         self._visible_stale = False
         self._set_items(
             [ChatListItem(chat=chat) for chat in self._chats],
             selected_jid=selected_jid,
-            preserve_focused_order=False,
-            force=True,
+            preserve_focused_order=preserve_focused_order,
+            force=not preserve_focused_order,
         )
 
     def _set_items(
@@ -174,7 +191,8 @@ class ChatListPanel(wx.Panel):
         index = self._chat_indexes_by_jid.get(chat.jid)
         if index is not None:
             self._chats[index] = chat
-            if not self.IsShown() or self.list_box.HasFocus():
+            if (getattr(self, "_update_batch_depth", 0)
+                    or not self.IsShown() or self.list_box.HasFocus()):
                 self._visible_stale = True
                 return
             self._update_visible_chat(chat)
@@ -182,7 +200,8 @@ class ChatListPanel(wx.Panel):
 
         self._chat_indexes_by_jid[chat.jid] = len(self._chats)
         self._chats.append(chat)
-        if not self.IsShown() or self.list_box.HasFocus():
+        if (getattr(self, "_update_batch_depth", 0)
+                or not self.IsShown() or self.list_box.HasFocus()):
             self._visible_stale = True
             return
         if not self._searching:

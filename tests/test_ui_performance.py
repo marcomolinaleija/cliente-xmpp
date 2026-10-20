@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -393,6 +393,153 @@ class ChatListPerformanceTests(unittest.TestCase):
 
 
 class MainWindowPerformanceTests(unittest.TestCase):
+    @staticmethod
+    def _merge_window():
+        window = MainWindow.__new__(MainWindow)
+        window.messages_by_chat = {}
+        window.delivery_states_by_message = {}
+        window._refresh_file_transfer_preview = Mock()
+        window._discard_retracted_message_media = Mock()
+        return window
+
+    @staticmethod
+    def _fixture_message(index, **kwargs):
+        fields = dict(
+            chat_jid="chat@example.test", sender_jid="sender@example.test",
+            body="Repeated fixture", message_id=f"remote-{index}",
+            sent_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=index * 4),
+        )
+        fields.update(kwargs)
+        return Message(**fields)
+
+    def test_repeated_history_expires_only_temporary_content_candidates(self):
+        window = self._merge_window()
+        messages = [self._fixture_message(i) for i in range(1000)]
+        with patch.object(
+            MainWindow, "_message_timestamp", wraps=MainWindow._message_timestamp,
+        ) as stamp:
+            window._merge_messages(messages[0].chat_jid, messages)
+        self.assertEqual(window.messages_by_chat[messages[0].chat_jid], messages)
+        self.assertLess(stamp.call_count, 12000)
+
+    def test_live_append_does_not_remerge_cached_rows(self):
+        window = self._merge_window()
+        cached = [self._fixture_message(i) for i in range(500)]
+        jid = cached[0].chat_jid
+        window._merge_messages(jid, cached)
+        canonical = window.messages_by_chat[jid]
+        with patch.object(MainWindow, "_matching_content_message_index",
+                          wraps=MainWindow._matching_content_message_index) as match:
+            for i in range(500, 1500):
+                window._merge_messages(jid, [self._fixture_message(i, body=f"New {i}")])
+        self.assertIs(window.messages_by_chat[jid], canonical)
+        self.assertEqual(len(canonical), 1500)
+        self.assertEqual(match.call_count, 1000)
+
+    def test_live_store_reports_each_new_row_once_after_in_place_append(self):
+        window = self._merge_window()
+        window._message_jid_may_be_group_chat = Mock(return_value=False)
+        for name in ("_normalize_audio_metadata_for_messages", "_flush_pending_reaction_updates",
+                     "_remember_message_sender", "_update_chat_activity", "_persist_messages"):
+            setattr(window, name, Mock())
+        for i in range(7):
+            with self.subTest(message=i):
+                message = self._fixture_message(i, body=f"New fixture {i}")
+                stored, added, _ = window._store_message(message)
+                self.assertIs(stored, message)
+                self.assertTrue(added)
+        duplicate = self._fixture_message(6, body="New fixture 6", delivery_state="read")
+        _, added, _ = window._store_message(duplicate)
+        self.assertFalse(added)
+        self.assertEqual(len(window.messages_by_chat[duplicate.chat_jid]), 7)
+
+    def test_real_store_and_event_pipeline_notify_seven_new_messages_not_history(self):
+        from cliente_xmpp.xmpp.events import MessageReceived
+
+        for notify in (False, True):
+            with self.subTest(notify=notify):
+                window = self._merge_window()
+                window._message_jid_may_be_group_chat = Mock(return_value=False)
+                window._is_locally_deleted_message = Mock(return_value=False)
+                window.loading_initial_chat_activity = False
+                window.whatsapp_verified = True
+                window._processing_xmpp_batch = True
+                window.conversation = SimpleNamespace(IsShown=lambda: False, current_chat=None)
+                for name in ("_normalize_audio_metadata_for_messages",
+                             "_flush_pending_reaction_updates", "_remember_message_sender",
+                             "_update_chat_activity", "_persist_messages", "_set_chat_state",
+                             "_ensure_chat_for_message", "_observe_atajos_message",
+                             "_update_chat_from_message", "_auto_download_media_message",
+                             "_speak_incoming_message", "_play_incoming_message_sound"):
+                    setattr(window, name, Mock())
+                window._show_windows_notification = Mock(return_value=False)
+                for i in range(7):
+                    message = self._fixture_message(i, body=f"New fixture {i}")
+                    window._handle_xmpp_event(MessageReceived(message, notify=notify))
+                window._handle_xmpp_event(MessageReceived(
+                    self._fixture_message(6, body="New fixture 6"), notify=notify,
+                ))
+                self.assertEqual(window._show_windows_notification.call_count, 7 if notify else 0)
+                self.assertEqual(window._speak_incoming_message.call_count, 7 if notify else 0)
+                self.assertEqual(window._play_incoming_message_sound.call_count, 7 if notify else 0)
+
+    def test_append_falls_back_for_identity_updates_and_late_history(self):
+        window = self._merge_window()
+        first = self._fixture_message(10)
+        window._merge_messages(first.chat_jid, [first])
+        window._merge_messages(first.chat_jid, [self._fixture_message(10, delivery_state="read")])
+        window._merge_messages(first.chat_jid, [self._fixture_message(1)])
+        rows = window.messages_by_chat[first.chat_jid]
+        self.assertEqual([m.message_id for m in rows], ["remote-1", "remote-10"])
+        self.assertEqual(rows[-1].delivery_state, "read")
+
+    def test_append_hydrates_replies_and_preserves_known_delivery(self):
+        window = self._merge_window()
+        reply = self._fixture_message(1, reply_to_id="remote-2", body="Reply")
+        window._merge_messages(reply.chat_jid, [reply])
+        incoming = self._fixture_message(2)
+        window.delivery_states_by_message[(reply.chat_jid, incoming.message_id)] = "read"
+        hydrated = window._merge_messages(reply.chat_jid, [incoming])
+        self.assertEqual(hydrated, [reply])
+        self.assertEqual(reply.reply_quote, incoming.body)
+        self.assertEqual(incoming.delivery_state, "read")
+
+    def test_append_keeps_structural_group_echo_correlation(self):
+        window = self._merge_window()
+        jid = "#room@whatsapp.example.test"
+        outgoing = self._fixture_message(
+            0, chat_jid=jid, sender_jid="me", chat_is_group=True,
+            outgoing=True, message_id="cliente-xmpp-pending",
+        )
+        echo = self._fixture_message(
+            1, chat_jid=jid, sender_jid=jid + "/fixture", chat_is_group=True,
+        )
+        window._merge_messages(jid, [outgoing])
+        window._merge_messages(jid, [echo])
+        self.assertEqual(len(window.messages_by_chat[jid]), 1)
+        self.assertEqual(window.messages_by_chat[jid][0].message_id, echo.message_id)
+        later = self._fixture_message(
+            4, chat_jid=jid, sender_jid=jid + "/fixture", chat_is_group=True,
+        )
+        window._merge_messages(jid, [later])
+        self.assertEqual(len(window.messages_by_chat[jid]), 2)
+
+    def test_content_window_keeps_boundary_and_distinct_pending_sends(self):
+        for seconds, count in ((120, 1), (121, 2)):
+            with self.subTest(seconds=seconds):
+                window = self._merge_window()
+                first = self._fixture_message(0, outgoing=True, message_id="cliente-xmpp-pending")
+                second = self._fixture_message(1, outgoing=True,
+                                              sent_at=first.sent_at + timedelta(seconds=seconds))
+                window._merge_messages(first.chat_jid, [first, second])
+                self.assertEqual(len(window.messages_by_chat[first.chat_jid]), count)
+        window = self._merge_window()
+        first = self._fixture_message(0, outgoing=True, message_id="cliente-xmpp-first")
+        second = self._fixture_message(0, outgoing=True, message_id="cliente-xmpp-second")
+        window._merge_messages(first.chat_jid, [first])
+        window._merge_messages(first.chat_jid, [second])
+        self.assertEqual(len(window.messages_by_chat[first.chat_jid]), 2)
+
     def test_incoming_audio_is_downloaded_automatically(self) -> None:
         message = Message(
             chat_jid="chat@example.test",

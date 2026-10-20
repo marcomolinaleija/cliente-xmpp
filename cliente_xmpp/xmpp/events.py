@@ -100,6 +100,23 @@ class WhatsAppBridgeStatus:
 
 
 @dataclass(slots=True)
+class WhatsAppLinkState:
+    account_jid: str
+    component_jid: str
+    generation: int
+    attempt: str
+    revision: int
+    status: str
+    authenticated: bool
+    reason: str = ""
+    qr_revision: int = 0
+    qr_deadline: float = 0.0
+    image_data: bytes = b""
+    code: str = ""
+    sync_phase: str = "pending"
+
+
+@dataclass(slots=True)
 class WhatsAppPairingCodeReceived:
     component_jid: str
     code: str
@@ -280,6 +297,7 @@ XmppEvent = (
     | XmppError
     | ChatReadFailed
     | WhatsAppBridgeStatus
+    | WhatsAppLinkState
     | WhatsAppPairingCodeReceived
     | WhatsAppLinkSessionStarted
     | WhatsAppLinkSessionEnded

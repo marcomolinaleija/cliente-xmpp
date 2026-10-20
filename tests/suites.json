@@ -1,6 +1,15 @@
 {
   "version": 1,
   "modules": {
+    "test_ui_event_pump": {
+      "area": "platform",
+      "layer": "fast",
+      "overrides": {"UiEventPumpNativeTests": {"layer": "integration"}}
+    },
+    "test_whatsapp_linking": {
+      "area": "connection",
+      "layer": "fast"
+    },
     "test_live_voice": {
       "area": "media",
       "layer": "fast",
@@ -465,6 +474,10 @@
       "layer": "contracts"
     },
     "test_patch_slidge_number_change": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_bridge_inbound": {
       "area": "bridge",
       "layer": "contracts"
     }

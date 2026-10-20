@@ -9,7 +9,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ BRIDGE_IMAGE_PATTERN = re.compile(
 )
 BRIDGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_UPDATE_MANIFEST_BYTES = 64 * 1024
+MIN_LINKING_BRIDGE_VERSION = 35
 
 
 class LocalBridgeError(RuntimeError):
@@ -44,6 +45,7 @@ class LocalBridgeConnection:
     settings: ConnectionSettings
     password: str
     connection_file: Path
+    update_status: LocalBridgeUpdateStatus | None = None
 
     @property
     def needs_password_migration(self) -> bool:
@@ -128,6 +130,27 @@ class LocalBridgeService:
             self.stop_keepalive()
             raise
         return connection
+
+    def prepare_for_linking(self) -> LocalBridgeConnection | None:
+        """Check compatibility before offering a QR; never update without consent."""
+        connection = self.prepare()
+        if connection is None:
+            return None
+        installed = self.installed_update_status()
+        if not installed.supports_updates or installed.current_version is None:
+            raise LocalBridgeError(
+                "No se pudo verificar la versión del puente local. "
+                "Repara el actualizador del appliance antes de vincular WhatsApp."
+            )
+        if installed.current_version >= MIN_LINKING_BRIDGE_VERSION:
+            return connection
+        update = self.check_for_update()
+        if not update.update_available or (update.target_version or 0) < MIN_LINKING_BRIDGE_VERSION:
+            raise LocalBridgeError(
+                "El puente incluido es demasiado antiguo para vincular WhatsApp. "
+                "No hay una actualización compatible disponible; no se modificó tu sesión."
+            )
+        return replace(connection, update_status=update)
 
     def start_keepalive(self) -> None:
         if self.platform_name != "nt":

@@ -24,8 +24,8 @@ from aiohttp import (
     WSServerHandshakeError,
     web,
 )
-from slixmpp import JID
-from slixmpp.exceptions import XMPPError
+from slixmpp import JID, Iq
+from slixmpp.exceptions import IqError, IqTimeout, XMPPError
 from voice_fakes import AudioBackend
 
 from cliente_xmpp.audio.live_call import SILENCE, LiveCallAudio
@@ -256,6 +256,48 @@ class VoiceCapturePacerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VoiceAuthorizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_grant_failures_close_transport_and_report_without_unhandled_task(self):
+        for error in (IqTimeout(Iq()), IqError(Iq()), TimeoutError(), ValueError()):
+            with self.subTest(error=type(error).__name__):
+                client = SimpleNamespace(
+                    _voice=None, _whatsapp_session_ready=True, _emit=Mock(),
+                    boundjid=JID("account@example.invalid"),
+                    _configured_local_whatsapp_component=lambda: COMPONENT,
+                    _configured_remote_whatsapp_component=lambda: "",
+                )
+                voice = SimpleNamespace(open=AsyncMock(side_effect=error), close=AsyncMock())
+                with patch("cliente_xmpp.xmpp.client.VoiceTransport", return_value=voice):
+                    await BridgeXmppClient.start_voice(client, "fixture-session")
+                voice.close.assert_awaited_once()
+                event = client._emit.call_args.args[0]
+                self.assertFalse(event.connected)
+                self.assertIsNone(client._voice)
+                self.assertTrue(client._whatsapp_session_ready)
+
+    async def test_old_grant_timeout_cannot_disable_replacement_voice(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def fail_later():
+            entered.set()
+            await release.wait()
+            raise IqTimeout(Iq())
+
+        client = SimpleNamespace(
+            _voice=None, _whatsapp_session_ready=True, _emit=Mock(),
+            _configured_local_whatsapp_component=lambda: COMPONENT,
+            _configured_remote_whatsapp_component=lambda: "",
+        )
+        old = SimpleNamespace(open=fail_later, close=AsyncMock())
+        new = SimpleNamespace(open=AsyncMock(), close=AsyncMock())
+        with patch("cliente_xmpp.xmpp.client.VoiceTransport", side_effect=[old, new]):
+            task = asyncio.create_task(BridgeXmppClient.start_voice(client, "old"))
+            await entered.wait()
+            await BridgeXmppClient.start_voice(client, "new")
+            release.set()
+            await task
+        self.assertIs(client._voice, new)
+        client._emit.assert_not_called()
+
     async def test_pending_activation_cannot_survive_disable_disconnect_or_replacement(self):
         for operation in ("disable", "disconnect", "replace"):
             with self.subTest(operation=operation):

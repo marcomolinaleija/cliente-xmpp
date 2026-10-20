@@ -66,6 +66,7 @@ class WhatsAppPairingCodeDialog(wx.Dialog):
             style=wx.TE_READONLY | wx.TE_CENTER,
         )
         self.code.SetToolTip("Codigo para escribir en WhatsApp.")
+        self.code.SetName("Código de vinculación de WhatsApp para introducir en el teléfono")
         font = self.code.GetFont()
         font.SetPointSize(28)
         font.SetWeight(wx.FONTWEIGHT_BOLD)

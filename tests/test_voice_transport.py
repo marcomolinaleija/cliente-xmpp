@@ -10,12 +10,20 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from socket import EAI_NONAME, gaierror
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from xml.etree import ElementTree as ET
 
 import wx
-from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
+from aiohttp import (
+    ClientSession,
+    TCPConnector,
+    ThreadedResolver,
+    WSMsgType,
+    WSServerHandshakeError,
+    web,
+)
 from slixmpp import JID
 from slixmpp.exceptions import XMPPError
 from voice_fakes import AudioBackend
@@ -32,6 +40,7 @@ from cliente_xmpp.ui.voice_dialog import VoiceCallDialog
 from cliente_xmpp.xmpp.client import BridgeXmppClient, XmppService
 from cliente_xmpp.xmpp.events import VoiceChannelChanged, VoiceStateChanged
 from cliente_xmpp.xmpp.voice import NAMESPACE, PROTOCOL, VoiceTransport, validate_grant
+from cliente_xmpp.xmpp.voice_worker import IsolatedVoiceTransport
 from tools.bridge_voice import (
     CapturePacer,
     FlowMetrics,
@@ -143,7 +152,7 @@ class VoiceCapturePacerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(done.wait(), 2)
             self.assertEqual([data for _, data in sent], expected)
             self.assertAlmostEqual(sent[0][0], .06)
-            self.assertTrue(all(b[0]-a[0] >= .019999
+            self.assertTrue(all(b[0]-a[0] >= .017999
                                 for a, b in zip(sent, sent[1:], strict=False)))
             self.assertEqual(metrics.counts["capture_queue_dropped_packets"], 0)
             self.assertEqual(metrics.counts["capture_queue_packets"], 0)
@@ -157,6 +166,47 @@ class VoiceCapturePacerTests(unittest.IsolatedAsyncioTestCase):
         pacer.state("ended")
         self.assertEqual(metrics.counts["capture_revoked_packets"], 20)
         self.assertEqual(metrics.counts["capture_queue_packets"], 0)
+
+    async def test_repeated_slow_writes_recover_backlog_without_drops_or_bursts(self):
+        now, next_input, count = 0., .02, 0
+        sent, queues = [], []
+        metrics = FlowMetrics(clock=lambda: now, report=lambda _: None)
+        metrics.state("active")
+
+        def advance(delay):
+            nonlocal now, next_input
+            end = now + delay
+            while next_input <= end + 1e-9:
+                now = next_input
+                pacer.push(bytes(640))
+                next_input += .02
+            now = end
+
+        async def sleep(delay):
+            advance(delay)
+
+        class Finished(Exception):
+            pass
+
+        async def send(data):
+            nonlocal count
+            count += 1
+            sent.append(now)
+            if count in range(50, 500, 50):
+                advance(.1)
+            if count % 50 == 49:
+                queues.append(pacer.queue.qsize())
+            if count == 500:
+                raise Finished()
+
+        pacer = CapturePacer(send, metrics=metrics, clock=lambda: now, sleep=sleep)
+        pacer.state("active", "fixture-call")
+        pacer.push(bytes(640))
+        with self.assertRaises(Finished):
+            await pacer.run()
+        self.assertEqual(metrics.counts["capture_queue_dropped_packets"], 0)
+        self.assertLessEqual(max(queues), 4)
+        self.assertTrue(all(b-a >= .017999 for a, b in zip(sent, sent[1:], strict=False)))
 
     async def test_held_audio_is_revoked_on_hangup_logout_or_another_call(self):
         for operation in ("hangup", "logout", "new_call"):
@@ -526,6 +576,36 @@ class VoiceTLSIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.voice.close()
         await self.backend_runner.cleanup()
 
+    async def test_hostname_tls_uses_system_dns_even_when_optional_async_resolver_fails(self):
+        self.voice.url = self.voice.url.replace("127.0.0.1", "localhost")
+        # The fault belongs to the client: do not also poison the fixture proxy's connector.
+        self.voice.native_http = lambda: ClientSession(
+            connector=TCPConnector(resolver=ThreadedResolver()),
+        )
+        with patch("aiohttp.connector.DefaultResolver", side_effect=AssertionError(
+            "optional async DNS must not choose voice resolution",
+        )), patch("cliente_xmpp.xmpp.voice.ThreadedResolver", wraps=ThreadedResolver) as resolver:
+            await self.client.open()
+            resolver.assert_called_once_with()
+            await self.client.command("dial", peer="fixture@" + COMPONENT)
+            pcm = bytes([7]) * 640
+            self.client.feed(pcm)
+            self.assertEqual(await asyncio.wait_for(self.client.playback.get(), 2), pcm)
+
+    async def test_system_dns_failure_is_specific_private_and_does_not_open_microphone(self):
+        self.voice.url = self.voice.url.replace("127.0.0.1", "localhost")
+        with patch.object(ThreadedResolver, "resolve", side_effect=gaierror(
+            EAI_NONAME, "fixture-private-host-and-token-must-not-be-echoed",
+        )), self.assertRaisesRegex(ValueError, "DNS"):
+            await self.client.open()
+        closed = [e for e in self.events if isinstance(e, VoiceChannelChanged) and not e.connected]
+        self.assertTrue(closed)
+        self.assertIn("DNS", closed[-1].detail)
+        self.assertNotIn("fixture-private", closed[-1].detail)
+        self.assertIsNone(self.backend_headers)
+        self.assertIsNone(self.client.audio)
+        self.assertIsNone(self.client.ws)
+
     async def test_tls_proxy_command_pcm_both_directions_and_logout(self):
         self.voice.metrics_enabled = True
         reports = []
@@ -667,7 +747,7 @@ class VoiceTLSIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await wait_for(lambda: c.state == "ended" and stream.closed)
                 self.assertFalse(c.audio_running)
                 self.assertFalse(stream.started)
-                self.assertFalse(dialog.answer.IsEnabled())
+                self.assertIsNone(window._voice_dialog)
             finally:
                 c.disable()
                 if client._voice:
@@ -995,6 +1075,137 @@ class VoiceMediaIsolationTests(unittest.IsolatedAsyncioTestCase):
                     await self.cleanup_flow()
                 self.assertFalse(worker.thread.is_alive())
                 self.assertEqual(self.voice.tokens.leases, {})
+
+
+class VoiceClientIsolationTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        VoiceTLSIntegrationTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        VoiceTLSIntegrationTests.tearDownClass.__func__(cls)
+
+    async def test_tls_duplex_survives_xmpp_stall_and_preserves_mute_and_close(self):
+        owner = threading.get_ident()
+        backend, received, events = AudioBackend(), [], []
+        backend.clock = time.perf_counter
+        io = MediaLoop()
+
+        async def serve():
+            async def echo(request):
+                ws = web.WebSocketResponse(protocols=(PROTOCOL,))
+                await ws.prepare(request)
+                await ws.send_json({"type": "state", "revision": 0, "state": "idle"})
+                revision = 0
+                async for message in ws:
+                    if message.type == WSMsgType.TEXT:
+                        command = json.loads(message.data)
+                        revision += 1
+                        state = "active" if command["action"] == "dial" else "ended"
+                        await ws.send_json({"type": "state", "revision": revision,
+                                            "state": state, "call_id": "fixture-call",
+                                            "direction": "outgoing"})
+                        await ws.send_json({"type": "result", "id": command["id"]})
+                    elif message.type == WSMsgType.BINARY:
+                        received.append(message.data)
+                        await ws.send_bytes(message.data)
+                return ws
+
+            app = web.Application()
+            app.router.add_get("/voice/v1", echo)
+            runner = web.AppRunner(app, access_log=None)
+            await runner.setup()
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls.load_cert_chain(self.cert, self.key)
+            site = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=tls)
+            await site.start()
+            return runner, site._server.sockets[0].getsockname()[1]
+
+        runner, port = await io.call(serve())
+        fixture = self
+
+        class Request(IQ):
+            async def send(self, **kwargs):
+                fixture.assertEqual(threading.get_ident(), owner)
+                result = IQ(from_jid=COMPONENT, kind="result")
+                result.append(ET.Element(f"{{{NAMESPACE}}}open", {
+                    "url": f"wss://localhost:{port}/voice/v1", "token": "a"*40,
+                    "protocol": PROTOCOL, "format": "pcm16le", "rate": "16000",
+                    "channels": "1", "expires-in": "30",
+                }))
+                return result
+
+        def emit(event):
+            self.assertEqual(threading.get_ident(), owner)
+            events.append(event)
+
+        client = SimpleNamespace(boundjid=JID(RESOURCE), Iq=Request,
+                                 settings=SimpleNamespace(use_tls=True, ca_file=str(self.cert)))
+        voice = IsolatedVoiceTransport(client, COMPONENT, emit,
+                                       audio_factory=lambda: LiveCallAudio(backend))
+
+        async def until(predicate):
+            async with asyncio.timeout(4):
+                while not predicate():
+                    await asyncio.sleep(.01)
+
+        source = None
+        try:
+            await voice.open()
+            self.assertEqual(backend.streams, [])
+            await voice.command("dial", peer="fixture@"+COMPONENT,
+                                audio_settings=VoiceAudioSettings())
+            await until(lambda: backend.streams and backend.streams[0].started)
+            stream = backend.streams[0]
+            played = []
+
+            def capture():
+                for _ in range(100):
+                    played.append(stream.frame(bytes([7])*640))
+                    time.sleep(.02)
+
+            source = threading.Thread(target=capture)
+            source.start()
+            await until(lambda: len(received) >= 10)
+            time.sleep(.5)  # Slixmpp stalled; devices and TLS peer remain independent.
+            await asyncio.to_thread(source.join, 4)
+            self.assertFalse(source.is_alive())
+            await until(lambda: len(received) == 100)
+            stats = await voice.diagnostics()
+            self.assertEqual((stats.capture_dropped, stats.transport_capture_dropped), (0, 0))
+            self.assertEqual(stats.transport_playback_dropped, 0)
+            self.assertGreater(sum(bool(any(pcm)) for pcm in played), 70)
+            await voice.configure_audio(muted=True)
+            stream.frame(bytes([7])*640)
+            await until(lambda: len(received) == 101)
+            self.assertEqual(received[-1], SILENCE)
+            await voice.command("hangup", call_id="fixture-call")
+            await until(lambda: stream.closed)
+            self.assertTrue(any(isinstance(e, VoiceStateChanged) for e in events))
+        finally:
+            if source:
+                await asyncio.to_thread(source.join, 4)
+            await voice.close()
+            await voice.close()
+            await io.call(runner.cleanup())
+            await io.stop()
+        self.assertFalse(voice.worker.thread.is_alive())
+
+    async def test_open_failure_closes_media_worker_without_opening_microphone(self):
+        backend = AudioBackend()
+        client = SimpleNamespace(boundjid=JID(RESOURCE),
+                                 settings=SimpleNamespace(use_tls=True, ca_file=str(self.cert)))
+        voice = IsolatedVoiceTransport(client, COMPONENT, Mock(),
+                                       audio_factory=lambda: LiveCallAudio(backend))
+        with patch("cliente_xmpp.xmpp.voice_worker.request_voice_grant",
+                   AsyncMock(return_value=("wss://localhost/voice/v1", "a"*40))), patch.object(
+            VoiceTransport, "open", AsyncMock(side_effect=ValueError("fixture TLS failure")),
+        ):
+            with self.assertRaises(ValueError):
+                await voice.open()
+        self.assertEqual(backend.streams, [])
+        self.assertFalse(voice.worker.thread.is_alive())
 
 
 if __name__ == "__main__":

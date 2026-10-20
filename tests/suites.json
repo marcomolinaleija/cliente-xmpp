@@ -11,7 +11,8 @@
       "layer": "contracts",
       "overrides": {
         "VoiceTLSIntegrationTests": {"layer": "integration"},
-        "VoiceMediaIsolationTests": {"layer": "integration"}
+        "VoiceMediaIsolationTests": {"layer": "integration"},
+        "VoiceClientIsolationTests": {"layer": "integration"}
       }
     },
     "test_voice_call_probe": {

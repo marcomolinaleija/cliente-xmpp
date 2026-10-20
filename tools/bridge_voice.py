@@ -164,13 +164,19 @@ class CapturePacer:
                 self.state("ended")
                 return
             if self.active and generation == self.epoch:
+                started = self.clock()
                 self._count("capture_delay_max_ms", round((self.clock()-received)*1000),
                             maximum=True)
                 await self.send(data)
+                # Recover a delayed queue gradually, never by dumping a burst into
+                # the native three-block queue. Normally keep the exact 20 ms rate.
+                interval = .018 if self.queue.qsize() > 3 else .02
+                # Account for time spent writing: a slow write must not incur an
+                # additional full block of sleep after it has already finished.
+                deadline = (started + interval if started - deadline >= .02
+                            else deadline + interval)
             self.pending = False
             self._gauge()
-            now = self.clock()
-            deadline = now + .02 if now - deadline >= .02 else deadline + .02
 
 
 def secure_url(value: str) -> str:

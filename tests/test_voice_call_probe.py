@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tools.patch_wacalls_voice_activity import TRANSFORMS as ACTIVITY_TRANSFORMS
 from tools.read_voice_flow import MAX_INPUT, MAX_LINE, parse_report, read_reports
 from tools.run_voice_call_probe import (
     isolated_run_args,
@@ -18,9 +21,44 @@ from tools.run_voice_call_probe import (
     summarize_go_tests,
     verify_archive,
 )
+from tools.voice_bridge_entrypoint import main as voice_entrypoint
+from tools.voice_bridge_entrypoint import prepare_runtime
 
 
 class VoiceCallProbeTests(unittest.TestCase):
+    def test_bootstrap_creates_fresh_socket_path_before_exec_and_preserves_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = Path(prepare_runtime(root))
+            self.assertEqual(first.name, "native.sock")
+            self.assertEqual(first.parent.parent, root.resolve())
+            self.assertFalse(first.exists())
+            first.write_text("do not replace")
+            with patch.dict(os.environ, {"CAN_VOICE_ENABLE": "1"}), \
+                    patch.object(sys, "argv", ["entry", "--home-dir", directory]), \
+                    patch("os.execv") as execute:
+                voice_entrypoint()
+                second = Path(os.environ["CAN_VOICE_SOCKET"])
+                self.assertNotEqual(first, second)
+                self.assertEqual(second.parent.parent, root.resolve())
+                self.assertFalse(second.exists())
+                execute.assert_called_once_with(
+                    "/venv/bin/slidge-whatsapp", ["slidge-whatsapp", "--home-dir", directory])
+            self.assertEqual(first.read_text(), "do not replace")
+
+    def test_disabled_voice_bootstrap_does_not_create_runtime(self):
+        with patch.dict(os.environ, {"CAN_VOICE_ENABLE": "0"}), \
+                patch.object(sys, "argv", ["entry"]), \
+                patch("tools.voice_bridge_entrypoint.prepare_runtime") as prepare, \
+                patch("os.execv"):
+            voice_entrypoint()
+            prepare.assert_not_called()
+
+    def test_activity_patch_rejects_source_without_expected_anchors(self):
+        for name, transform in ACTIVITY_TRANSFORMS.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                transform("package mlow\n// incompatible source\n")
+
     def test_codec_reference_rejects_modified_cached_fixture_without_network(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -52,7 +90,8 @@ class VoiceCallProbeTests(unittest.TestCase):
             with patch("tools.run_voice_call_probe.manager", changed), \
                     patch("tools.run_voice_call_probe.relay", changed), \
                     patch("tools.run_voice_call_probe.signaling", changed), \
-                    patch("tools.run_voice_call_probe.MEDIA_TRANSFORMS", {}):
+                    patch("tools.run_voice_call_probe.MEDIA_TRANSFORMS", {}), \
+                    patch("tools.run_voice_call_probe.CODEC_TRANSFORMS", {}):
                 context = prepare_context(archive, root, manifest)
             generated = (context / "wacalls-lifecycle.patch").read_bytes()
             self.assertIn(b"+// fixture change\n", generated)

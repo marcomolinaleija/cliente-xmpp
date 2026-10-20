@@ -27,12 +27,15 @@ COPY upstream_tests/ /src/internal/voip/call/
 COPY wacalls-srtp-auth.patch /tmp/wacalls-srtp-auth.patch
 COPY wacalls-lifecycle.patch /tmp/wacalls-lifecycle.patch
 COPY wacalls-media.patch /tmp/wacalls-media.patch
+COPY wacalls-codec.patch /tmp/wacalls-codec.patch
 COPY instrumentation/call/ /src/internal/voip/call/
 COPY instrumentation/transport/ /src/internal/voip/transport/
+COPY instrumentation/mlow/ /src/internal/voip/media/mlow/
 RUN git apply --unidiff-zero --check /tmp/wacalls-srtp-auth.patch && \
     git apply --unidiff-zero /tmp/wacalls-srtp-auth.patch && \
     git apply --check /tmp/wacalls-lifecycle.patch && git apply /tmp/wacalls-lifecycle.patch && \
-    git apply --check /tmp/wacalls-media.patch && git apply /tmp/wacalls-media.patch
+    git apply --check /tmp/wacalls-media.patch && git apply /tmp/wacalls-media.patch && \
+    git apply --check /tmp/wacalls-codec.patch && git apply /tmp/wacalls-codec.patch
 RUN gofmt -w canprobe/*.go voicecore/*.go internal/voip/call/*.go && \
     go test -run '^$' ./internal/voip/... ./internal/wa ./canprobe ./codecprobe ./voicecore && \
     go test -race -run '^$' ./internal/voip/... ./internal/wa ./canprobe ./codecprobe ./voicecore && \

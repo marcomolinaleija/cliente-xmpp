@@ -4,11 +4,13 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from cliente_xmpp.models.calls import CallEvent
+from cliente_xmpp.formatting import format_call_body
+from cliente_xmpp.models.calls import CallEvent, aggregate_call_events
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.storage.message_store import MessageStore
 from cliente_xmpp.xmpp.calls import CALL_NAMESPACE, call_event_from_xml, routed_chat_jid
@@ -386,6 +388,75 @@ class CallContractTests(unittest.TestCase):
         )
         self.assertIsNone(event.duration_seconds)
         self.assertEqual(event.effective_duration_seconds, 4)
+
+    def test_answer_and_end_override_only_weak_signaling_missed_heuristic(self) -> None:
+        at = datetime(2026, 10, 20, 12, tzinfo=UTC)
+        cases = (
+            ("", "", "", True, True, None, "ended"),
+            ("signaling", "", "timeout", True, True, None, "ended"),
+            ("", "", "", False, True, 60, "missed"),  # duration alone is not proof.
+            ("", "", "", True, False, None, "missed"),
+            ("app_state", "missed", "", True, True, 60, "missed"),
+            ("message", "missed", "", True, True, 60, "missed"),
+            ("history_sync", "", "", True, True, 60, "missed"),
+            ("signaling", "missed", "", True, True, 60, "missed"),
+        )
+        for source, outcome, reason, answered, ended, duration, expected in cases:
+            with self.subTest(source=source, outcome=outcome, answered=answered, ended=ended):
+                event = self._event(
+                    "fixture-call", 3, "missed", at=at,
+                    answered_at=at if answered else None,
+                    ended_at=at + timedelta(seconds=60) if ended else None,
+                    source=source, outcome=outcome, terminal_reason=reason,
+                    duration_seconds=duration,
+                )
+                self.assertEqual(event.state, expected)
+                for body in ("Missed call with Fixture contact",
+                             "Outgoing voice call: missed with Fixture contact"):
+                    text = format_call_body(body, call=event)
+                    self.assertIn("Fixture contact", text)
+                    self.assertEqual("perdida" in text, expected == "missed")
+
+    def test_answered_call_ended_by_peer_is_consistent_live_stored_and_aggregated(self) -> None:
+        from cliente_xmpp.ui.main_window import MainWindow
+
+        at = datetime(2026, 10, 20, 12, tzinfo=UTC)
+        accepted = self._event("fixture-completed", 2, "accepted", at=at,
+                               direction="outgoing", answered_at=at)
+        terminal = self._event("fixture-completed", 3, "missed",
+                               at=at + timedelta(seconds=60), direction="outgoing",
+                               ended_at=at + timedelta(seconds=60))
+        target = self._message(accepted, message_id="fixture-accept")
+        incoming = replace(self._message(terminal, message_id="fixture-terminal"),
+                           body="Missed call with Fixture contact")
+        MainWindow._merge_message_metadata(target, incoming)
+        self.assertEqual(target.call.state, "ended")
+        self.assertNotIn("perdida", MainWindow._message_body_for_display(target))
+        summary, = aggregate_call_events((accepted, terminal))
+        self.assertEqual((summary.state, summary.answered, summary.duration_seconds),
+                         ("ended", True, 60))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.sqlite3"
+            store = MessageStore(path)
+            store.upsert_chats(self.account_jid, [Chat(self.contact_jid, "Fixture contact")])
+            store.upsert_messages(self.account_jid, [self._message(accepted, message_id="accept")])
+            store.upsert_messages(self.account_jid, [incoming])
+            # Simulate an already cached legacy terminal, not just a newly merged model.
+            with closing(sqlite3.connect(path)) as conn:
+                conn.execute("UPDATE messages SET call_state='missed' WHERE call_id=?",
+                             ("fixture-completed",))
+                conn.commit()
+            loaded = store.load_recent_messages(self.account_jid, self.contact_jid)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].call.state, "ended")
+            self.assertIsNone(loaded[0].call.duration_seconds)  # retain original facts.
+            text = MainWindow._message_body_for_display(loaded[0])
+            self.assertNotIn("perdida", text)
+            self.assertIn("1 minuto", text)
+            statistics = store.load_statistics(self.account_jid, 7,
+                                               now=at + timedelta(hours=1)).calls
+            self.assertEqual((statistics.total, statistics.answered, statistics.missed), (1, 1, 0))
+            self.assertEqual(statistics.duration_total_seconds, 60)
 
     def test_statistics_merge_phases_without_counting_messages_or_invalid_durations(self) -> None:
         at = datetime(2026, 8, 31, 12, tzinfo=UTC)

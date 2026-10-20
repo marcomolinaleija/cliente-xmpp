@@ -14,8 +14,10 @@ import urllib.request
 from pathlib import Path
 
 try:
+    from tools.patch_wacalls_voice_activity import TRANSFORMS as CODEC_TRANSFORMS
     from tools.patch_wacalls_voice_metrics import TRANSFORMS as MEDIA_TRANSFORMS
 except ModuleNotFoundError:
+    from patch_wacalls_voice_activity import TRANSFORMS as CODEC_TRANSFORMS
     from patch_wacalls_voice_metrics import TRANSFORMS as MEDIA_TRANSFORMS
 
 if __package__:
@@ -42,6 +44,7 @@ def probe_fingerprint() -> str:
                EXPERIMENT / "upstream.json", EXPERIMENT / "codec-reference.json"]
     sources.append(ROOT / "tools/patch_wacalls_voice_lifecycle.py")
     sources.append(ROOT / "tools/patch_wacalls_voice_metrics.py")
+    sources.append(ROOT / "tools/patch_wacalls_voice_activity.py")
     sources.extend(sorted((EXPERIMENT / "instrumentation").rglob("*.go")))
     for directory in ("canprobe", "codecprobe", "voicecore", "upstream_tests"):
         sources.extend(sorted((EXPERIMENT / directory).glob("*.go")))
@@ -112,7 +115,7 @@ def prepare_context(archive: Path, output: Path, manifest: dict) -> Path:
     shutil.copyfile(EXPERIMENT / "Dockerfile.integration", context / "Dockerfile.integration")
     for name in ("patch_slidge_voice.py", "bridge_voice.py", "gopy_whatsapp_exports.map",
                  "smoke_voice_integration.py", "smoke_voice_activation.py", "read_voice_flow.py",
-                 "bridge_voice_lifecycle_test.go"):
+                 "bridge_voice_lifecycle_test.go", "voice_bridge_entrypoint.py"):
         shutil.copyfile(ROOT / "tools" / name, context / name)
     shutil.copyfile(EXPERIMENT / "wacalls-srtp-auth.patch", context / "wacalls-srtp-auth.patch")
     changes = []
@@ -143,6 +146,15 @@ def prepare_context(archive: Path, output: Path, manifest: dict) -> Path:
                 fromfile="a/" + path, tofile="b/" + path,
             ))
     (context / "wacalls-media.patch").write_text("".join(changes), encoding="utf-8", newline="\n")
+    changes = []
+    with tarfile.open(archive, "r:gz") as upstream:
+        for path, transform in CODEC_TRANSFORMS.items():
+            original = upstream.extractfile(prefix + "/" + path).read().decode()
+            changes.extend(difflib.unified_diff(
+                original.splitlines(keepends=True), transform(original).splitlines(keepends=True),
+                fromfile="a/" + path, tofile="b/" + path,
+            ))
+    (context / "wacalls-codec.patch").write_text("".join(changes), encoding="utf-8", newline="\n")
     shutil.copytree(EXPERIMENT / "instrumentation", context / "instrumentation", dirs_exist_ok=True)
     reference = context / "codec-reference"
     reference.mkdir(exist_ok=True)

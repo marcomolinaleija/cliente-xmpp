@@ -5,6 +5,7 @@ There is no history/store integration: live revisions never mark a chat unread.
 from __future__ import annotations
 
 import uuid
+from time import monotonic
 
 from cliente_xmpp.models.voice import VoiceAudioSettings
 from cliente_xmpp.xmpp.events import (
@@ -25,13 +26,15 @@ STATE_LABELS = {
 
 class VoiceController:
     def __init__(self, service, account, component, render, announce, incoming, name_for_jid,
-                 available=lambda: True, before_call=lambda: True, ringback=None):
+                 available=lambda: True, before_call=lambda: True, ringback=None, clock=monotonic):
         self.service = service
         self.account, self.component = account, component
         self.render, self.announce, self.incoming = render, announce, incoming
         self.name_for_jid = name_for_jid
         self.available, self.before_call = available, before_call
         self.ringback = ringback
+        self.clock = clock
+        self.active_since = None
         self._ringback_cancelled = False
         self._feedback_armed = False
         self._connected_feedback = False
@@ -109,6 +112,15 @@ class VoiceController:
     def status(self):
         return self.detail or STATE_LABELS.get(self.state, "Sin llamada")
 
+    @property
+    def duration(self):
+        seconds = (max(0, int(self.clock() - self.active_since))
+                   if self.active_since is not None else 0)
+        hours, seconds = divmod(seconds, 3600)
+        minutes, seconds = divmod(seconds, 60)
+        return (f"{hours}:{minutes:02}:{seconds:02}" if hours
+                else f"{minutes:02}:{seconds:02}")
+
     def select(self, jid, name):
         if self.busy:
             return
@@ -139,6 +151,7 @@ class VoiceController:
         old, self.session_id = self.session_id, ""
         self.connecting = self.connected = self.audio_running = False
         self.state, self.call_id, self.pending = "idle", "", ""
+        self.active_since = None
         self.action_id = ""
         self.queued_dial = False
         self.revision = -1
@@ -241,6 +254,7 @@ class VoiceController:
                 self.pending = ""
                 self.queued_dial = False
                 self.state, self.call_id = "idle", ""
+                self.active_since = None
                 self.detail = event.detail or "Se cerró el canal de llamadas"
                 self.session_id = ""
             else:
@@ -268,6 +282,11 @@ class VoiceController:
             ):
                 self.action_id = ""
             self.state, self.call_id, self.revision = event.state, event.call_id, event.revision
+            if event.state == "active":
+                if self.active_since is None or previous_id != event.call_id:
+                    self.active_since = self.clock()
+            elif event.state in {"idle", "ended"} or previous_id != event.call_id:
+                self.active_since = None
             if self.ringback is not None:
                 if (event.direction == "outgoing" and event.state in {"initiating", "ringing"}
                         and not self._ringback_cancelled):

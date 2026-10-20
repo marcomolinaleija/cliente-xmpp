@@ -1862,8 +1862,7 @@ class ConversationPanel(wx.Panel):
         if message.call is not None:
             return format_call_body(
                 message.body,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
 
         if is_link_preview(message):

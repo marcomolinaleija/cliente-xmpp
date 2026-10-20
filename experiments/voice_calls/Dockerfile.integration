@@ -45,7 +45,9 @@ COPY --from=builder /tmp/voice-native-*.jsonl /opt/voice-tools/
 COPY smoke_voice_integration.py /opt/voice-tools/
 COPY smoke_voice_activation.py /opt/voice-tools/
 COPY read_voice_flow.py /opt/voice-tools/
+COPY voice_bridge_entrypoint.py /opt/voice-tools/
 USER slidge
 ENV CAN_VOICE_ENABLE=0
 RUN python -B /opt/voice-tools/smoke_voice_integration.py
 RUN python -B /opt/voice-tools/smoke_voice_activation.py
+ENTRYPOINT ["python", "-B", "/opt/voice-tools/voice_bridge_entrypoint.py"]

@@ -1,4 +1,4 @@
-"""Authenticated live voice transport; runs only on the XMPP asyncio loop.
+"""Authenticated live voice transport; all operations belong to one asyncio loop.
 
 PCM queues are bounded. No media packet enters wx events, message history or SQLite.
 Microphone/device ownership belongs to the audio layer, not this protocol module.
@@ -10,11 +10,20 @@ import json
 import ssl
 import uuid
 from dataclasses import replace
+from socket import gaierror
 from time import perf_counter
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
-from aiohttp import ClientSession, ClientTimeout, TraceConfig, WSMsgType
+from aiohttp import (
+    ClientConnectorError,
+    ClientSession,
+    ClientTimeout,
+    TCPConnector,
+    ThreadedResolver,
+    TraceConfig,
+    WSMsgType,
+)
 from slixmpp import JID
 
 from cliente_xmpp.audio.live_call import CAPTURE_FRAMES, SILENCE, LiveCallAudio
@@ -59,14 +68,26 @@ def latest(queue: asyncio.Queue, data: bytes) -> bool:
     return dropped
 
 
+async def request_voice_grant(client, component):
+    """Authorization belongs to the XMPP owner loop, not the media worker."""
+    if not client.settings.use_tls:
+        raise ValueError("La voz requiere una conexión XMPP con TLS.")
+    iq = client.Iq()
+    iq["type"], iq["to"] = "get", component
+    iq.append(ET.Element(f"{{{NAMESPACE}}}open"))
+    return validate_grant(await iq.send(timeout=10), component)
+
+
 class VoiceTransport:
-    def __init__(self, client, component: str, emit, *, session_id="", audio_factory=LiveCallAudio):
+    def __init__(self, client, component: str, emit, *, session_id="", audio_factory=LiveCallAudio,
+                 authorized_grant=None):
         self.client = client
         self.component = component
         self.account = str(client.boundjid.bare)
         self.emit = emit
         self.session_id = session_id or uuid.uuid4().hex
         self.audio_factory = audio_factory
+        self.authorized_grant = authorized_grant
         self.audio: VoiceAudioSession | None = None
         self.call_id = ""
         self.capture: asyncio.Queue[bytes] = asyncio.Queue(CAPTURE_FRAMES)
@@ -97,12 +118,9 @@ class VoiceTransport:
     async def _run(self, ready: asyncio.Future) -> None:
         detail = ""
         try:
-            if not self.client.settings.use_tls:
-                raise ValueError("La voz requiere una conexión XMPP con TLS.")
-            iq = self.client.Iq()
-            iq["type"], iq["to"] = "get", self.component
-            iq.append(ET.Element(f"{{{NAMESPACE}}}open"))
-            url, token = validate_grant(await iq.send(timeout=10), self.component)
+            url, token = (self.authorized_grant if self.authorized_grant is not None
+                          else await request_voice_grant(self.client, self.component))
+            self.authorized_grant = None
             tls = ssl.create_default_context(cafile=self.client.settings.ca_file or None)
             tls.minimum_version = ssl.TLSVersion.TLSv1_2
             trace = TraceConfig()
@@ -112,6 +130,9 @@ class VoiceTransport:
 
             trace.on_request_redirect.append(reject_redirect)
             async with ClientSession(
+                # Use the system DNS configuration, also when aiodns is installed.
+                # getaddrinfo runs in the loop's executor, never on the wx thread.
+                connector=TCPConnector(resolver=ThreadedResolver()),
                 timeout=ClientTimeout(total=None, sock_connect=5),
                 trace_configs=[trace], trust_env=False,
             ) as http:
@@ -157,10 +178,16 @@ class VoiceTransport:
                         await asyncio.gather(sender, return_exceptions=True)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             detail = "No se pudo mantener el canal de voz seguro. Revisa la conexión del puente."
+            dns_failure = (isinstance(exc, ClientConnectorError)
+                           and isinstance(exc.os_error, gaierror))
+            if dns_failure:
+                detail = "No se pudo resolver la dirección del puente de voz (DNS)."
             if not ready.done():
-                ready.set_exception(ValueError("No se pudo abrir el canal de voz seguro."))
+                ready.set_exception(ValueError(
+                    detail if dns_failure else "No se pudo abrir el canal de voz seguro.",
+                ))
         finally:
             if not ready.done():
                 ready.cancel()
@@ -316,6 +343,20 @@ class VoiceTransport:
             receive_gap_max_ms=self.receive_gap_max_ms, send_max_ms=self.send_max_ms,
             pump_late_ticks=self.pump_late_ticks, pump_late_max_ms=self.pump_late_max_ms,
         )
+
+    async def diagnostics(self):
+        return self.statistics()
+
+    async def configure_audio(self, *, settings=None, muted=None, load_devices=False):
+        audio = self._audio()
+        if load_devices:
+            await audio.load_devices()
+        if settings is not None:
+            await audio.configure(settings)
+        if muted is not None:
+            audio.mute(muted)
+            while not self.capture.empty():
+                self.capture.get_nowait()
 
     async def close(self) -> None:
         if self.audio:

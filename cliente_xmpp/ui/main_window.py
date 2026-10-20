@@ -9245,8 +9245,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if message.call is not None and not has_media(message):
             preview = format_call_body(
                 preview,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
         return preview
 

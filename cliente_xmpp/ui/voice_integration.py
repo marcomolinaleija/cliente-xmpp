@@ -103,9 +103,7 @@ class VoiceIntegrationMixin:
         dialog = getattr(self, "_voice_dialog", None)
         if dialog is not None and not dialog.IsBeingDeleted():
             if activate:
-                dialog.Show()
-                dialog.Raise()
-                dialog.mute.SetFocus()
+                dialog.present()
             return dialog
         controller = self._voice_controller
         dialog = self._voice_dialog = VoiceCallDialog(
@@ -113,8 +111,7 @@ class VoiceIntegrationMixin:
         )
         controller.refresh_devices()
         if activate:
-            dialog.Show()
-            dialog.mute.SetFocus()
+            dialog.present()
         else:
             dialog.ShowWithoutActivating()
         return dialog
@@ -172,9 +169,15 @@ class VoiceIntegrationMixin:
         # Existing call-history notifications already implement chat mute, toast,
         # sound and NVDA fallback. Live control must not duplicate those alerts.
         self.status_bar.SetStatusText("Llamada entrante de " + name[:120])
-        muted = getattr(self, "_chat_notifications_muted", lambda _jid: False)(chat_jid)
-        if not muted:
-            self._show_voice_dialog(activate=False)
+        # Live call controls are explicitly always foregrounded; notification
+        # mute still governs the separate toast/sound path, not answering UI.
+        if self.IsIconized():
+            self.Iconize(False)
+        if not self.IsShown():
+            self.Show()
+        if getattr(self, "_tray_hidden", False):
+            self._tray_hidden = False
+        self._show_voice_dialog(activate=True)
 
     def _render_voice(self):
         dialog = getattr(self, "_voice_dialog", None)

@@ -562,7 +562,7 @@ class VoiceControllerTests(unittest.TestCase):
         self.assertEqual(c.state, "idle")
         self.assertFalse(c.audio_running)
 
-    def test_automatic_listener_does_not_call_and_muted_incoming_does_not_open_window(self):
+    def test_listener_never_dials_and_every_incoming_opens_foreground_even_if_muted(self):
         c = VoiceController(Mock(), ACCOUNT, COMPONENT, Mock(), Mock(), Mock(), lambda _: "Fixture")
         window = SimpleNamespace(
             _voice_controller=c, current_jid=ACCOUNT, whatsapp_component_jid=COMPONENT,
@@ -570,6 +570,8 @@ class VoiceControllerTests(unittest.TestCase):
             _ensure_voice_controller=Mock(return_value=c),
             _chat_notifications_muted=Mock(return_value=False),
             _show_voice_dialog=Mock(), status_bar=Mock(),
+            IsIconized=Mock(return_value=False), Iconize=Mock(),
+            IsShown=Mock(return_value=True), Show=Mock(),
         )
         VoiceIntegrationMixin._sync_voice_connection(window, True)
         VoiceIntegrationMixin._sync_voice_connection(window, True)
@@ -577,11 +579,17 @@ class VoiceControllerTests(unittest.TestCase):
         c.service.voice_command.assert_not_called()
         window._show_voice_dialog.assert_not_called()
         VoiceIntegrationMixin._voice_incoming(window, PEER, "Fixture")
-        window._show_voice_dialog.assert_called_once_with(activate=False)
+        window._show_voice_dialog.assert_called_once_with(activate=True)
         window._show_voice_dialog.reset_mock()
         window._chat_notifications_muted.return_value = True
+        window.IsIconized.return_value = True
+        window.IsShown.return_value = False
+        window._tray_hidden = True
         VoiceIntegrationMixin._voice_incoming(window, PEER, "Fixture")
-        window._show_voice_dialog.assert_not_called()
+        window._show_voice_dialog.assert_called_once_with(activate=True)
+        window.Iconize.assert_called_once_with(False)
+        window.Show.assert_called_once()
+        self.assertFalse(window._tray_hidden)
         sid = c.session_id
         VoiceIntegrationMixin._sync_voice_connection(window, False)
         c.service.stop_voice.assert_called_once_with(sid)
@@ -641,6 +649,25 @@ class VoiceControllerTests(unittest.TestCase):
         self.service.stop_voice.assert_called_with(self.session)
         c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=self.session))
         self.assertFalse(c.connected)
+
+    def test_duration_starts_on_active_not_ringing_and_survives_duplicate_active(self):
+        c = self.controller()
+        now = [10.]
+        c.clock = lambda: now[0]
+        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                 "ringing", "", 1, self.session, PEER))
+        now[0] = 20.
+        self.assertEqual(c.duration, "00:00")
+        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                 "active", "", 2, self.session, PEER))
+        now[0] = 95.
+        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                 "active", "", 3, self.session, PEER))
+        self.assertEqual(c.duration, "01:15")
+        now[0] = 3621.
+        self.assertEqual(c.duration, "1:00:01")
+        c.disable()
+        self.assertEqual(c.duration, "00:00")
 
 
 class VoiceDialogNativeTests(unittest.TestCase):
@@ -747,12 +774,18 @@ class VoiceDialogNativeTests(unittest.TestCase):
             self.assertTrue(dialog.answer.IsEnabled())
             self.assertTrue(dialog.answer.IsShown())
             self.assertFalse(dialog.hangup.IsShown())
+            self.assertFalse(dialog.audio_panel.IsShown())
+            dialog._toggle_audio_settings(None)
+            self.assertTrue(dialog.audio_panel.IsShown())
             self.assertEqual(dialog.input.GetSelection(), 1)
             self.assertFalse(dialog.input.IsFrozen())
             dialog._apply_devices(None)
             self.assertEqual(c.settings.input_device, 1)
             self.assertEqual(dialog.status.GetName(), "Estado de la llamada")
             event = Mock(GetKeyCode=Mock(return_value=wx.WXK_ESCAPE))
+            dialog._key(event)
+            self.assertFalse(dialog.audio_panel.IsShown())
+            service.voice_command.assert_not_called()
             dialog._key(event)
             self.assertEqual(service.voice_command.call_args.args, ("reject",))
             service.stop_voice.assert_not_called()
@@ -768,7 +801,8 @@ class VoiceDialogNativeTests(unittest.TestCase):
         dialog = VoiceCallDialog(None, c, Mock())
         holder["dialog"] = dialog
         try:
-            for name in ("status", "peer", "mute", "input", "output", "hangup", "answer"):
+            for name in ("status", "peer", "mute", "audio_settings", "input", "output",
+                         "hangup", "answer"):
                 with self.subTest(control=name):
                     self.assertTrue(accessible(getattr(dialog, name))["name"])
             before = accessible(dialog.mute)
@@ -776,6 +810,111 @@ class VoiceDialogNativeTests(unittest.TestCase):
             self.assertFalse(before["state"] & 0x10)
             dialog.mute.SetValue(True)
             self.assertTrue(accessible(dialog.mute)["state"] & 0x10)
+        finally:
+            dialog.Destroy()
+
+    def test_duration_keeps_advancing_with_focus_without_text_events_or_announcements(self):
+        holder, now = {}, [10.]
+        announce = Mock()
+        c = VoiceController(Mock(), ACCOUNT, COMPONENT, lambda: holder["dialog"].render(),
+                            announce, Mock(), lambda _: "Fixture", clock=lambda: now[0])
+        dialog = VoiceCallDialog(None, c, Mock())
+        holder["dialog"] = dialog
+        try:
+            c.enable()
+            c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=c.session_id))
+            c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                     "active", "", 1, c.session_id, PEER))
+            announce.reset_mock()
+            self.assertTrue(dialog.duration_timer.IsRunning())
+            self.assertIn("Duración: 00:00", dialog.status.GetValue())
+            with patch.object(dialog.status, "HasFocus", return_value=False):
+                now[0] = 75.
+                dialog._tick(None)
+            self.assertIn("Duración: 01:05", dialog.status.GetValue())
+            dialog.status.SetSelection(0, 7)
+            text_events = Mock()
+            dialog.status.Bind(wx.EVT_TEXT, text_events)
+            with patch.object(dialog.status, "HasFocus", return_value=True):
+                now[0] = 90.
+                dialog._tick(None)
+            self.assertIn("Duración: 01:20", dialog.status.GetValue())
+            self.assertEqual(dialog.status.GetSelection(), (0, 7))
+            event = Mock()
+            dialog._status_focus(event)
+            self.assertIn("Duración: 01:20", dialog.status.GetValue())
+            event.Skip.assert_called_once()
+            announce.assert_not_called()
+            text_events.assert_not_called()
+        finally:
+            dialog.Destroy()
+
+    def test_hangup_and_remote_end_close_once_without_disabling_listener(self):
+        for ending in ("local", "remote"):
+            with self.subTest(ending=ending):
+                holder, closed = {}, Mock()
+                service = Mock()
+                c = VoiceController(service, ACCOUNT, COMPONENT,
+                                    lambda holder=holder: holder["dialog"].render(), Mock(), Mock(),
+                                    lambda _: "Fixture")
+                dialog = VoiceCallDialog(None, c, closed)
+                holder["dialog"] = dialog
+                try:
+                    c.enable()
+                    c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=c.session_id))
+                    c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                             "active", "", 1, c.session_id, PEER))
+                    self.assertEqual(dialog.hangup.GetLabel().replace("&", ""), "Colgar")
+                    self.assertFalse(hasattr(dialog, "close_button"))
+                    c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                             "ended", "", 1, c.session_id, PEER))
+                    self.assertFalse(dialog._closing)  # stale revision cannot close the call.
+                    if ending == "local":
+                        dialog.hangup.Command(wx.CommandEvent(wx.wxEVT_BUTTON,
+                                                              dialog.hangup.GetId()))
+                        service.voice_command.assert_called_once()
+                        self.assertEqual(service.voice_command.call_args.args, ("hangup",))
+                    else:
+                        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid",
+                                                 "outgoing", "ended", "", 2, c.session_id, PEER))
+                        service.voice_command.assert_not_called()
+                    self.assertTrue(dialog._closing)
+                    self.assertFalse(dialog.duration_timer.IsRunning())
+                    dialog.dismiss()
+                    closed.assert_called_once_with(dialog)
+                    service.stop_voice.assert_not_called()
+                    self.assertTrue(c.connected)
+                finally:
+                    if not dialog.IsBeingDeleted():
+                        dialog.Destroy()
+
+    def test_incoming_restores_and_focuses_answer_without_permanent_topmost(self):
+        holder = {}
+        c = VoiceController(Mock(), ACCOUNT, COMPONENT, lambda: holder["dialog"].render(),
+                            Mock(), Mock(), lambda _: "Fixture")
+        dialog = VoiceCallDialog(None, c, Mock())
+        holder["dialog"] = dialog
+        try:
+            c.enable()
+            c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=c.session_id))
+            c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "incoming",
+                                     "incoming_ringing", "", 1, c.session_id, PEER))
+            self.assertTrue(dialog.GetWindowStyleFlag() & wx.STAY_ON_TOP)
+            with patch.object(dialog, "IsIconized", return_value=True), \
+                    patch.object(dialog, "Iconize") as restore, \
+                    patch.object(dialog, "Show") as show, \
+                    patch.object(dialog, "Raise") as raise_window, \
+                    patch.object(dialog, "RequestUserAttention") as attention, \
+                    patch.object(dialog.answer, "SetFocus") as focus:
+                dialog.present()
+                restore.assert_called_once_with(False)
+                show.assert_called_once()
+                raise_window.assert_called_once()
+                attention.assert_called_once()
+                focus.assert_called_once()
+            c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "incoming",
+                                     "active", "", 2, c.session_id, PEER))
+            self.assertFalse(dialog.GetWindowStyleFlag() & wx.STAY_ON_TOP)
         finally:
             dialog.Destroy()
 

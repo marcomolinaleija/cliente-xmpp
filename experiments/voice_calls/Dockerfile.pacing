@@ -1,0 +1,8 @@
+# Small local follow-up to the codec-corrected candidate. No native rebuild.
+ARG VOICE_IMAGE=cliente-xmpp-bridge:voice-fixed-20261020
+FROM ${VOICE_IMAGE}
+USER root
+COPY bridge_voice.py /opt/voice-tools/bridge_voice.py
+COPY bridge_voice.py /venv/lib/python3.13/site-packages/slidge_whatsapp/voice.py
+RUN python -B -c "import ast; from pathlib import Path; ast.parse(Path('/opt/voice-tools/bridge_voice.py').read_text())"
+USER slidge

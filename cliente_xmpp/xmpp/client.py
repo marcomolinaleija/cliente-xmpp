@@ -90,7 +90,7 @@ from cliente_xmpp.xmpp.http_upload import (
     upload_file_with_system_resolver,
 )
 from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
-from cliente_xmpp.xmpp.voice import VoiceTransport
+from cliente_xmpp.xmpp.voice_worker import IsolatedVoiceTransport as VoiceTransport
 
 EventHandler = Callable[[XmppEvent], None]
 
@@ -6040,18 +6040,11 @@ class XmppService:
                 if diagnostics_request:
                     self._emit(VoiceDiagnostics(
                         voice.account, voice.component, session_id, diagnostics_request,
-                        voice.statistics(),
+                        await voice.diagnostics(),
                     ))
                     return
-                audio = voice._audio()
-                if load_devices:
-                    await audio.load_devices()
-                if settings is not None:
-                    await audio.configure(settings)
-                if muted is not None:
-                    audio.mute(muted)
-                    while not voice.capture.empty():
-                        voice.capture.get_nowait()
+                await voice.configure_audio(settings=settings, muted=muted,
+                                            load_devices=load_devices)
             except (ValueError, RuntimeError):
                 self._emit(VoiceActionFailed(
                     voice.account, voice.component, session_id, "audio", voice.call_id,

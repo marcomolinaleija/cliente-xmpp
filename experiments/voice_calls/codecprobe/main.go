@@ -162,6 +162,13 @@ func run(root string) (comparison, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--export-synthetic" {
+		if err := exportSynthetic(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 1 {
 		fmt.Fprintln(os.Stderr, "offline probe accepts no account or network arguments")
 		os.Exit(2)
@@ -174,4 +181,29 @@ func main() {
 	if err = json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		os.Exit(1)
 	}
+}
+
+// Fixed generated waveform for an independent decoder. Never takes user audio.
+func exportSynthetic() error {
+	enc := mlow.NewMlowEncoder()
+	frames := make([]string, 0, 84)
+	seed := uint32(0x12345678)
+	for f := 0; f < 84; f++ {
+		pcm := make([]float32, 960)
+		for i := range pcm {
+			if f < 18 || f >= 66 {
+				t := float64(f*960+i) / 16000
+				pcm[i] = float32(.25*math.Sin(2*math.Pi*150*t) + .05*math.Sin(2*math.Pi*1700*t))
+			} else {
+				seed = seed*1664525 + 1013904223
+				pcm[i] = .001 * (float32(seed>>8)/8388608 - 1)
+			}
+		}
+		wire, err := enc.Encode(pcm)
+		if err != nil {
+			return err
+		}
+		frames = append(frames, hex.EncodeToString(wire))
+	}
+	return json.NewEncoder(os.Stdout).Encode(frames)
 }

@@ -384,8 +384,7 @@ class ChatListPanel(wx.Panel):
         if message.call is not None:
             preview_source = format_call_body(
                 preview_source,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
         preview_source = preview_source or "Adjunto"
         preview = self._truncate_preview(preview_source)

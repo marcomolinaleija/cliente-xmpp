@@ -152,6 +152,7 @@ from cliente_xmpp.ui.sticker_gallery_dialog import StickerGalleryDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
 from cliente_xmpp.ui.system_tray import SystemTrayIcon
 from cliente_xmpp.ui.theme import apply_theme
+from cliente_xmpp.ui.voice_integration import VoiceIntegrationMixin
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkPanel,
     WhatsAppPairingCodeDialog,
@@ -248,7 +249,7 @@ class ManualHistoryLoad:
         self.bulk = self.remaining is None or self.remaining >= 500
 
 
-class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
+class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegrationMixin, wx.Frame):
     def __init__(self, *, development_mode: bool = False, startup_checks: bool = True) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
@@ -368,6 +369,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.whatsapp_link_status = "unknown"
         self.whatsapp_link_detail = ""
         self.whatsapp_verified = False
+        self._voice_controller = None
+        self._voice_dialog = None
         self.pending_roster_chats: list[Chat] | None = None
         self.whatsapp_link_session: tuple[str, str, str] | None = None
         self.whatsapp_link_mode = ""
@@ -574,6 +577,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
+        self.conversation.call_button.Bind(wx.EVT_BUTTON, self._on_call_contact)
         self.conversation.search_button.Bind(wx.EVT_BUTTON, self._on_open_chat_message_search)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
         self.conversation.emoji_button.Bind(wx.EVT_BUTTON, self._on_open_emoji_picker)
@@ -648,6 +652,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             wx.MessageBox("El JID y el password son obligatorios.", "Datos incompletos")
             return
 
+        self._close_voice()
         self.settings_store.save_connection_profile(self.connection_mode, login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
@@ -2169,6 +2174,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.audio_recorder.cancel()
             self.conversation.set_recording_state(False)
         self.conversation.set_remote_actions_enabled(enabled)
+        VoiceIntegrationMixin._sync_voice_connection(self, enabled)
         self.chat_list.set_new_chat_enabled(enabled)
         self.connection_header.mark_all_read_button.Enable(enabled)
         current_chat = self.conversation.current_chat
@@ -2294,6 +2300,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
 
         menu = wx.Menu()
+        if VoiceIntegrationMixin._voice_chat_supported(self, chat):
+            call_item = menu.Append(wx.ID_ANY, "Llamar…")
+            call_item.Enable(self.whatsapp_verified)
+            self.Bind(wx.EVT_MENU, lambda _event, target=chat: self._call_voice_contact(target),
+                      call_item)
+            menu.AppendSeparator()
         rename_item = menu.Append(wx.ID_ANY, "Cambiar nombre\tF2")
         mute_item = menu.Append(
             wx.ID_ANY,
@@ -4864,6 +4876,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         return path, ""
 
     def _start_recording(self) -> None:
+        voice = getattr(self, "_voice_controller", None)
+        if voice is not None and voice.busy:
+            message = "Termina la llamada antes de grabar una nota de voz."
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
         if not self._require_whatsapp_connection():
             return
 
@@ -6721,6 +6739,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             event.Veto()
             return
         self._closing = True
+        self._close_voice()
+        self._shutdown_voice_devices()
         self.manual_history_load = None
         self._close_atajos_api()
         self._close_scheduled_messages()
@@ -6754,6 +6774,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         wx.PostEvent(self, WxXmppEvent(event))
 
     def _handle_xmpp_event(self, event: XmppEvent) -> None:
+        if VoiceIntegrationMixin._handle_voice_event(self, event):
+            return
         if getattr(self, "_storage_reset_in_progress", False):
             return
         match event:

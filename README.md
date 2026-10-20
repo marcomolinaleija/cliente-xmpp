@@ -2,6 +2,21 @@
 
 Cliente de escritorio para Windows pensado como interfaz propia sobre un bridge XMPP de WhatsApp.
 
+## Rama experimental de llamadas de voz
+
+La rama `voice-calls` incluye llamadas de voz individuales desde Windows y los
+cambios correspondientes del puente Linux. Es una alfa funcional: permite llamar,
+contestar, rechazar, colgar, silenciar y seleccionar dispositivos, pero la calidad
+de audio y los microcortes siguen en investigación. Vídeo y llamadas grupales quedan
+fuera de este prototipo.
+
+Para colaborar, consulta la [entrada del experimento](experiments/voice_calls/README.md),
+la [arquitectura, pruebas y evolución](docs/PUENTE_WHATSAPP_VOZ_EXPERIMENTAL_V35.md)
+y la [investigación de calidad](docs/INVESTIGACION_CALIDAD_LLAMADAS_2026-10-18.md).
+Las activaciones del VPS descritas allí son evidencia histórica; cada desarrollador
+debe usar su propio entorno de prueba. Esta rama no incluye credenciales, bases de
+datos, logs privados ni imágenes experimentales publicadas.
+
 ## Objetivo inicial
 
 - Conectar con una cuenta XMPP existente.

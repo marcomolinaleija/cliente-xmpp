@@ -1,0 +1,12 @@
+{
+  "repository": "oxidezap/whatsapp-rust",
+  "commit": "d1d929aeb3ea9a10ee61cb87a3176b72e90f3dd2",
+  "base_url": "https://raw.githubusercontent.com/oxidezap/whatsapp-rust/d1d929aeb3ea9a10ee61cb87a3176b72e90f3dd2/wacore/src/voip/mlow/testdata/",
+  "provenance_url": "https://github.com/oxidezap/whatsapp-rust/blob/d1d929aeb3ea9a10ee61cb87a3176b72e90f3dd2/wacore/src/voip/mlow/testdata/PROVENANCE.md",
+  "input": "public synthetic corpus, no recorded conversations",
+  "files": {
+    "synth_mic.raw": {"bytes": 211200, "sha256": "aec92c54ecc1e1f81dc20c5a730499af5f4efbd4ed90fea3ffab26e606f8f569"},
+    "wasm_derived_ref.raw": {"bytes": 211200, "sha256": "91c3970882daecc54428fa1d52428a2e3fa364ced10f674af38bf1a971e2a076"},
+    "wasm_derived_frames.json": {"bytes": 23291, "sha256": "c3b9c0b5140cd48401be07311ec547ec024e3e4c0841f5cdbf8178ede7d24bb3"}
+  }
+}

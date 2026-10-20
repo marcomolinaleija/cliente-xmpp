@@ -57,7 +57,8 @@ datas = collect_data_files("rlottie_python")
 datas += collect_data_files("_sounddevice_data")
 datas += [
     (str(path), "cliente_xmpp/assets/audio")
-    for path in (ROOT / "cliente_xmpp" / "assets" / "audio").glob("*.mp3")
+    for path in (ROOT / "cliente_xmpp" / "assets" / "audio").iterdir()
+    if path.suffix.lower() in {".mp3", ".wav"} and path.is_file()
 ]
 datas += [
     (str(path), "cliente_xmpp/assets")

@@ -22,6 +22,7 @@ from slixmpp.exceptions import IqError, IqTimeout
 from slixmpp.plugins.xep_0363.http_upload import FileTooBig, HTTPError
 
 from cliente_xmpp.audio.duration import media_duration_seconds
+from cliente_xmpp.audio.live_call import LiveAudioError
 from cliente_xmpp.audio.opus import (
     VOICE_NOTE_MIME,
     VOICE_NOTE_UPLOAD_MIME,
@@ -47,6 +48,7 @@ from cliente_xmpp.models.names import (
     unescape_jid_text,
 )
 from cliente_xmpp.models.reactions import ReactionUpdate, normalized_reactions
+from cliente_xmpp.models.voice import VoiceAudioSettings
 from cliente_xmpp.xmpp.calls import call_event_from_xml, routed_chat_jid
 from cliente_xmpp.xmpp.events import (
     ChatActivityLoaded,
@@ -68,6 +70,9 @@ from cliente_xmpp.xmpp.events import (
     MessageReactionReceived,
     MessageReceived,
     RosterLoaded,
+    VoiceActionFailed,
+    VoiceChannelChanged,
+    VoiceDiagnostics,
     WhatsAppBridgeStatus,
     WhatsAppLinkSessionEnded,
     WhatsAppLinkSessionStarted,
@@ -85,6 +90,7 @@ from cliente_xmpp.xmpp.http_upload import (
     upload_file_with_system_resolver,
 )
 from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
+from cliente_xmpp.xmpp.voice import VoiceTransport
 
 EventHandler = Callable[[XmppEvent], None]
 
@@ -214,6 +220,8 @@ class BridgeXmppClient(ClientXMPP):
         super().__init__(settings.jid, password)
         self.settings = settings
         self._emit = emit
+        self._voice: VoiceTransport | None = None
+        self._voice_request: tuple[str, object] | None = None
         self._history_preload_semaphore = asyncio.Semaphore(4)
         self._group_chat_jids: set[str] = set()
         self._joined_group_chat_jids: set[str] = set()
@@ -336,6 +344,10 @@ class BridgeXmppClient(ClientXMPP):
         asyncio.create_task(self._load_displayed_states())
 
     def _on_disconnected(self, _event: object) -> None:
+        self._voice_request = None
+        voice = getattr(self, "_voice", None)
+        if voice and voice.task:
+            asyncio.create_task(voice.close())
         self._whatsapp_session_ready = False
         getattr(self, "_own_group_occupants", {}).clear()
         getattr(self, "_pending_poll_votes", {}).clear()
@@ -375,6 +387,10 @@ class BridgeXmppClient(ClientXMPP):
         self.loop.call_later(delay, reconnect)
 
     def request_disconnect(self) -> None:
+        self._voice_request = None
+        voice = getattr(self, "_voice", None)
+        if voice and voice.task:
+            asyncio.create_task(voice.close())
         self._disconnect_requested = True
         self.disconnect()
 
@@ -2944,6 +2960,33 @@ class BridgeXmppClient(ClientXMPP):
 
         if chats:
             self._emit(ChatsDiscovered(chats))
+
+    async def start_voice(self, session_id: str = "") -> None:
+        request = (session_id, object())
+        self._voice_request = request
+        component = (
+            self._configured_local_whatsapp_component()
+            or self._configured_remote_whatsapp_component()
+        )
+        if not component or not self._whatsapp_session_ready:
+            self._emit(VoiceChannelChanged(
+                str(self.boundjid.bare), component, False,
+                "WhatsApp no está conectado.", session_id,
+            ))
+            return
+        if self._voice:
+            await self._voice.close()
+        if self._voice_request is not request:
+            return
+        self._voice = VoiceTransport(self, component, self._emit, session_id=session_id)
+        try:
+            await self._voice.open()
+        except (ValueError, TimeoutError):
+            self._emit(VoiceChannelChanged(
+                str(self.boundjid.bare), component, False,
+                "No se pudo abrir el canal de voz seguro.",
+                session_id,
+            ))
 
     async def load_group_message_info(
         self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
@@ -5937,6 +5980,86 @@ class XmppService:
 
         self._loop.call_soon_threadsafe(request)
 
+    def start_voice(self, session_id: str = "") -> None:
+        """Explicit experimental activation; never opens a microphone automatically."""
+        if self._client and self._loop:
+            client, loop = self._client, self._loop
+            loop.call_soon_threadsafe(lambda: loop.create_task(client.start_voice(session_id)))
+
+    def voice_command(
+        self, action: str, *, call_id: str = "", peer: str = "", session_id: str = "",
+        audio_settings: VoiceAudioSettings | None = None,
+        request_id: str = "",
+    ) -> None:
+        if not self._client or not self._loop:
+            return
+        client, loop = self._client, self._loop
+
+        async def command():
+            voice = client._voice
+            if not voice or (session_id and voice.session_id != session_id):
+                return
+            try:
+                await voice.command(action, call_id=call_id, peer=peer,
+                                    audio_settings=audio_settings)
+            except (ValueError, TimeoutError, RuntimeError) as exc:
+                self._emit(VoiceActionFailed(
+                    voice.account, voice.component, voice.session_id, action, call_id,
+                    str(exc) if isinstance(exc, LiveAudioError)
+                    else "No se pudo completar la acción de llamada.",
+                    request_id,
+                ))
+
+        loop.call_soon_threadsafe(lambda: loop.create_task(command()))
+
+    def stop_voice(self, session_id: str = "") -> None:
+        if self._client and self._loop:
+            client, loop = self._client, self._loop
+
+            async def close():
+                request = getattr(client, "_voice_request", None)
+                if request and (not session_id or request[0] == session_id):
+                    client._voice_request = None
+                if client._voice and (not session_id or client._voice.session_id == session_id):
+                    await client._voice.close()
+
+            loop.call_soon_threadsafe(lambda: loop.create_task(close()))
+
+    def voice_audio(self, session_id: str, *, settings: VoiceAudioSettings | None = None,
+                    muted: bool | None = None, load_devices: bool = False,
+                    diagnostics_request: str = "") -> None:
+        if not self._client or not self._loop:
+            return
+        client, loop = self._client, self._loop
+
+        async def configure():
+            voice = client._voice
+            if not voice or voice.session_id != session_id:
+                return
+            try:
+                if diagnostics_request:
+                    self._emit(VoiceDiagnostics(
+                        voice.account, voice.component, session_id, diagnostics_request,
+                        voice.statistics(),
+                    ))
+                    return
+                audio = voice._audio()
+                if load_devices:
+                    await audio.load_devices()
+                if settings is not None:
+                    await audio.configure(settings)
+                if muted is not None:
+                    audio.mute(muted)
+                    while not voice.capture.empty():
+                        voice.capture.get_nowait()
+            except (ValueError, RuntimeError):
+                self._emit(VoiceActionFailed(
+                    voice.account, voice.component, session_id, "audio", voice.call_id,
+                    "No se pudo configurar el dispositivo de audio.",
+                ))
+
+        loop.call_soon_threadsafe(lambda: loop.create_task(configure()))
+
     def load_group_message_info(
         self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
     ) -> None:
@@ -6052,11 +6175,15 @@ class XmppService:
 
     def _run_client(self, settings: ConnectionSettings, password: str) -> None:
         self._file_transfer_lock = None
+        client = None
+        loop = None
         try:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
 
-            self._client = BridgeXmppClient(settings, password, self._emit)
+            client = BridgeXmppClient(settings, password, self._emit)
+            self._client = client
             plugins = (
                 "xep_0030",
                 "xep_0049",
@@ -6083,7 +6210,7 @@ class XmppService:
             )
             for plugin in plugins:
                 if plugin == "xep_0199":
-                    self._client.register_plugin(
+                    client.register_plugin(
                         plugin,
                         {
                             "keepalive": True,
@@ -6092,24 +6219,31 @@ class XmppService:
                         },
                     )
                 else:
-                    self._client.register_plugin(plugin)
-            self._client["xep_0030"].add_feature(MESSAGE_CORRECT_NS)
+                    client.register_plugin(plugin)
+            client["xep_0030"].add_feature(MESSAGE_CORRECT_NS)
 
             if settings.host:
-                self._client.connect(settings.host, settings.port)
+                client.connect(settings.host, settings.port)
             else:
-                self._client.connect()
+                client.connect()
 
-            self._loop.run_forever()
+            loop.run_forever()
         except Exception as exc:
             self._emit(XmppError(f"Error en la conexión XMPP: {exc}"))
         finally:
-            if self._loop and self._file_transfer_tasks:
-                tasks = tuple(self._file_transfer_tasks)
-                self._cancel_file_transfers()
-                self._loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-            self._client = None
-            self._loop = None
+            voice = getattr(client, "_voice", None)
+            if loop and voice:
+                loop.run_until_complete(voice.close())
+            if loop:
+                tasks = tuple(task for task in self._file_transfer_tasks if task.get_loop() is loop)
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+            if self._client is client:
+                self._client = None
+            if self._loop is loop:
+                self._loop = None
 
 
 def _format_file_send_error(exc: BaseException) -> str:

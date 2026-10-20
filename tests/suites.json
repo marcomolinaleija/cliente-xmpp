@@ -1,6 +1,23 @@
 {
   "version": 1,
   "modules": {
+    "test_live_voice": {
+      "area": "media",
+      "layer": "fast",
+      "overrides": {"VoiceDialogNativeTests": {"layer": "integration", "area": "platform"}}
+    },
+    "test_voice_transport": {
+      "area": "bridge",
+      "layer": "contracts",
+      "overrides": {
+        "VoiceTLSIntegrationTests": {"layer": "integration"},
+        "VoiceMediaIsolationTests": {"layer": "integration"}
+      }
+    },
+    "test_voice_call_probe": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_read_marker_errors": {
       "area": "connection",
       "layer": "fast",

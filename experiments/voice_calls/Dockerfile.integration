@@ -1,0 +1,51 @@
+# Local candidate only. No credentials, volumes, external ports, login or deployment.
+ARG BRIDGE_IMAGE=ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v35@sha256:5cc36c7f2d1cfc08632f6d6e88cd38c009138915069fc0de282c3a43c60de86e
+ARG PROBE_IMAGE=cliente-xmpp-voice-probe:v35-offline
+FROM ${PROBE_IMAGE} AS voice_sources
+FROM ${BRIDGE_IMAGE} AS patched
+USER root
+COPY --from=voice_sources /src /opt/voice-upstream
+COPY patch_slidge_voice.py bridge_voice.py /opt/voice-tools/
+RUN python -B /opt/voice-tools/patch_slidge_voice.py \
+      /venv/lib/python3.13/site-packages/slidge_whatsapp \
+      /opt/voice-upstream/voicecore /opt/voice-upstream /opt/voice-tools/bridge_voice.py && \
+    python -B /opt/voice-tools/patch_slidge_voice.py \
+      /venv/lib/python3.13/site-packages/slidge_whatsapp \
+      /opt/voice-upstream/voicecore /opt/voice-upstream /opt/voice-tools/bridge_voice.py && \
+    python -m compileall -q /venv/lib/python3.13/site-packages/slidge_whatsapp
+
+FROM voice_sources AS builder
+RUN apt-get update -y && apt-get install -y --no-install-recommends libmupdf-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -s libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /integration/slidge_whatsapp
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+COPY bridge_voice_lifecycle_test.go /integration/slidge_whatsapp/
+WORKDIR /integration/slidge_whatsapp
+# Preserve v35's actual patched WhatsMeow; MVS retains its other dependency pins.
+RUN go mod edit -go=1.26.4 \
+      -require=github.com/pion/webrtc/v4@v4.2.15 \
+      -replace=go.mau.fi/whatsmeow=/opt/bridge-whatsmeow && \
+    go mod tidy && \
+    gofmt -w session.go voicecore && \
+    (go test -json -mod=mod . ./voicecore/... >/tmp/voice-native-go.jsonl || \
+      (tail -60 /tmp/voice-native-go.jsonl; exit 1)) && \
+    (go test -json -mod=mod -race . ./voicecore/... >/tmp/voice-native-race.jsonl || \
+      (tail -60 /tmp/voice-native-race.jsonl; exit 1)) && \
+    cd generated && \
+    go build -mod=mod -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched AS candidate
+COPY --from=builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=builder /tmp/voice-native-*.jsonl /opt/voice-tools/
+COPY smoke_voice_integration.py /opt/voice-tools/
+COPY smoke_voice_activation.py /opt/voice-tools/
+COPY read_voice_flow.py /opt/voice-tools/
+USER slidge
+ENV CAN_VOICE_ENABLE=0
+RUN python -B /opt/voice-tools/smoke_voice_integration.py
+RUN python -B /opt/voice-tools/smoke_voice_activation.py

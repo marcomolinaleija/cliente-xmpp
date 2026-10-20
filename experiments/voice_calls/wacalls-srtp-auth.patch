@@ -1,0 +1,19 @@
+--- a/internal/voip/media/srtp.go
++++ b/internal/voip/media/srtp.go
+@@ -112,4 +112,10 @@
+-	c.updateRoc(header.SequenceNumber)
+-	index := c.packetIndex(header.SequenceNumber)
+-
+-	iv := c.generateIV(header.Ssrc, index)
++	// Authenticate with candidate rollover state; forged packets must not mutate it.
++	next := *c
++	next.updateRoc(header.SequenceNumber)
++	expected := next.computeAuthTag(data[:len(data)-next.authTagLen], next.roc, next.authTagLen)
++	if !hmac.Equal(expected, data[len(data)-next.authTagLen:]) {
++		return nil, &SrtpError{SrtpErrAuthFailed, "authentication tag mismatch"}
++	}
++	index := next.packetIndex(header.SequenceNumber)
++
++	iv := next.generateIV(header.Ssrc, index)
+@@ -120,0 +127 @@
++	*c = next

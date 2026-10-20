@@ -88,6 +88,7 @@ class ConversationPanel(wx.Panel):
         self._replying = False
         self._editing = False
         self._remote_actions_enabled = False
+        self._voice_component = ""
         self._audio_durations_by_url: dict[str, float] = {}
         self._thumbnail_indexes_by_path: dict[str, int] = {}
         self._thumbnail_images = wx.ImageList(48, 48)
@@ -112,6 +113,8 @@ class ConversationPanel(wx.Panel):
         self.contact_avatar = wx.StaticBitmap(self, bitmap=wx.Bitmap())
         self.contact_avatar.Hide()
         self.contact_info_button = wx.Button(self, label="Información del contacto")
+        self.call_button = wx.Button(self, label="&Llamar")
+        self.call_button.Hide()
         self.search_button = wx.Button(self, label="Buscar...")
         self.search_button.SetName("Buscar mensajes en este chat")
         self.search_button.SetToolTip(
@@ -176,6 +179,26 @@ class ConversationPanel(wx.Panel):
     def set_contact_summary(self, name: str, status: str = "") -> None:
         label = f"{name} | {status}" if status else name
         self.contact_info_button.SetLabel(label)
+        if hasattr(self, "call_button"):
+            self._refresh_call_button()
+
+    def set_voice_component(self, component: str) -> None:
+        self._voice_component = component
+        self._refresh_call_button()
+
+    def _refresh_call_button(self) -> None:
+        chat = self.current_chat
+        valid = bool(chat and not chat.is_group and self._voice_component and "@" in chat.jid
+                     and "/" not in chat.jid
+                     and chat.jid.rsplit("@", 1)[1] == self._voice_component)
+        changed = self.call_button.IsShown() != valid
+        self.call_button.Show(valid)
+        self.call_button.Enable(valid and self._remote_actions_enabled)
+        if valid:
+            name = chat.custom_name or chat.name
+            self.call_button.SetName("Llamar a " + name[:120])
+        if changed:
+            self.Layout()
 
     def set_contact_avatar(self, path: Path | None) -> None:
         """Muestra el avatar cacheado sin quitar el nombre accesible del boton."""
@@ -452,6 +475,8 @@ class ConversationPanel(wx.Panel):
 
     def set_remote_actions_enabled(self, enabled: bool) -> None:
         self._remote_actions_enabled = enabled
+        if hasattr(self, "call_button"):
+            self._refresh_call_button()
         recording = self.pause_recording_button.IsShown()
         self.compose.Enable(enabled and not recording)
         self.emoji_button.Enable(enabled and not recording)
@@ -1333,6 +1358,7 @@ class ConversationPanel(wx.Panel):
         header = wx.BoxSizer(wx.HORIZONTAL)
         header.Add(self.back_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         header.Add(self.contact_info_button, 1, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 8)
+        header.Add(self.call_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         header.Add(self.search_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
         header.Add(self.load_older_button, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 8)
 

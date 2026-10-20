@@ -7,6 +7,68 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.message_info import GroupMessageInfo
 from cliente_xmpp.models.reactions import ReactionUpdate
+from cliente_xmpp.models.voice import VoiceAudioStats, VoiceDevice
+
+
+@dataclass(slots=True)
+class VoiceChannelChanged:
+    account_jid: str
+    component_jid: str
+    connected: bool
+    detail: str = ""
+    session_id: str = ""
+
+
+@dataclass(slots=True)
+class VoiceStateChanged:
+    account_jid: str
+    component_jid: str
+    call_id: str
+    peer: str
+    direction: str
+    state: str
+    reason: str
+    revision: int
+    session_id: str = ""
+    chat_jid: str = ""
+
+
+@dataclass(slots=True)
+class VoiceAudioChanged:
+    account_jid: str
+    component_jid: str
+    session_id: str
+    running: bool
+    muted: bool
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class VoiceDevicesLoaded:
+    account_jid: str
+    session_id: str
+    devices: tuple[VoiceDevice, ...] = ()
+    error: str = ""
+
+
+@dataclass(slots=True)
+class VoiceDiagnostics:
+    account_jid: str
+    component_jid: str
+    session_id: str
+    request_id: str
+    stats: VoiceAudioStats
+
+
+@dataclass(slots=True)
+class VoiceActionFailed:
+    account_jid: str
+    component_jid: str
+    session_id: str
+    action: str
+    call_id: str
+    detail: str
+    request_id: str = ""
 
 
 @dataclass(slots=True)
@@ -208,6 +270,12 @@ class ChatActivityLoadFinished:
 
 XmppEvent = (
     XmppConnected
+    | VoiceChannelChanged
+    | VoiceStateChanged
+    | VoiceAudioChanged
+    | VoiceDiagnostics
+    | VoiceDevicesLoaded
+    | VoiceActionFailed
     | XmppDisconnected
     | XmppError
     | ChatReadFailed

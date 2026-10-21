@@ -258,7 +258,9 @@ class ChatListPanel(wx.Panel):
             if selected_jid:
                 for index, item in enumerate(self._items):
                     if item.chat.jid == selected_jid:
-                        self.list_box.SetSelection(index)
+                        # MSW reannounces even an unchanged selection to screen readers.
+                        if self.list_box.GetSelection() != index:
+                            self.list_box.SetSelection(index)
                         self._last_selected_jid = selected_jid
                         break
         finally:

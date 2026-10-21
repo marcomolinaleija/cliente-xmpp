@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import os
 import threading
 import unittest
 from collections import deque
@@ -169,6 +171,103 @@ class UiEventPumpTests(unittest.TestCase):
 
 
 class UiEventPumpNativeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Requires Windows accessibility events")
+    def test_chat_batches_do_not_reannounce_the_unchanged_selected_contact(self):
+        app = wx.App.Get() or wx.App(False)
+        frame = wx.Frame(None, title="Synthetic chat accessibility test")
+        panel = ChatListPanel(frame)
+        chats = [Chat(jid=f"fixture{i}@example.invalid", name=f"Contact {i}",
+                      last_message_preview="Unchanged preview") for i in range(165)]
+        panel.set_chats(chats)
+        panel.select_chat_by_jid(chats[1].jid)
+        hwnd = panel.list_box.GetHandle()
+        events = []
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        callback_type = ctypes.WINFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+            ctypes.c_long, ctypes.c_long, ctypes.c_uint, ctypes.c_uint,
+        )
+
+        @callback_type
+        def record(_hook, event, window, object_id, child_id, _thread, _time):
+            if window == hwnd and object_id == -4:  # OBJID_CLIENT
+                events.append((event, child_id))
+
+        user32.SetWinEventHook.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p,
+                                         callback_type, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+        user32.SetWinEventHook.restype = ctypes.c_void_p
+        user32.UnhookWinEvent.argtypes = [ctypes.c_void_p]
+        user32.NotifyWinEvent.argtypes = [ctypes.c_uint, ctypes.c_void_p,
+                                         ctypes.c_long, ctypes.c_long]
+        # Limit capture to this test process, not other applications or accounts.
+        hook = user32.SetWinEventHook(0x8005, 0x8006, None, record, os.getpid(), 0, 0)
+
+        def pump():
+            # WinEvent callbacks need a running native loop, not only wx.Yield.
+            loop = wx.GUIEventLoop()
+            activation = wx.EventLoopActivator(loop)
+            timeout = wx.CallLater(100, loop.Exit)
+            try:
+                loop.Run()
+            finally:
+                timeout.Stop()
+                del activation
+
+        try:
+            self.assertTrue(hook, ctypes.get_last_error())
+            frame.Show()
+            frame.Raise()
+            pump()
+            panel.list_box.SetFocus()
+            pump()
+            self.assertTrue(panel.list_box.HasFocus())
+            # A silent/dead hook must not turn this regression into a false pass.
+            events.clear()
+            user32.NotifyWinEvent(0x8005, hwnd, -4, 2)  # EVENT_OBJECT_FOCUS
+            user32.NotifyWinEvent(0x8006, hwnd, -4, 2)  # EVENT_OBJECT_SELECTION
+            pump()
+            self.assertIn((0x8005, 2), events)
+            self.assertIn((0x8006, 2), events)
+            selected_row = panel.list_box.GetString(1)
+            for changed in (False, True):
+                with self.subTest(other_chat_changed=changed):
+                    events.clear()
+                    for index in range(5):
+                        self.assertTrue(panel.list_box.HasFocus())
+                        panel.begin_update_batch()
+                        updated = replace(chats[100], last_message_preview=f"Update {index}")
+                        panel.upsert_chat(updated if changed else chats[100])
+                        panel.end_update_batch()
+                        pump()
+                    self.assertEqual(events, [])
+                    self.assertEqual(panel.list_box.GetSelection(), 1)
+                    self.assertEqual(panel.list_box.GetString(1), selected_row)
+                    self.assertEqual(panel.selected_chat().jid, chats[1].jid)
+                    self.assertTrue(panel.list_box.HasFocus())
+                    if changed:
+                        self.assertIn("Update 4", panel.list_box.GetString(100))
+            # Real selection changes must still work and notify accessibility.
+            events.clear()
+            panel.force_refresh_visible(chats[2].jid, preserve_focused_order=True)
+            pump()
+            self.assertEqual(panel.list_box.GetSelection(), 2)
+            self.assertIn((0x8005, 3), events)
+            self.assertIn((0x8006, 3), events)
+            # Replacing the selected row can clear the native selection on MSW.
+            # Restore it if necessary; the guard must not drop the user's contact.
+            panel.begin_update_batch()
+            panel.upsert_chat(replace(chats[2], last_message_preview="Selected row updated"))
+            panel.end_update_batch()
+            pump()
+            self.assertEqual(panel.list_box.GetSelection(), 2)
+            self.assertEqual(panel.selected_chat().jid, chats[2].jid)
+            self.assertIn("Selected row updated", panel.list_box.GetString(2))
+        finally:
+            if hook:
+                user32.UnhookWinEvent(hook)
+            frame.Destroy()
+            app.Yield()
+
     def test_native_wx_timer_runs_before_large_backlog_finishes(self):
         app = wx.App.Get() or wx.App(False)
         frame = wx.Frame(None)
@@ -241,6 +340,27 @@ class ChatListBatchTests(unittest.TestCase):
                      "_chat_by_jid", "select_chat_by_jid"):
             setattr(panel, name, MethodType(getattr(ChatListPanel, name), panel))
         return panel
+
+    def test_incremental_refresh_only_sets_selection_when_target_changes(self):
+        panel = self.panel()
+        chats = [Chat(jid=f"fixture{i}@example.invalid", name=f"Contact {i}") for i in range(3)]
+        panel.set_chats(chats)
+        panel.list_box.selection, panel.list_box.focused = 1, True
+        with patch.object(panel.list_box, "SetSelection",
+                          wraps=panel.list_box.SetSelection) as select:
+            for changed in (False, True):
+                with self.subTest(other_chat_changed=changed):
+                    panel.begin_update_batch()
+                    panel.upsert_chat(replace(chats[0], last_message_preview="New preview")
+                                      if changed else chats[0])
+                    panel.end_update_batch()
+                    select.assert_not_called()
+                    self.assertEqual(panel.selected_chat().jid, chats[1].jid)
+                    self.assertEqual(panel._last_selected_jid, chats[1].jid)
+            panel.force_refresh_visible(chats[2].jid, preserve_focused_order=True)
+            select.assert_called_once_with(2)
+            self.assertEqual(panel.selected_chat().jid, chats[2].jid)
+            self.assertEqual(panel._last_selected_jid, chats[2].jid)
 
     def test_thousand_updates_render_once_and_keep_focused_order_and_selection(self):
         panel = self.panel()

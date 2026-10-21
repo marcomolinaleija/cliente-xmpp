@@ -1,10 +1,156 @@
 # Appliance local del puente de WhatsApp para WSL2
 
-Este documento describe el appliance reproducible que instala Prosody y una imagen inicial de
-`slidge-whatsapp` v19 dentro de una distribución WSL2 exclusiva. No modifica otras
+Este documento describe el appliance reproducible que instala Prosody y el puente
+con motor de voz dentro de una distribución WSL2 exclusiva. No modifica otras
 distribuciones del usuario y no requiere Docker Desktop.
 
+Para usuarios que actualizan al cliente con llamadas, consulta
+[Actualización y requisitos de voz](ACTUALIZACION_LLAMADAS.md). El actualizador
+de imagen no prepara por sí solo el entorno de voz. La nueva appliance deja
+voz activa automáticamente. Los procedimientos de entregas anteriores se
+conservan debajo de la preparación de 1.2.
+
 ## Estado
+
+Las fuentes preparan la appliance **1.2.0**: migración por versión desde 1.0/1.1,
+respaldo de la imagen activa del puente y configuración obligatoria de voz
+local. El manifiesto público sigue identificando el artefacto **1.1.0**; no se
+ha sustituido por hashes de una candidata aún no publicada. Las
+validaciones históricas siguientes corresponden a las entregas anteriores.
+
+La candidata anterior con activación opcional quedó sustituida. La nueva
+candidata se reconstruyó y validó con voz activa desde la instalación y la
+migración; la [auditoría de 1.2](VALIDACION_APPLIANCE_1_2.md) identifica cada paquete.
+
+### Actualización completa a 1.2 y activación de voz
+
+Hay dos actualizaciones independientes: `whatsapp-can-bridge update` reemplaza
+la imagen de Slidge; `actualizar-puente-local.ps1` actualiza la distribución
+completa mediante el paquete y el instalador del manifiesto de appliance.
+
+El actualizador nuevo compara versiones. Actualiza 1.0 y 1.1 a la entrega
+seleccionada, omite una versión idéntica con sus capacidades presentes y
+rechaza un downgrade. Descarga por HTTPS, verifica tamaño y hashes del paquete
+y del instalador y solicita `ACTUALIZAR` antes de migrar. El instalador contrasta
+la versión declarada dentro del `.wsl`; la mera presencia del actualizador de
+imágenes ya no basta para omitir la migración.
+
+Los scripts antiguos descargados desde la release 1.1 siguen fijados a 1.1:
+el usuario deberá obtener el actualizador de la nueva entrega. El comando de
+uso sigue siendo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\actualizar-puente-local.ps1
+```
+
+El actualizador nuevo consulta `release-manifest.json` del canal mantenido;
+también admite `-ManifestUrl` para seleccionar un manifiesto HTTPS de GitHub.
+Si el canal sigue en 1.1, no ofrece 1.2. No cambies ese manifiesto hasta verificar
+que los assets de la nueva release existen y coinciden con sus hashes.
+
+La migración conserva `/etc/whatsapp-can-bridge` completo, sesión, adjuntos y
+Prosody. Si existe `bridge-image.json`, exporta también la imagen activa a OCI
+y verifica su checksum antes de reemplazar la distribución. Al importarla
+normaliza el ID local que Podman pueda cambiar, conservando tag y digest
+aprobados. Después adopta la imagen incluida en el paquete sólo si su versión
+es mayor; conserva una instalada de igual versión o posterior. Guarda los
+metadatos anteriores en `bridge-image-before-bundled.json`. Una instalación
+1.0 sin ese registro usa la imagen inicial del nuevo paquete. También conserva
+las opciones adicionales del entorno y las preferencias de conversión; las
+claves de identidad, rutas y voz se regeneran de forma controlada.
+
+Antes de un rollback o recuperación interrumpida, si existe una candidata se
+exporta y protege su estado completo. Si no puede guardarse, no se elimina.
+El respaldo permite recuperar mensajes que hayan llegado durante la validación;
+no se fusionan automáticamente sus bases con las de la distribución restaurada.
+Conserva ambos respaldos y revisa esa recuperación antes de continuar si hubo
+actividad durante el intento.
+
+Voz queda activa al instalar y migrar, sin un comando adicional. La appliance genera un
+certificado para `127.0.0.1`, firmado por su CA existente, y monta sólo el
+directorio del certificado de voz en Slidge, en modo lectura. El puerto `8766`
+se utiliza para el servicio de voz. No se necesita dominio público, proxy
+adicional ni cambiar la confianza global de Windows.
+
+Para comprobar voz después de instalar:
+
+```powershell
+wsl.exe -d WhatsAppCAN-Bridge -u root -- /usr/local/sbin/whatsapp-can-bridge voice status
+```
+
+`voice enable` queda como reparación, no como paso de instalación. `voice disable`
+se rechaza. La configuración comprueba la imagen sin volúmenes de cuenta ni
+red externa y valida servicios y TLS. Si falla una migración, recupera la
+appliance anterior; no completa la nueva con voz apagada. Una imagen conservada
+de igual versión o posterior también debe ofrecer el motor compatible.
+La recepción audible debe probarse con un
+contacto autorizado; un smoke TLS no acredita audio.
+
+### Preparar la siguiente entrega
+
+Después de construir y validar un `.wsl` con autorización, prepara un manifiesto
+candidato fuera del archivo estable:
+
+```powershell
+.\tools\wsl-appliance\prepare-appliance-release.ps1 `
+  -PackagePath .\dist\wsl\WhatsAppCAN-Bridge-amd64.wsl `
+  -OutputManifestPath .\dist\wsl\release-manifest-candidate.json
+```
+
+El script lee la versión del paquete, materializa el instalador con BOM/CRLF
+como asset y calcula tamaño y SHA-256 de los archivos reales. El publicador
+acepta ese manifiesto mediante `-ManifestPath`, verifica también el instalador
+y conserva las barreras de árbol limpio, upstream sincronizado y tag/release
+inexistentes. La publicación exige autorización independiente. Promueve el
+manifiesto estable sólo después de verificar los assets publicados; no cambies
+la release 1.1 existente.
+
+Pruebas de esta preparación: suite Python del área `bridge` (PowerShell real
+con WSL simulado, archivos y checksums temporales), más
+`test-voice-configuration.sh` en Linux como root para TLS, permisos,
+idempotencia y rechazo de fallos sin desactivar voz. El script Linux usa
+claves sintéticas y dobles de Podman/systemd; no inicia servicios ni cuentas.
+Las pruebas completas de importación, migración y reinicio con un `.wsl` real
+se realizan en una distribución desechable antes de publicar.
+
+`build-appliance.ps1 -BasePackagePath` permite reutilizar el paquete genérico
+publicado identificado por el manifiesto estable. Comprueba tamaño y SHA-256
+antes de importarlo en un builder nuevo; rechaza exportaciones personales o
+archivos distintos. Sin esa opción conserva la raíz Ubuntu fijada por hash.
+
+El validador nativo reproducible es `tools/wsl-appliance/validate-appliance.ps1`.
+Recibe el paquete candidato, los paquetes públicos 1.0/1.1 con sus hashes y el
+Python del entorno `XMPP`. Crea nombres `WhatsAppCAN-Validate-<id>-<escenario>`
+nuevos, usa contratos de conexión y CA separados dentro de `.test-results`, y
+comprueba instalación limpia, migraciones 1.0/1.1, conservación del puente ya
+actualizado, autenticación XMPP, XEP-0363, reinicio y rollback forzado. No vincula
+WhatsApp ni accede a conversaciones reales. Sólo elimina distribuciones que
+él mismo acaba de crear y que aprobaron su escenario; una prueba fallida queda
+detenida para diagnóstico. El JSON final exige los cuatro escenarios completos.
+`-Scenarios` permite repetir sólo los escenarios afectados por una corrección;
+un informe parcial conserva `completed=false`, aunque los seleccionados pasen.
+
+Para incluir una imagen local con el motor de voz, expórtala como OCI y ejecuta
+`prepare_bridge_bundle.py --archive ARCHIVO --image REFERENCIA --output-directory DIRECTORIO --voice`.
+La referencia debe pertenecer al repositorio aprobado y tener etiqueta `vN`.
+El preparador comprueba identidad, digest y arquitectura Linux amd64, y genera
+el archivo OCI, sus hashes, el ID y `bundled-image.json`. Pasa ese directorio a
+`build-appliance.ps1 -BridgeBundleDirectory DIRECTORIO`; el build vuelve a
+comprobar los bytes y la importación real, e incorpora imagen, digest y
+capacidad de voz a `version.json`. El build exige ese bundle con motor de voz;
+rechaza omitirlo o producir una appliance 1.2 sin llamadas. Preparar el bundle
+no publica nada en GHCR.
+
+El digest del bundle identifica el manifiesto del OCI incluido. Antes de
+publicar una entrega con ese motor, transfiere ese mismo OCI al registro
+conservando sus digests y comprueba allí la identidad resultante. No sustituyas
+el archivo por otro build bajo la misma etiqueta ni promociones el manifiesto
+de actualización de imágenes con un digest supuesto. Si el registro cambia la
+identidad, hay que resolver esa diferencia y regenerar los artefactos afectados
+antes de promover la entrega. La publicación de GHCR y la de la appliance
+requieren autorización independiente del build local.
+
+## Entregas anteriores
 
 La implementación reproducible vive en `tools/wsl-appliance/`.
 Produce `WhatsAppCAN-Bridge-amd64.wsl`, genera secretos distintos por instalación y sólo publica

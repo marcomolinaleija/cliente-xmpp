@@ -10,6 +10,12 @@ contestar, rechazar, colgar, silenciar y seleccionar dispositivos, pero la calid
 de audio y los microcortes siguen en investigación. Vídeo y llamadas grupales quedan
 fuera de este prototipo.
 
+Si actualizas desde una versión anterior, consulta
+[qué preparar para las llamadas y cómo conservar el uso habitual](docs/ACTUALIZACION_LLAMADAS.md).
+Puedes conservar tu puente anterior para mensajería. La nueva appliance configura
+voz automáticamente al instalar o migrar; un puente remoto requiere preparar
+su imagen y configuración de voz.
+
 Para colaborar, consulta la [entrada del experimento](experiments/voice_calls/README.md),
 la [arquitectura, pruebas y evolución](docs/PUENTE_WHATSAPP_VOZ_EXPERIMENTAL_V35.md)
 y la [investigación de calidad](docs/INVESTIGACION_CALIDAD_LLAMADAS_2026-10-18.md).

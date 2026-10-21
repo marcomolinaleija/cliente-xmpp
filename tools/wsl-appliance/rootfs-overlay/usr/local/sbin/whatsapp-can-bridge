@@ -7,6 +7,7 @@ credentials_file="$config_dir/credentials"
 environment_file="$config_dir/environment"
 tls_dir="$config_dir/tls"
 bridge_image_manager="/usr/local/libexec/whatsapp-can-bridge-image"
+voice_manager="/usr/local/libexec/whatsapp-can-bridge-voice"
 xmpp_domain="xmpp.whatsappcan.local"
 component_domain="whatsapp.xmpp.whatsappcan.local"
 xmpp_user="whatsappcan"
@@ -69,13 +70,38 @@ ensure_bridge_image() {
     "$bridge_image_manager" initialize
 }
 
+merge_environment() {
+    local generated="$1" previous="$2"
+    if [[ ! -e "$previous" ]]; then cat "$generated"; return; fi
+    [[ -f "$previous" && ! -L "$previous" ]] || return 1
+    # Read dotenv as data, never source it. Managed identity/mount/WSS fields
+    # come from this installation; retain other options and additional secrets.
+    awk -F= '
+        BEGIN {
+            split("SLIDGE_JID SLIDGE_SECRET SLIDGE_SERVER SLIDGE_HOME_DIR SLIDGE_NO_UPLOAD_PATH SLIDGE_NO_UPLOAD_URL_PREFIX CAN_VOICE_ENABLE CAN_VOICE_URL CAN_VOICE_BIND CAN_VOICE_PORT CAN_VOICE_HOME CAN_VOICE_CERT CAN_VOICE_KEY CAN_VOICE_SOCKET", names, " ")
+            for (i in names) managed[names[i]]=1
+        }
+        FNR==NR {
+            if (!($1 in values)) order[++count]=$1
+            values[$1]=$0
+            next
+        }
+        /^[A-Za-z_][A-Za-z0-9_]*=/ {
+            if ($1 in managed) next
+            if (!($1 in values)) order[++count]=$1
+            values[$1]=$0
+        }
+        END { for(i=1; i<=count; i++) print values[order[i]] }
+    ' "$generated" "$previous"
+}
+
 configure_bridge() {
     require_root
     if [[ -f "$configured_marker" ]]; then
         echo "El appliance ya estaba configurado; se conservaron sus credenciales."
     fi
 
-    local xmpp_password component_secret rendered
+    local xmpp_password component_secret rendered environment_candidate environment_merged
     install -d -o root -g prosody -m 0750 "$config_dir"
     install -d -o 10000 -g 10000 -m 0700 "$state_dir/slidge"
     install -d -o 10000 -g 10000 -m 0755 "$state_dir/attachments"
@@ -98,6 +124,8 @@ EOF
     fi
 
     ensure_tls
+    ensure_bridge_image
+    "$voice_manager" prepare
 
     rendered="$(mktemp)"
     sed \
@@ -109,7 +137,8 @@ EOF
     rm -f "$rendered"
     install -m 0644 /opt/whatsapp-can-bridge/templates/nginx.conf /etc/nginx/nginx.conf
 
-    cat > "$environment_file" <<EOF
+    environment_candidate="$(mktemp "$config_dir/.environment-candidate.XXXXXX")"
+    cat > "$environment_candidate" <<EOF
 SLIDGE_JID=$component_domain
 SLIDGE_SECRET=$component_secret
 SLIDGE_SERVER=127.0.0.1
@@ -121,9 +150,17 @@ SLIDGE_WHATSAPP_ALWAYS_SYNC_ROSTER=true
 SLIDGE_CONVERT_STICKERS=true
 SLIDGE_FIX_FILENAME_SUFFIX_MIME_TYPE=true
 EOF
-    chmod 0600 "$environment_file"
+    "$voice_manager" environment >> "$environment_candidate"
+    environment_merged="$(mktemp "$config_dir/.environment-merged.XXXXXX")"
+    if ! merge_environment "$environment_candidate" "$environment_file" > "$environment_merged"; then
+        rm -f -- "$environment_candidate" "$environment_merged"
+        echo 'El entorno anterior no es un archivo seguro; se conservó sin cambios.' >&2
+        return 1
+    fi
+    chmod 0600 "$environment_merged"
+    mv -- "$environment_merged" "$environment_file"
+    rm -f -- "$environment_candidate"
 
-    ensure_bridge_image
     runuser -u prosody -- test -r "$tls_dir/server.key"
     openssl verify -CAfile "$tls_dir/ca.crt" "$tls_dir/server.crt"
     prosodyctl check config
@@ -180,17 +217,21 @@ smoke_test() {
     local service
     local restarts_before
     restarts_before="$(systemctl show whatsapp-can-slidge.service --property=NRestarts --value)"
-    for _attempt in {1..40}; do
+    # Fresh SQLite migrations exceeded the former 10 s window in a real WSL
+    # installation. Wait for readiness, without restarting the process.
+    local startup_deadline=$((SECONDS + 60))
+    while (( SECONDS < startup_deadline )); do
         if systemctl is-active --quiet prosody.service \
             && systemctl is-active --quiet nginx.service \
             && systemctl is-active --quiet whatsapp-can-slidge.service \
             && ss -ltn | grep -qE '127\.0\.0\.1:5222\b' \
             && ss -ltn | grep -qE '127\.0\.0\.1:5280\b' \
             && ss -ltn | grep -qE '127\.0\.0\.1:8080\b' \
-            && curl --fail --silent --show-error http://127.0.0.1:5280/file_share/ >/dev/null \
+            && curl --fail --silent --show-error --max-time 2 http://127.0.0.1:5280/file_share/ >/dev/null \
             && [[ "$(podman inspect whatsapp-can-slidge --format '{{.State.Running}}' 2>/dev/null || true)" == "true" ]] \
             && podman logs whatsapp-can-slidge 2>&1 \
-                | grep 'Slidge has successfully started' >/dev/null; then
+                | grep 'Slidge has successfully started' >/dev/null \
+            && "$voice_manager" smoke >/dev/null 2>&1; then
             break
         fi
         sleep 0.25
@@ -212,7 +253,7 @@ smoke_test() {
     if ! ss -ltn | grep -qE '127\.0\.0\.1:5280\b'; then
         echo "FALLO: Prosody HTTP Upload no escucha en 127.0.0.1:5280." >&2
         failed=true
-    elif ! curl --fail --silent --show-error http://127.0.0.1:5280/file_share/ >/dev/null; then
+    elif ! curl --fail --silent --show-error --max-time 2 http://127.0.0.1:5280/file_share/ >/dev/null; then
         echo "FALLO: el endpoint local XEP-0363 no responde." >&2
         failed=true
     fi
@@ -232,10 +273,15 @@ smoke_test() {
     if $failed; then
         exit 1
     fi
+    if ! "$voice_manager" smoke; then
+        echo "FALLO: el canal de voz local no supera TLS/autorización." >&2
+        exit 1
+    fi
     echo "Smoke test local correcto."
 }
 
-action="${1:-status}"
+main() {
+local action="${1:-status}"
 shift || true
 case "$action" in
     configure)
@@ -270,6 +316,10 @@ case "$action" in
         require_root
         "$bridge_image_manager" update "$@"
         ;;
+    voice)
+        require_root
+        "$voice_manager" "$@"
+        ;;
     keepalive)
         require_root
         cat >/dev/null
@@ -281,7 +331,9 @@ case "$action" in
         cat "$tls_dir/ca.crt"
         ;;
     *)
-        echo "Uso: whatsapp-can-bridge {configure|connection|status|start|stop|restart|logs|smoke|update|keepalive|version|ca-certificate}" >&2
+        echo "Uso: whatsapp-can-bridge {configure|connection|status|start|stop|restart|logs|smoke|update|voice [status|enable]|keepalive|version|ca-certificate}" >&2
         exit 64
         ;;
 esac
+}
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

@@ -9,7 +9,12 @@ from typing import Any
 from cliente_xmpp.config.credentials import CredentialStore
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.xmpp.client import XmppService
-from cliente_xmpp.xmpp.events import WhatsAppBridgeStatus, XmppConnected, XmppError
+from cliente_xmpp.xmpp.events import (
+    WhatsAppBridgeStatus,
+    WhatsAppLinkState,
+    XmppConnected,
+    XmppError,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,14 +61,18 @@ def main() -> int:
     def emit(event: object) -> None:
         if isinstance(event, XmppConnected):
             outcome["connected"] = True
-            if not args.wait_whatsapp_status:
+            if not args.wait_whatsapp_status or outcome["whatsapp_status"]:
                 completed.set()
         elif isinstance(event, XmppError):
             outcome["error"] = True
             completed.set()
-        elif isinstance(event, WhatsAppBridgeStatus):
+        elif isinstance(event, (WhatsAppBridgeStatus, WhatsAppLinkState)):
             outcome["whatsapp_status"] = event.status
-            completed.set()
+            if event.status == "connection_error":
+                outcome["error"] = True
+                completed.set()
+            elif outcome["connected"]:
+                completed.set()
 
     service = XmppService(emit)
     service.connect(settings, password)

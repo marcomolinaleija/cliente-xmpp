@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import io
 import json
 import re
@@ -28,6 +29,46 @@ from cliente_xmpp.local_bridge import (
 from cliente_xmpp.ui.main_window import MainWindow
 from cliente_xmpp.ui.whatsapp_link_panel import WhatsAppLinkPanel
 from cliente_xmpp.xmpp.client import BridgeXmppClient
+from cliente_xmpp.xmpp.events import (
+    WhatsAppBridgeStatus,
+    WhatsAppLinkState,
+    XmppConnected,
+    XmppError,
+)
+
+
+class LocalXmppSmokeTests(unittest.TestCase):
+    def test_old_and_new_linking_statuses_require_authentication_and_reject_errors(self):
+        path = Path(__file__).resolve().parents[1] / "tools/wsl-appliance/smoke_local_xmpp.py"
+        spec = importlib.util.spec_from_file_location("appliance_xmpp_smoke", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        new_status = WhatsAppLinkState("fixture@example.test", "whatsapp.example.test", 1,
+                                       "", 0, "needs_registration", False)
+        cases = (
+            ("legacy", [XmppConnected(), WhatsAppBridgeStatus("needs_pairing")], 0),
+            ("linking", [XmppConnected(), new_status], 0),
+            ("status_first", [new_status, XmppConnected()], 0),
+            ("missing_status", [XmppConnected()], 1),
+            ("not_authenticated", [new_status], 1),
+            ("bridge_error", [XmppConnected(), WhatsAppBridgeStatus("connection_error")], 1),
+            ("xmpp_error", [XmppError("synthetic failure")], 1),
+        )
+        for name, events, expected in cases:
+            with self.subTest(name=name):
+                service = Mock()
+
+                def connect(emit, service=service, events=events):
+                    service.connect.side_effect = lambda *_: [emit(event) for event in events]
+                    return service
+
+                with patch.object(module, "parse_args", return_value=SimpleNamespace(
+                    connection_json=path, wait_whatsapp_status=True, timeout=0,
+                )), patch.object(module, "load_connection", return_value=(object(), "synthetic")), \
+                        patch.object(module, "XmppService", side_effect=connect), \
+                        patch("sys.stdout", new_callable=io.StringIO):
+                    self.assertEqual(module.main(), expected)
+                service.disconnect.assert_called_once()
 
 
 class WslApplianceBuildTests(unittest.TestCase):
@@ -112,22 +153,18 @@ class WslApplianceBuildTests(unittest.TestCase):
         manifest = json.loads(
             (appliance_root / "release-manifest.json").read_text(encoding="utf-8")
         )
-        installer_path = appliance_root / "install-appliance.ps1"
-        # The published PowerShell asset uses CRLF, as required by .gitattributes.
-        # A checkout can contain LF; hash the canonical asset bytes in either case.
-        installer_bytes = installer_path.read_bytes().replace(b"\r\n", b"\n")
-        installer_hash = hashlib.sha256(installer_bytes.replace(b"\n", b"\r\n")).hexdigest()
-
-        self.assertEqual(manifest["appliance_version"], "1.1.0")
         self.assertEqual(
             manifest["updater_asset_name"],
             updater_path.name,
         )
-        self.assertIn(manifest["download_url"], updater)
-        self.assertIn(manifest["sha256"], updater)
-        self.assertIn(str(manifest["size_bytes"]), updater)
-        self.assertIn(installer_hash, updater)
-        self.assertIn("wsl-appliance-v1.1.0", updater)
+        self.assertIn('main/tools/wsl-appliance/release-manifest.json', updater)
+        self.assertIn('$manifest.installer_sha256', updater)
+        self.assertIn('$manifest.appliance_version', updater)
+        self.assertRegex(manifest['installer_sha256'], r'^[0-9a-f]{64}$')
+        self.assertIn(manifest['release_tag'], manifest['installer_url'])
+        # The stable manifest still names immutable published bytes, not this
+        # development checkout. New-release hashes are tested from real assets
+        # by ApplianceMigrationTests, including the package's own version.
         self.assertIn("-InstallOrResume", updater)
         self.assertIn("Start-BitsTransfer", updater)
         self.assertIn("Invoke-WebRequest", updater)
@@ -268,9 +305,12 @@ class WslApplianceBuildTests(unittest.TestCase):
             "chmod 0644 /etc/systemd/system/whatsapp-can-slidge.service",
             provision,
         )
-        save_position = provision.index("podman save --format oci-archive")
-        load_position = provision.index('podman load -i "$image_directory/slidge-v19.oci"')
-        inspect_position = provision.index(
+        # The default-image path still validates a real save/load cycle. The
+        # optional bundle path has its own import/ID guard and separate tests.
+        default_provision = provision.split('elif ! $skip_bridge_image; then', 1)[1]
+        save_position = default_provision.index("podman save --format oci-archive")
+        load_position = default_provision.index('podman load -i "$image_directory/slidge-v19.oci"')
+        inspect_position = default_provision.index(
             "podman image inspect \"$bridge_image\" --format '{{.Id}}'"
         )
         self.assertLess(save_position, load_position)
@@ -345,7 +385,7 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("function Recover-InterruptedMigration", install_script)
         self.assertIn('"--export", $Distribution, $fullBackup', install_script)
         self.assertIn("legacy-upgrade-journal.json", install_script)
-        self.assertIn("etc/whatsapp-can-bridge/credentials", install_script)
+        self.assertIn('"etc/whatsapp-can-bridge"', install_script)
         self.assertIn("var/lib/whatsapp-can-bridge/slidge", install_script)
         self.assertIn("var/lib/whatsapp-can-bridge/attachments", install_script)
         self.assertIn("var/lib/prosody", install_script)

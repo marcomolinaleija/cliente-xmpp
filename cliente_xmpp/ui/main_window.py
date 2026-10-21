@@ -108,7 +108,12 @@ from cliente_xmpp.models.phone_numbers import (
     normalize_phone_number,
     whatsapp_contact_jid_candidates,
 )
-from cliente_xmpp.models.reactions import ReactionState, ReactionUpdate, flattened_reactions
+from cliente_xmpp.models.reactions import (
+    ReactionState,
+    ReactionUpdate,
+    flattened_reactions,
+    is_supported_reaction,
+)
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.manager import (
@@ -8508,19 +8513,31 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         actor = "Tú" if update.sender_is_me else (
             update.sender_name or self._display_name_for_jid(update.sender_id)
         )
+        # A chat summary may describe a different message or a previous reaction.
+        # Only quote the actual target, never feed a summary back into itself.
+        reference = "un mensaje"
         if target is not None:
             body = media_description(target) if has_media(target) else target.body
-        else:
-            chat = self._visible_chat_by_jid(update.chat_jid) or self.searchable_chats_by_jid.get(
-                update.chat_jid
-            )
-            body = chat.last_message_preview if chat is not None else "mensaje"
-        body = " ".join(body.split()) or "mensaje"
-        if len(body) > 80:
-            body = f"{body[:77]}..."
+            body = " ".join(body.split()) or "mensaje"
+            if len(body) > 80:
+                body = f"{body[:77]}..."
+            reference = f"«{body}»"
         if update.reactions:
-            return f"{actor} reaccionó a «{body}» con {' '.join(update.reactions)}"
-        return f"{actor} quitó su reacción de «{body}»"
+            return f"{actor} reaccionó a {reference} con {' '.join(update.reactions)}"
+        return f"{actor} quitó su reacción de {reference}"
+
+    @staticmethod
+    def _compact_legacy_reaction_preview(preview: str) -> str:
+        """Compact the old formatter's self-nesting, not arbitrary quoted text."""
+        marker = " reaccionó a «"
+        actor, separator, quoted = preview.partition(marker)
+        if not actor or not separator or not quoted.startswith(actor + marker):
+            return preview
+        _, closing, reactions = quoted.rpartition("» con ")
+        if (not closing or not reactions
+                or not all(is_supported_reaction(emoji) for emoji in reactions.split())):
+            return preview
+        return f"{actor} reaccionó a un mensaje con {reactions}"
 
     def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
         if not message_id:
@@ -9046,6 +9063,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     self._message_body_for_display(message)
                 )
                 chat.last_message_at = message.sent_at
+            elif chat.last_message_preview != self._message_body_for_display(message):
+                # A newer reaction summary can outlive the message it refers to.
+                # Repair only its in-memory preview, preserving time and unread state.
+                chat.last_message_preview = MainWindow._compact_legacy_reaction_preview(
+                    chat.last_message_preview
+                )
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:

@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 
 from aiohttp.client_exceptions import ClientConnectorError, ClientError
 from slixmpp import ClientXMPP
-from slixmpp.exceptions import IqError, IqTimeout
+from slixmpp.exceptions import IqError, IqTimeout, PresenceError
 from slixmpp.plugins.xep_0363.http_upload import FileTooBig, HTTPError
 
 from cliente_xmpp.audio.duration import media_duration_seconds
@@ -230,6 +230,7 @@ class BridgeXmppClient(ClientXMPP):
         self._group_roster_requests: set[str] = set()
         self._group_participant_cache_enabled: set[str] = set()
         self._group_rejoin_scheduled: set[str] = set()
+        self._group_join_retry_attempts: dict[str, int] = {}
         self._group_membership_ping_failures: dict[str, int] = {}
         self._group_membership_ping_unsupported_jids: set[str] = set()
         self._group_membership_watchdog_task: asyncio.Task[None] | None = None
@@ -295,6 +296,7 @@ class BridgeXmppClient(ClientXMPP):
         getattr(self, "_group_roster_requests", set()).clear()
         getattr(self, "_group_participant_cache_enabled", set()).clear()
         self._group_rejoin_scheduled.clear()
+        getattr(self, "_group_join_retry_attempts", {}).clear()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
         self._presence_subscription_jids.clear()
@@ -352,6 +354,7 @@ class BridgeXmppClient(ClientXMPP):
         linking = getattr(self, "_linking", None)
         if linking is not None:
             linking.close()
+        generation = linking.generation if linking is not None else 0
         self._voice_request = None
         voice = getattr(self, "_voice", None)
         if voice and voice.task:
@@ -362,17 +365,18 @@ class BridgeXmppClient(ClientXMPP):
         self._clear_transient_message_retries()
         getattr(self, "_pending_read_markers", {}).clear()
         self._stop_group_membership_watchdog()
+        getattr(self, "_group_join_retry_attempts", {}).clear()
         getattr(self, "_group_roster_requests", set()).clear()
         getattr(self, "_group_participant_cache_enabled", set()).clear()
         getattr(self, "_group_membership_ping_failures", {}).clear()
         getattr(self, "_group_membership_ping_unsupported_jids", set()).clear()
         if self._disconnect_requested:
-            self._emit(XmppDisconnected())
+            self._emit(XmppDisconnected(generation=generation))
             if self.loop and self.loop.is_running():
                 self.loop.call_soon_threadsafe(self.loop.stop)
             return
 
-        self._emit(XmppDisconnected("Reconectando..."))
+        self._emit(XmppDisconnected("Reconectando...", generation=generation))
         self._schedule_reconnect()
 
     def _schedule_reconnect(self, delay: float = 3.0) -> None:
@@ -1593,7 +1597,14 @@ class BridgeXmppClient(ClientXMPP):
         defer_unlinked_state: bool = False,
     ) -> str:
         linking = getattr(self, "_linking", None)
-        if linking is not None and await linking.available(jid):
+        if linking is not None:
+            try:
+                supported = await linking.available(jid)
+            except Exception:
+                return "unknown"
+        else:
+            supported = False
+        if supported:
             try:
                 return await linking.probe(jid)
             except Exception:
@@ -1835,11 +1846,12 @@ class BridgeXmppClient(ClientXMPP):
 
     async def request_whatsapp_link_status(self, component_jid: str) -> None:
         linking = getattr(self, "_linking", None)
-        if linking is not None and await linking.available(component_jid):
-            try:
+        try:
+            if linking is not None and await linking.available(component_jid):
                 await linking.probe(component_jid)
-            except Exception:
-                self._emit(XmppError("No se pudo consultar el estado de vinculación."))
+                return
+        except Exception:
+            self._emit(XmppError("No se pudo consultar el estado de vinculación."))
             return
         await self._debug_whatsapp_component_commands(component_jid)
 
@@ -1851,13 +1863,14 @@ class BridgeXmppClient(ClientXMPP):
         cancel_existing: bool = True,
     ) -> None:
         linking = getattr(self, "_linking", None)
-        if linking is not None and await linking.available(component_jid):
-            try:
+        try:
+            if linking is not None and await linking.available(component_jid):
                 await linking.start(component_jid)
-            except Exception:
-                self._emit(XmppError(
-                    "No se pudo iniciar la vinculación. Consulta el estado y reintenta."
-                ))
+                return
+        except Exception:
+            self._emit(XmppError(
+                "No se pudo iniciar la vinculación. Consulta el estado y reintenta."
+            ))
             return
         if cancel_existing:
             if component_jid in self._whatsapp_link_sessions:
@@ -2049,15 +2062,15 @@ class BridgeXmppClient(ClientXMPP):
 
     async def cancel_whatsapp_linking(self, component_jid: str, *, silent: bool = False) -> bool:
         linking = getattr(self, "_linking", None)
-        if linking is not None and await linking.available(component_jid):
-            try:
+        try:
+            if linking is not None and await linking.available(component_jid):
                 return await linking.cancel(component_jid)
-            except Exception:
-                if not silent:
-                    self._emit(XmppError(
+        except Exception:
+            if not silent:
+                self._emit(XmppError(
                     "No se confirmó la cancelación. El intento sigue pendiente."
                 ))
-                return False
+            return False
         session = self._whatsapp_link_sessions.get(component_jid)
         if session is None:
             if not silent:
@@ -2121,13 +2134,14 @@ class BridgeXmppClient(ClientXMPP):
         allow_recovery: bool = True,
     ) -> None:
         linking = getattr(self, "_linking", None)
-        if linking is not None and await linking.available(component_jid):
-            try:
+        try:
+            if linking is not None and await linking.available(component_jid):
                 await linking.phone(component_jid, phone)
-            except Exception:
-                self._emit(XmppError(
-                    "No se pudo obtener el código de vinculación. Consulta el estado."
-                ))
+                return
+        except Exception:
+            self._emit(XmppError(
+                "No se pudo obtener el código de vinculación. Consulta el estado."
+            ))
             return
         existing_session = self._whatsapp_link_sessions.get(component_jid)
         if existing_session is not None and existing_session[0] == SLIDGE_PAIR_PHONE_COMMAND:
@@ -2905,16 +2919,40 @@ class BridgeXmppClient(ClientXMPP):
         self._joined_group_chat_jids.add(jid)
         try:
             future = self["xep_0045"].join_muc(jid, self._muc_nick(), maxhistory="0")
+            generation = self._session_generation
             future.add_done_callback(
-                lambda task, room_jid=jid: self._finish_group_join(room_jid, task)
+                lambda task, room_jid=jid, generation=generation:
+                    self._finish_group_join(room_jid, task, generation)
             )
         except Exception:
             self._joined_group_chat_jids.discard(jid)
 
-    def _finish_group_join(self, jid: str, task: asyncio.Future) -> None:
+    def _finish_group_join(
+        self, jid: str, task: asyncio.Future, generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._session_generation:
+            if not task.cancelled():
+                task.exception()  # Consume it, but never retire the new session's occupant.
+            return
         try:
             task.result()
-        except (TimeoutError, IqError, IqTimeout):
+        except (IqError, PresenceError) as exc:
+            self._joined_group_chat_jids.discard(jid)
+            condition = str(exc.condition or "")
+            delays = (2, 5, 15, 30)
+            attempts = self._group_join_retry_attempts.get(jid, 0)
+            if (
+                condition in {
+                    "service-unavailable", "remote-server-not-found", "remote-server-timeout",
+                }
+                and attempts < len(delays)
+            ):
+                self._group_join_retry_attempts[jid] = attempts + 1
+                self._schedule_group_rejoin(jid, delay=delays[attempts])
+                return
+            self._group_roster_requests.discard(jid)
+            return
+        except asyncio.CancelledError:
             self._joined_group_chat_jids.discard(jid)
             self._group_roster_requests.discard(jid)
             return
@@ -2923,6 +2961,7 @@ class BridgeXmppClient(ClientXMPP):
             self._group_roster_requests.discard(jid)
             return
 
+        self._group_join_retry_attempts.pop(jid, None)
         if jid in self._group_roster_requests:
             self._group_roster_requests.discard(jid)
             self._emit_group_participants_from_roster(jid)

@@ -33,10 +33,15 @@ class LinkingProtocol:
     async def available(self, component):
         if component in self.supported:
             return self.supported[component]
+        # A failed discovery is not evidence of an older bridge. Keep it
+        # retryable instead of silently selecting the legacy protocol.
         try:
             info = await self.client["xep_0030"].get_info(jid=component, timeout=8)
         except Exception:
-            return False
+            self.monitor(component)
+            raise
+        if not self.current():
+            raise asyncio.CancelledError
         value = any(e.get("var") == NAMESPACE
                     for e in info.xml.findall(f".//{{{DISCO_NS}}}feature"))
         self.supported[component] = value
@@ -50,6 +55,8 @@ class LinkingProtocol:
             return await self._request(component, op, **values)
 
     async def _request(self, component, op="status", **values):
+        if not self.current():
+            raise asyncio.CancelledError
         started = time.monotonic()
         iq = self.client.make_iq_get() if op == "status" else self.client.make_iq_set()
         iq["to"] = component
@@ -103,23 +110,45 @@ class LinkingProtocol:
         return event
 
     async def probe(self, component):
-        event = await self.request(component)
+        try:
+            event = await self.request(component)
+            return event.status
+        finally:
+            # In particular, a failed first IQ must not leave this session
+            # without any way to observe recovery.
+            self.monitor(component)
+
+    def monitor(self, component):
+        if not self.current():
+            return
         if component not in self.pollers or self.pollers[component].done():
             self.pollers[component] = asyncio.create_task(self.poll(component))
-        return event.status
 
     async def poll(self, component):
         failures = 0
         while self.current():
-            await asyncio.sleep(3)
             try:
+                await asyncio.sleep(min(30, 3 * 2 ** min(failures, 4)))
+                if not self.current():
+                    return
+                if not await self.available(component):
+                    # Only a successful feature response permits legacy mode.
+                    await self.client._debug_whatsapp_component_commands(component)
+                    return
                 await self.request(component)
                 failures = 0
             except asyncio.CancelledError:
                 return
             except Exception:
+                if not self.current():
+                    return
                 failures += 1
                 if failures == 3:
+                    if not self.supported.get(component):
+                        self.client._emit_whatsapp_status(
+                            component, "connection_error", "No se pudo consultar WhatsApp."
+                        )
+                        continue
                     old = self.states.get(component)
                     self.client._whatsapp_session_ready = False
                     self.client._emit(WhatsAppLinkState(

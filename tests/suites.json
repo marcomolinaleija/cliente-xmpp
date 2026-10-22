@@ -1,6 +1,10 @@
 {
   "version": 1,
   "modules": {
+    "test_bridge_recovery": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_ui_event_pump": {
       "area": "platform",
       "layer": "fast",

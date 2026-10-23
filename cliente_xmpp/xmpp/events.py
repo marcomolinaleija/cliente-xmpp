@@ -79,6 +79,7 @@ class XmppConnected:
 @dataclass(slots=True)
 class XmppDisconnected:
     reason: str = ""
+    generation: int = 0
 
 
 @dataclass(slots=True)

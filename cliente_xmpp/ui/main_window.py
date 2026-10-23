@@ -396,6 +396,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_link_detail = ""
         self.whatsapp_verified = False
         self.whatsapp_link_protocol = False
+        self.whatsapp_link_recovering = False
+        self.whatsapp_recovery_roster: list[Chat] | None = None
         self.whatsapp_link_generation = 0
         self.whatsapp_link_attempt = ""
         self.whatsapp_link_revision = -1
@@ -688,6 +690,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self._close_voice()
         self.whatsapp_link_generation = time.monotonic_ns()
         self.whatsapp_link_protocol = False
+        self.whatsapp_link_recovering = False
         self.whatsapp_link_attempt = ""
         self.whatsapp_link_revision = -1
         self.whatsapp_link_state_key = None
@@ -1630,6 +1633,18 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 and event.revision < self.whatsapp_link_revision):
             return
         self.whatsapp_link_protocol = True
+        still_authenticated = self.whatsapp_verified and event.authenticated
+        was_ready = self.whatsapp_verified or getattr(self, "whatsapp_link_recovering", False)
+        recovering = was_ready and (
+            (event.status == "connecting" and event.reason == "disconnected")
+            or (event.status == "connection_error" and event.reason in {
+                "status_unavailable", "connection_timeout",
+            })
+        )
+        recovered = getattr(self, "whatsapp_link_recovering", False) and event.authenticated
+        if recovering and not getattr(self, "whatsapp_link_recovering", False):
+            self.whatsapp_recovery_roster = self.pending_roster_chats
+        self.whatsapp_link_recovering = recovering
         # Unlike legacy "Syncing contacts" text, this is an explicit transport
         # authentication snapshot. A disconnect must revoke UI send permission.
         self.whatsapp_verified = event.authenticated
@@ -1690,7 +1705,22 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if event.authenticated and event.sync_phase != "ready":
                 detail = ("La sincronización inicial necesita revisión; puedes usar tus chats."
                           if event.sync_phase == "error" else "Sincronizando contactos y grupos...")
-            self._handle_whatsapp_bridge_status(status, event.component_jid, detail)
+            if recovering or recovered or still_authenticated:
+                # Revoke send permission without replacing the conversation or
+                # stealing focus. A temporary transport outage is not unlinking.
+                self.whatsapp_link_status = status
+                self.whatsapp_link_detail = detail
+                message = ("WhatsApp conectado" if event.authenticated
+                           else "Reconectando con WhatsApp...")
+                if detail:
+                    message = f"{message}. {detail}"
+                self.connection_header.set_status(message)
+                self.status_bar.SetStatusText(message)
+                self._set_whatsapp_remote_actions_enabled(event.authenticated)
+                if (recovered and self.pending_roster_chats is not self.whatsapp_recovery_roster):
+                    self._apply_pending_roster_if_ready()
+            else:
+                self._handle_whatsapp_bridge_status(status, event.component_jid, detail)
         if (event.image_data and event.qr_deadline > time.monotonic()
                 and status == "needs_qr" and not self.whatsapp_pair_phone_pending):
             self.whatsapp_qr_deadline = event.qr_deadline
@@ -7051,8 +7081,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     message = "Verificando confirmación de conexión con WhatsApp..."
                     self._show_chat_placeholder(message)
                     self.status_bar.SetStatusText(message)
-            case XmppDisconnected(reason=reason):
-                self.whatsapp_link_generation = time.monotonic_ns()
+            case XmppDisconnected(reason=reason, generation=generation):
+                if generation and generation < self.whatsapp_link_generation:
+                    return
+                # Use the producer's boundary, not the time a delayed UI turn
+                # processes it (which may be after the next session started).
+                self.whatsapp_link_generation = max(
+                    getattr(self, "whatsapp_link_generation", 0), generation
+                ) + 1
+                self.whatsapp_link_protocol = False
+                self.whatsapp_link_recovering = False
+                self.whatsapp_link_state_key = None
                 self.whatsapp_pairing_bootstrap_generation = (
                     getattr(self, "whatsapp_pairing_bootstrap_generation", 0) + 1
                 )

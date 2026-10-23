@@ -1,0 +1,34 @@
+# Python-only overlay on the verified, running R5; no native or dependency changes.
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:muc-xml-r5-flat-20261022
+FROM ${BRIDGE_IMAGE}
+USER root
+RUN --network=none --mount=type=bind,source=.,target=/tmp/can-group-echo-input <<'SH'
+set -eu
+mkdir -p /opt/group-echo-tools
+cp /tmp/can-group-echo-input/patch_slidge_group_echo.py /opt/group-echo-tools/
+cp /tmp/can-group-echo-input/smoke_bridge_group_echo_runtime.py /opt/group-echo-tools/
+CAN_VOICE_ENABLE=0 python -B - <<'PY'
+import os
+import pwd
+import subprocess
+
+user = pwd.getpwnam("slidge")
+smoke = "/opt/group-echo-tools/smoke_bridge_group_echo_runtime.py"
+
+def check(script, *args):
+    subprocess.run(["python", "-B", script, *args], check=True,
+                   user=user.pw_uid, group=user.pw_gid, env=os.environ)
+
+check(smoke, "--expect-blocking")
+for _ in range(2):
+    subprocess.run(["python", "-B", "/opt/group-echo-tools/patch_slidge_group_echo.py",
+                    "/venv/lib/python3.13/site-packages"], check=True)
+check(smoke)
+check("/opt/read-marker-tools/smoke_bridge_read_markers_runtime.py")
+check("/opt/recovery-tools/smoke_bridge_recovery_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_linking_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_muc_history_runtime.py")
+PY
+SH
+USER slidge
+LABEL org.can.whatsapp.group-echo-recovery="1"

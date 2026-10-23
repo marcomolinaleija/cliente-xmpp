@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import secrets
 import time
 from xml.etree import ElementTree as ET
@@ -43,10 +44,13 @@ class LinkingSession:
         self.requests: dict[str, str] = {}
         self.mode = "qr"
         self.sync_error = False
+        self.sync_task = None
         self.phone_code = ""
         self.phone_fingerprint = ""
 
     def change(self, phase, reason=""):
+        if phase != "connected" and self.sync_task is not None and not self.sync_task.done():
+            self.sync_task.cancel()
         self.phase, self.reason = phase, reason
         self.changed_at = self.clock()
         self.revision += 1
@@ -62,6 +66,56 @@ class LinkingSession:
         self.mode = "qr"
         self.sync_error = False
         self.change("connecting")
+
+    def retry_sync(self):
+        if (self.sync_task is not None and not self.sync_task.done()
+                and not self.sync_task.cancelling()):
+            return
+        attempt = self.attempt
+
+        async def retry():
+            for delay in (30, 60, 120):
+                await asyncio.sleep(delay)
+                if not self.authenticated or attempt != self.attempt:
+                    return
+                try:
+                    contacts = self.session.contacts
+                    if not contacts.ready.done():
+                        with self.session.xmpp.store.session() as orm:
+                            await contacts._fill(orm)
+                        if not self.authenticated or attempt != self.attempt:
+                            return
+                        if not contacts.ready.done():
+                            contacts.ready.set_result(True)
+                    if self.session.xmpp.GROUPS:
+                        groups = self.session.bookmarks
+                        if not groups.ready.done():
+                            await groups.fill()
+                            if not self.authenticated or attempt != self.attempt:
+                                return
+                            if not groups.ready.done():
+                                groups.ready.set_result(True)
+                    if not self.authenticated or attempt != self.attempt:
+                        return
+                    required = [contacts.ready]
+                    if self.session.xmpp.GROUPS:
+                        required.append(groups.ready)
+                    if any(not f.done() or f.cancelled() or f.exception() is not None
+                           or not f.result() for f in required):
+                        raise RuntimeError("Roster readiness was cancelled or failed")
+                    self.session.send_gateway_status("Logged in", show="chat")
+                    self.sync_error = False
+                    self.revision += 1
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "WhatsApp roster sync retry failed", exc_info=True,
+                    )
+            # Exhaustion remains visible as sync=error; never acknowledge completion.
+
+        self.sync_task = asyncio.create_task(retry())
 
     def snapshot(self):
         if (not self.authenticated and self.phase in {"connecting", "paired"}
@@ -157,7 +211,8 @@ class LinkingSession:
             except Exception as exc:
                 self.change("connection_error", "cancel_failed")
                 raise LinkingError("cancel_failed") from exc
-            tasks = [t for t in (self.task, self.bootstrap, getattr(self, "phone_task", None))
+            tasks = [t for t in (self.task, self.bootstrap, self.sync_task,
+                                getattr(self, "phone_task", None))
                      if t and not t.done()]
             for task in tasks:
                 task.cancel()
@@ -298,6 +353,8 @@ def install_session(cls):
             owner.authenticated = True
             owner.change("connected")
         await original_connect(self, event)
+        if owner.authenticated and owner.sync_error:
+            owner.retry_sync()
 
     async def logout(self):
         owner = state(self)
@@ -305,7 +362,7 @@ def install_session(cls):
         owner.change("needs_relogin", "disconnected")
         await original_logout(self)
         current = asyncio.current_task()
-        tasks = [task for task in (owner.task, owner.bootstrap,
+        tasks = [task for task in (owner.task, owner.bootstrap, owner.sync_task,
                                   getattr(owner, "phone_task", None))
                  if task is not None and task is not current and not task.done()]
         for task in tasks:
@@ -339,11 +396,19 @@ def install(gateway):
             result = await original_login_wrap(session)
             if not state(session).authenticated:
                 session.logged = False
+            else:
+                state(session).sync_error = False
             return result
         except Exception:
             owner = state(session)
             if owner.authenticated:
                 owner.sync_error = True
+                owner.revision += 1
+                logging.getLogger(__name__).warning(
+                    "WhatsApp authenticated; initial roster sync failed, retrying", exc_info=True,
+                )
+                owner.retry_sync()
+                return "WhatsApp conectado; sincronización pendiente."
             raise
         finally:
             session.is_logging_in = False

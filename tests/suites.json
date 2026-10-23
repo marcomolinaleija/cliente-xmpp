@@ -1,6 +1,10 @@
 {
   "version": 1,
   "modules": {
+    "test_bridge_group_echo": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_bridge_recovery": {
       "area": "bridge",
       "layer": "contracts"
@@ -13,6 +17,11 @@
     "test_whatsapp_linking": {
       "area": "connection",
       "layer": "fast"
+    },
+    "test_xmpp_reconnection": {
+      "area": "connection",
+      "layer": "fast",
+      "overrides": {"XmppTlsReconnectionIntegrationTests": {"layer": "integration"}}
     },
     "test_live_voice": {
       "area": "media",

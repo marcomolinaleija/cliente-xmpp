@@ -15,7 +15,7 @@ from slixmpp.exceptions import PresenceError
 from cliente_xmpp.xmpp.client import BridgeXmppClient
 from cliente_xmpp.xmpp.events import WhatsAppLinkState, XmppDisconnected, XmppError
 from cliente_xmpp.xmpp.linking import DISCO_NS, NAMESPACE, LinkingProtocol
-from tools.bridge_linking import LinkingError, LinkingSession, install_session, state
+from tools.bridge_linking import LinkingError, LinkingSession, install, install_session, state
 
 PNG = b"\x89PNG\r\n\x1a\nfictional"
 
@@ -183,6 +183,149 @@ class LinkingOwnerTests(unittest.IsolatedAsyncioTestCase):
         await session.logout()
         self.assertTrue(pending.cancelled())
         self.assertEqual(calls[-1], "existing-logout")
+
+
+class LinkingSyncRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def gateway(self, *, authenticated=True, failures=1, contacts_failed=False):
+        class Session:
+            login = on_wa_qr = on_wa_pair = on_wa_connect = logout = on_wa_logged_out = AsyncMock()
+
+        class Gateway(SimpleNamespace):
+            def __getitem__(self, _):
+                return SimpleNamespace(add_feature=Mock())
+
+        loop = asyncio.get_running_loop()
+        contacts = SimpleNamespace(ready=loop.create_future(), _fill=AsyncMock())
+        groups = SimpleNamespace(ready=loop.create_future(), fill=AsyncMock())
+        store = SimpleNamespace(session=Mock(return_value=Mock(__enter__=Mock(),
+                                                             __exit__=Mock(return_value=False))))
+        gateway = Gateway(default_ns="jabber:component:accept", GROUPS=True, store=store,
+                          register_handler=Mock())
+        session = SimpleNamespace(xmpp=gateway, contacts=contacts, bookmarks=groups,
+                                  logged=True, is_logging_in=True, send_gateway_status=Mock())
+        owner = state(session)
+        owner.authenticated = authenticated
+        owner.change("connected" if authenticated else "connecting")
+        fill = contacts._fill if contacts_failed else groups.fill
+        fill.side_effect = [RuntimeError("fixture groups timeout")] * failures + [None]
+        if not contacts_failed:
+            contacts.ready.set_result(True)
+
+        async def original(_):
+            await fill()
+            return "fixture original result"
+
+        gateway.login_wrap = AsyncMock(side_effect=original)
+        original_login = gateway.login_wrap
+        with patch.dict("sys.modules", {"tools.session": SimpleNamespace(Session=Session)}):
+            install(gateway)
+        return gateway, session, owner, original_login
+
+    async def test_post_auth_sync_failure_does_not_escape_and_recovers_without_login(self):
+        for contacts_failed in (False, True):
+            with self.subTest(contacts_failed=contacts_failed):
+                gateway, session, owner, original = self.gateway(contacts_failed=contacts_failed)
+                sleeps = []
+
+                async def sleep(delay, sleeps=sleeps):
+                    sleeps.append(delay)
+
+                with patch("tools.bridge_linking.asyncio.sleep", side_effect=sleep):
+                    await gateway.login_wrap(session)
+                    self.assertTrue(owner.authenticated)
+                    self.assertEqual(owner.snapshot()["sync"], "error")
+                    self.assertFalse(session.is_logging_in)
+                    await owner.sync_task
+                self.assertEqual(sleeps, [30])
+                self.assertEqual(owner.snapshot()["sync"], "ready")
+                self.assertTrue(session.logged)
+                session.send_gateway_status.assert_called_once_with("Logged in", show="chat")
+                original.assert_awaited_once()
+
+    async def test_failed_auth_still_raises_without_retry(self):
+        gateway, session, owner, _ = self.gateway(authenticated=False)
+        with self.assertRaises(RuntimeError):
+            await gateway.login_wrap(session)
+        self.assertFalse(owner.authenticated)
+        self.assertIsNone(getattr(owner, "sync_task", None))
+        self.assertFalse(session.is_logging_in)
+
+    async def test_retries_are_bounded_and_exhaustion_stays_in_error(self):
+        gateway, session, owner, original = self.gateway(failures=4)
+        sleep = AsyncMock()
+        with patch("tools.bridge_linking.asyncio.sleep", sleep):
+            await gateway.login_wrap(session)
+            await owner.sync_task
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [30, 60, 120])
+        self.assertEqual(session.bookmarks.fill.await_count, 4)
+        self.assertEqual(owner.snapshot()["sync"], "error")
+        self.assertTrue(owner.authenticated)
+        self.assertFalse(session.bookmarks.ready.done())
+        original.assert_awaited_once()
+
+    async def test_logout_disconnect_and_new_attempt_cancel_retry_without_relogging(self):
+        for action in ("logged_out", "connecting", "new_attempt"):
+            with self.subTest(action=action):
+                gateway, session, owner, original = self.gateway(failures=4)
+                gate = asyncio.Event()
+                entered = asyncio.Event()
+
+                async def sleep(_, entered=entered, gate=gate):
+                    entered.set()
+                    await gate.wait()
+
+                with patch("tools.bridge_linking.asyncio.sleep", side_effect=sleep):
+                    await gateway.login_wrap(session)
+                    task = owner.sync_task
+                    await entered.wait()
+                    if action == "new_attempt":
+                        owner.reserve()
+                    else:
+                        owner.authenticated = False
+                        owner.change(action)
+                    await asyncio.gather(task, return_exceptions=True)
+                self.assertTrue(task.cancelled())
+                self.assertEqual(session.bookmarks.fill.await_count, 1)
+                original.assert_awaited_once()
+
+    async def test_duplicate_failure_shares_one_retry_and_stale_result_cannot_mark_ready(self):
+        gateway, session, owner, _ = self.gateway(failures=4)
+        gate = asyncio.Event()
+        with patch("tools.bridge_linking.asyncio.sleep", side_effect=lambda _: gate.wait()):
+            await gateway.login_wrap(session)
+            task = owner.sync_task
+            await gateway.login_wrap(session)
+            self.assertIs(task, owner.sync_task)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        gateway, session, owner, _ = self.gateway()
+
+        async def stale_result():
+            owner.attempt = "replacement-attempt"
+
+        with patch("tools.bridge_linking.asyncio.sleep", new_callable=AsyncMock):
+            await gateway.login_wrap(session)
+            session.bookmarks.fill.side_effect = stale_result
+            await owner.sync_task
+        self.assertFalse(session.bookmarks.ready.done())
+        self.assertTrue(owner.sync_error)
+
+    async def test_cancelled_readiness_is_not_falsely_reported_ready(self):
+        gateway, session, owner, _ = self.gateway()
+        session.bookmarks.ready.cancel()
+        with patch("tools.bridge_linking.asyncio.sleep", new_callable=AsyncMock):
+            await gateway.login_wrap(session)
+            await owner.sync_task
+        self.assertEqual(owner.snapshot()["sync"], "error")
+
+    async def test_successful_login_keeps_original_result_and_has_no_retry(self):
+        gateway, session, owner, original = self.gateway(failures=0)
+        result = await gateway.login_wrap(session)
+        self.assertEqual(result, "fixture original result")
+        self.assertIsNone(owner.sync_task)
+        self.assertFalse(owner.sync_error)
+        original.assert_awaited_once()
 
 
 class LinkingProtocolTests(unittest.IsolatedAsyncioTestCase):
@@ -586,6 +729,30 @@ class LinkingUiIsolationTests(unittest.TestCase):
             _apply_pending_roster_if_ready=Mock(),
         )
 
+    def test_authenticated_sync_updates_never_display_reconnecting(self):
+        from cliente_xmpp.ui.main_window import MainWindow
+
+        window = self.window()
+        window.whatsapp_verified = True
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter") as call_after:
+            for revision, sync in enumerate(("syncing", "ready", "error"), start=3):
+                with self.subTest(sync=sync):
+                    event = WhatsAppLinkState(
+                        window.current_jid, "whatsapp.example.invalid", 10,
+                        "fixture-attempt", revision, "connected", True, sync_phase=sync,
+                    )
+                    MainWindow._handle_whatsapp_link_state(window, event)
+                    self.assertTrue(window.whatsapp_verified)
+                    self.assertFalse(window.whatsapp_link_recovering)
+                    self.assertTrue(window.connection_header.set_status.call_args.args[0]
+                                    .startswith("WhatsApp conectado"))
+                    self.assertTrue(window.status_bar.SetStatusText.call_args.args[0]
+                                    .startswith("WhatsApp conectado"))
+                    window._set_whatsapp_remote_actions_enabled.assert_called_with(True)
+            window._handle_whatsapp_bridge_status.assert_not_called()
+            window._apply_pending_roster_if_ready.assert_not_called()
+            call_after.assert_not_called()
+
     def test_transient_outage_keeps_chat_and_focus_but_revokes_send_until_authenticated(self):
         from cliente_xmpp.ui.main_window import MainWindow
 
@@ -637,6 +804,55 @@ class LinkingUiIsolationTests(unittest.TestCase):
         window._handle_whatsapp_bridge_status.assert_called_once_with(
             "logged_out", "whatsapp.example.invalid", "",
         )
+
+    def test_outage_past_bridge_deadline_keeps_chat_until_recovery_or_real_logout(self):
+        from cliente_xmpp.ui.main_window import MainWindow
+
+        for end in ("connected", "logged_out"):
+            with self.subTest(end=end):
+                window = self.window()
+                window.whatsapp_verified = True
+                owner = LinkingSession(SimpleNamespace(), clock=lambda: 100.0)
+                owner.change("connecting", "disconnected")
+                for elapsed in (0, 189, 191, 600):
+                    owner.clock = lambda elapsed=elapsed: 100.0 + elapsed
+                    snapshot = owner.snapshot()
+                    event = WhatsAppLinkState(
+                        window.current_jid, "whatsapp.example.invalid", 10,
+                        "fixture-attempt", int(snapshot["revision"]) + 3,
+                        snapshot["phase"], False, snapshot["reason"],
+                    )
+                    MainWindow._handle_whatsapp_link_state(window, event)
+                    self.assertTrue(window.whatsapp_link_recovering)
+                    self.assertFalse(window.whatsapp_verified)
+                    window._set_whatsapp_remote_actions_enabled.assert_called_with(False)
+                    window._handle_whatsapp_bridge_status.assert_not_called()
+                self.assertEqual(event.reason, "connection_timeout")
+                event.status, event.authenticated = end, end == "connected"
+                event.reason, event.revision = "" if event.authenticated else "device_removed", 20
+                MainWindow._handle_whatsapp_link_state(window, event)
+                self.assertFalse(window.whatsapp_link_recovering)
+                if event.authenticated:
+                    window._handle_whatsapp_bridge_status.assert_not_called()
+                    window._set_whatsapp_remote_actions_enabled.assert_called_with(True)
+                    window._apply_pending_roster_if_ready.assert_not_called()
+                else:
+                    window._handle_whatsapp_bridge_status.assert_called_once_with(
+                        "logged_out", "whatsapp.example.invalid", "",
+                    )
+
+    def test_initial_login_timeout_does_not_masquerade_as_authenticated_recovery(self):
+        from cliente_xmpp.ui.main_window import MainWindow
+
+        window = self.window()
+        event = WhatsAppLinkState(
+            window.current_jid, "whatsapp.example.invalid", 10,
+            "fixture-attempt", 3, "connection_error", False, "connection_timeout",
+        )
+        MainWindow._handle_whatsapp_link_state(window, event)
+        self.assertFalse(window.whatsapp_link_recovering)
+        self.assertFalse(window.whatsapp_verified)
+        window._handle_whatsapp_bridge_status.assert_called_once()
 
     def test_delayed_disconnect_uses_producer_generation_and_accepts_next_session(self):
         from cliente_xmpp.ui.main_window import MainWindow

@@ -83,20 +83,25 @@ def recovery_source(source):
 
 
 def roster_native_source(source):
-    if "// CAN bounded roster snapshot v1" in source:
+    if "// CAN bounded roster snapshot v2" in source:
         return source
+    if "// CAN bounded roster snapshot v1" in source:
+        source = replace(source,
+                         "context.WithTimeout(context.Background(), 30*time.Second)",
+                         "context.WithTimeout(context.Background(), 120*time.Second)", count=3)
+        return source.replace("// CAN bounded roster snapshot v1", "// CAN bounded roster snapshot v2")
     for name in ("GetContacts", "GetGroups"):
         start = source.index(f"func (s *Session) {name}(")
         # GetContacts is followed by presence helpers, which are not part of it.
         end = source.index("\n}\n", start) + 3
         method = source[start:end]
         method = replace(method, "\tif s.client == nil || s.client.Store.ID == nil {\n",
-                         "\t// CAN bounded roster snapshot v1\n"
+                         "\t// CAN bounded roster snapshot v2\n"
                          "\tclient := s.currentClient()\n"
                          "\tif client == nil || client.Store == nil || client.Store.ID == nil {\n")
         # A bounded worker call must not read a mutable session client/context.
         offset = method.index("\n\t}\n") + len("\n\t}\n")
-        method = method[:offset] + ("\tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)\n"
+        method = method[:offset] + ("\tctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)\n"
                                    "\tdefer cancel()\n") + method[offset:]
         method = method.replace("s.client", "client").replace("s.ctx", "ctx")
         result = "contacts" if name == "GetContacts" else "groups"
@@ -106,7 +111,7 @@ def roster_native_source(source):
         source = source[:start] + method + source[end:]
     old = "\treturn s.subscribeToPresences(s.ctx, s.currentClient())"
     return replace(source, old,
-                   "\tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)\n"
+                   "\tctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)\n"
                    "\tdefer cancel()\n"
                    "\treturn s.subscribeToPresences(ctx, s.currentClient())")
 
@@ -190,6 +195,43 @@ def attachment_source(source):
     return replace(source, old, new)
 
 
+def muc_error_source(source):
+    if "# CAN ignore reflected MUC errors v1" in source:
+        return source
+    source = replace(source,
+                     "from ..util import DispatcherMixin, exceptions_to_xmpp_errors\n",
+                     "from ..util import DispatcherMixin, Ignore, exceptions_to_xmpp_errors\n")
+    start = source.index("    async def __on_group_chat_error(")
+    end = source.index("    @exceptions_to_xmpp_errors", start)
+    method = replace(source[start:end], "        except XMPPError as e:\n",
+                     "        # CAN ignore reflected MUC errors v1: Ignore is BaseException, not Exception.\n"
+                     "        except (XMPPError, Ignore) as e:\n")
+    return source[:start] + method + source[end:]
+
+
+def archive_xml_source(source):
+    if "# CAN archive XML 1.0 characters v1" in source:
+        return source
+    source = replace(source, "import uuid\n", "import re\nimport uuid\n")
+    source = replace(source, "class HistoryMessage:\n", r'''# CAN archive XML 1.0 characters v1: keep valid text and preserve stored rows.
+_CAN_INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+class HistoryMessage:
+''')
+    source = replace(source, "            stanza = Message(xml=ET.fromstring(stanza))\n",
+                     '            stanza = Message(xml=ET.fromstring(_CAN_INVALID_XML.sub("\\ufffd", stanza)))\n')
+    return replace(source, "            from_db = False\n", '''            from_db = False
+            for node in stanza.xml.iter():
+                if node.text:
+                    node.text = _CAN_INVALID_XML.sub("\\ufffd", node.text)
+                if node.tail:
+                    node.tail = _CAN_INVALID_XML.sub("\\ufffd", node.tail)
+                for key, value in node.attrib.items():
+                    node.set(key, _CAN_INVALID_XML.sub("\\ufffd", value))
+''')
+
+
 def patch_package(site_packages):
     transforms = {
         "slidge_whatsapp/session.go": lambda s: roster_native_source(session_source(s)),
@@ -199,6 +241,8 @@ def patch_package(site_packages):
         "slidge_whatsapp/group.py": roster_group_source,
         "slidge/group/room.py": room_source,
         "slidge/core/mixins/attachment.py": attachment_source,
+        "slidge/core/dispatcher/muc/misc.py": muc_error_source,
+        "slidge/util/archive_msg.py": archive_xml_source,
     }
     outputs = {}
     for name, transform in transforms.items():

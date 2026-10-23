@@ -392,6 +392,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_verified = False
         self.whatsapp_link_protocol = False
         self.whatsapp_link_recovering = False
+        self.whatsapp_recovery_roster: list[Chat] | None = None
         self.whatsapp_link_generation = 0
         self.whatsapp_link_attempt = ""
         self.whatsapp_link_revision = -1
@@ -1631,7 +1632,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         was_ready = self.whatsapp_verified or getattr(self, "whatsapp_link_recovering", False)
         recovering = was_ready and (
             (event.status == "connecting" and event.reason == "disconnected")
-            or (event.status == "connection_error" and event.reason == "status_unavailable")
+            or (event.status == "connection_error" and event.reason in {
+                "status_unavailable", "connection_timeout",
+            })
         )
         recovered = getattr(self, "whatsapp_link_recovering", False) and event.authenticated
         if recovering and not getattr(self, "whatsapp_link_recovering", False):
@@ -1702,7 +1705,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 # stealing focus. A temporary transport outage is not unlinking.
                 self.whatsapp_link_status = status
                 self.whatsapp_link_detail = detail
-                message = "WhatsApp conectado" if recovered else "Reconectando con WhatsApp..."
+                message = ("WhatsApp conectado" if event.authenticated
+                           else "Reconectando con WhatsApp...")
                 if detail:
                     message = f"{message}. {detail}"
                 self.connection_header.set_status(message)

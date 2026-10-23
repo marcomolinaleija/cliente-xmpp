@@ -389,7 +389,10 @@ class BridgeXmppClient(ClientXMPP):
             self._reconnect_scheduled = False
             if self._disconnect_requested:
                 return
-            if self.is_connected() or self.is_connecting():
+            # Slixmpp can retain a finished TLS Future after losing transport.
+            # Only an actually pending attempt should suppress this retry.
+            attempt = self._current_connection_attempt
+            if self.is_connected() or (attempt is not None and not attempt.done()):
                 return
             if self.settings.host:
                 self.connect(self.settings.host, self.settings.port)

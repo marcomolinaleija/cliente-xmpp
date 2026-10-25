@@ -11,6 +11,58 @@ from cliente_xmpp.xmpp.events import ChatReadFailed, MessageReceived
 
 
 class OpenChatReadTests(unittest.TestCase):
+    def test_hidden_or_unverified_current_chat_does_not_clear_or_send_read(self):
+        for group in (False, True):
+            for state in ("hidden", "unverified"):
+                with self.subTest(group=group, state=state):
+                    window, chat = self.window(group)
+                    window.messages_by_chat[chat.jid] = [self.message(chat, 1)]
+                    if state == "hidden":
+                        window.conversation.IsShown.return_value = False
+                    else:
+                        window.whatsapp_verified = False
+                    window._mark_current_chat_displayed(chat.jid)
+                    self.assertEqual(chat.unread_count, 3)
+                    window._update_chat_summary.assert_not_called()
+                    window.xmpp.mark_chat_displayed.assert_not_called()
+
+    def test_late_history_keeps_hidden_chat_unread_and_does_not_render_it(self):
+        for visible in (False, True):
+            with self.subTest(visible=visible):
+                window, chat = self.window(group=True)
+                window.conversation.IsShown.return_value = visible
+                window.conversation.unread_marker_count = lambda: 3
+                window.history_loading_chats = {chat.jid}
+                window.history_loaded_chats = set()
+                window.history_exhausted_chats = set()
+                window.preloaded_history_chats = set()
+                window._normalize_audio_metadata_for_messages = Mock()
+                window._merge_messages = lambda jid, msgs, window=window: (
+                    window.messages_by_chat.__setitem__(jid, list(msgs)) or []
+                )
+                for name in ("_flush_pending_reaction_updates", "_persist_messages",
+                             "_update_chat_activity_from_messages",
+                             "_update_chat_preview_from_messages",
+                             "_auto_download_media_messages", "_apply_synced_chat_displayed",
+                             "_load_conversation", "_refresh_load_older_button"):
+                    setattr(window, name, Mock())
+                window.status_bar = SimpleNamespace(SetStatusText=Mock())
+                message = self.message(chat, 2)
+                MainWindow._handle_message_history_loaded(
+                    window, chat.jid, [message], older=False, complete=True, background=False,
+                )
+                self.assertEqual(window.messages_by_chat[chat.jid], [message])
+                window._persist_messages.assert_called_once_with([message])
+                if visible:
+                    window._load_conversation.assert_called_once()
+                    self.assertEqual(chat.unread_count, 0)
+                    window.xmpp.mark_chat_displayed.assert_called_once()
+                else:
+                    self.assertEqual(chat.unread_count, 3)
+                    window._load_conversation.assert_not_called()
+                    window._update_chat_summary.assert_not_called()
+                    window.xmpp.mark_chat_displayed.assert_not_called()
+
     def test_read_failure_keeps_local_state_and_allows_marker_retry_without_modal(self):
         window, chat = self.window(group=True)
         window.displayed_marker_ids_by_chat[chat.jid] = "fixture-marker"

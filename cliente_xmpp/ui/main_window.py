@@ -7490,11 +7490,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         # Reapply it after merging messages so the marker can now be resolved.
         self._apply_synced_chat_displayed(chat_jid)
         self._refresh_chat_order()
-        if (
-            not background
-            and self.conversation.current_chat
-            and self.conversation.current_chat.jid == chat_jid
-        ):
+        if not background and is_visible_chat:
             self._load_conversation(
                 self.conversation.current_chat,
                 unread_count=self.conversation.unread_marker_count(),
@@ -9832,6 +9828,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         return current + unread_delta
 
     def _mark_current_chat_displayed(self, chat_jid: str) -> None:
+        if not self.conversation.IsShown() or not getattr(self, "whatsapp_verified", True):
+            return
         chat = self.conversation.current_chat
         if chat is None or chat.jid != chat_jid:
             return
@@ -10018,9 +10016,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.clear_editing()
         self.conversation.clear_unread_marker()
         self._reset_window_title()
+        self._mark_current_chat_displayed(selected_jid)
         self.settings_panel.Hide()
         self.conversation.Hide()
-        self._mark_current_chat_displayed(selected_jid)
         self.chat_list.Show()
         if self._search_is_active():
             self._apply_chat_search()

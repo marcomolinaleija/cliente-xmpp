@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "channel": "experimental",
+  "bridge_version": "ex-20261023-r6",
+  "image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v-ex-20261023-r6",
+  "digest": "sha256:b419138d33dcc15b94e7e4abe3837d621c29190a770f1d15831138dd45a73a63",
+  "image_id": "sha256:a772d3842cadcc1f72a85379b391e80190f5ddf6aebb44fae8e00d11babd51a8",
+  "platform": "linux/amd64",
+  "manual_only": true,
+  "verified_source_branch": "voice-calls",
+  "verified_source_commit": "32f824b1a300f351e6b9b20717f1adc1ba5c4ce7"
+}

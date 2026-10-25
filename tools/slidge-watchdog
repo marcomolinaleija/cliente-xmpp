@@ -8,7 +8,7 @@ STATE_DIR=${STATE_DIR:-/var/lib/slidge-watchdog}
 STATE_FILE="$STATE_DIR/state"
 LOCK_FILE=${LOCK_FILE:-/run/lock/slidge-watchdog.lock}
 COOLDOWN=900
-WINDOW=900
+WINDOW=3600
 MAX_RESTARTS=2
 
 mkdir -p "$STATE_DIR"
@@ -48,8 +48,13 @@ if [ -n "$reason" ]; then
     exit 0
   fi
   logger -t slidge-watchdog -- "$reason; restarting $CONTAINER"
-  docker restart "$CONTAINER" >/dev/null
+  # Retain bounded, content-free evidence before recovery, not conversations.
+  umask 077
+  docker inspect -f '{{json .State}}' "$CONTAINER" > "$STATE_DIR/before-restart-state.json"
+  docker stats --no-stream --format '{{.CPUPerc}} {{.MemUsage}} {{.PIDs}}' "$CONTAINER" > "$STATE_DIR/before-restart-resources.txt" || true
   restart_count=$((restart_count + 1))
   last_restart=$now
+  printf 'window_start=%s\nrestart_count=%s\nlast_restart=%s\n' "$window_start" "$restart_count" "$last_restart" > "$STATE_FILE"
+  docker restart "$CONTAINER" >/dev/null
 fi
 printf 'window_start=%s\nrestart_count=%s\nlast_restart=%s\n' "$window_start" "$restart_count" "$last_restart" > "$STATE_FILE"

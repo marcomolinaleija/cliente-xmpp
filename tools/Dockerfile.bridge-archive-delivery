@@ -1,0 +1,38 @@
+# Overlay on the exact R6 runtime; no dependency/native upgrade, network or data mount.
+# Expected local ImageID: sha256:a772d3842cadcc1f72a85379b391e80190f5ddf6aebb44fae8e00d11babd51a8
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:group-echo-r6-20261022
+FROM ${BRIDGE_IMAGE}
+USER root
+COPY patch_slidge_archive_delivery.py bridge_health.py bridge_archive_delivery.py smoke_bridge_archive_delivery_runtime.py /opt/archive-delivery-tools/
+RUN --network=none CAN_VOICE_ENABLE=0 python -B - <<'PY'
+import os
+import pwd
+import shutil
+import subprocess
+from pathlib import Path
+
+user = pwd.getpwnam("slidge")
+site = Path("/venv/lib/python3.13/site-packages")
+tools = Path("/opt/archive-delivery-tools")
+smoke = tools / "smoke_bridge_archive_delivery_runtime.py"
+
+def check(script, *args):
+    subprocess.run(["python", "-B", str(script), *args], check=True,
+                   user=user.pw_uid, group=user.pw_gid, env=os.environ)
+
+check(smoke, "--expect-blocking")
+for _ in range(2):
+    subprocess.run(["python", "-B", str(tools / "patch_slidge_archive_delivery.py"),
+                    str(site)], check=True)
+shutil.copyfile(tools / "bridge_health.py", site / "slidge/can_health.py")
+shutil.copyfile(tools / "bridge_archive_delivery.py", site / "slidge/can_archive_delivery.py")
+check(smoke)
+check("/opt/group-echo-tools/smoke_bridge_group_echo_runtime.py")
+check("/opt/read-marker-tools/smoke_bridge_read_markers_runtime.py")
+check("/opt/recovery-tools/smoke_bridge_recovery_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_linking_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_muc_history_runtime.py")
+PY
+USER slidge
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["python", "-B", "/opt/archive-delivery-tools/bridge_health.py"]
+LABEL org.can.whatsapp.archive-delivery="2"

@@ -1,6 +1,10 @@
 {
   "version": 1,
   "modules": {
+    "test_bridge_archive_delivery": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_bridge_group_echo": {
       "area": "bridge",
       "layer": "contracts"

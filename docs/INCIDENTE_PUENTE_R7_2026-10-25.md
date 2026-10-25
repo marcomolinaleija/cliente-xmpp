@@ -89,7 +89,9 @@ cada excepción de aquel arranque.
 - No se conservan cuerpos de conversaciones, audio, credenciales ni paquetes
   completos. La captura SYN retiene contadores, no direcciones.
 - Las dos vistas permiten correlacionar fallo externo con recepción local y
-  presión del host; no equivalen a dos redes externas independientes.
+  presión del host. Se añadió una ruta de diagnóstico desde otro servidor,
+  pero su primera medición fue posterior a la recuperación local: no demuestra
+  todavía el comportamiento simultáneo desde dos redes durante la primera caída.
 - No considerar diez minutos saludables como resolución de una recurrencia
   aproximada de doce horas. Informar duración real, huecos y límites.
 
@@ -132,9 +134,52 @@ XMPP 5222 y NVDA Remote TCP 6837. La última muestra anterior, a `19:39:09Z`,
 era positiva en los cuatro puertos. Falló también una conexión SSH real.
 
 Esto confirma el síntoma desde esa red externa, pero no identifica su causa:
-durante la caída todavía falta recuperar y contrastar la captura del servidor.
-No se ordenó un reinicio para ocultar el incidente y no se atribuye a SQLite,
-al proveedor, a un bloqueo de origen o al acceso local sin esa correlación.
+el historial conserva fallos entre `19:40:15Z` y `19:44:39Z`, y la primera
+muestra recuperada es `19:45:40Z`. No se ordenó un reinicio del puente o del
+servidor para obtener esa recuperación.
+
+La consulta por la ruta alternativa y sus cuatro sondas positivas corresponden
+a `19:46Z`, **después** de esa primera recuperación. Por tanto, no permiten
+concluir retrospectivamente que sólo fallaba el origen local. La captura del
+servidor sí conserva salud local positiva y ausencia de reinicios/errores SQL
+en ese intervalo; eso no descarta un problema de entrada o trayecto de red.
+
+La inspección posterior no encontró un bloqueo activo de ese origen en
+Fail2ban, ni reglas específicas o registros coincidentes de Mailcow. No
+equivale a descartar un bloqueo temporal anterior. Se preparó una captura
+coordinada de cabeceras TCP y sondas externas para la siguiente recurrencia,
+con confirmación de que la captura está lista antes de generar los intentos.
+Su prueba de control verificó SYN y SYN/ACK en los cuatro servicios, sin guardar
+paquetes completos ni direcciones del equipo del usuario.
+
+### Correcciones adicionales del cliente, disponibles al reiniciarlo
+
+Se reprodujeron y corrigieron dos mecanismos distintos, sin forzar el cierre
+del CAN que está utilizando el usuario:
+
+1. **Lecturas involuntarias de chats ocultos.** Una respuesta de historial tardía
+   podía reconstruir una conversación oculta, borrar sus no leídos y enviar un
+   marcador de lectura. Ahora sólo se actualiza y marca la conversación visible;
+   el helper tampoco altera lecturas si WhatsApp no está verificado. La última
+   confirmación al salir de un chat se hace antes de ocultarlo, conservando el
+   comportamiento deliberado de lectura y la vuelta de foco a la lista.
+2. **Bloqueo por salida de diagnóstico.** El `print(..., flush=True)` incondicional
+   del hilo XMPP podía detener su bucle si stdout dejaba de aceptar datos. Una
+   prueba con una tubería real no drenada reprodujo el bloqueo del heartbeat.
+   Se sustituyó por `LOGGER.debug`: no escribe por defecto y mantiene el
+   diagnóstico cuando se configura explícitamente el nivel DEBUG. No se
+   modificaron los modos de consola del usuario ni el protocolo de mensajes.
+
+Validación: las regresiones fallan en las implementaciones anteriores y pasan
+con los cambios; suite completa **1 144 métodos / 667 subcasos**, sin fallos,
+errores ni omisiones, además de Ruff y `git diff --check`. No hubo build Windows,
+reinstalación ni modificación en bloque de los no leídos existentes.
+
+Estas reproducciones demuestran los defectos corregidos, no permiten atribuir
+sin más toda la recaída humana a ellos. Se añadió vigilancia temporal de la
+respuesta IQ del recurso CAN y de la capacidad de respuesta de su ventana,
+sin presencia adicional, mensajes, recibos, lectura de pantalla ni cambios de
+foco. La resolución completa y la estabilidad prolongada siguen pendientes.
 
 ## Referencias
 

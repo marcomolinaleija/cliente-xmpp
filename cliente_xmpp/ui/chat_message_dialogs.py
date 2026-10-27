@@ -38,8 +38,7 @@ def _message_description(message: Message) -> str:
         if message.call is not None:
             description = format_call_body(
                 description,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
     description = " ".join(description.split()) or "Mensaje sin texto"
     return description if len(description) <= 260 else f"{description[:257]}..."

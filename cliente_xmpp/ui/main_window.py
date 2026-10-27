@@ -133,6 +133,7 @@ from cliente_xmpp.ui.connection_header_panel import ConnectionHeaderPanel
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.emoji_picker_dialog import EmojiPickerDialog
 from cliente_xmpp.ui.emoticons import convert_standalone_emoticon
+from cliente_xmpp.ui.event_pump import UiEventPump
 from cliente_xmpp.ui.events import EVT_XMPP_EVENT, WxXmppEvent
 from cliente_xmpp.ui.login_panel import LoginData, LoginPanel
 from cliente_xmpp.ui.message_info_dialog import (
@@ -152,6 +153,7 @@ from cliente_xmpp.ui.sticker_gallery_dialog import StickerGalleryDialog
 from cliente_xmpp.ui.storage_manager_dialog import StorageManagerDialog
 from cliente_xmpp.ui.system_tray import SystemTrayIcon
 from cliente_xmpp.ui.theme import apply_theme
+from cliente_xmpp.ui.voice_integration import VoiceIntegrationMixin
 from cliente_xmpp.ui.whatsapp_link_panel import (
     WhatsAppLinkPanel,
     WhatsAppPairingCodeDialog,
@@ -186,6 +188,7 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppBridgeStatus,
     WhatsAppLinkSessionEnded,
     WhatsAppLinkSessionStarted,
+    WhatsAppLinkState,
     WhatsAppPairingCodeReceived,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
@@ -211,6 +214,12 @@ CONTACT_AVATARS_DIR = APP_DIR / "avatars"
 SEARCH_RESULT_LIMIT = 500
 SEARCH_MEMORY_MESSAGE_LIMIT = 200
 INITIAL_CHAT_LOAD_FALLBACK_MS = 8000
+BATCHED_XMPP_EVENTS = (
+    MessageReceived, MessageHistoryLoaded, MessageDeliveryUpdated, MessageReactionReceived,
+    RosterLoaded, ChatsDiscovered, ChatActivityLoaded, ChatActivityLoadFinished,
+    GroupParticipantUpdated, GroupParticipantsLoaded, ChatDisplayedSynced,
+    ContactPresenceUpdated,
+)
 SEARCH_DEBOUNCE_MS = 250
 WHATSAPP_QR_TIMEOUT_SECONDS = 60
 UPDATE_CHECK_INITIAL_DELAY_MS = 2000
@@ -248,7 +257,13 @@ class ManualHistoryLoad:
         self.bulk = self.remaining is None or self.remaining >= 500
 
 
-class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
+class _MergedMessages(list[Message]):
+    """Canonical merge output, with conservative eligibility for live appends."""
+
+    appendable = False
+
+
+class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegrationMixin, wx.Frame):
     def __init__(self, *, development_mode: bool = False, startup_checks: bool = True) -> None:
         super().__init__(None, title=APP_WINDOW_TITLE, size=(980, 700))
 
@@ -319,6 +334,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.bridge_update_status: LocalBridgeUpdateStatus | None = None
         self.bridge_update_feedback_timer: wx.CallLater | None = None
         self._closing = False
+        self._processing_xmpp_batch = False
+        self._chat_list_refresh_pending = False
+        self._xmpp_event_pump = UiEventPump(
+            self._handle_xmpp_event,
+            lambda: wx.PostEvent(self, WxXmppEvent()),
+            lambda: wx.CallLater(10, self._drain_xmpp_events),
+        )
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.pending_reaction_updates_by_chat: dict[str, list[ReactionUpdate]] = {}
@@ -368,6 +390,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.whatsapp_link_status = "unknown"
         self.whatsapp_link_detail = ""
         self.whatsapp_verified = False
+        self.whatsapp_link_protocol = False
+        self.whatsapp_link_recovering = False
+        self.whatsapp_recovery_roster: list[Chat] | None = None
+        self.whatsapp_link_generation = 0
+        self.whatsapp_link_attempt = ""
+        self.whatsapp_link_revision = -1
+        self.whatsapp_link_state_key = None
+        self.whatsapp_qr_context = None
+        self.whatsapp_code_dialog = None
+        self._voice_controller = None
+        self._voice_dialog = None
         self.pending_roster_chats: list[Chat] | None = None
         self.whatsapp_link_session: tuple[str, str, str] | None = None
         self.whatsapp_link_mode = ""
@@ -574,6 +607,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.conversation.load_older_button.Bind(wx.EVT_BUTTON, self._on_load_older_messages)
         self.conversation.back_button.Bind(wx.EVT_BUTTON, self._on_back_to_chat_list)
         self.conversation.contact_info_button.Bind(wx.EVT_BUTTON, self._on_contact_info)
+        self.conversation.call_button.Bind(wx.EVT_BUTTON, self._on_call_contact)
         self.conversation.search_button.Bind(wx.EVT_BUTTON, self._on_open_chat_message_search)
         self.conversation.send_button.Bind(wx.EVT_BUTTON, self._on_primary_send_action)
         self.conversation.emoji_button.Bind(wx.EVT_BUTTON, self._on_open_emoji_picker)
@@ -648,6 +682,19 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             wx.MessageBox("El JID y el password son obligatorios.", "Datos incompletos")
             return
 
+        self._close_voice()
+        self.whatsapp_link_generation = time.monotonic_ns()
+        self.whatsapp_link_protocol = False
+        self.whatsapp_link_recovering = False
+        self.whatsapp_link_attempt = ""
+        self.whatsapp_link_revision = -1
+        self.whatsapp_link_state_key = None
+        self.whatsapp_qr_context = None
+        self.whatsapp_pairing_bootstrap_generation += 1
+        self.whatsapp_link_session = None
+        self.whatsapp_qr_request_in_flight = False
+        self.whatsapp_qr_restart_after_cancel = False
+        self._close_whatsapp_qr_dialog()
         self.settings_store.save_connection_profile(self.connection_mode, login.settings)
         self._save_login_password(login)
         self.current_jid = login.settings.jid
@@ -1098,6 +1145,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
 
+        if not error and getattr(self, "local_bridge_startup_after_update", False):
+            self.local_bridge_startup_after_update = False
+            self._schedule_local_bridge_startup()
+
     def _schedule_bridge_update_feedback(self) -> None:
         self._stop_bridge_update_feedback()
         self.bridge_update_feedback_timer = wx.CallLater(
@@ -1244,7 +1295,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         )
         self.status_bar.SetStatusText("Iniciando puente local de WhatsApp...")
         self.login_panel.set_connecting(True)
-        future = self.local_bridge_executor.submit(self.local_bridge.prepare)
+        future = self.local_bridge_executor.submit(self.local_bridge.prepare_for_linking)
 
         def completed() -> None:
             if self._closing:
@@ -1281,6 +1332,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self._set_connected_ui(False)
             self.status_bar.SetStatusText("Desconectado")
             self._schedule_auto_connect()
+            return
+
+        if connection.update_status is not None:
+            self.bridge_update_status = connection.update_status
+            self.local_bridge_startup_after_update = True
+            self.status_bar.SetStatusText(
+                "El puente incluido necesita actualizarse antes de vincular WhatsApp."
+            )
+            self._on_update_bridge_now(wx.CommandEvent())
             return
 
         password = connection.password or self.credential_store.get_password(
@@ -1416,6 +1476,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.whatsapp_component_jid = component_jid
         self.whatsapp_link_status = status
         self.whatsapp_link_detail = detail
+        code_dialog = getattr(self, "whatsapp_code_dialog", None)
+        if status not in {"needs_pair_code", "needs_qr"} and code_dialog is not None:
+            if code_dialog.IsModal():
+                code_dialog.EndModal(wx.ID_OK if status == "connected" else wx.ID_CANCEL)
 
         if status == "connecting" and self.whatsapp_verified:
             message = "WhatsApp conectado. Sincronizando contactos y grupos..."
@@ -1426,7 +1490,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.workspace_panel.Layout()
             return
 
-        if status in {"connected", "paired"}:
+        if status == "connected":
             self.whatsapp_pairing_bootstrap_generation += 1
             started_at = time.perf_counter()
             self.whatsapp_verified = True
@@ -1438,9 +1502,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.whatsapp_qr_deadline = 0.0
             self.whatsapp_link_panel.clear()
             self._close_whatsapp_qr_dialog()
+            code_dialog = getattr(self, "whatsapp_code_dialog", None)
+            if code_dialog is not None and code_dialog.IsModal():
+                code_dialog.EndModal(wx.ID_OK)
             if not self.workspace_panel.IsShown():
                 self._set_connected_ui(True)
-            message = "WhatsApp vinculado" if status == "paired" else "WhatsApp conectado"
+            message = "WhatsApp conectado"
+            if detail:
+                message += f". {detail}"
             self.connection_header.set_status(message)
             self.status_bar.SetStatusText(message)
             self._set_whatsapp_remote_actions_enabled(True)
@@ -1454,13 +1523,19 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             )
             return
 
-        if status == "connecting":
+        if status == "paired":
+            self.whatsapp_verified = False
+            self.whatsapp_qr_request_in_flight = False
+            self._close_whatsapp_qr_dialog()
+            message = "Vinculación aceptada. Esperando la conexión autenticada de WhatsApp..."
+        elif status == "connecting":
             self.whatsapp_verified = False
             message = "WhatsApp está iniciando sesión. Espera por favor."
         elif status == "needs_qr":
             self.whatsapp_verified = False
             self.whatsapp_qr_request_in_flight = True
-            if self.whatsapp_qr_deadline <= time.monotonic():
+            if (self.whatsapp_qr_deadline <= time.monotonic()
+                    and not getattr(self, "whatsapp_link_protocol", False)):
                 self.whatsapp_qr_deadline = (
                     time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
                 )
@@ -1507,7 +1582,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 )
             ),
             can_cancel=self._has_cancelable_whatsapp_link(component_jid),
-            action_enabled=status != "connecting",
+            action_enabled=status not in {"connecting", "paired"},
         )
         if not getattr(self, "development_mode", False):
             self._show_chat_placeholder(
@@ -1536,10 +1611,120 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.status_bar.SetStatusText(f"Codigo de vinculacion: {code}")
         wx.CallAfter(self.speaker.speak, f"Codigo de vinculacion: {code}")
         dialog = WhatsAppPairingCodeDialog(self, code)
+        self.whatsapp_code_dialog = dialog
         try:
             dialog.ShowModal()
         finally:
+            self.whatsapp_code_dialog = None
             dialog.Destroy()
+
+    def _handle_whatsapp_link_state(self, event: WhatsAppLinkState) -> None:
+        if event.account_jid != self.current_jid.split("/", 1)[0]:
+            return
+        if event.generation < self.whatsapp_link_generation:
+            return
+        if (event.generation == self.whatsapp_link_generation
+                and event.attempt == self.whatsapp_link_attempt
+                and event.revision < self.whatsapp_link_revision):
+            return
+        self.whatsapp_link_protocol = True
+        still_authenticated = self.whatsapp_verified and event.authenticated
+        was_ready = self.whatsapp_verified or getattr(self, "whatsapp_link_recovering", False)
+        recovering = was_ready and (
+            (event.status == "connecting" and event.reason == "disconnected")
+            or (event.status == "connection_error" and event.reason in {
+                "status_unavailable", "connection_timeout",
+            })
+        )
+        recovered = getattr(self, "whatsapp_link_recovering", False) and event.authenticated
+        if recovering and not getattr(self, "whatsapp_link_recovering", False):
+            self.whatsapp_recovery_roster = self.pending_roster_chats
+        self.whatsapp_link_recovering = recovering
+        # Unlike legacy "Syncing contacts" text, this is an explicit transport
+        # authentication snapshot. A disconnect must revoke UI send permission.
+        self.whatsapp_verified = event.authenticated
+        if event.attempt != self.whatsapp_link_attempt:
+            self._close_whatsapp_qr_dialog()
+        self.whatsapp_link_generation = event.generation
+        self.whatsapp_link_attempt = event.attempt
+        self.whatsapp_link_revision = event.revision
+        context = (event.account_jid, event.generation, event.attempt, event.qr_revision)
+        self.whatsapp_qr_context = context
+        self.whatsapp_link_session = (
+            (event.component_jid, "urn:can:whatsapp:linking:1", event.attempt)
+            if event.attempt and not event.authenticated and event.status != "canceled" else None
+        )
+        messages = {
+            "status_unavailable": ("No se pudo confirmar el estado del puente. "
+                                   "No se inició otro intento."),
+            "stale_attempt": "El intento cambió. Consulta el estado antes de reintentar.",
+            "cancel_required": "Cancela el intento anterior antes de iniciar otro.",
+            "cancel_failed": "No se confirmó la cancelación. El intento sigue pendiente.",
+            "client_outdated": "El puente necesita actualizarse para vincular WhatsApp.",
+            "stream_replaced": "Otra instancia está usando esta sesión de WhatsApp.",
+            "unsupported_pairing": ("El puente no admite el método de verificación "
+                                    "solicitado por WhatsApp."),
+            "phone_pair_failed": ("No se pudo generar el código. "
+                                  "Cancela este intento y vuelve a intentarlo."),
+            "not_ready": ("WhatsApp no preparó la vinculación a tiempo. "
+                          "Consulta el estado o cancela."),
+            "login_failed": ("No se completó la conexión. "
+                             "Puedes cancelar y reintentar sin borrar tus datos."),
+            "connection_failed": "La conexión con WhatsApp falló. Tus datos se conservan.",
+            "connection_timeout": ("WhatsApp no completó la conexión. "
+                                   "Cancela y vuelve a intentarlo."),
+            "qr_render_failed": "El puente no pudo preparar la imagen QR. Cancela y reintenta.",
+        }
+        status = "connected" if event.authenticated else event.status
+        if status in {"expired", "canceled"}:
+            status = "needs_relogin"
+        elif status == "canceling":
+            status = "connecting"
+        key = (event.generation, event.attempt, status, event.reason, event.sync_phase)
+        if event.image_data:
+            self.whatsapp_qr_deadline = event.qr_deadline
+        if event.status == "canceled":
+            self.whatsapp_pair_phone_pending = ""
+            self.whatsapp_qr_context = None
+            self._close_whatsapp_qr_dialog()
+            if self.whatsapp_qr_restart_after_cancel:
+                self.whatsapp_qr_restart_after_cancel = False
+                self.whatsapp_qr_request_in_flight = False
+                wx.CallAfter(self._begin_whatsapp_qr_request)
+                return
+        if event.reason in {"cancel_failed", "stale_attempt", "status_unavailable"}:
+            self.whatsapp_qr_restart_after_cancel = False
+        if self.whatsapp_link_state_key != key:
+            self.whatsapp_link_state_key = key
+            detail = messages.get(event.reason, "")
+            if event.authenticated and event.sync_phase != "ready":
+                detail = ("La sincronización inicial necesita revisión; puedes usar tus chats."
+                          if event.sync_phase == "error" else "Sincronizando contactos y grupos...")
+            if recovering or recovered or still_authenticated:
+                # Revoke send permission without replacing the conversation or
+                # stealing focus. A temporary transport outage is not unlinking.
+                self.whatsapp_link_status = status
+                self.whatsapp_link_detail = detail
+                message = ("WhatsApp conectado" if event.authenticated
+                           else "Reconectando con WhatsApp...")
+                if detail:
+                    message = f"{message}. {detail}"
+                self.connection_header.set_status(message)
+                self.status_bar.SetStatusText(message)
+                self._set_whatsapp_remote_actions_enabled(event.authenticated)
+                if (recovered and self.pending_roster_chats is not self.whatsapp_recovery_roster):
+                    self._apply_pending_roster_if_ready()
+            else:
+                self._handle_whatsapp_bridge_status(status, event.component_jid, detail)
+        if (event.image_data and event.qr_deadline > time.monotonic()
+                and status == "needs_qr" and not self.whatsapp_pair_phone_pending):
+            self.whatsapp_qr_deadline = event.qr_deadline
+            self._handle_whatsapp_qr_image_data(event.component_jid, event.image_data,
+                                              "image/png", "", context=context)
+        if event.code:
+            self.whatsapp_pair_phone_pending = ""
+            self.whatsapp_pairing_bootstrap_generation += 1
+            self._handle_whatsapp_pairing_code(event.component_jid, event.code)
 
     def _handle_whatsapp_link_session_started(
         self,
@@ -1606,6 +1791,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.whatsapp_pair_phone_pending = ""
             self.whatsapp_pairing_bootstrap_generation += 1
         if self.whatsapp_qr_restart_after_cancel:
+            if not canceled:
+                self.whatsapp_qr_restart_after_cancel = False
+                self.status_bar.SetStatusText(
+                    "No se confirmó la cancelación. No se inició otro intento."
+                )
+                return
             self.whatsapp_qr_restart_after_cancel = False
             self.whatsapp_qr_request_in_flight = False
             self.whatsapp_qr_path = ""
@@ -1730,9 +1921,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         mime: str,
         filename: str,
     ) -> None:
+        if getattr(self, "whatsapp_link_protocol", False):
+            return
         if self.whatsapp_verified:
             return
-        if self._request_pending_whatsapp_pair_code(component_jid):
+        if (not getattr(self, "whatsapp_link_protocol", False)
+                and self._request_pending_whatsapp_pair_code(component_jid)):
             return
         if image_url in self.whatsapp_qr_downloads_in_progress:
             self._focus_whatsapp_qr_dialog()
@@ -1740,6 +1934,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
 
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
         self.whatsapp_qr_downloads_in_progress.add(image_url)
+        qr_context = (self.current_jid, self.whatsapp_pairing_bootstrap_generation,
+                      self.whatsapp_qr_deadline)
         self.status_bar.SetStatusText("Descargando QR de vinculacion...")
         message = Message(
             chat_jid=component_jid,
@@ -1763,9 +1959,16 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             finally:
                 wx.CallAfter(self.whatsapp_qr_downloads_in_progress.discard, image_url)
 
-            wx.CallAfter(self._show_whatsapp_qr, downloaded.path)
+            wx.CallAfter(self._show_downloaded_whatsapp_qr, downloaded.path, qr_context)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_downloaded_whatsapp_qr(self, path: Path, context: tuple) -> None:
+        current = (self.current_jid, self.whatsapp_pairing_bootstrap_generation,
+                   self.whatsapp_qr_deadline)
+        if context != current or not self.whatsapp_qr_request_in_flight:
+            return
+        self._show_whatsapp_qr(path)
 
     def _handle_whatsapp_qr_image_data(
         self,
@@ -1773,10 +1976,16 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         image_data: bytes,
         mime: str,
         filename: str,
+        *,
+        context: tuple | None = None,
     ) -> None:
+        if getattr(self, "whatsapp_link_protocol", False):
+            if context is None or context != self.whatsapp_qr_context:
+                return
         if self.whatsapp_verified:
             return
-        if self._request_pending_whatsapp_pair_code(component_jid):
+        if (not getattr(self, "whatsapp_link_protocol", False)
+                and self._request_pending_whatsapp_pair_code(component_jid)):
             return
 
         self.whatsapp_component_jid = component_jid or self.whatsapp_component_jid
@@ -1814,7 +2023,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.status_bar.SetStatusText("El QR recibido no es una imagen válida")
             return
 
-        if self.whatsapp_qr_deadline <= 0:
+        if self.whatsapp_qr_deadline <= 0 and not getattr(self, "whatsapp_link_protocol", False):
             self.whatsapp_qr_deadline = time.monotonic() + WHATSAPP_QR_TIMEOUT_SECONDS
         if self.whatsapp_qr_deadline <= time.monotonic():
             self._mark_whatsapp_qr_expired(
@@ -1826,6 +2035,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         wx.CallAfter(self.speaker.speak, "QR de vinculacion listo")
         self.whatsapp_qr_path = path_text
         dialog = self.whatsapp_qr_dialog or self._create_whatsapp_qr_dialog()
+        was_shown = dialog.IsShown()
         if not dialog.set_image(
             path_text,
             self.whatsapp_qr_deadline,
@@ -1836,7 +2046,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         if not dialog.IsShown():
             dialog.Show()
         self._refresh_whatsapp_link_panel_actions()
-        self._focus_whatsapp_qr_dialog()
+        if not was_shown:
+            self._focus_whatsapp_qr_dialog()
 
     def _create_whatsapp_qr_dialog(self) -> WhatsAppQrDialog:
         dialog = WhatsAppQrDialog(self, on_expired=self._on_whatsapp_qr_expired)
@@ -1886,6 +2097,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
 
         method = self._choose_whatsapp_link_method()
+        if getattr(self, "whatsapp_link_protocol", False):
+            if method == "phone":
+                self._begin_whatsapp_phone_pairing()
+            elif method == "qr":
+                if self.whatsapp_qr_path and self.whatsapp_qr_deadline > time.monotonic():
+                    self._show_whatsapp_qr_status()
+                elif self.whatsapp_link_status in {"connecting", "paired"}:
+                    self.xmpp.request_whatsapp_link_status(self.whatsapp_component_jid)
+                else:
+                    self._begin_whatsapp_qr_request()
+            return
         if method == "phone":
             self._begin_whatsapp_phone_pairing()
         elif (
@@ -1930,6 +2152,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
 
         self.whatsapp_pair_phone_pending = phone
+        if getattr(self, "whatsapp_link_protocol", False):
+            self._close_whatsapp_qr_dialog()
+            self.whatsapp_link_panel.set_status(
+                "Preparando el código en el puente. No es un SMS; aparecerá en esta computadora.",
+                action_label="Consultar estado", can_cancel=bool(self.whatsapp_link_attempt),
+            )
+            self.xmpp.request_whatsapp_pair_code(self.whatsapp_component_jid, phone)
+            return
         self.whatsapp_pairing_bootstrap_generation += 1
         bootstrap_generation = self.whatsapp_pairing_bootstrap_generation
         wx.CallLater(
@@ -2034,7 +2264,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             dialog = wx.TextEntryDialog(
                 self,
                 "Escribe el número de tu WhatsApp en formato internacional, por ejemplo "
-                "+52 449 123 4567. Después recibirás un código para escribir en WhatsApp.",
+                "+52 202 555 0100. El código aparecerá aquí; no se envía por SMS. "
+                "En tu teléfono abre Dispositivos vinculados > Vincular un dispositivo > "
+                "Vincular con número de teléfono e introduce ese código.",
                 "Vincular con número de teléfono",
             )
             try:
@@ -2099,6 +2331,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         wx.CallAfter(self.speaker.speak, message)
 
     def _mark_whatsapp_qr_expired(self, message: str) -> None:
+        self.whatsapp_pairing_bootstrap_generation += 1
         self.whatsapp_qr_request_in_flight = False
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_deadline = 0.0
@@ -2115,6 +2348,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         self.status_bar.SetStatusText(message)
 
     def _mark_whatsapp_qr_error(self, message: str) -> None:
+        self.whatsapp_pairing_bootstrap_generation += 1
         self.whatsapp_qr_request_in_flight = False
         self.whatsapp_qr_path = ""
         self.whatsapp_qr_deadline = 0.0
@@ -2169,6 +2403,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self.audio_recorder.cancel()
             self.conversation.set_recording_state(False)
         self.conversation.set_remote_actions_enabled(enabled)
+        VoiceIntegrationMixin._sync_voice_connection(self, enabled)
         self.chat_list.set_new_chat_enabled(enabled)
         self.connection_header.mark_all_read_button.Enable(enabled)
         current_chat = self.conversation.current_chat
@@ -2294,6 +2529,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             return
 
         menu = wx.Menu()
+        if VoiceIntegrationMixin._voice_chat_supported(self, chat):
+            call_item = menu.Append(wx.ID_ANY, "Llamar…")
+            call_item.Enable(self.whatsapp_verified)
+            self.Bind(wx.EVT_MENU, lambda _event, target=chat: self._call_voice_contact(target),
+                      call_item)
+            menu.AppendSeparator()
         rename_item = menu.Append(wx.ID_ANY, "Cambiar nombre\tF2")
         mute_item = menu.Append(
             wx.ID_ANY,
@@ -4864,6 +5105,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         return path, ""
 
     def _start_recording(self) -> None:
+        voice = getattr(self, "_voice_controller", None)
+        if voice is not None and voice.busy:
+            message = "Termina la llamada antes de grabar una nota de voz."
+            self.status_bar.SetStatusText(message)
+            self.speaker.speak(message)
+            return
         if not self._require_whatsapp_connection():
             return
 
@@ -6702,7 +6949,44 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             self._react_to_message(message, reaction)
 
     def _on_xmpp_event(self, event: WxXmppEvent) -> None:
-        self._handle_xmpp_event(event.event)
+        if event.event is not None:
+            self._handle_xmpp_event(event.event)
+        else:
+            self._drain_xmpp_events()
+
+    def _drain_xmpp_events(self) -> None:
+        if self._closing:
+            return
+        previous_batch = self._processing_xmpp_batch
+        self._processing_xmpp_batch = True
+        self.chat_list.begin_update_batch()
+        try:
+            self._xmpp_event_pump.drain()
+        finally:
+            try:
+                self._flush_chat_list_refresh()
+            finally:
+                try:
+                    self.chat_list.end_update_batch()
+                finally:
+                    self._processing_xmpp_batch = previous_batch
+
+    def _request_chat_list_refresh(self) -> None:
+        self._chat_list_refresh_pending = True
+        if not getattr(self, "_processing_xmpp_batch", False):
+            MainWindow._flush_chat_list_refresh(self)
+
+    def _flush_chat_list_refresh(self) -> None:
+        if not getattr(self, "_chat_list_refresh_pending", False):
+            return
+        self._chat_list_refresh_pending = False
+        self._refresh_chat_order(preserve_focused_order=True)
+        if self.chat_list.IsShown() and not self.chat_list.is_searching:
+            selected = self.chat_list.selected_chat()
+            self.chat_list.force_refresh_visible(
+                selected.jid if selected else "", preserve_focused_order=True,
+            )
+        self._select_first_chat_if_needed()
 
     def _on_close(self, event: wx.CloseEvent) -> None:
         if getattr(self, "bridge_update_installing", False) and event.CanVeto():
@@ -6721,6 +7005,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             event.Veto()
             return
         self._closing = True
+        pump = getattr(self, "_xmpp_event_pump", None)
+        if pump is not None:
+            pump.close()
+        self._close_voice()
+        self._shutdown_voice_devices()
         self.manual_history_load = None
         self._close_atajos_api()
         self._close_scheduled_messages()
@@ -6751,9 +7040,18 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         event.Skip()
 
     def _post_xmpp_event(self, event: XmppEvent) -> None:
-        wx.PostEvent(self, WxXmppEvent(event))
+        if getattr(self, "_closing", False):
+            return
+        if isinstance(event, BATCHED_XMPP_EVENTS):
+            self._xmpp_event_pump.submit(event)
+        else:
+            # Connection/voice/linking controls must also work in nested modal
+            # loops (e.g. authentication closes the pairing-code dialog).
+            wx.PostEvent(self, WxXmppEvent(event))
 
     def _handle_xmpp_event(self, event: XmppEvent) -> None:
+        if VoiceIntegrationMixin._handle_voice_event(self, event):
+            return
         if getattr(self, "_storage_reset_in_progress", False):
             return
         match event:
@@ -6767,7 +7065,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     else:
                         self._set_startup_wait_ui()
                         self.startup_message.SetValue(
-                            "Conexión local lista.\n"
+                            "Conexión XMPP lista.\n"
                             "Verificando el estado de vinculación de WhatsApp..."
                         )
                         self.startup_message.SetFocus()
@@ -6778,7 +7076,25 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     message = "Verificando confirmación de conexión con WhatsApp..."
                     self._show_chat_placeholder(message)
                     self.status_bar.SetStatusText(message)
-            case XmppDisconnected(reason=reason):
+            case XmppDisconnected(reason=reason, generation=generation):
+                if generation and generation < self.whatsapp_link_generation:
+                    return
+                # Use the producer's boundary, not the time a delayed UI turn
+                # processes it (which may be after the next session started).
+                self.whatsapp_link_generation = max(
+                    getattr(self, "whatsapp_link_generation", 0), generation
+                ) + 1
+                self.whatsapp_link_protocol = False
+                self.whatsapp_link_recovering = False
+                self.whatsapp_link_state_key = None
+                self.whatsapp_pairing_bootstrap_generation = (
+                    getattr(self, "whatsapp_pairing_bootstrap_generation", 0) + 1
+                )
+                self.whatsapp_qr_context = None
+                self.whatsapp_qr_request_in_flight = False
+                self.whatsapp_qr_restart_after_cancel = False
+                self.whatsapp_link_session = None
+                self._close_whatsapp_qr_dialog()
                 load = getattr(self, "manual_history_load", None)
                 if load is not None:
                     self.history_loading_chats.discard(load.chat_jid)
@@ -6833,7 +7149,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     return
                 self.status_bar.SetStatusText(message)
                 wx.MessageBox(message, "XMPP")
+            case WhatsAppLinkState():
+                self._handle_whatsapp_link_state(event)
             case WhatsAppBridgeStatus(status=status, component_jid=component_jid, detail=detail):
+                if getattr(self, "whatsapp_link_protocol", False):
+                    return
                 self._handle_whatsapp_bridge_status(status, component_jid, detail)
             case WhatsAppPairingCodeReceived(component_jid=component_jid, code=code):
                 self._handle_whatsapp_pairing_code(component_jid, code)
@@ -6949,12 +7269,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     message,
                     mark_unread=notify and not message.outgoing and not current_chat_is_open,
                 )
-                self._refresh_chat_order(preserve_focused_order=False)
-                if self.chat_list.IsShown() and not self.chat_list.is_searching:
-                    selected_chat = self.chat_list.selected_chat()
-                    self.chat_list.force_refresh_visible(
-                        selected_chat.jid if selected_chat else ""
-                    )
+                MainWindow._request_chat_list_refresh(self)
                 if current_chat_is_open:
                     if added_message:
                         self.conversation.insert_message_sorted(message)
@@ -6966,7 +7281,6 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     if notify and not message.outgoing:
                         self._mark_current_chat_displayed(message.chat_jid)
                 self._auto_download_media_message(message)
-                self._select_first_chat_if_needed()
                 if (added_message or completed_upload) and not suppress_notification:
                     windows_notification_shown = self._show_windows_notification(
                         message,
@@ -7234,10 +7548,52 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     discard_media(target)
                 discard_media(incoming)
 
-        merged = self.messages_by_chat.get(chat_jid, []) + messages
+        existing = self.messages_by_chat.get(chat_jid, [])
+        if (
+            isinstance(existing, _MergedMessages)
+            and existing.appendable
+            and len(messages) == 1
+        ):
+            incoming = messages[0]
+            key = self._message_merge_key(incoming)
+            content_key = self._message_content_key(incoming)
+            if (
+                not incoming.replaces_id
+                and not incoming.retracted
+                and incoming.poll_update is None
+                and incoming.call is None
+                and not incoming.upload_id
+                and (not existing or self._message_timestamp(incoming)
+                     >= self._message_timestamp(existing[-1]))
+                and all(self._message_merge_key(item) != key for item in existing)
+                and self._matching_group_self_echo_index(incoming, existing) is None
+                and self._matching_content_message_index(
+                    incoming,
+                    {content_key: [i for i, item in enumerate(existing)
+                                   if self._message_content_key(item) == content_key]},
+                    existing,
+                ) is None
+            ):
+                # Existing rows are already canonical. Re-running their pairwise
+                # deduplication on every live stanza makes a backlog quadratic.
+                existing.append(incoming)
+                known_state = getattr(self, "delivery_states_by_message", {}).get(
+                    (chat_jid, incoming.message_id)
+                )
+                if known_state:
+                    incoming.delivery_state = MainWindow._merge_delivery_state(
+                        incoming.delivery_state, known_state,
+                    )
+                hydrated = MainWindow._hydrate_reply_quotes(existing)
+                refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+                if callable(refresh_preview):
+                    refresh_preview(chat_jid)
+                return hydrated
+
+        merged = existing + messages
         indexes_by_key: dict[tuple[object, ...], int] = {}
         indexes_by_content: dict[tuple[object, ...], list[int]] = {}
-        unique_messages: list[Message] = []
+        unique_messages = _MergedMessages()
         updated_polls: list[Message] = []
         for message in sorted(merged, key=self._message_timestamp):
             if message.poll_update is not None:
@@ -7261,6 +7617,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                     message,
                     indexes_by_content,
                     unique_messages,
+                    chronological=True,
                 )
             if existing_index is not None:
                 self._merge_message_metadata(unique_messages[existing_index], message)
@@ -7282,6 +7639,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 )
 
         hydrated_replies = MainWindow._hydrate_reply_quotes(unique_messages)
+        unique_messages.appendable = (
+            all(not item.upload_id and item.call is None for item in unique_messages)
+            and all(self._message_timestamp(first) <= self._message_timestamp(second)
+                    for first, second in zip(unique_messages, unique_messages[1:], strict=False))
+        )
         self.messages_by_chat[chat_jid] = unique_messages
         refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
         if callable(refresh_preview):
@@ -7478,8 +7840,26 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         message: Message,
         indexes_by_content: dict[tuple[object, ...], list[int]],
         unique_messages: list[Message],
+        *,
+        chronological: bool = False,
     ) -> int | None:
-        for index in indexes_by_content.get(cls._message_content_key(message), []):
+        candidates = indexes_by_content.get(cls._message_content_key(message), [])
+        timestamp = cls._message_timestamp(message)
+        if chronological:
+            # Only the temporary lookup expires, never messages. This merge walks
+            # sorted input; older candidates cannot match any subsequent item.
+            # Upload/call metadata can move timestamps, so retain those entries.
+            window = (
+                OUTGOING_MESSAGE_DUPLICATE_WINDOW_SECONDS
+                if message.outgoing else MESSAGE_DUPLICATE_WINDOW_SECONDS
+            )
+            candidates[:] = [
+                index for index in candidates
+                if unique_messages[index].upload_id
+                or unique_messages[index].call is not None
+                or timestamp - cls._message_timestamp(unique_messages[index]) <= window
+            ]
+        for index in candidates:
             candidate = unique_messages[index]
             if candidate.upload_id or message.upload_id:
                 continue  # Pending files have identity, not a remote message body.
@@ -7491,7 +7871,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
                 continue
             duplicate_window = cls._message_duplicate_window_seconds(candidate, message)
             if (
-                abs(cls._message_timestamp(candidate) - cls._message_timestamp(message))
+                abs(cls._message_timestamp(candidate) - timestamp)
                 <= duplicate_window
             ):
                 return index
@@ -8026,6 +8406,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         )
         self._normalize_audio_metadata_for_messages([message])
         existing_messages = self.messages_by_chat.get(message.chat_jid, [])
+        # A canonical live merge may append in place. Snapshot membership before
+        # merging so a genuinely new row does not suppress unread/notifications.
+        existing_objects = {id(existing) for existing in existing_messages}
         existing_keys = {
             self._message_merge_key(existing)
             for existing in existing_messages
@@ -8054,7 +8437,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
             existing_group_echo is None
             and not message.replaces_id
             and message_key not in existing_keys
-            and all(existing is not stored_message for existing in existing_messages)
+            and id(stored_message) not in existing_objects
         )
         return stored_message, added_message, hydrated_replies
 
@@ -9223,8 +9606,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, wx.Frame):
         if message.call is not None and not has_media(message):
             preview = format_call_body(
                 preview,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
         return preview
 

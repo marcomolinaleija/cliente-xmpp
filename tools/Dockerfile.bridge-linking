@@ -1,0 +1,34 @@
+# Layer onto the currently deployed image, including voice and all prior native patches.
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:voice-pacing-20261020
+ARG BUILD_IMAGE=cliente-xmpp-voice-probe:voice-fixed-r2-20261020
+FROM ${BRIDGE_IMAGE} AS patched
+USER root
+COPY bridge_linking.py patch_slidge_linking.py patch_slidge_failed_relogin_state.py /opt/linking-tools/
+RUN python -B /opt/linking-tools/patch_slidge_linking.py /venv/lib/python3.13/site-packages /opt/linking-tools/bridge_linking.py && \
+    python -B /opt/linking-tools/patch_slidge_linking.py /venv/lib/python3.13/site-packages /opt/linking-tools/bridge_linking.py
+
+FROM ${BUILD_IMAGE} AS builder
+RUN apt-get update -y && apt-get install -y --no-install-recommends libmupdf-dev && rm -rf /var/lib/apt/lists/*
+COPY --from=patched /usr/local/include/python3.13 /usr/local/include/python3.13
+COPY --from=patched /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+RUN ln -sf libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /integration/slidge_whatsapp
+COPY bridge_linking_test.go bridge_voice_lifecycle_test.go /integration/slidge_whatsapp/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /integration/slidge_whatsapp
+RUN go mod edit -go=1.26.4 -require=github.com/pion/webrtc/v4@v4.2.15 -replace=go.mau.fi/whatsmeow=/opt/bridge-whatsmeow && \
+    go mod tidy && gofmt -w session.go bridge_linking_test.go && \
+    (go test -json -mod=mod . ./voicecore/... >/tmp/linking-go.jsonl || (tail -60 /tmp/linking-go.jsonl; exit 1)) && \
+    (go test -json -mod=mod -race . ./voicecore/... >/tmp/linking-race.jsonl || (tail -60 /tmp/linking-race.jsonl; exit 1)) && \
+    cd generated && go build -mod=mod -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=builder /tmp/linking-go.jsonl /tmp/linking-race.jsonl /opt/linking-tools/
+COPY --from=builder /integration/slidge_whatsapp/go.mod /opt/linking-tools/native-go.mod
+COPY smoke_bridge_linking_runtime.py /opt/linking-tools/
+LABEL org.can.whatsapp.linking="1"
+USER slidge
+RUN CAN_VOICE_ENABLE=0 python -B /opt/linking-tools/smoke_bridge_linking_runtime.py

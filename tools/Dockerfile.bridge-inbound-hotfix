@@ -1,0 +1,9 @@
+# Bounded correction of the deployed inbound image; no native rebuild or state mounts.
+ARG INBOUND_BASE=cliente-xmpp-bridge:inbound-20261020
+FROM ${INBOUND_BASE}
+USER root
+COPY patch_slidge_inbound.py smoke_bridge_muc_history_runtime.py /opt/inbound-tools/
+RUN python -B -c 'import sys; from pathlib import Path; import slidge; sys.path.insert(0,"/opt/inbound-tools"); from patch_slidge_inbound import room_source; p=Path(slidge.__file__).parent/"group/room.py"; p.write_text(room_source(p.read_text()))'
+USER slidge
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_muc_history_runtime.py >/tmp/can-muc-smoke.json
+LABEL org.can.whatsapp.inbound.muc-pool="2"

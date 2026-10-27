@@ -1,0 +1,17 @@
+# Python-only overlay: retain the inspected R2 native library and every feature.
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:recovery-r2-20261022
+FROM ${BRIDGE_IMAGE}
+USER root
+COPY patch_slidge_read_markers.py smoke_bridge_read_markers_runtime.py /opt/read-marker-tools/
+USER slidge
+# The installed original must reproduce a blocked loop and failed read commit.
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/read-marker-tools/smoke_bridge_read_markers_runtime.py --expect-blocking
+USER root
+RUN python -B /opt/read-marker-tools/patch_slidge_read_markers.py /venv/lib/python3.13/site-packages && \
+    python -B /opt/read-marker-tools/patch_slidge_read_markers.py /venv/lib/python3.13/site-packages
+USER slidge
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/read-marker-tools/smoke_bridge_read_markers_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/recovery-tools/smoke_bridge_recovery_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_linking_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_muc_history_runtime.py
+LABEL org.can.whatsapp.read-markers="1"

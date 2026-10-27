@@ -3263,8 +3263,7 @@ def _message_preview(message: Message) -> str:
         if message.call is not None:
             preview = format_call_body(
                 preview,
-                duration_seconds=message.call.effective_duration_seconds,
-                event_timestamp=message.call.event_timestamp,
+                call=message.call,
             )
     elif is_link_preview(message):
         preview = link_description(message)

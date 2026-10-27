@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from cliente_xmpp.models.calls import CallEvent
+
 MONTH_NAMES = (
     "enero",
     "febrero",
@@ -181,6 +183,7 @@ def format_datetime(value: object, *, now: datetime | None = None) -> str:
 def format_call_body(
     body: str,
     *,
+    call: CallEvent | None = None,
     duration_seconds: float | int | None = None,
     event_timestamp: datetime | None = None,
 ) -> str:
@@ -190,6 +193,22 @@ def format_call_body(
     used as the bridge's human-readable label and contact name.
     """
 
+    if call is not None:
+        if duration_seconds is None:
+            duration_seconds = call.effective_duration_seconds
+        if event_timestamp is None:
+            event_timestamp = call.event_timestamp
+        if (call.state == "ended" and call.answered_at is not None
+                and call.source in {"", "signaling"} and not call.outcome):
+            # The legacy fallback may still say missed after the structured
+            # acceptance and termination have been merged. Preserve its contact.
+            modern = _CALL_MODERN_PREFIX_PATTERN.match(body)
+            if modern is not None and modern["outcome"].casefold() == "missed":
+                start, end = modern.span("outcome")
+                body = body[:start] + "connected" + body[end:]
+            else:
+                body = re.sub(r"^Missed call\b", "Call ended", body, count=1,
+                              flags=re.IGNORECASE)
     result = _translate_call_prefix(body)
     # Older bridge notices append the routable XMPP JID after the human name.
     # It is transport metadata, not call content, so never expose it in UI text.

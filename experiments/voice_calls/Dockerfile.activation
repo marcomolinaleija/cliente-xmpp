@@ -1,0 +1,9 @@
+# Refresh the Python activation layer only; preserve the tested v35 native binding.
+ARG NATIVE_IMAGE=cliente-xmpp-bridge:v35-voice-local
+FROM ${NATIVE_IMAGE}
+USER root
+COPY bridge_voice.py /venv/lib/python3.13/site-packages/slidge_whatsapp/voice.py
+COPY smoke_voice_activation.py read_voice_flow.py /opt/voice-tools/
+USER slidge
+RUN python -B /opt/voice-tools/smoke_voice_activation.py && \
+    python -B /opt/voice-tools/smoke_voice_integration.py

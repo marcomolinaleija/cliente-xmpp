@@ -1,0 +1,41 @@
+# R4 = verified read-marker overlay + non-fatal roster recovery and bounded 120s calls.
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:read-markers-r3-20261022
+ARG BUILD_IMAGE=cliente-xmpp-bridge:linking-builder-20261020
+FROM ${BRIDGE_IMAGE} AS patched
+USER root
+COPY patch_slidge_recovery.py smoke_bridge_recovery_runtime.py /opt/recovery-tools/
+# Reject the installed R2/R3 login wrapper before replacing it.
+USER slidge
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/recovery-tools/smoke_bridge_recovery_runtime.py --sync-only --expect-sync-failure
+USER root
+COPY bridge_linking.py /venv/lib/python3.13/site-packages/slidge_whatsapp/linking.py
+RUN python -B /opt/recovery-tools/patch_slidge_recovery.py /venv/lib/python3.13/site-packages && \
+    python -B /opt/recovery-tools/patch_slidge_recovery.py /venv/lib/python3.13/site-packages
+
+FROM ${BUILD_IMAGE} AS builder
+ENV GOMAXPROCS=2
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /integration/slidge_whatsapp
+COPY bridge_payload_recovery_test.go /integration/slidge_whatsapp/
+COPY check_bridge_go_report.py /opt/recovery-tools/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /integration/slidge_whatsapp
+RUN go mod edit -go=1.26.4 -require=github.com/pion/webrtc/v4@v4.2.15 -replace=go.mau.fi/whatsmeow=/opt/bridge-whatsmeow && \
+    go mod tidy && gofmt -w session.go
+RUN (go test -p 2 -json -mod=mod . ./voicecore/... >/tmp/sync-go.jsonl; echo $? >/tmp/sync-go.status) && \
+    python3 /opt/recovery-tools/check_bridge_go_report.py /tmp/sync-go.jsonl "$(cat /tmp/sync-go.status)" && \
+    (go test -p 2 -json -mod=mod -race . ./voicecore/... >/tmp/sync-race.jsonl; echo $? >/tmp/sync-race.status) && \
+    python3 /opt/recovery-tools/check_bridge_go_report.py /tmp/sync-race.jsonl "$(cat /tmp/sync-race.status)"
+RUN cd generated && go build -p 2 -mod=mod -buildmode=c-shared -tags "mupdf extlib" \
+    -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+    -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+
+FROM patched
+COPY --from=builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=builder /integration/slidge_whatsapp/session.go /venv/lib/python3.13/site-packages/slidge_whatsapp/
+COPY --from=builder /tmp/sync-go.jsonl /tmp/sync-race.jsonl /opt/recovery-tools/
+USER slidge
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/recovery-tools/smoke_bridge_recovery_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/read-marker-tools/smoke_bridge_read_markers_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_linking_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/inbound-tools/smoke_bridge_muc_history_runtime.py
+LABEL org.can.whatsapp.sync-recovery="1"

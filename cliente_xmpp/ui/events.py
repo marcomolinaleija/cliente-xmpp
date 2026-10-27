@@ -9,7 +9,7 @@ EVT_XMPP_EVENT = wx.PyEventBinder(wxEVT_XMPP_EVENT, 1)
 
 
 class WxXmppEvent(wx.PyCommandEvent):
-    def __init__(self, event: XmppEvent) -> None:
+    def __init__(self, event: XmppEvent | None = None) -> None:
         super().__init__(wxEVT_XMPP_EVENT)
         self.event = event
 

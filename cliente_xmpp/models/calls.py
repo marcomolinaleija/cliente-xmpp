@@ -31,6 +31,18 @@ CALL_OUTCOMES = frozenset(
 CALL_SOURCES = frozenset({"", "signaling", "history_sync", "app_state", "message"})
 
 
+def _resolved_terminal_state(
+    state: str, source: str, outcome: str, reason: str,
+    answered_at: datetime | None, ended_at: datetime | None,
+) -> str:
+    # Older signaling classifies an empty terminate reason as missed, even after
+    # acceptance. Explicit answer/end facts beat that heuristic, not call logs.
+    if (state == "missed" and source in {"", "signaling"} and not outcome
+            and reason in {"", "timeout"} and answered_at is not None and ended_at is not None):
+        return "ended"
+    return state
+
+
 @dataclass(frozen=True, slots=True)
 class CallEvent:
     """One validated, versioned call-contract phase carried by a message."""
@@ -78,6 +90,10 @@ class CallEvent:
                 raise ValueError("call timestamps must be timezone-aware")
         if self.answered_at and self.ended_at and self.ended_at < self.answered_at:
             raise ValueError("call ended before it was answered")
+        object.__setattr__(self, "state", _resolved_terminal_state(
+            self.state, self.source, self.outcome, self.terminal_reason,
+            self.answered_at, self.ended_at,
+        ))
 
     @property
     def effective_duration_seconds(self) -> float | None:
@@ -188,6 +204,10 @@ def aggregate_call_events(events: Iterable[CallEvent]) -> tuple[CallSummary, ...
         )
         state = (
             terminal.state if terminal is not None else ("accepted" if accepted else latest.state)
+        )
+        state = _resolved_terminal_state(
+            state, source, outcome, terminal.terminal_reason if terminal else "",
+            answered_at, ended_at,
         )
         summaries.append(
             CallSummary(

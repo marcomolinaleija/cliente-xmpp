@@ -1,0 +1,36 @@
+# Python-only overlay on a config-preserving, verified one-layer copy of R4.
+# The original R4 has 127 layers and cannot host a runnable additional layer.
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:r4-flat-base-20261022
+FROM ${BRIDGE_IMAGE}
+USER root
+# Bind build inputs and keep all baseline checks, fixes and regressions in one layer.
+RUN --network=none --mount=type=bind,source=.,target=/tmp/can-muc-xml-input <<'SH'
+set -eu
+cp /tmp/can-muc-xml-input/patch_slidge_recovery.py /opt/recovery-tools/
+cp /tmp/can-muc-xml-input/smoke_bridge_recovery_runtime.py /opt/recovery-tools/
+CAN_VOICE_ENABLE=0 python -B - <<'PY'
+import os
+import pwd
+import subprocess
+
+user = pwd.getpwnam("slidge")
+smoke = "/opt/recovery-tools/smoke_bridge_recovery_runtime.py"
+
+def check(script, *args):
+    subprocess.run(["python", "-B", script, *args], check=True,
+                   user=user.pw_uid, group=user.pw_gid, env=os.environ)
+
+# Reject both installed baselines with the runtime user's permissions.
+check(smoke, "--muc-errors-only", "--expect-muc-failure")
+check(smoke, "--archive-xml-only", "--expect-xml-failure")
+for _ in range(2):
+    subprocess.run(["python", "-B", "/opt/recovery-tools/patch_slidge_recovery.py",
+                    "/venv/lib/python3.13/site-packages"], check=True)
+check(smoke)
+check("/opt/read-marker-tools/smoke_bridge_read_markers_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_linking_runtime.py")
+check("/opt/inbound-tools/smoke_bridge_muc_history_runtime.py")
+PY
+SH
+USER slidge
+LABEL org.can.whatsapp.muc-xml-recovery="1"

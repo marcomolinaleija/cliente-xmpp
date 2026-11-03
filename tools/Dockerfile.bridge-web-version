@@ -1,0 +1,47 @@
+# Exact deployed R7 runtime; retain voice, archive, linking and all other patches.
+# Expected local ImageID: sha256:d50d94cd842e49f4facb1bc15058f5cbb3e99049da983d5713508c3a9522b922
+ARG BRIDGE_IMAGE=cliente-xmpp-bridge:archive-delivery-r7-staging-20261025
+ARG BUILD_IMAGE=cliente-xmpp-bridge:linking-builder-20261020
+FROM ${BRIDGE_IMAGE} AS patched
+USER root
+COPY patch_slidge_web_version.py /opt/web-version-tools/
+RUN --network=none python -B /opt/web-version-tools/patch_slidge_web_version.py /venv/lib/python3.13/site-packages
+
+FROM ${BUILD_IMAGE} AS builder
+ENV GOMAXPROCS=2 GOMEMLIMIT=2GiB
+COPY --from=patched /venv/lib/python3.13/site-packages/slidge_whatsapp /integration/slidge_whatsapp
+COPY patch_slidge_web_version.py check_bridge_go_report.py /opt/web-version-tools/
+COPY bridge_web_version_test.go bridge_linking_test.go bridge_voice_lifecycle_test.go bridge_inbound_test.go /integration/slidge_whatsapp/
+COPY gopy_whatsapp_exports.map /tmp/gopy_whatsapp_exports.map
+WORKDIR /integration/slidge_whatsapp
+# Patch the actual local replacement too; runtime's vendor tree is not used by -mod=mod.
+RUN --network=none python3 -B /opt/web-version-tools/patch_slidge_web_version.py /integration --fork /opt/bridge-whatsmeow && \
+    go mod edit -go=1.26.4 -require=github.com/pion/webrtc/v4@v4.2.15 -replace=go.mau.fi/whatsmeow=/opt/bridge-whatsmeow && \
+    gofmt -w gateway.go bridge_web_version_test.go
+RUN --network=none (go test -p 2 -json -mod=mod . ./voicecore/... > /tmp/web-version-go.jsonl; echo $? > /tmp/web-version-go.status) && \
+    python3 /opt/web-version-tools/check_bridge_go_report.py /tmp/web-version-go.jsonl "$(cat /tmp/web-version-go.status)" && \
+    (go test -p 2 -json -mod=mod -race . ./voicecore/... > /tmp/web-version-race.jsonl; echo $? > /tmp/web-version-race.status) && \
+    python3 /opt/web-version-tools/check_bridge_go_report.py /tmp/web-version-race.jsonl "$(cat /tmp/web-version-race.status)" && \
+    cd generated && go build -p 2 -mod=mod -buildmode=c-shared -tags "mupdf extlib" \
+      -ldflags="-s -w -extldflags=-Wl,--version-script=/tmp/gopy_whatsapp_exports.map" \
+      -o _whatsapp.cpython-313-x86_64-linux-gnu.so .
+# Call regressions exercise the existing fork too, not just textual source markers.
+COPY bridge_call_records_v27_test.go bridge_call_duration_v33_test.go bridge_call_recovery_v33_test.go /integration/slidge_whatsapp/
+RUN --network=none (go test -p 2 -json -mod=mod . > /tmp/web-version-calls-go.jsonl; echo $? > /tmp/web-version-calls-go.status) && \
+    python3 /opt/web-version-tools/check_bridge_go_report.py /tmp/web-version-calls-go.jsonl "$(cat /tmp/web-version-calls-go.status)" && \
+    (go test -p 2 -json -mod=mod -race . > /tmp/web-version-calls-race.jsonl; echo $? > /tmp/web-version-calls-race.status) && \
+    python3 /opt/web-version-tools/check_bridge_go_report.py /tmp/web-version-calls-race.jsonl "$(cat /tmp/web-version-calls-race.status)"
+
+FROM patched
+COPY --from=builder /integration/slidge_whatsapp/generated/_whatsapp.cpython-313-x86_64-linux-gnu.so /venv/lib/python3.13/site-packages/slidge_whatsapp/generated/
+COPY --from=builder /tmp/web-version-go.jsonl /tmp/web-version-race.jsonl /tmp/web-version-calls-go.jsonl /tmp/web-version-calls-race.jsonl /opt/web-version-tools/
+COPY bridge_calls_v27_contract_test.py /opt/web-version-tools/
+USER slidge
+# Existing offline smokes run without credentials, production mounts or network.
+RUN --network=none CAN_VOICE_ENABLE=0 python -B /opt/linking-tools/smoke_bridge_linking_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/group-echo-tools/smoke_bridge_group_echo_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/read-marker-tools/smoke_bridge_read_markers_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/recovery-tools/smoke_bridge_recovery_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/archive-delivery-tools/smoke_bridge_archive_delivery_runtime.py && \
+    CAN_VOICE_ENABLE=0 python -B /opt/web-version-tools/bridge_calls_v27_contract_test.py
+LABEL org.can.whatsapp.web-version="2.3000.1052556849"

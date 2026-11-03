@@ -79,11 +79,8 @@ class OpenChatReadTests(unittest.TestCase):
             window.displayed_marker_ids_by_chat, {"other@example.test": "other-marker"}
         )
         self.assertEqual(chat.unread_count, 3)
-        self.assertEqual(window.status_bar.SetStatusText.call_count, 2)
-        window.status_bar.SetStatusText.assert_called_with("Lectura pendiente")
-        window.speaker.speak.assert_called_once_with(
-            "La sincronización de lectura con WhatsApp está pendiente."
-        )
+        window.status_bar.SetStatusText.assert_not_called()
+        window.speaker.speak.assert_not_called()
 
     def window(self, group: bool = False):
         chat = Chat(jid="chat@example.test", name="Fixture", is_group=group, unread_count=3)

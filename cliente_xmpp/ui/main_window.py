@@ -5012,6 +5012,34 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.status_bar.SetStatusText(detail)
             self.speaker.speak(detail)
 
+    def _is_latest_chat_message(self, chat_jid: str, message: Message) -> bool:
+        messages = getattr(self, "messages_by_chat", {}).get(chat_jid, [])
+        message_ts = self._message_timestamp(message)
+        if messages:
+            found = False
+            for item in messages:
+                if item is message:
+                    found = True
+                    continue
+                if found or self._message_timestamp(item) > message_ts:
+                    return False
+
+        latest_checker = getattr(self, "_latest_message_timestamp", None)
+        if callable(latest_checker):
+            latest_ts = latest_checker(chat_jid)
+            if latest_ts is not None and latest_ts > message_ts:
+                return False
+
+        chat_getter = getattr(self, "_chat_by_jid", None)
+        chat = chat_getter(chat_jid) if callable(chat_getter) else None
+        if chat and chat.last_message_at:
+            try:
+                if chat.last_message_at.timestamp() > message_ts:
+                    return False
+            except (OSError, ValueError):
+                pass
+        return True
+
     def _refresh_file_transfer_preview(self, chat_jid: str) -> None:
         setter = getattr(getattr(self, "chat_list", None), "set_file_transfer_preview", None)
         if not callable(setter):
@@ -5019,6 +5047,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         pending = [item for item in self.messages_by_chat.get(chat_jid, []) if item.upload_id]
         active = next((item for item in pending if item.upload_state == "uploading"), None)
         message = active or (pending[-1] if pending else None)
+        if message and not active and not self._is_latest_chat_message(chat_jid, message):
+            message = None
         preview = ""
         if message:
             state = {
@@ -7118,15 +7148,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 else:
                     self.connection_header.set_status("Desconectado (Reconectando...)")
                     self.status_bar.SetStatusText("Desconectado")
-            case ChatReadFailed(chat_jid=chat_jid, detail=detail):
+            case ChatReadFailed(chat_jid=chat_jid):
                 # Keep local read state, but allow the remote marker to be retried
                 # on the next read. Never remove an optimistic outgoing message.
                 self.displayed_marker_ids_by_chat.pop(chat_jid, None)
-                self.status_bar.SetStatusText(detail)
-                now = time.monotonic()
-                if now - getattr(self, "_last_read_error_announcement", -60) >= 60:
-                    self._last_read_error_announcement = now
-                    self.speaker.speak("La sincronización de lectura con WhatsApp está pendiente.")
             case XmppError(message=message):
                 load = getattr(self, "manual_history_load", None)
                 if (
@@ -9522,8 +9547,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         return jid != self.current_jid and self._jid_may_be_group_chat(jid)
 
     def _latest_message_timestamp(self, chat_jid: str) -> float | None:
-        latest = self.latest_message_timestamps_by_chat.get(chat_jid)
-        messages = [item for item in self.messages_by_chat.get(chat_jid, []) if not item.upload_id]
+        latest = getattr(self, "latest_message_timestamps_by_chat", {}).get(chat_jid)
+        messages = [
+            item for item in getattr(self, "messages_by_chat", {}).get(chat_jid, [])
+            if not item.upload_id
+        ]
         if not messages:
             return latest
 
@@ -9674,6 +9702,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if visible_chat is not None or preview or sent_at is not None:
                 self.chat_list.upsert_chat(updated_chat)
             self._persist_chat(updated_chat)
+            refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+            if callable(refresh_preview):
+                refresh_preview(chat_jid)
             return
 
         updated_chat = Chat(
@@ -9695,6 +9726,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if preview or sent_at is not None:
             self.chat_list.upsert_chat(updated_chat)
         self._persist_chat(updated_chat)
+        refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+        if callable(refresh_preview):
+            refresh_preview(chat_jid)
         if not is_group:
             self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
 
@@ -10501,10 +10535,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
 
     def _chat_by_jid(self, jid: str) -> Chat | None:
-        return self._visible_chat_by_jid(jid) or self.searchable_chats_by_jid.get(jid)
+        return (
+            self._visible_chat_by_jid(jid)
+            or getattr(self, "searchable_chats_by_jid", {}).get(jid)
+        )
 
     def _visible_chat_by_jid(self, jid: str) -> Chat | None:
-        return self.chat_list.chat_by_jid(jid)
+        chat_list = getattr(self, "chat_list", None)
+        lookup = getattr(chat_list, "chat_by_jid", None)
+        return lookup(jid) if callable(lookup) else None
 
     def _chat_notifications_muted(self, jid: str) -> bool:
         chat = self._chat_by_jid(jid)

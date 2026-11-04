@@ -432,6 +432,10 @@
       "area": "media",
       "layer": "integration"
     },
+    "test_sticker_import": {
+      "area": "media",
+      "layer": "integration"
+    },
     "test_sticker_pack_messages": {
       "area": "media",
       "layer": "integration"

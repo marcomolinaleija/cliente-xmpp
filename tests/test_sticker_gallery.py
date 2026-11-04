@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -465,6 +467,44 @@ class StickerGalleryTests(unittest.TestCase):
             self.dialog._export()
             export.assert_called_once_with(self.library, pack_id, target)
 
+    def test_import_pack_consent_is_optional_then_batch_labels_select_the_imported_pack(self):
+        source = self.root / "fixture.canstickers"
+        manifest = {
+            "format": "can-stickers", "version": 1, "name": "Imported", "author": "CAN",
+            "stickers": [{"file": "000.png", "name": "Sticker 1", "description": ""}],
+        }
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("000.png", self.source.read_bytes())
+        with (
+            patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.MessageBox", return_value=wx.NO),
+            patch("cliente_xmpp.ui.sticker_gallery_dialog.rayoai.request_sticker_labels") as ai,
+        ):
+            self.dialog._initial_pack = lambda: source
+            self.dialog._reload()
+            self.wait(lambda: len(self.dialog._entries) == 1 and not self.dialog._busy)
+            self.assertIsNotNone(self.dialog._pack_id())
+            self.assertEqual(self.dialog._entries[0].description, "")
+            ai.assert_not_called()
+        with (
+            patch("cliente_xmpp.ui.sticker_gallery_dialog.wx.MessageBox", return_value=wx.YES),
+            patch(
+                "cliente_xmpp.ui.sticker_gallery_dialog.rayoai.request_sticker_labels",
+                return_value=("Saludo", "Una figura saluda."),
+            ) as ai,
+        ):
+            self.dialog._import_source(lambda: source)
+            self.wait(lambda: self.dialog.details.GetValue() == "Una figura saluda."
+                      and not self.dialog._busy)
+            ai.assert_called_once()
+            self.assertEqual(self.dialog._entries[0].name, "Saludo")
+            self.assertEqual(len(self.library.packs()), 1)
+            self.assertIn("Etiquetas completadas: 1", self.dialog.status.GetLabel())
+
+    def test_closing_gallery_cancels_remaining_pack_description_requests(self):
+        self.dialog._shutdown()
+        self.assertTrue(self.dialog._description_cancelled.is_set())
+
     def test_description_choice_only_remembers_rayoai(self) -> None:
         choice = StickerDescriptionDialog(self.dialog)
         try:
@@ -512,7 +552,8 @@ class StickerGalleryTests(unittest.TestCase):
         self.assertTrue(actions["Preferencias..."])
         self.assertTrue(actions["Cómo usar la galería..."])
         self.assertFalse(actions["Exportar paquete..."])
-        self.assertFalse(actions["Compartir paquete en el chat..."])
+        self.assertFalse(actions["Enviar paquete nativo por WhatsApp..."])
+        self.assertFalse(actions["Completar etiquetas del paquete con RayoAI..."])
 
     def test_library_menu_has_package_actions_and_preferences_are_reversible(self) -> None:
         self.library.create_pack("Fixture pack")
@@ -537,7 +578,8 @@ class StickerGalleryTests(unittest.TestCase):
             "Renombrar paquete...",
             "Eliminar paquete...",
             "Exportar paquete...",
-            "Compartir paquete en el chat...",
+            "Enviar paquete nativo por WhatsApp...",
+            "Completar etiquetas del paquete con RayoAI...",
         ):
             self.assertTrue(actions[label])
         for enabled in (True, False):

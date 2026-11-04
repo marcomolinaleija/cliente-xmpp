@@ -15,13 +15,21 @@ DESCRIPTION_INSTRUCTION = (
     "Devuelve solo una descripción breve y precisa en español; no inventes detalles, "
     "no menciones que estás describiendo una imagen y no incluyas formato ni explicaciones."
 )
+STICKER_LABEL_INSTRUCTION = (
+    "Examina este sticker para una persona ciega. Devuelve únicamente un objeto JSON con "
+    "name (un nombre breve y descriptivo en español, máximo 80 caracteres) y description "
+    "(descripción visual precisa en español que incluya el texto visible). "
+    "No inventes identidades, intenciones ni detalles y no añadas formato Markdown."
+)
 
 
 def send_open_path(path: str | Path) -> bool:
     return send_payload({"cmd": "open", "path": str(Path(path).resolve())})
 
 
-def request_description(path: str | Path) -> str | None:
+def request_description(
+    path: str | Path, *, instruction: str = DESCRIPTION_INSTRUCTION
+) -> str | None:
     """Request a description and wait for the matching local IPC response."""
     request_id = uuid.uuid4().hex
     try:
@@ -29,7 +37,7 @@ def request_description(path: str | Path) -> str | None:
             "cmd": "describe",
             "request_id": request_id,
             "path": str(Path(path).resolve()),
-            "instruction": DESCRIPTION_INSTRUCTION,
+            "instruction": instruction,
         }
         with socket.create_connection(
             (RAYOAI_HOST, RAYOAI_PORT),
@@ -47,6 +55,23 @@ def request_description(path: str | Path) -> str | None:
         return None
     description = " ".join(description.split()).strip()
     return description or None
+
+
+def request_sticker_labels(path: str | Path) -> tuple[str, str] | None:
+    """Use the existing description IPC; tolerate a provider returning plain text."""
+    response = request_description(path, instruction=STICKER_LABEL_INSTRUCTION)
+    if not response:
+        return None
+    payload = response.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        labels = json.loads(payload)
+    except json.JSONDecodeError:
+        return None if payload.startswith(("{", "[")) else ("", payload)
+    if not isinstance(labels, dict) or not all(
+        isinstance(labels.get(key), str) for key in ("name", "description")
+    ):
+        return None
+    return labels["name"].strip(), labels["description"].strip()
 
 
 def _receive_json_line(conn: socket.socket) -> dict[str, object]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,11 @@ from cliente_xmpp.accessibility.speaker import NvdaSpeaker
 from cliente_xmpp.config.settings import SettingsStore
 from cliente_xmpp.integrations import rayoai
 from cliente_xmpp.media.downloads import DOWNLOADS_DIR
+from cliente_xmpp.media.sticker_descriptions import (
+    PackDescriptionResult,
+    describe_pack,
+    generic_sticker_name,
+)
 from cliente_xmpp.media.sticker_packs import export_pack, import_pack
 from cliente_xmpp.models.stickers import LibrarySticker, StickerPack
 from cliente_xmpp.storage.sticker_library import MAX_DESCRIPTION_LENGTH, StickerLibrary
@@ -119,6 +125,9 @@ class StickerGalleryDialog(wx.Dialog):
         self._active, self._busy = True, False
         self._initial_list_focus_pending = True
         self._reload_pending = False
+        self._pending_pack_id: int | None = None
+        self._completion_status = ""
+        self._description_cancelled = threading.Event()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="can-stickers")
         self._entries: list[LibrarySticker] = []
         self._packs: list[StickerPack] = []
@@ -297,11 +306,12 @@ class StickerGalleryDialog(wx.Dialog):
             self._reload_pending = True
             return
         pack_id, favorite, query, offset = (
-            self._pack_id(),
-            self.groups.GetSelection() == 1,
+            self._pending_pack_id if self._pending_pack_id is not None else self._pack_id(),
+            self._pending_pack_id is None and self.groups.GetSelection() == 1,
             self.search.GetValue(),
             self._offset,
         )
+        self._pending_pack_id = None
 
         def load():
             entries = self.library.list_stickers(
@@ -373,12 +383,15 @@ class StickerGalleryDialog(wx.Dialog):
         self.Layout()
         self._refresh_selection_labels()
         self._show_details()
+        if self._completion_status:
+            self.status.SetLabel(self._completion_status)
+            self._completion_status = ""
         if self._initial_source is not None:
             source, self._initial_source = self._initial_source, None
             wx.CallAfter(self._create, source, self._initial_description)
         elif self._initial_pack is not None:
             source, self._initial_pack = self._initial_pack, None
-            wx.CallAfter(self._run, lambda: import_pack(self.library, source()))
+            wx.CallAfter(self._import_source, source)
         elif focused is None or not self.IsDescendant(focused):
             self.items.SetFocus()
 
@@ -617,7 +630,10 @@ class StickerGalleryDialog(wx.Dialog):
             "Alt+M enfoca la lista; Alt+O enfoca Mostrar; Ctrl+F busca; "
             "Ctrl+RePág/AvPág cambia de página. Escape cierra.\n\n"
             "La operación iniciada termina en segundo plano si cierras. "
-            "El formato .wastickers necesita un importador móvil compatible.",
+            "Exportar guarda un archivo, no lo instala en WhatsApp. Desde el selector de "
+            "un chat, Biblioteca → Enviar paquete nativo por WhatsApp solicita el envío "
+            "como paquete, si el puente lo admite. El formato .wastickers es para "
+            "importadores móviles compatibles, no para ese envío nativo.",
             "Usar la galería",
             wx.OK | wx.ICON_INFORMATION,
             self,
@@ -634,8 +650,10 @@ class StickerGalleryDialog(wx.Dialog):
             ("Renombrar paquete...", self._rename_pack, selected_pack),
             ("Eliminar paquete...", self._delete_pack, selected_pack),
             ("Exportar paquete...", self._export, selected_pack),
+            ("Completar etiquetas del paquete con RayoAI...", self._describe_current_pack,
+             selected_pack),
             (
-                "Compartir paquete en el chat...",
+                "Enviar paquete nativo por WhatsApp...",
                 self._share,
                 selected_pack and self._on_share is not None,
             ),
@@ -993,7 +1011,68 @@ class StickerGalleryDialog(wx.Dialog):
         finally:
             dialog.Destroy()
         if source:
-            self._run(lambda: import_pack(self.library, source))
+            self._import_source(lambda: source)
+
+    def _import_source(self, source: Callable[[], Path]) -> None:
+        def operation():
+            pack_id = import_pack(self.library, source())
+            missing = sum(
+                not entry.description or generic_sticker_name(entry.name)
+                for entry in self.library.list_stickers(pack_id=pack_id)
+            )
+            return pack_id, missing
+
+        def imported(result):
+            pack_id, missing = result
+            self._pending_pack_id, self._offset = pack_id, 0
+            self.search.ChangeValue("")
+            if missing and self._confirm_pack_description():
+                self._start_pack_description(pack_id)
+            else:
+                self._completion_status = (
+                    "Paquete importado; sus stickers ya están en la biblioteca."
+                )
+                self._reload()
+
+        self._run(operation, imported)
+
+    def _confirm_pack_description(self) -> bool:
+        return wx.MessageBox(
+            "¿Completar los nombres genéricos y textos alternativos que falten?\n\n"
+            "RayoAI recibirá las imágenes sin descripción y puede usar el proveedor externo "
+            "configurado. Las descripciones existentes se conservan. "
+            "El proceso es secuencial; cerrar la galería lo detiene entre solicitudes. "
+            "Si eliges No, los stickers siguen disponibles sin usar RayoAI.",
+            "Etiquetas del paquete", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION, self,
+        ) == wx.YES
+
+    def _describe_current_pack(self, _event=None) -> None:
+        pack_id = self._pack_id()
+        if pack_id is not None and self._confirm_pack_description():
+            self._start_pack_description(pack_id)
+
+    def _start_pack_description(self, pack_id: int) -> None:
+        def progress(done, total):
+            wx.CallAfter(self._pack_description_progress, done, total)
+
+        def completed(result: PackDescriptionResult):
+            self._pending_pack_id, self._offset = pack_id, 0
+            self._completion_status = (
+                f"Etiquetas completadas: {result.updated}. Sin completar: {result.failed}. "
+                "Los stickers importados se conservan."
+            )
+            self._reload()
+
+        self._run(
+            lambda: describe_pack(
+                self.library, pack_id, rayoai.request_sticker_labels,
+                cancelled=self._description_cancelled.is_set, progress=progress,
+            ), completed,
+        )
+
+    def _pack_description_progress(self, done: int, total: int) -> None:
+        if self._active:
+            self.status.SetLabel(f"Completando etiquetas: {done} de {total}.")
 
     def _send(self, _event=None) -> None:
         if (
@@ -1006,6 +1085,7 @@ class StickerGalleryDialog(wx.Dialog):
 
     def _shutdown(self) -> None:
         self._active = False
+        self._description_cancelled.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _close(self, _event=None) -> None:

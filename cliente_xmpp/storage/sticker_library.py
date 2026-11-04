@@ -224,6 +224,26 @@ class StickerLibrary:
     def add_many(
         self, entries: list[tuple[Path, str, str]], *, pack_name: str = "", author: str = "CAN"
     ) -> list[LibrarySticker]:
+        return self._add_many(entries, pack_name=pack_name, author=author)[0]
+
+    def import_many(
+        self, entries: list[tuple[Path, str, str]], *, pack_name: str, author: str
+    ) -> int:
+        """Reuse an identical pack atomically; never replace another pack's membership."""
+        pack_name = bounded_text(pack_name, 128, "Paquete", required=True)
+        if not entries:
+            raise ValueError("El paquete no tiene stickers.")
+        _, pack_id = self._add_many(
+            entries, pack_name=pack_name, author=author, reuse_pack=True
+        )
+        if pack_id is None:
+            raise ValueError("El paquete necesita un nombre.")
+        return pack_id
+
+    def _add_many(
+        self, entries: list[tuple[Path, str, str]], *, pack_name: str, author: str,
+        reuse_pack: bool = False,
+    ) -> tuple[list[LibrarySticker], int | None]:
         prepared: list[tuple[Path, str, str, str, bool]] = []
         created_paths: list[Path] = []
         retained: set[Path] = set()
@@ -242,13 +262,26 @@ class StickerLibrary:
                     prepared.append((path, digest, name, description, animated))
                 pack_id = None
                 if pack_name:
-                    pack_id = conn.execute(
-                        "INSERT INTO packs(name,author) VALUES(?,?)",
-                        (
-                            bounded_text(pack_name, 128, "Paquete", required=True),
-                            bounded_text(author, 128, "Autor", required=True),
-                        ),
-                    ).lastrowid
+                    pack_name = bounded_text(pack_name, 128, "Paquete", required=True)
+                    author = bounded_text(author, 128, "Autor", required=True)
+                    if reuse_pack:
+                        # Lock only after image preparation, before matching membership.
+                        conn.execute("BEGIN IMMEDIATE")
+                        identities = {item[1] for item in prepared}
+                        for row in conn.execute(
+                            "SELECT id FROM packs WHERE name=? AND author=? ORDER BY id",
+                            (pack_name, author),
+                        ):
+                            members = {member[0] for member in conn.execute(
+                                "SELECT sticker_id FROM membership WHERE pack_id=?", (row[0],)
+                            )}
+                            if members == identities:
+                                pack_id = row[0]
+                                break
+                    if pack_id is None:
+                        pack_id = conn.execute(
+                            "INSERT INTO packs(name,author) VALUES(?,?)", (pack_name, author)
+                        ).lastrowid
                 ids = []
                 for path, digest, name, description, animated in prepared:
                     inserted = conn.execute(
@@ -285,7 +318,7 @@ class StickerLibrary:
             for path in created_paths:
                 if path not in retained:
                     self.managed_path(path.name).unlink(missing_ok=True)
-        return result
+        return result, pack_id
 
     def edit(
         self,

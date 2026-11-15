@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 import unicodedata
+import urllib.error
 import uuid
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
@@ -6524,23 +6525,28 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self._open_media_path(path)
             return
 
-        self._download_media(message)
+        self._download_media(message, open_after_download=True)
 
     def _download_media(
         self,
         message: Message,
         send_to_rayoai: bool = False,
         silent: bool = False,
+        open_after_download: bool = False,
     ) -> None:
         if getattr(self, "_storage_reset_in_progress", False):
             return
         if not self.current_jid:
             if not silent:
-                self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
+                msg = "No hay cuenta conectada para guardar la descarga"
+                self.status_bar.SetStatusText(msg)
+                self.speaker.speak(msg)
             return
 
         if not silent:
-            self.status_bar.SetStatusText(f"Descargando {media_description(message)}...")
+            desc = media_description(message)
+            self.status_bar.SetStatusText(f"Descargando {desc}...")
+            self.speaker.speak(f"Descargando {desc}")
 
         def worker() -> None:
             try:
@@ -6564,10 +6570,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 )
             except Exception as exc:
                 if not silent:
-                    wx.CallAfter(
-                        self.status_bar.SetStatusText,
-                        f"No se pudo descargar el archivo: {exc}",
-                    )
+                    error_msg = self._friendly_download_error_message(exc)
+                    wx.CallAfter(self._report_download_error, error_msg)
                 if silent:
                     wx.CallAfter(self._discard_auto_media_download, message)
                 return
@@ -6581,9 +6585,27 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 duration,
                 lottie_sticker_path is not None,
                 lottie_description,
+                open_after_download,
             )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _friendly_download_error_message(exc: Exception) -> str:
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 404:
+                return (
+                    "No se pudo descargar el archivo: "
+                    "no se encuentra en el servidor o el enlace ha expirado."
+                )
+            return f"No se pudo descargar el archivo: error del servidor ({exc.code} {exc.reason})."
+        if isinstance(exc, urllib.error.URLError):
+            return f"No se pudo descargar el archivo: error de conexión ({exc.reason})."
+        return f"No se pudo descargar el archivo: {exc}"
+
+    def _report_download_error(self, message: str) -> None:
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
 
     def _finish_media_download(
         self,
@@ -6594,6 +6616,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         duration_seconds: float = 0.0,
         normalized_lottie_sticker: bool = False,
         lottie_description: str = "",
+        open_after_download: bool = False,
     ) -> None:
         message.media_local_path = str(downloaded.path)
         if normalized_lottie_sticker:
@@ -6617,6 +6640,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self._discard_auto_media_download(message)
         else:
             self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
+            self.speaker.speak(f"Archivo descargado: {downloaded.filename or downloaded.path.name}")
+        if open_after_download:
+            self._open_media_path(downloaded.path)
         if send_to_rayoai:
             self._send_media_to_rayoai(message)
 
@@ -6836,7 +6862,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         try:
             os.startfile(path)
         except OSError as exc:
-            self.status_bar.SetStatusText(f"No se pudo abrir el archivo: {exc}")
+            msg = f"No se pudo abrir el archivo: {exc}"
+            self.status_bar.SetStatusText(msg)
+            self.speaker.speak(msg)
 
     def _toggle_starred_message(self, message: Message) -> None:
         message.starred = not message.starred

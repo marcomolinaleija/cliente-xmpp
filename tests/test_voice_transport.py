@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 
 import wx
 from aiohttp import (
+    ClientConnectionError,
     ClientSession,
     TCPConnector,
     ThreadedResolver,
@@ -1100,11 +1101,27 @@ class VoiceMediaIsolationTests(unittest.IsolatedAsyncioTestCase):
                 worker = self.voice.media_loop
                 grant = next(iter(self.voice.tokens.leases.values()))
                 try:
-                    await self.io.call(self.ws.send_bytes(bytes([7])*640))
+                    # Establish a legal pre-revocation packet explicitly. A
+                    # send before invalidation can reach the other worker first.
+                    before_revoke = bytes([7])*640
+                    async def primed_audio(before_revoke=before_revoke):
+                        await self.ws.send_bytes(before_revoke)
+                        echo = await self.ws.receive(timeout=2)
+                        self.assertEqual(echo.type, WSMsgType.BINARY)
+                        self.assertEqual(echo.data, before_revoke)
+                    await self.io.call(primed_audio())
                     if operation == "logout":
                         await self.voice.revoke(self.session)
                     else:
                         self.session.user.legacy_module_data["device_id"] = "other-device"
+                    async def revoked(grant=grant):
+                        while not grant.revoked.is_set():
+                            await asyncio.sleep(.005)
+                    await asyncio.wait_for(revoked(), 2)
+                    try:
+                        await self.io.call(self.ws.send_bytes(bytes([8])*640))
+                    except ClientConnectionError:
+                        pass  # Closing the channel already rejected the packet.
                     async def closed():
                         while True:
                             msg = await self.ws.receive(timeout=2)
@@ -1112,7 +1129,7 @@ class VoiceMediaIsolationTests(unittest.IsolatedAsyncioTestCase):
                                 return
                     await self.io.call(closed())
                     self.assertTrue(grant.revoked.is_set())
-                    self.assertEqual(self.received, [])
+                    self.assertEqual(self.received, [before_revoke])
                 finally:
                     await self.cleanup_flow()
                 self.assertFalse(worker.thread.is_alive())

@@ -65,13 +65,49 @@ $updaterBuilderPath = Join-Path $PSScriptRoot "build-public-updater.ps1"
 $updaterPath = Join-Path $artifactRoot $updaterAssetName
 $updaterChecksumPath = Join-Path $artifactRoot "$updaterAssetName.sha256"
 $notesPath = Join-Path $PSScriptRoot "release-notes.md"
+$installerPath = Join-Path $artifactRoot 'install-appliance.ps1'
+$installerChecksumPath = "$installerPath.sha256"
 foreach ($requiredFile in $artifactPath, $checksumPath, $updaterSourcePath, $updaterBuilderPath, $notesPath) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Falta el archivo requerido: $requiredFile"
     }
 }
+if (-not $manifest.PSObject.Properties['installer_sha256'] -or
+    -not $manifest.PSObject.Properties['installer_url']) {
+    throw 'Prepara un manifiesto nuevo con prepare-appliance-release.ps1 antes de publicar.'
+}
+if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $installerChecksumPath -PathType Leaf)) {
+    throw 'Falta el instalador verificado de la appliance.'
+}
+$installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceInstallerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'install-appliance.ps1') -Raw -Encoding UTF8
+$sourceInstallerText = $sourceInstallerText.Replace("`r`n", "`n").Replace("`n", "`r`n")
+$sourceInstallerBytes = [byte[]](@(0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes($sourceInstallerText))
+$sourceHasher = [Security.Cryptography.SHA256]::Create()
+try { $sourceInstallerHash = ([BitConverter]::ToString($sourceHasher.ComputeHash($sourceInstallerBytes))).Replace('-', '').ToLowerInvariant() }
+finally { $sourceHasher.Dispose() }
+if ($sourceInstallerHash -ne $installerHash) { throw 'El instalador preparado no coincide con las fuentes actuales.' }
+$installerChecksum = ((Get-Content -LiteralPath $installerChecksumPath -Raw).Trim() -split '\s+')[0]
+$expectedInstallerUrl = "https://github.com/$Repository/releases/download/$tag/install-appliance.ps1"
+if ($installerHash -ne [string]$manifest.installer_sha256 -or $installerChecksum -ne $installerHash -or
+    [string]$manifest.installer_url -cne $expectedInstallerUrl) {
+    throw 'El instalador o su URL no coincide con el manifiesto candidato.'
+}
+$packageVersionJson = (& tar.exe -xOf $artifactPath --include 'opt/whatsapp-can-bridge/version.json' --include './opt/whatsapp-can-bridge/version.json' | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]($packageVersionJson | ConvertFrom-Json).appliance_version -ne [string]$manifest.appliance_version -or
+    $tag -cne "wsl-appliance-v$($manifest.appliance_version)") {
+    throw 'La versión del paquete no coincide con el manifiesto o tag.'
+}
 
 $artifact = Get-Item -LiteralPath $artifactPath
+$packageCapabilities = $packageVersionJson | ConvertFrom-Json
+if ([Version]$manifest.appliance_version -ge [Version]'1.2.0' -and
+    (-not $packageCapabilities.PSObject.Properties['bridge_voice'] -or $packageCapabilities.bridge_voice -ne $true -or
+     -not $packageCapabilities.PSObject.Properties['voice_required'] -or $packageCapabilities.voice_required -ne $true -or
+     -not $packageCapabilities.PSObject.Properties['voice_configuration'] -or [int]$packageCapabilities.voice_configuration -lt 2)) {
+    throw 'No se puede publicar una appliance nueva sin motor de voz y activación obligatoria.'
+}
 $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $checksumHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
 if ($artifact.Length -ne $expectedSize) {
@@ -149,7 +185,7 @@ catch {
     throw
 }
 
-& gh release create $tag $artifactPath $checksumPath $updaterPath $updaterChecksumPath `
+& gh release create $tag $artifactPath $checksumPath $updaterPath $updaterChecksumPath $installerPath $installerChecksumPath `
     --repo $Repository `
     --title "WhatsApp CAN - Appliance WSL2 $($manifest.appliance_version)" `
     --notes-file $notesPath `
@@ -162,7 +198,9 @@ $publishedAssets = @(gh release view $tag --repo $Repository --json assets --jq 
 if ($publishedAssets -notcontains $assetName -or
     $publishedAssets -notcontains "$assetName.sha256" -or
     $publishedAssets -notcontains $updaterAssetName -or
-    $publishedAssets -notcontains "$updaterAssetName.sha256") {
+    $publishedAssets -notcontains "$updaterAssetName.sha256" -or
+    $publishedAssets -notcontains 'install-appliance.ps1' -or
+    $publishedAssets -notcontains 'install-appliance.ps1.sha256') {
     throw "La release se creó, pero no contiene todos los assets esperados."
 }
 $releaseUrl = (gh release view $tag --repo $Repository --json url --jq ".url" | Out-String).Trim()

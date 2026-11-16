@@ -1,6 +1,14 @@
 {
   "version": 1,
   "modules": {
+    "test_bridge_web_version": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
+    "test_bridge_archive_delivery": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_bridge_group_echo": {
       "area": "bridge",
       "layer": "contracts"
@@ -212,6 +220,10 @@
       "area": "media",
       "layer": "fast"
     },
+    "test_appliance_migration": {
+      "area": "bridge",
+      "layer": "contracts"
+    },
     "test_local_bridge": {
       "area": "bridge",
       "layer": "contracts"
@@ -417,6 +429,10 @@
       "layer": "integration"
     },
     "test_sticker_library": {
+      "area": "media",
+      "layer": "integration"
+    },
+    "test_sticker_import": {
       "area": "media",
       "layer": "integration"
     },

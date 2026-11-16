@@ -1,11 +1,66 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from cliente_xmpp.config.settings import ConnectionSettings
 from cliente_xmpp.xmpp.client import BridgeXmppClient
+
+
+class XmppDiagnosticBackpressureTests(unittest.TestCase):
+    def test_normal_diagnostics_do_not_block_loop_on_an_unread_stdout_pipe(self):
+        script = '''import asyncio,sys
+from pathlib import Path
+from cliente_xmpp.xmpp.client import BridgeXmppClient
+root = Path(sys.argv[1])
+async def produce():
+    (root / "ready").write_text("ready")
+    for _ in range(128):
+        BridgeXmppClient._debug_whatsapp("fictional diagnostic " * 512)
+        await asyncio.sleep(0)
+async def heartbeat():
+    await asyncio.sleep(.05)
+    (root / "heartbeat").write_text("alive")
+async def run():
+    await asyncio.gather(produce(), heartbeat())
+asyncio.run(run())
+'''
+        with tempfile.TemporaryDirectory(prefix="can-stdout-fixture-") as temp:
+            root = Path(temp)
+            child = subprocess.Popen(
+                [sys.executable, "-c", script, temp], stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not (root / "ready").exists() and child.poll() is None:
+                    self.assertLess(time.monotonic(), deadline, "fixture did not initialize")
+                    time.sleep(.01)
+                self.assertTrue((root / "ready").exists(), "fixture failed before producing")
+                deadline = time.monotonic() + 1
+                while not (root / "heartbeat").exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(
+                    (root / "heartbeat").exists(),
+                    "synchronous diagnostic output stalled the XMPP owner loop",
+                )
+                self.assertEqual(child.wait(timeout=3), 0)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=3)
+                child.stdout.close()
+
+    def test_diagnostics_remain_available_when_debug_logging_is_enabled(self):
+        with self.assertLogs("cliente_xmpp.xmpp.client", level="DEBUG") as logs:
+            BridgeXmppClient._debug_whatsapp("fictional diagnostic")
+        self.assertIn("[cliente-xmpp][whatsapp] fictional diagnostic", logs.output[0])
 
 
 class XmppReconnectionTests(unittest.IsolatedAsyncioTestCase):

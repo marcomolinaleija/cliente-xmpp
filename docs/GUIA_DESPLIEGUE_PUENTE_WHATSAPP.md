@@ -5,7 +5,14 @@ mantenemos Marco y el equipo de `cliente-xmpp`. Sirve tanto para un servidor
 propio como para un NAS que tenga Docker Compose. Usa dominios, rutas y
 secretos de ejemplo: no copies ninguno de otra instalación.
 
-La imagen soportada actualmente es:
+Para actualizar una instalación existente al cliente con llamadas, consulta
+[Actualización y requisitos de voz](ACTUALIZACION_LLAMADAS.md). Los ejemplos
+de esta guía conservan la referencia histórica v23: no habilitan voz. La guía
+de actualización distingue la base estable v35 de las candidatas con voz y
+explica la compatibilidad con puentes anteriores y la nueva appliance con voz
+habilitada automáticamente.
+
+La imagen utilizada en los ejemplos de esta guía es:
 
 ```text
 ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v23@sha256:44f5a5a3ba491bfab28fb280d531d3be535e4628149ec705ff6ee472e1cadb0f
@@ -350,6 +357,10 @@ recrea únicamente `slidge-whatsapp`. Conserva las carpetas `slidge` y
 `attachments` salvo que estés restaurando una copia verificada de ellas.
 
 ## Actualizar nuestra imagen
+
+Estas instrucciones cubren el reemplazo de imagen con la configuración
+existente. Para añadir llamadas se necesita además preparar WSS, TLS y el
+entorno de voz según la [guía de actualización](ACTUALIZACION_LLAMADAS.md).
 
 Marco y el equipo mantienen la imagen y sus capacidades; por eso se actualiza
 de forma controlada, no con una etiqueta desconocida ni reconstruyendo Slidge

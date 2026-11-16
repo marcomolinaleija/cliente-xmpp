@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import math
 import struct
@@ -674,6 +675,107 @@ class VoiceDialogNativeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = wx.App.Get() or wx.App(False)
+
+    def call_window(self):
+        class Window(VoiceIntegrationMixin, wx.Frame):
+            pass
+
+        window = Window(None, title="Fixture chat")
+        window._closing = False
+        window._voice_dialog = None
+        window.status_bar = Mock()
+        window.conversation = SimpleNamespace(
+            messages=wx.TextCtrl(window, value="Fixture message", style=wx.TE_MULTILINE),
+            composer=wx.TextCtrl(window),
+        )
+        window._voice_controller = VoiceController(
+            Mock(), ACCOUNT, COMPONENT, window._render_voice, Mock(), window._voice_incoming,
+            lambda _: "Fixture contact",
+        )
+        c = window._voice_controller
+        c.enable()
+        c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=c.session_id))
+        return window, c
+
+    def test_call_is_unowned_and_chat_remains_usable_until_remote_end(self):
+        get_owner = ctypes.WinDLL("user32").GetWindow
+        get_owner.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+        get_owner.restype = ctypes.c_void_p
+        for direction in ("incoming", "outgoing"):
+            with self.subTest(direction=direction):
+                window, c = self.call_window()
+                try:
+                    window.ShowWithoutActivating()
+                    state = "incoming_ringing" if direction == "incoming" else "ringing"
+                    c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid",
+                                             direction, state, "", 1, c.session_id, PEER))
+                    dialog = window._show_voice_dialog()
+                    self.assertIsInstance(dialog, wx.Frame)
+                    self.assertIsNone(dialog.GetParent())
+                    self.assertFalse(get_owner(dialog.GetHandle(), 4))  # GW_OWNER
+                    self.assertTrue(dialog.GetWindowStyleFlag() & wx.MINIMIZE_BOX)
+                    self.assertFalse(dialog.GetWindowStyleFlag() & wx.FRAME_NO_TASKBAR)
+                    c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid",
+                                             direction, "active", "", 2, c.session_id, PEER))
+                    self.assertFalse(dialog.GetWindowStyleFlag() & wx.STAY_ON_TOP)
+                    window.Iconize(True)
+                    wx.YieldIfNeeded()
+                    self.assertTrue(dialog.IsShownOnScreen())
+                    self.assertFalse(dialog.IsIconized())
+                    window.Iconize(False)
+                    window.Raise()
+                    window.conversation.composer.SetFocus()
+                    wx.YieldIfNeeded()
+                    self.assertTrue(window.IsEnabled())
+                    self.assertIs(wx.Window.FindFocus(), window.conversation.composer)
+                    window.conversation.composer.WriteText("Draft during call")
+                    window.conversation.messages.SetFocus()
+                    window.conversation.messages.SetSelection(0, 7)
+                    c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid",
+                                             direction, "active", "", 3, c.session_id, PEER))
+                    dialog._tick(None)
+                    self.assertIs(wx.Window.FindFocus(), window.conversation.messages)
+                    self.assertEqual(window.conversation.messages.GetSelection(), (0, 7))
+                    window.conversation.composer.SetFocus()
+                    c.service.reset_mock()
+                    with patch("cliente_xmpp.ui.voice_integration.wx.CallAfter") as later:
+                        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid",
+                                                 direction, "ended", "", 4, c.session_id, PEER))
+                        later.assert_not_called()  # Do not steal focus from the draft.
+                    self.assertIsNone(window._voice_dialog)
+                    self.assertTrue(dialog._closing)
+                    self.assertIs(wx.Window.FindFocus(), window.conversation.composer)
+                    self.assertEqual(window.conversation.composer.GetValue(), "Draft during call")
+                    c.service.voice_command.assert_not_called()
+                    c.service.stop_voice.assert_not_called()
+                    self.assertTrue(c.connected)
+                finally:
+                    window._closing = True
+                    window._close_voice()
+                    window.Destroy()
+                    wx.YieldIfNeeded()
+
+    def test_independent_call_is_reused_and_closed_by_main_window_shutdown(self):
+        window, c = self.call_window()
+        try:
+            c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "call", "fixture@lid", "outgoing",
+                                     "active", "", 1, c.session_id, PEER))
+            dialog = window._show_voice_dialog(activate=False)
+            with patch.object(dialog, "present") as present:
+                self.assertIs(window._show_voice_dialog(), dialog)
+                present.assert_called_once()
+            window._closing = True
+            sid = c.session_id
+            window._close_voice()
+            self.assertTrue(dialog._closing)
+            self.assertIsNone(window._voice_dialog)
+            self.assertFalse(dialog.duration_timer.IsRunning())
+            c.service.stop_voice.assert_called_once_with(sid)
+            c.service.voice_command.assert_not_called()
+        finally:
+            window._close_voice()
+            window.Destroy()
+            wx.YieldIfNeeded()
 
     def test_contact_header_call_button_is_adjacent_and_only_for_whatsapp_individuals(self):
         frame = wx.Frame(None)

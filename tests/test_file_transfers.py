@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -390,6 +391,44 @@ class TransferUiTests(unittest.TestCase):
                     message_id="remote-fixture"),
         ])
         self.assertEqual(len(window.messages_by_chat["chat@example.test"]), 3)
+
+    def test_failed_transfer_preview_clears_when_newer_message_arrives(self):
+        window = self.window()
+        event = FileTransferUpdated(
+            "chat@example.test", "fixture-id", "solo sabe trabajar.mp3", "queued"
+        )
+        window._handle_file_transfer_updated(event)
+        event.state, event.detail = "failed", "Upload failed"
+        window._handle_file_transfer_updated(event)
+        window.chat_list.set_file_transfer_preview.assert_called_with(
+            "chat@example.test", "Archivo no enviado: solo sabe trabajar.mp3"
+        )
+        # A newer message arrives in the chat
+        newer_message = Message(
+            "chat@example.test", "other@example.test", "Nuevo mensaje recibido",
+            sent_at=datetime.now() + timedelta(seconds=1),
+            message_id="msg-after-failed",
+        )
+        window._merge_messages("chat@example.test", [newer_message])
+        window.chat_list.set_file_transfer_preview.assert_called_with(
+            "chat@example.test", ""
+        )
+
+    def test_failed_transfer_preview_cleared_if_not_latest(self):
+        window = self.window()
+        event = FileTransferUpdated(
+            "chat@example.test", "fixture-id", "solo sabe trabajar.mp3", "queued"
+        )
+        window._handle_file_transfer_updated(event)
+        message = window.messages_by_chat[event.chat_jid][0]
+        message.upload_state = "failed"
+        newer = Message(
+            "chat@example.test", "other@example.test", "Hola",
+            sent_at=message.sent_at + timedelta(seconds=5),
+        )
+        window.messages_by_chat[event.chat_jid].append(newer)
+        window._refresh_file_transfer_preview(event.chat_jid)
+        window.chat_list.set_file_transfer_preview.assert_called_with(event.chat_jid, "")
 
 
 if __name__ == "__main__":

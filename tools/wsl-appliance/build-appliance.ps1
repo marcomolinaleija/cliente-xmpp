@@ -2,6 +2,8 @@
 param(
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\..\dist\wsl"),
     [string]$WorkDirectory = (Join-Path $env:LOCALAPPDATA "WhatsAppCAN\WslBuild"),
+    [string]$BasePackagePath = "",
+    [string]$BridgeBundleDirectory = "",
     [switch]$KeepBuilder,
     [switch]$SkipBridgeImage,
     [switch]$OverwriteOutput
@@ -73,6 +75,49 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $WorkDirectory, $OutputDirectory | Out-Null
+    if (-not $BridgeBundleDirectory -or $SkipBridgeImage) {
+        throw 'La appliance 1.2 requiere un bundle verificado con motor de voz.'
+    }
+    $bridgeBundleFiles = @()
+    if ($BridgeBundleDirectory) {
+        $bundleRoot = (Resolve-Path -LiteralPath $BridgeBundleDirectory).Path
+        $bundleMetadataPath = Join-Path $bundleRoot 'bundled-image.json'
+        $bundleMetadata = Get-Content -LiteralPath $bundleMetadataPath -Raw | ConvertFrom-Json
+        if ($bundleMetadata.schema_version -ne 1 -or
+            $bundleMetadata.voice -ne $true -or
+            [string]$bundleMetadata.image -notmatch '^ghcr\.io/marcomolinaleija/cliente-xmpp-bridge:v[1-9][0-9]*$' -or
+            [string]$bundleMetadata.digest -notmatch '^sha256:[0-9a-f]{64}$' -or
+            [string]$bundleMetadata.image_id -notmatch '^sha256:[0-9a-f]{64}$' -or
+            [string]$bundleMetadata.archive_sha256 -notmatch '^[0-9a-f]{64}$' -or
+            $bundleMetadata.voice -isnot [bool]) {
+            throw 'La identidad del bundle del puente no es válida.'
+        }
+        $bundleArchiveName = "slidge-$(([string]$bundleMetadata.image -split ':')[-1]).oci"
+        if ([string]$bundleMetadata.archive -cne $bundleArchiveName) { throw 'Ruta de archivo OCI no aprobada.' }
+        $bundleArchivePath = Join-Path $bundleRoot $bundleArchiveName
+        $bundleIdPath = Join-Path $bundleRoot ($bundleArchiveName.Replace('.oci', '.image-id'))
+        $bridgeBundleFiles = @($bundleMetadataPath, $bundleArchivePath, "$bundleArchivePath.sha256", $bundleIdPath)
+        foreach ($bundleFile in $bridgeBundleFiles) {
+            $bundleItem = Get-Item -LiteralPath $bundleFile
+            if ($bundleItem.PSIsContainer -or ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'El bundle no puede contener enlaces.' }
+        }
+        if ((Get-FileHash -LiteralPath $bundleArchivePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$bundleMetadata.archive_sha256 -or
+            (Get-Content -LiteralPath "$bundleArchivePath.sha256" -Raw).Trim() -cne "$($bundleMetadata.archive_sha256)  $bundleArchiveName" -or
+            (Get-Content -LiteralPath $bundleIdPath -Raw).Trim() -cne [string]$bundleMetadata.image_id) {
+            throw 'Los bytes o el ID del bundle no coinciden con el manifiesto.'
+        }
+    }
+    if ($BasePackagePath) {
+        # Only reuse the verified generic published appliance, never an export
+        # of an installed distribution containing credentials or conversations.
+        $publishedBase = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release-manifest.json') -Raw | ConvertFrom-Json
+        $baseImagePath = (Resolve-Path -LiteralPath $BasePackagePath).Path
+        if ((Get-FileHash -LiteralPath $baseImagePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$publishedBase.sha256 -or
+            (Get-Item -LiteralPath $baseImagePath).Length -ne [long]$publishedBase.size_bytes) {
+            throw 'La base no coincide con el paquete genérico publicado y verificado.'
+        }
+        $baseImageSha256 = [string]$publishedBase.sha256
+    }
     if (-not (Test-Path -LiteralPath $baseImagePath -PathType Leaf)) {
         Write-Host "Descargando la raíz Ubuntu 24.04 para WSL..."
         Invoke-WebRequest -Uri $baseImageUrl -OutFile $baseImagePath -UseBasicParsing
@@ -97,10 +142,27 @@ try {
 
     $overlayWslPath = ConvertTo-WslMountPath $overlayDirectory
     Invoke-Native wsl.exe @("-d", $builderName, "-u", "root", "--", "/bin/cp", "-a", "$overlayWslPath/.", "/")
+    if ($BridgeBundleDirectory) {
+        Invoke-Native wsl.exe @('-d', $builderName, '-u', 'root', '--', 'mkdir', '-p', '/opt/whatsapp-can-bridge/images')
+        foreach ($bundleFile in $bridgeBundleFiles) {
+            $bundleWslPath = ConvertTo-WslMountPath $bundleFile
+            Invoke-Native wsl.exe @('-d', $builderName, '-u', 'root', '--', '/bin/cp', '--', $bundleWslPath, '/opt/whatsapp-can-bridge/images/')
+        }
+    }
 
     $provisionArguments = @("-d", $builderName, "-u", "root", "--", "/bin/bash", "/opt/whatsapp-can-bridge/build/provision-rootfs.sh")
-    if ($SkipBridgeImage) {
+    if ($SkipBridgeImage -and $BridgeBundleDirectory) { throw 'No se puede omitir una imagen y aplicar un bundle a la vez.' }
+    if ($BridgeBundleDirectory) {
+        $provisionArguments += '--image-bundle'
+    }
+    elseif ($SkipBridgeImage) {
         $provisionArguments += "--skip-bridge-image"
+    }
+    elseif ($BasePackagePath) {
+        $overlayVersion = Get-Content -LiteralPath (Join-Path $overlayDirectory 'opt/whatsapp-can-bridge/version.json') -Raw | ConvertFrom-Json
+        if ([string]$publishedBase.bridge_image -ceq [string]$overlayVersion.bridge_image) {
+            $provisionArguments += '--reuse-bundled-image'
+        }
     }
     Write-Host "Instalando Prosody, nginx, Podman y el runtime del appliance..."
     Invoke-Native wsl.exe $provisionArguments

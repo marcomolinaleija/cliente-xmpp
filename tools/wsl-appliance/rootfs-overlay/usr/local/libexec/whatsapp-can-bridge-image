@@ -17,6 +17,25 @@ service_name="whatsapp-can-slidge.service"
 active_image=""
 active_digest=""
 active_image_id=""
+prepared_bundled_id=""
+
+load_bundled_metadata() {
+    local metadata="${1:-/opt/whatsapp-can-bridge/images/bundled-image.json}"
+    [[ -e "$metadata" ]] || return 0
+    local image digest archive directory="${metadata%/*}"
+    [[ -f "$metadata" && ! -L "$metadata" ]] || return 1
+    [[ "$(jq -er '.schema_version' "$metadata")" == 1 ]] || return 1
+    image="$(jq -er '.image | strings' "$metadata")" || return 1
+    digest="$(jq -er '.digest | strings' "$metadata")" || return 1
+    archive="$(jq -er '.archive | strings' "$metadata")" || return 1
+    validate_image_identity "$image" "$digest" || return 1
+    [[ "$archive" == "slidge-${image##*:}.oci" ]] || return 1
+    bundled_image="$image"
+    bundled_digest="$digest"
+    bundled_archive="$directory/$archive"
+    bundled_archive_checksum="$bundled_archive.sha256"
+    bundled_image_id_file="$directory/${archive%.oci}.image-id"
+}
 
 require_root() {
     if [[ "${WHATSAPP_CAN_SKIP_ROOT_CHECK:-false}" == "true" ]]; then
@@ -131,16 +150,24 @@ initialize_image() {
         return
     fi
 
+    ensure_bundled_image || return 1
+    write_active_image "$bundled_image" "$bundled_digest" "$prepared_bundled_id"
+}
+
+ensure_bundled_image() {
+    require_root
+    load_bundled_metadata || return 1
+
     if ! image_exists "$bundled_image"; then
         if [[ ! -f "$bundled_archive" || ! -f "$bundled_archive_checksum" ]]; then
-            echo "La imagen inicial v19 no está incluida en este appliance." >&2
+            echo "La imagen inicial aprobada no está incluida en este appliance." >&2
             return 1
         fi
         (cd "$(dirname "$bundled_archive")" && sha256sum -c "$(basename "$bundled_archive_checksum")")
         podman load -i "$bundled_archive"
     fi
     if [[ ! -s "$bundled_image_id_file" ]]; then
-        echo "Falta el ID inmutable de la imagen inicial v19." >&2
+        echo "Falta el ID inmutable de la imagen inicial aprobada." >&2
         return 1
     fi
 
@@ -148,10 +175,29 @@ initialize_image() {
     actual_image_id="$(inspect_image_id "$bundled_image")"
     expected_image_id="$(normalize_image_id "$(tr -d '\r\n' < "$bundled_image_id_file")")" || return 1
     if [[ "$actual_image_id" != "$expected_image_id" ]]; then
-        echo "La imagen inicial no coincide con el ID aprobado de v19." >&2
+        echo "La imagen inicial no coincide con el ID aprobado." >&2
         return 1
     fi
-    write_active_image "$bundled_image" "$bundled_digest" "$actual_image_id"
+    prepared_bundled_id="$actual_image_id"
+}
+
+prefer_bundled_image() {
+    require_root
+    if [[ ! -s "$active_image_file" ]]; then initialize_image; return; fi
+    load_active_image || return 1
+    load_bundled_metadata || return 1
+    local installed_version="${active_image##*:v}" bundled_version="${bundled_image##*:v}" previous
+    if (( installed_version >= bundled_version )); then
+        echo "Se conserva la imagen activa v$installed_version; la incluida no es posterior."
+        return
+    fi
+    ensure_bundled_image || return 1
+    previous="$(mktemp "$config_dir/.bridge-before-bundle.XXXXXX")"
+    cp -- "$active_image_file" "$previous"
+    chmod 0600 "$previous"
+    mv -- "$previous" "$config_dir/bridge-image-before-bundled.json"
+    write_active_image "$bundled_image" "$bundled_digest" "$prepared_bundled_id"
+    echo "Imagen actualizada desde el bundle verificado a $bundled_image."
 }
 
 read_update_manifest() {
@@ -306,17 +352,37 @@ run_container() {
         echo "La imagen activa no está disponible localmente." >&2
         return 1
     fi
+    # Voice is required even if an old environment or marker survives migration.
     exec podman run --rm --name whatsapp-can-slidge --pull=never --network host \
         --env-file /etc/whatsapp-can-bridge/environment \
+        --env CAN_VOICE_ENABLE=1 \
+        -v /etc/whatsapp-can-bridge/voice-tls:/run/can-voice-tls:ro \
         -v /var/lib/whatsapp-can-bridge/slidge:/var/lib/slidge \
         -v /var/lib/whatsapp-can-bridge/attachments:/var/lib/slidge-attachments \
         "$active_image_id"
+}
+
+adopt_imported_image() {
+    require_root
+    local reference="$1" imported_id
+    [[ "$reference" =~ ^localhost/whatsapp-can-migration:[0-9a-f]{32}$ ]] || return 1
+    load_active_image || return 1
+    imported_id="$(inspect_image_id "$reference")" || return 1
+    write_active_image "$active_image" "$active_digest" "$imported_id"
 }
 
 main() {
     local action="${1:-status}"
     shift || true
     case "$action" in
+        prefer-bundled)
+            [[ $# -eq 0 ]] || return 64
+            prefer_bundled_image
+            ;;
+        adopt-imported)
+            [[ $# -eq 1 ]] || return 64
+            adopt_imported_image "$1"
+            ;;
         initialize)
             [[ $# -eq 0 ]] || return 64
             initialize_image
@@ -342,7 +408,7 @@ main() {
             fi
             ;;
         *)
-            echo "Uso: whatsapp-can-bridge-image {initialize|status|run|update}" >&2
+            echo "Uso: whatsapp-can-bridge-image {initialize|status|run|update|prefer-bundled|adopt-imported REFERENCIA}" >&2
             return 64
             ;;
     esac

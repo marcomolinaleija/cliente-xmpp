@@ -6,10 +6,17 @@ from cliente_xmpp.models.voice import VoiceAudioSettings
 from cliente_xmpp.ui.theme import apply_theme
 
 
-class VoiceCallDialog(wx.Dialog):
+class VoiceCallDialog(wx.Frame):
+    """Independent call window; keep the existing name for integration hooks."""
+
     def __init__(self, parent, controller, closed):
-        super().__init__(parent, title="Llamada de WhatsApp",
-                         size=(560, 420), style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        # On Windows an owned dialog stays above its owner even when modeless.
+        # MainWindow closes us explicitly; do not tie chat/call activation,
+        # minimization or task switching together through a native owner.
+        super().__init__(None, title="Llamada de WhatsApp",
+                         size=(560, 420), style=wx.DEFAULT_FRAME_STYLE)
+        if parent is not None:
+            self.SetIcons(parent.GetIcons())
         self.SetMinSize((480, 360))
         self.controller = controller
         self._closed_callback = closed

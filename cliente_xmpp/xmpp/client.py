@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
 import mimetypes
 import re
 import threading
@@ -94,6 +95,7 @@ from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
 from cliente_xmpp.xmpp.voice_worker import IsolatedVoiceTransport as VoiceTransport
 
 EventHandler = Callable[[XmppEvent], None]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2371,7 +2373,7 @@ class BridgeXmppClient(ClientXMPP):
 
     @staticmethod
     def _debug_whatsapp(message: str) -> None:
-        print(f"{WHATSAPP_DEBUG_PREFIX} {message}", flush=True)
+        LOGGER.debug("%s %s", WHATSAPP_DEBUG_PREFIX, message)
 
     def _emit_whatsapp_status(self, component_jid: str, status: str, detail: str = "") -> None:
         component_jid = component_jid.split("/", 1)[0]

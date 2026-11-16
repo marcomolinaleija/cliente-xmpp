@@ -1,5 +1,11 @@
 # Voz experimental en v35
 
+Para actualizar desde una versión anterior, empieza por la
+[guía de compatibilidad y requisitos de llamadas](ACTUALIZACION_LLAMADAS.md).
+Las activaciones y ejemplos siguientes son evidencia histórica; el entrypoint
+actual prepara el socket privado automáticamente y no requiere copiar una ruta
+de socket de esas activaciones.
+
 Desarrollo aislado en `voice-calls`. El 18 de octubre el usuario
 autorizó activar una candidata local en `marco-vps` para probar, sin publicar en GHCR.
 Las pruebas usan identidades ficticias, audio generado y servidores locales. No se

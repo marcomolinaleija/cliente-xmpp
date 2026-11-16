@@ -12,6 +12,10 @@ printf 'original-state\n' > "$WHATSAPP_CAN_STATE_DIR/slidge/session.db"
 updater="$(cd "$(dirname "$0")" && pwd)/rootfs-overlay/usr/local/libexec/whatsapp-can-bridge-image"
 # shellcheck source=/dev/null
 source "$updater"
+# Keep the production metadata parser, but resolve its default path inside this
+# fixture. A real appliance's bundled-image.json must not influence the test.
+eval "$(declare -f load_bundled_metadata | sed '1s/load_bundled_metadata/fixture_load_bundled_metadata/')"
+load_bundled_metadata() { fixture_load_bundled_metadata "${1:-$test_root/bundled-image.json}"; }
 
 raw_id="$(printf 'a%.0s' {1..64})"
 [[ "$(normalize_image_id "$raw_id")" == "sha256:$raw_id" ]]
@@ -105,3 +109,39 @@ if update_from_manifest "$retagged_manifest" >/dev/null 2>&1; then
 fi
 
 echo "Bridge image updater tests: ok"
+
+# A migration imports OCI independently of Podman's old local image ID.
+write_active_image "$old_image" "$old_digest" "$old_id"
+adopt_imported_image "localhost/whatsapp-can-migration:$(printf 'a%.0s' {1..32})"
+load_active_image
+[[ "$active_image" == "$old_image" && "$active_digest" == "$old_digest" ]]
+[[ "$active_image_id" == "$new_id" ]]
+if adopt_imported_image 'ghcr.io/example/unapproved:v1'; then
+    echo 'Accepted an unrelated migration reference' >&2
+    exit 1
+fi
+echo 'Imported image adoption: ok'
+
+bundle_metadata="$test_root/bundled-image.json"
+jq -n --arg image "$new_image" --arg digest "$new_digest" \
+    '{schema_version:1,image:$image,digest:$digest,archive:"slidge-v20.oci"}' > "$bundle_metadata"
+load_bundled_metadata "$bundle_metadata"
+[[ "$bundled_image" == "$new_image" && "$bundled_digest" == "$new_digest" ]]
+[[ "$bundled_archive" == "$test_root/slidge-v20.oci" ]]
+jq '.archive="../../outside.oci"' "$bundle_metadata" > "$test_root/invalid-bundle.json"
+if load_bundled_metadata "$test_root/invalid-bundle.json"; then
+    echo 'Accepted an out-of-root bundle archive' >&2; exit 1
+fi
+echo 'Bundled image metadata: ok'
+
+printf '%s\n' "$new_id" > "$bundled_image_id_file"
+write_active_image "$old_image" "$old_digest" "$old_id"
+prefer_bundled_image
+load_active_image
+[[ "$active_image" == "$new_image" && "$active_digest" == "$new_digest" ]]
+[[ "$(jq -r '.image' "$config_dir/bridge-image-before-bundled.json")" == "$old_image" ]]
+write_active_image 'ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v50' "$old_digest" "$old_id"
+prefer_bundled_image
+load_active_image
+[[ "$active_image" == 'ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v50' ]]
+echo 'Bundled upgrades preserve newer installed images: ok'

@@ -5,7 +5,7 @@ import json
 import stat
 import tempfile
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from PIL import Image, ImageOps
@@ -19,6 +19,31 @@ MAX_PACK_BYTES = 120 * 1024 * 1024
 MAX_PACK_ITEMS = 200
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 NATIVE_PACK_MIME = "application/x-can-sticker-pack"
+
+
+def _archive_name(filename: str, *, whatsapp: bool) -> str:
+    # Some mobile exporters prefix flat names with ONE slash. Never flatten a path.
+    name = filename[1:] if whatsapp and filename.startswith("/") else filename
+    if name in {"", ".", ".."} or any(c in name for c in "/\\:\0"):
+        raise ValueError("El paquete contiene rutas o enlaces no seguros.")
+    return name
+
+
+def _whatsapp_images(archive: zipfile.ZipFile, files: dict[str, zipfile.ZipInfo]) -> list[str]:
+    images = [name for name in files if Path(name).suffix.lower() in {".webp", ".png"}]
+    covers = [name for name in images if name.casefold() == "cover.png"]
+    if not covers:
+        # WiStickers uses a numerically named 96x96 PNG instead of cover.png.
+        for name in images:
+            if Path(name).suffix.lower() == ".png":
+                with Image.open(io.BytesIO(archive.read(files[name]))) as image:
+                    if image.format == "PNG" and image.size == (96, 96):
+                        covers.append(name)
+        if len(covers) > 1:
+            raise ValueError(
+                "El paquete tiene varias posibles portadas de 96×96; revisa su contenido."
+            )
+    return [name for name in images if name not in covers]
 
 
 def is_sticker_pack_attachment(message: Message) -> bool:
@@ -157,19 +182,14 @@ def import_pack(library: StickerLibrary, source: Path) -> int:
     try:
         with zipfile.ZipFile(source) as archive, tempfile.TemporaryDirectory() as directory:
             infos = archive.infolist()
-            names = [info.filename for info in infos]
+            names = [_archive_name(info.filename, whatsapp=source.suffix.lower() == ".wastickers")
+                     for info in infos]
             if len(infos) > MAX_PACK_ITEMS + 4 or len({n.casefold() for n in names}) != len(names):
                 raise ValueError("El paquete contiene demasiados archivos o nombres duplicados.")
             total = 0
             for info in infos:
-                name = PurePosixPath(info.filename)
                 if (
-                    len(name.parts) != 1
-                    or name.name in {"", ".", ".."}
-                    or "\\" in info.filename
-                    or ":" in info.filename
-                    or name.is_absolute()
-                    or stat.S_ISLNK(info.external_attr >> 16)
+                    stat.S_ISLNK(info.external_attr >> 16)
                     or info.flag_bits & 1
                 ):
                     raise ValueError("El paquete contiene rutas o enlaces no seguros.")
@@ -178,8 +198,13 @@ def import_pack(library: StickerLibrary, source: Path) -> int:
                 total += info.file_size
             if total > MAX_PACK_BYTES:
                 raise ValueError("El paquete descomprimido es demasiado grande.")
+            files = dict(zip(names, infos, strict=True))
+
+            def read(name: str) -> bytes:
+                return archive.read(files[name])
+
             if "manifest.json" in names:
-                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                manifest = json.loads(read("manifest.json").decode("utf-8"))
                 if (
                     not isinstance(manifest, dict)
                     or manifest.get("format") != "can-stickers"
@@ -191,12 +216,11 @@ def import_pack(library: StickerLibrary, source: Path) -> int:
             else:
                 if source.suffix.lower() == ".canstickers":
                     raise ValueError("Falta el manifiesto del paquete CAN.")
-                name = archive.read("title.txt").decode("utf-8")
-                author = archive.read("author.txt").decode("utf-8")
+                name = read("title.txt").decode("utf-8")
+                author = read("author.txt").decode("utf-8")
                 stickers = [
-                    {"file": n, "name": Path(n).stem, "description": ""}
-                    for n in names
-                    if Path(n).suffix.lower() in {".webp", ".png"} and n.lower() != "cover.png"
+                    {"file": n, "name": f"Sticker {index}", "description": ""}
+                    for index, n in enumerate(_whatsapp_images(archive, files), 1)
                 ]
             if not isinstance(name, str) or not isinstance(author, str):
                 raise ValueError("Nombre o autor de paquete no válido.")
@@ -221,10 +245,9 @@ def import_pack(library: StickerLibrary, source: Path) -> int:
                 if not isinstance(title, str) or not isinstance(description, str):
                     raise ValueError("Texto del sticker no válido.")
                 target = Path(directory) / f"{index}{Path(filename).suffix.lower()}"
-                target.write_bytes(archive.read(filename))
+                target.write_bytes(read(filename))
                 entries.append((target, title, description))
             # add_many commits membership and files as one logical import; a bad image rolls back.
-            created = library.add_many(entries, pack_name=name, author=author)
-            return created[0].pack_ids[-1]
+            return library.import_many(entries, pack_name=name, author=author)
     except (zipfile.BadZipFile, KeyError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("El paquete de stickers está dañado o incompleto.") from exc

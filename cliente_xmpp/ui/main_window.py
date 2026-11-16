@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 import unicodedata
+import urllib.error
 import uuid
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
@@ -108,7 +109,12 @@ from cliente_xmpp.models.phone_numbers import (
     normalize_phone_number,
     whatsapp_contact_jid_candidates,
 )
-from cliente_xmpp.models.reactions import ReactionState, ReactionUpdate, flattened_reactions
+from cliente_xmpp.models.reactions import (
+    ReactionState,
+    ReactionUpdate,
+    flattened_reactions,
+    is_supported_reaction,
+)
 from cliente_xmpp.models.statistics import LocalChatStatistics, MessageStatistics
 from cliente_xmpp.notifications.windows import WindowsNotificationService
 from cliente_xmpp.storage.manager import (
@@ -5007,6 +5013,34 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.status_bar.SetStatusText(detail)
             self.speaker.speak(detail)
 
+    def _is_latest_chat_message(self, chat_jid: str, message: Message) -> bool:
+        messages = getattr(self, "messages_by_chat", {}).get(chat_jid, [])
+        message_ts = self._message_timestamp(message)
+        if messages:
+            found = False
+            for item in messages:
+                if item is message:
+                    found = True
+                    continue
+                if found or self._message_timestamp(item) > message_ts:
+                    return False
+
+        latest_checker = getattr(self, "_latest_message_timestamp", None)
+        if callable(latest_checker):
+            latest_ts = latest_checker(chat_jid)
+            if latest_ts is not None and latest_ts > message_ts:
+                return False
+
+        chat_getter = getattr(self, "_chat_by_jid", None)
+        chat = chat_getter(chat_jid) if callable(chat_getter) else None
+        if chat and chat.last_message_at:
+            try:
+                if chat.last_message_at.timestamp() > message_ts:
+                    return False
+            except (OSError, ValueError):
+                pass
+        return True
+
     def _refresh_file_transfer_preview(self, chat_jid: str) -> None:
         setter = getattr(getattr(self, "chat_list", None), "set_file_transfer_preview", None)
         if not callable(setter):
@@ -5014,6 +5048,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         pending = [item for item in self.messages_by_chat.get(chat_jid, []) if item.upload_id]
         active = next((item for item in pending if item.upload_state == "uploading"), None)
         message = active or (pending[-1] if pending else None)
+        if message and not active and not self._is_latest_chat_message(chat_jid, message):
+            message = None
         preview = ""
         if message:
             state = {
@@ -6489,23 +6525,28 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self._open_media_path(path)
             return
 
-        self._download_media(message)
+        self._download_media(message, open_after_download=True)
 
     def _download_media(
         self,
         message: Message,
         send_to_rayoai: bool = False,
         silent: bool = False,
+        open_after_download: bool = False,
     ) -> None:
         if getattr(self, "_storage_reset_in_progress", False):
             return
         if not self.current_jid:
             if not silent:
-                self.status_bar.SetStatusText("No hay cuenta conectada para guardar la descarga")
+                msg = "No hay cuenta conectada para guardar la descarga"
+                self.status_bar.SetStatusText(msg)
+                self.speaker.speak(msg)
             return
 
         if not silent:
-            self.status_bar.SetStatusText(f"Descargando {media_description(message)}...")
+            desc = media_description(message)
+            self.status_bar.SetStatusText(f"Descargando {desc}...")
+            self.speaker.speak(f"Descargando {desc}")
 
         def worker() -> None:
             try:
@@ -6529,10 +6570,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 )
             except Exception as exc:
                 if not silent:
-                    wx.CallAfter(
-                        self.status_bar.SetStatusText,
-                        f"No se pudo descargar el archivo: {exc}",
-                    )
+                    error_msg = self._friendly_download_error_message(exc)
+                    wx.CallAfter(self._report_download_error, error_msg)
                 if silent:
                     wx.CallAfter(self._discard_auto_media_download, message)
                 return
@@ -6546,9 +6585,27 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 duration,
                 lottie_sticker_path is not None,
                 lottie_description,
+                open_after_download,
             )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _friendly_download_error_message(exc: Exception) -> str:
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 404:
+                return (
+                    "No se pudo descargar el archivo: "
+                    "no se encuentra en el servidor o el enlace ha expirado."
+                )
+            return f"No se pudo descargar el archivo: error del servidor ({exc.code} {exc.reason})."
+        if isinstance(exc, urllib.error.URLError):
+            return f"No se pudo descargar el archivo: error de conexión ({exc.reason})."
+        return f"No se pudo descargar el archivo: {exc}"
+
+    def _report_download_error(self, message: str) -> None:
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
 
     def _finish_media_download(
         self,
@@ -6559,6 +6616,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         duration_seconds: float = 0.0,
         normalized_lottie_sticker: bool = False,
         lottie_description: str = "",
+        open_after_download: bool = False,
     ) -> None:
         message.media_local_path = str(downloaded.path)
         if normalized_lottie_sticker:
@@ -6582,6 +6640,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self._discard_auto_media_download(message)
         else:
             self.status_bar.SetStatusText(f"Archivo descargado: {downloaded.path}")
+            self.speaker.speak(f"Archivo descargado: {downloaded.filename or downloaded.path.name}")
+        if open_after_download:
+            self._open_media_path(downloaded.path)
         if send_to_rayoai:
             self._send_media_to_rayoai(message)
 
@@ -6801,7 +6862,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         try:
             os.startfile(path)
         except OSError as exc:
-            self.status_bar.SetStatusText(f"No se pudo abrir el archivo: {exc}")
+            msg = f"No se pudo abrir el archivo: {exc}"
+            self.status_bar.SetStatusText(msg)
+            self.speaker.speak(msg)
 
     def _toggle_starred_message(self, message: Message) -> None:
         message.starred = not message.starred
@@ -7113,15 +7176,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 else:
                     self.connection_header.set_status("Desconectado (Reconectando...)")
                     self.status_bar.SetStatusText("Desconectado")
-            case ChatReadFailed(chat_jid=chat_jid, detail=detail):
+            case ChatReadFailed(chat_jid=chat_jid):
                 # Keep local read state, but allow the remote marker to be retried
                 # on the next read. Never remove an optimistic outgoing message.
                 self.displayed_marker_ids_by_chat.pop(chat_jid, None)
-                self.status_bar.SetStatusText(detail)
-                now = time.monotonic()
-                if now - getattr(self, "_last_read_error_announcement", -60) >= 60:
-                    self._last_read_error_announcement = now
-                    self.speaker.speak("La sincronización de lectura con WhatsApp está pendiente.")
             case XmppError(message=message):
                 load = getattr(self, "manual_history_load", None)
                 if (
@@ -7485,11 +7543,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         # Reapply it after merging messages so the marker can now be resolved.
         self._apply_synced_chat_displayed(chat_jid)
         self._refresh_chat_order()
-        if (
-            not background
-            and self.conversation.current_chat
-            and self.conversation.current_chat.jid == chat_jid
-        ):
+        if not background and is_visible_chat:
             self._load_conversation(
                 self.conversation.current_chat,
                 unread_count=self.conversation.unread_marker_count(),
@@ -8547,19 +8601,31 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         actor = "Tú" if update.sender_is_me else (
             update.sender_name or self._display_name_for_jid(update.sender_id)
         )
+        # A chat summary may describe a different message or a previous reaction.
+        # Only quote the actual target, never feed a summary back into itself.
+        reference = "un mensaje"
         if target is not None:
             body = media_description(target) if has_media(target) else target.body
-        else:
-            chat = self._visible_chat_by_jid(update.chat_jid) or self.searchable_chats_by_jid.get(
-                update.chat_jid
-            )
-            body = chat.last_message_preview if chat is not None else "mensaje"
-        body = " ".join(body.split()) or "mensaje"
-        if len(body) > 80:
-            body = f"{body[:77]}..."
+            body = " ".join(body.split()) or "mensaje"
+            if len(body) > 80:
+                body = f"{body[:77]}..."
+            reference = f"«{body}»"
         if update.reactions:
-            return f"{actor} reaccionó a «{body}» con {' '.join(update.reactions)}"
-        return f"{actor} quitó su reacción de «{body}»"
+            return f"{actor} reaccionó a {reference} con {' '.join(update.reactions)}"
+        return f"{actor} quitó su reacción de {reference}"
+
+    @staticmethod
+    def _compact_legacy_reaction_preview(preview: str) -> str:
+        """Compact the old formatter's self-nesting, not arbitrary quoted text."""
+        marker = " reaccionó a «"
+        actor, separator, quoted = preview.partition(marker)
+        if not actor or not separator or not quoted.startswith(actor + marker):
+            return preview
+        _, closing, reactions = quoted.rpartition("» con ")
+        if (not closing or not reactions
+                or not all(is_supported_reaction(emoji) for emoji in reactions.split())):
+            return preview
+        return f"{actor} reaccionó a un mensaje con {reactions}"
 
     def _message_by_id(self, chat_jid: str, message_id: str) -> Message | None:
         if not message_id:
@@ -9085,6 +9151,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     self._message_body_for_display(message)
                 )
                 chat.last_message_at = message.sent_at
+            elif chat.last_message_preview != self._message_body_for_display(message):
+                # A newer reaction summary can outlive the message it refers to.
+                # Repair only its in-memory preview, preserving time and unread state.
+                chat.last_message_preview = MainWindow._compact_legacy_reaction_preview(
+                    chat.last_message_preview
+                )
             self._update_chat_activity(message.chat_jid, self._message_timestamp(message))
 
         for chat in chats:
@@ -9503,8 +9575,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         return jid != self.current_jid and self._jid_may_be_group_chat(jid)
 
     def _latest_message_timestamp(self, chat_jid: str) -> float | None:
-        latest = self.latest_message_timestamps_by_chat.get(chat_jid)
-        messages = [item for item in self.messages_by_chat.get(chat_jid, []) if not item.upload_id]
+        latest = getattr(self, "latest_message_timestamps_by_chat", {}).get(chat_jid)
+        messages = [
+            item for item in getattr(self, "messages_by_chat", {}).get(chat_jid, [])
+            if not item.upload_id
+        ]
         if not messages:
             return latest
 
@@ -9655,6 +9730,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if visible_chat is not None or preview or sent_at is not None:
                 self.chat_list.upsert_chat(updated_chat)
             self._persist_chat(updated_chat)
+            refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+            if callable(refresh_preview):
+                refresh_preview(chat_jid)
             return
 
         updated_chat = Chat(
@@ -9676,6 +9754,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if preview or sent_at is not None:
             self.chat_list.upsert_chat(updated_chat)
         self._persist_chat(updated_chat)
+        refresh_preview = getattr(self, "_refresh_file_transfer_preview", None)
+        if callable(refresh_preview):
+            refresh_preview(chat_jid)
         if not is_group:
             self.chat_names_by_jid.setdefault(chat_jid, self._display_name_for_jid(chat_jid))
 
@@ -9809,6 +9890,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         return current + unread_delta
 
     def _mark_current_chat_displayed(self, chat_jid: str) -> None:
+        if not self.conversation.IsShown() or not getattr(self, "whatsapp_verified", True):
+            return
         chat = self.conversation.current_chat
         if chat is None or chat.jid != chat_jid:
             return
@@ -9995,9 +10078,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.clear_editing()
         self.conversation.clear_unread_marker()
         self._reset_window_title()
+        self._mark_current_chat_displayed(selected_jid)
         self.settings_panel.Hide()
         self.conversation.Hide()
-        self._mark_current_chat_displayed(selected_jid)
         self.chat_list.Show()
         if self._search_is_active():
             self._apply_chat_search()
@@ -10480,10 +10563,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
 
     def _chat_by_jid(self, jid: str) -> Chat | None:
-        return self._visible_chat_by_jid(jid) or self.searchable_chats_by_jid.get(jid)
+        return (
+            self._visible_chat_by_jid(jid)
+            or getattr(self, "searchable_chats_by_jid", {}).get(jid)
+        )
 
     def _visible_chat_by_jid(self, jid: str) -> Chat | None:
-        return self.chat_list.chat_by_jid(jid)
+        chat_list = getattr(self, "chat_list", None)
+        lookup = getattr(chat_list, "chat_by_jid", None)
+        return lookup(jid) if callable(lookup) else None
 
     def _chat_notifications_muted(self, jid: str) -> bool:
         chat = self._chat_by_jid(jid)

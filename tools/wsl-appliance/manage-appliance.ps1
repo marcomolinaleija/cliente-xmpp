@@ -1,11 +1,12 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Position = 0)][ValidateSet("status", "start", "stop", "restart", "logs", "smoke", "update", "connection", "backup", "uninstall")]
+    [Parameter(Position = 0)][ValidateSet("status", "start", "stop", "restart", "logs", "smoke", "update", "voice", "connection", "backup", "uninstall")]
     [string]$Action = "status",
     [string]$DistroName = "WhatsAppCAN-Bridge",
     [string]$BackupPath,
     [string]$ConfirmDistroName,
-    [string]$ManifestUrl
+    [string]$ManifestUrl,
+    [ValidateSet('status', 'enable')][string]$VoiceAction = 'status'
 )
 
 Set-StrictMode -Version Latest
@@ -45,6 +46,9 @@ if ($LASTEXITCODE -ne 0 -or $knownDistros -notcontains $DistroName) {
 }
 
 switch ($Action) {
+    "voice" {
+        Invoke-Native wsl.exe @('-d', $DistroName, '-u', 'root', '--', '/usr/local/sbin/whatsapp-can-bridge', 'voice', $VoiceAction)
+    }
     "backup" {
         if (-not $BackupPath) {
             throw "La acción backup requiere -BackupPath."

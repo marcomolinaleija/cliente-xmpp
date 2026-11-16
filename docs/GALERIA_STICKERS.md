@@ -36,6 +36,29 @@ integrada con F1 incluye el recorrido de uso.
 - Un sticker puede estar en varios paquetes. Borrar un paquete sólo elimina
   agrupación; borrar un sticker requiere confirmación y afecta su copia propia.
 
+## Importar paquetes y completar etiquetas
+
+En **Biblioteca → Importar paquete...** se aceptan `.canstickers` y `.wastickers`.
+También se usa el mismo flujo al importar el paquete recibido desde un mensaje.
+El paquete queda disponible aunque se rechace la generación de descripciones.
+
+- La variante `.wastickers` con una barra inicial en nombres planos es compatible;
+  no se admiten subcarpetas, traversal, enlaces ni colisiones al normalizar.
+- La portada `cover.png` se excluye. Si no existe, un único PNG de 96×96 se reconoce
+  como portada; varias candidatas producen un error antes de importar.
+- Reimportar un paquete con el mismo nombre, autor y contenido reutiliza la
+  agrupación existente, sin borrar pertenencias ni duplicar imágenes. Un paquete
+  diferente que tenga el mismo nombre se mantiene separado.
+- Cuando faltan etiquetas, se ofrece completarlas con RayoAI. Es opcional y requiere
+  confirmación: el proveedor configurado puede recibir las imágenes sin descripción.
+  Los textos alternativos existentes se conservan y los nombres genéricos se
+  sustituyen por nombres descriptivos. Con una descripción existente, el nombre se
+  deriva localmente sin volver a enviar la imagen.
+- El procesamiento es secuencial, muestra avance y conserva los stickers si falla
+  una descripción. Cerrar la galería detiene el lote entre solicitudes; una edición
+  manual concurrente no se sobrescribe. Se puede reintentar desde **Biblioteca →
+  Completar etiquetas del paquete con RayoAI...**.
+
 ## Compartir paquetes y exportar: distintos alcances
 
 | Formato | Uso | Límites y metadatos |
@@ -56,12 +79,21 @@ usuario](https://github.com/WhatsApp/stickers/blob/main/Android/README.md); en
 iOS, [la integración de su muestra oficial](https://github.com/WhatsApp/stickers/blob/main/iOS/README.md).
 CAN no instala una app móvil ni publica automáticamente paquetes mediante PEP.
 
-**Compartir paquete en el chat** es distinto de exportar: envía un
+**Enviar paquete nativo por WhatsApp...** (antes **Compartir paquete en el chat**)
+es distinto de exportar: envía un
 `StickerPackMessage` mediante el [puente v30](PUENTE_WHATSAPP_STICKERS_V30.md),
 con portada dentro del ZIP y miniatura cifrada separada. El formato de biblioteca
 CAN v1 no cambia: otros CAN pueden importar el paquete recibido como antes.
 El cliente consulta la capacidad del puente antes de subir; si éste es antiguo,
 muestra un error y ofrece exportar, sin presentar un documento como paquete nativo.
+
+**Estado de interoperabilidad:** el usuario confirmó un rechazo al guardar paquetes
+salientes en WhatsApp. Las mejoras locales de importación y etiquetado no corrigen
+por sí mismas ese rechazo. Para diagnosticarlo hay que distinguir si el destinatario
+recibe un archivo adjunto o un paquete con vista previa y opción de añadirlo. Un ZIP
+válido o un roundtrip entre CAN y el puente no demuestran que el teléfono acepte el
+paquete. No se ha desplegado ni validado una corrección nueva de ese envío con estos
+cambios.
 
 Los paquetes CAN son ZIP planos con `manifest.json`, formato `can-stickers`,
 versión 1, y archivos WebP. Importar valida rutas, duplicados, tipos, tamaños y

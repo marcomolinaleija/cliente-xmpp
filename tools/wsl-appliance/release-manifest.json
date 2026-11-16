@@ -7,5 +7,7 @@
   "download_url": "https://github.com/marcomolinaleija/cliente-xmpp/releases/download/wsl-appliance-v1.1.0/WhatsAppCAN-Bridge-amd64.wsl",
   "sha256": "5c9efa86eeefdee1836bb822e277cc4c217b1317fc85f7d53d831929b13a8f74",
   "size_bytes": 747847680,
-  "updater_asset_name": "actualizar-puente-local.ps1"
+  "updater_asset_name": "actualizar-puente-local.ps1",
+  "installer_url": "https://raw.githubusercontent.com/marcomolinaleija/cliente-xmpp/wsl-appliance-v1.1.0/tools/wsl-appliance/install-appliance.ps1",
+  "installer_sha256": "181d39c8021b24acccfafc068d8fcf5468e5e1801ed01564bf69327261e8a802"
 }

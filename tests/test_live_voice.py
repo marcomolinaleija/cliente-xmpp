@@ -8,6 +8,7 @@ import struct
 import threading
 import unittest
 import wave
+from datetime import UTC, datetime
 from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -20,7 +21,8 @@ from cliente_xmpp.audio.live_call import SILENCE, LiveAudioError, LiveCallAudio
 from cliente_xmpp.audio.ringback import RingbackSound
 from cliente_xmpp.audio.voice_playout import PcmPlayout
 from cliente_xmpp.audio.voice_timing import AudioCadence
-from cliente_xmpp.models.chat import Chat
+from cliente_xmpp.models.calls import CallEvent
+from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.voice import VoiceAudioSettings, VoiceAudioStats, VoiceDevice
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
 from cliente_xmpp.ui.voice_controller import VoiceController
@@ -39,6 +41,14 @@ from tools.probe_voice_windows import accessible
 ACCOUNT = "fixture@example.invalid"
 COMPONENT = "whatsapp.example.invalid"
 PEER = "fixture@" + COMPONENT
+
+
+def call_message(call_id="fixture-call", state="offered", direction="incoming", chat=PEER):
+    return Message(
+        chat_jid=chat, sender_jid=chat, body="Llamada",
+        call=CallEvent(call_id=call_id, peer_jid="fixture@lid", direction=direction,
+                       kind="voice", state=state, event_timestamp=datetime.now(UTC), sequence=1),
+    )
 
 
 class LiveAudioTests(unittest.TestCase):
@@ -651,6 +661,32 @@ class VoiceControllerTests(unittest.TestCase):
         c.event(VoiceChannelChanged(ACCOUNT, COMPONENT, True, session_id=self.session))
         self.assertFalse(c.connected)
 
+    def test_answer_from_message_uses_live_controller_and_audio_safeguard(self):
+        c = self.controller()
+        c.event(VoiceStateChanged(ACCOUNT, COMPONENT, "fixture-call", "fixture@lid", "incoming",
+                                 "incoming_ringing", "", 1, self.session, PEER))
+        window = SimpleNamespace(
+            _voice_controller=c, _voice_available=lambda: True,
+            conversation=SimpleNamespace(current_chat=Chat(PEER, "Fixture")),
+            _show_voice_dialog=Mock(),
+        )
+        window._can_answer_voice_message = lambda message: (
+            VoiceIntegrationMixin._can_answer_voice_message(window, message)
+        )
+        message = call_message()
+        c.before_call = lambda: False
+        VoiceIntegrationMixin._on_voice_message_action(window, "answer", message)
+        self.service.voice_command.assert_not_called()
+        window._show_voice_dialog.assert_not_called()
+        c.before_call = lambda: True
+        VoiceIntegrationMixin._on_voice_message_action(window, "answer", message)
+        self.service.voice_command.assert_called_once()
+        self.assertEqual(self.service.voice_command.call_args.args, ("answer",))
+        self.assertEqual(self.service.voice_command.call_args.kwargs["call_id"], "fixture-call")
+        window._show_voice_dialog.assert_called_once()
+        VoiceIntegrationMixin._on_voice_message_action(window, "answer", message)
+        self.service.voice_command.assert_called_once()
+
     def test_duration_starts_on_active_not_ringing_and_survives_duplicate_active(self):
         c = self.controller()
         now = [10.]
@@ -776,6 +812,94 @@ class VoiceDialogNativeTests(unittest.TestCase):
             window._close_voice()
             window.Destroy()
             wx.YieldIfNeeded()
+
+    def test_incoming_message_actions_follow_selection_and_live_call(self):
+        frame = wx.Frame(None)
+        active = {"value": True}
+        actions = []
+        with patch("cliente_xmpp.ui.conversation_panel.MpvAudioPlayer"), \
+                patch("cliente_xmpp.ui.conversation_panel.NvdaSpeaker"):
+            panel = ConversationPanel(
+                frame, lambda jid: jid,
+                can_answer_voice_message=lambda message: (
+                    active["value"] and message.call is not None
+                ),
+                on_voice_message_action=lambda action, message: actions.append((action, message)),
+            )
+        try:
+            panel.set_chat(Chat(PEER, "Fixture contact"))
+            incoming = call_message()
+            other = Message(chat_jid=PEER, sender_jid=PEER, body="Otro mensaje")
+            panel.set_messages([incoming, other])
+            panel.focus_message(incoming)
+            self.assertTrue(panel.answer_call_button.IsShown())
+            self.assertTrue(panel.reject_call_button.IsShown())
+            self.assertIn("Contestar", accessible(panel.answer_call_button)["name"])
+            self.assertIn("Rechazar", accessible(panel.reject_call_button)["name"])
+            panel.answer_call_button.ProcessEvent(
+                wx.CommandEvent(wx.wxEVT_BUTTON, panel.answer_call_button.GetId())
+            )
+            self.assertEqual(actions, [("answer", incoming)])
+            active["value"] = False
+            panel.reject_call_button.ProcessEvent(
+                wx.CommandEvent(wx.wxEVT_BUTTON, panel.reject_call_button.GetId())
+            )
+            self.assertEqual(len(actions), 1)
+            panel.refresh_voice_message_actions()
+            self.assertFalse(panel.answer_call_button.IsShown())
+            self.assertFalse(panel.reject_call_button.IsShown())
+            panel._on_voice_message_action("reject")
+            self.assertEqual(len(actions), 1)
+            active["value"] = True
+            panel.focus_message(other)
+            self.assertFalse(panel.answer_call_button.IsShown())
+        finally:
+            # Drain panel CallAfter callbacks while their native controls still exist.
+            wx.Yield()
+            frame.Destroy()
+            wx.Yield()
+
+    def test_message_actions_require_exact_live_incoming_offer(self):
+        class Window(VoiceIntegrationMixin, wx.Frame):
+            pass
+
+        window = Window(None)
+        c = window._voice_controller = SimpleNamespace(
+            connected=True, session_id="fixture-session", state="incoming_ringing", pending="",
+            call_id="fixture-call", chat_jid=PEER, action=Mock(),
+        )
+        window._voice_available = lambda: True
+        window._show_voice_dialog = Mock()
+        window.conversation = SimpleNamespace(current_chat=Chat(PEER, "Fixture"))
+        try:
+            incoming = call_message()
+            self.assertTrue(window._can_answer_voice_message(incoming))
+            for other in (call_message(state="missed"), call_message(direction="outgoing"),
+                          call_message(call_id="old-call"),
+                          call_message(chat="other@" + COMPONENT)):
+                self.assertFalse(window._can_answer_voice_message(other))
+            c.state = "ended"
+            self.assertFalse(window._can_answer_voice_message(incoming))
+            window._on_voice_message_action("answer", incoming)
+            c.action.assert_not_called()
+            c.state = "incoming_ringing"
+            c.pending = "reject"
+            self.assertFalse(window._can_answer_voice_message(incoming))
+            c.pending = ""
+            window._on_voice_message_action("reject", incoming)
+            c.action.assert_called_once_with("reject")
+            c.action.reset_mock()
+            c.chat_jid = "other@" + COMPONENT
+            window._on_voice_message_action("answer", incoming)
+            c.action.assert_not_called()
+            c.chat_jid = PEER
+            c.connected = False
+            self.assertFalse(window._can_answer_voice_message(incoming))
+            c.connected = True
+            window._voice_available = lambda: False
+            self.assertFalse(window._can_answer_voice_message(incoming))
+        finally:
+            window.Destroy()
 
     def test_contact_header_call_button_is_adjacent_and_only_for_whatsapp_individuals(self):
         frame = wx.Frame(None)

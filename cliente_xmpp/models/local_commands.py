@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-LOCAL_BRIDGE_COMMANDS = frozenset({"/stats", "/status", "/transcribe"})
+LOCAL_BRIDGE_COMMANDS = frozenset({"/stats", "/status", "/transcribe", "/muse-decidir"})
 
 
 def is_local_bridge_command(body: str) -> bool:

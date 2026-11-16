@@ -17,6 +17,12 @@ from cliente_xmpp.media.downloads import (
     media_description,
 )
 from cliente_xmpp.media.links import is_link_preview
+from cliente_xmpp.models.assistants import (
+    MAX_ASSISTANT_SUGGESTIONS,
+    AssistantApproval,
+    assistant_approval,
+    assistant_suggestions,
+)
 from cliente_xmpp.models.chat import Chat, Message, Poll, poll_display_text
 from cliente_xmpp.models.names import display_label_from_jid
 from cliente_xmpp.ui.emoticons import EmoticonTextCtrl
@@ -65,6 +71,10 @@ class ConversationPanel(wx.Panel):
         on_forward_selected_messages: Callable[[], None] | None = None,
         on_copy_selected_messages: Callable[[], None] | None = None,
         on_delete_selected_messages: Callable[[], None] | None = None,
+        can_answer_voice_message: Callable[[Message], bool] | None = None,
+        on_voice_message_action: Callable[[str, Message], None] | None = None,
+        on_assistant_suggestion: Callable[[Message, str], None] | None = None,
+        on_assistant_approval: Callable[[Message, AssistantApproval, int], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.resolve_display_name = resolve_display_name
@@ -77,6 +87,12 @@ class ConversationPanel(wx.Panel):
         self.on_forward_selected_messages = on_forward_selected_messages
         self.on_copy_selected_messages = on_copy_selected_messages
         self.on_delete_selected_messages = on_delete_selected_messages
+        self.can_answer_voice_message = can_answer_voice_message
+        self.on_voice_message_action = on_voice_message_action
+        self.on_assistant_suggestion = on_assistant_suggestion
+        self.on_assistant_approval = on_assistant_approval
+        self._suggestion_prompts: tuple[str, ...] = ()
+        self._shown_approval: AssistantApproval | None = None
         self.current_chat: Chat | None = None
         self._messages: list[Message] = []
         self._message_rows: list[Message | str] = []
@@ -138,6 +154,23 @@ class ConversationPanel(wx.Panel):
             "Abre las opciones de la encuesta del mensaje seleccionado."
         )
         self.vote_in_poll_button.Hide()
+        self.answer_call_button = wx.Button(self, label="Con&testar llamada")
+        self.reject_call_button = wx.Button(self, label="&Rechazar llamada")
+        self.answer_call_button.Hide()
+        self.reject_call_button.Hide()
+        # Muse approval options first: a pending decision matters more than follow-ups.
+        self.approval_buttons: list[wx.Button] = []
+        for _index in range(MAX_ASSISTANT_SUGGESTIONS):
+            button = wx.Button(self, label="Opción de aprobación")
+            button.Hide()
+            self.approval_buttons.append(button)
+        # Assistant follow-ups: created once, right after the history, so Tab from
+        # the focused message reaches them without reordering other controls.
+        self.suggestion_buttons: list[wx.Button] = []
+        for _index in range(MAX_ASSISTANT_SUGGESTIONS):
+            button = wx.Button(self, label="Sugerencia")
+            button.Hide()
+            self.suggestion_buttons.append(button)
         self.compose: wx.TextCtrl
         self.emoji_button: wx.Button
         self.mention_suggestions: wx.ListBox
@@ -1380,6 +1413,12 @@ class ConversationPanel(wx.Panel):
             wx.TOP | wx.RIGHT | wx.ALIGN_TOP,
             12,
         )
+        for button in (self.answer_call_button, self.reject_call_button):
+            message_area.Add(button, 0, wx.TOP | wx.RIGHT | wx.ALIGN_TOP, 12)
+        suggestion_column = wx.BoxSizer(wx.VERTICAL)
+        for button in self.approval_buttons + self.suggestion_buttons:
+            suggestion_column.Add(button, 0, wx.BOTTOM | wx.EXPAND, 4)
+        message_area.Add(suggestion_column, 0, wx.TOP | wx.RIGHT | wx.ALIGN_TOP, 12)
         self.forward_selected_button = wx.Button(self, label="Reenviar selección")
         self.copy_selected_button = wx.Button(self, label="Copiar selección")
         self.delete_selected_button = wx.Button(self, label="Eliminar selección")
@@ -1450,6 +1489,22 @@ class ConversationPanel(wx.Panel):
         self.messages.Bind(wx.EVT_SIZE, self._on_messages_size)
         self.go_to_quoted_button.Bind(wx.EVT_BUTTON, self._on_go_to_quoted_message)
         self.vote_in_poll_button.Bind(wx.EVT_BUTTON, self._on_vote_in_poll)
+        self.answer_call_button.Bind(
+            wx.EVT_BUTTON, lambda _event: self._on_voice_message_action("answer")
+        )
+        self.reject_call_button.Bind(
+            wx.EVT_BUTTON, lambda _event: self._on_voice_message_action("reject")
+        )
+        for index, button in enumerate(self.suggestion_buttons):
+            button.Bind(
+                wx.EVT_BUTTON,
+                lambda _event, index=index: self._on_assistant_suggestion(index),
+            )
+        for index, button in enumerate(self.approval_buttons):
+            button.Bind(
+                wx.EVT_BUTTON,
+                lambda _event, index=index: self._on_assistant_approval(index),
+            )
         self.forward_selected_button.Bind(
             wx.EVT_BUTTON,
             lambda _event: self.on_forward_selected_messages()
@@ -1534,6 +1589,18 @@ class ConversationPanel(wx.Panel):
         if self.on_vote_in_poll is not None:
             self.on_vote_in_poll(message)
 
+    def _on_voice_message_action(self, action: str) -> None:
+        message = self.selected_message()
+        can_answer = getattr(self, "can_answer_voice_message", None)
+        callback = getattr(self, "on_voice_message_action", None)
+        if message is not None and can_answer is not None and can_answer(message):
+            if callback is not None:
+                callback(action, message)
+        self._update_message_action_buttons()
+
+    def refresh_voice_message_actions(self) -> None:
+        self._update_message_action_buttons()
+
     def _update_message_action_buttons(self, message: Message | None = None) -> None:
         selected_count = (
             len(getattr(self, "_selected_message_keys", set()))
@@ -1562,6 +1629,25 @@ class ConversationPanel(wx.Panel):
             layout_needed = True
         self.go_to_quoted_button.Enable(show_quote)
         self.vote_in_poll_button.Enable(show_vote)
+        can_answer = getattr(self, "can_answer_voice_message", None)
+        show_call_actions = bool(
+            not show_selection_actions and message is not None
+            and can_answer is not None and can_answer(message)
+        )
+        call_buttons = (
+            getattr(self, "answer_call_button", None),
+            getattr(self, "reject_call_button", None),
+        )
+        focus = wx.Window.FindFocus() if not show_call_actions and all(call_buttons) else None
+        for button in call_buttons:
+            if button is None:
+                continue
+            if button.IsShown() != show_call_actions:
+                if not show_call_actions and focus is button:
+                    self.messages.SetFocus()
+                button.Show(show_call_actions)
+                layout_needed = True
+            button.Enable(show_call_actions)
         for button in (
             self.forward_selected_button,
             self.copy_selected_button,
@@ -1571,12 +1657,104 @@ class ConversationPanel(wx.Panel):
                 button.Show(show_selection_actions)
                 layout_needed = True
             button.Enable(show_selection_actions)
+        approval = None if show_selection_actions else assistant_approval(message)
+        if self._update_approval_buttons(approval):
+            layout_needed = True
+        prompts = () if show_selection_actions else assistant_suggestions(message)
+        if self._update_suggestion_buttons(prompts):
+            layout_needed = True
         if show_selection_actions:
             self.forward_selected_button.SetLabel(f"Reenviar ({selected_count})")
             self.copy_selected_button.SetLabel(f"Copiar ({selected_count})")
             self.delete_selected_button.SetLabel(f"Eliminar ({selected_count})")
         if layout_needed:
             self.Layout()
+
+    def _update_suggestion_buttons(self, prompts: tuple[str, ...]) -> bool:
+        """Show one button per assistant suggestion; return True if layout changed."""
+        buttons = getattr(self, "suggestion_buttons", [])
+        if not buttons:
+            return False
+        prompts = prompts[: len(buttons)]
+        changed = False
+        focus = wx.Window.FindFocus()
+        for index, button in enumerate(buttons):
+            visible = index < len(prompts)
+            if visible:
+                prompt = prompts[index]
+                label = prompt if len(prompt) <= 80 else prompt[:79].rstrip() + "…"
+                # "&" would become a mnemonic; escape it so the label reads literally.
+                label = label.replace("&", "&&")
+                if button.GetLabel() != label:
+                    button.SetLabel(label)
+                    changed = True
+                button.SetName(f"Sugerencia {index + 1} de {len(prompts)}: {prompt}")
+            if button.IsShown() != visible:
+                if not visible and focus is button:
+                    self.messages.SetFocus()
+                button.Show(visible)
+                changed = True
+            button.Enable(visible)
+        self._suggestion_prompts = prompts
+        return changed
+
+    def _update_approval_buttons(self, approval: AssistantApproval | None) -> bool:
+        """Show one button per option of a pending approval; return True if layout changed."""
+        buttons = getattr(self, "approval_buttons", [])
+        if not buttons:
+            return False
+        options = approval.options[: len(buttons)] if approval is not None else ()
+        changed = False
+        focus = wx.Window.FindFocus()
+        for index, button in enumerate(buttons):
+            visible = index < len(options)
+            if visible:
+                option = options[index]
+                label = option if len(option) <= 80 else option[:79].rstrip() + "…"
+                label = label.replace("&", "&&")
+                if button.GetLabel() != label:
+                    button.SetLabel(label)
+                    changed = True
+                button.SetName(
+                    f"Aprobación de Muse, opción {index + 1} de {len(options)}: {option}"
+                )
+            if button.IsShown() != visible:
+                if not visible and focus is button:
+                    self.messages.SetFocus()
+                button.Show(visible)
+                changed = True
+            button.Enable(visible)
+        self._shown_approval = approval if options else None
+        return changed
+
+    def _on_assistant_approval(self, index: int) -> None:
+        message = self.selected_message()
+        approval = assistant_approval(message)
+        callback = getattr(self, "on_assistant_approval", None)
+        # Act only on the approval the buttons were built for, never a stale one.
+        if (
+            message is not None
+            and approval is not None
+            and callback is not None
+            and approval == getattr(self, "_shown_approval", None)
+            and index < len(approval.options)
+        ):
+            callback(message, approval, index)
+        self._update_message_action_buttons()
+
+    def _on_assistant_suggestion(self, index: int) -> None:
+        message = self.selected_message()
+        prompts = assistant_suggestions(message)
+        callback = getattr(self, "on_assistant_suggestion", None)
+        # Send only what the focused message still offers, never a stale label.
+        if (
+            message is not None
+            and callback is not None
+            and index < len(prompts)
+            and prompts == self._suggestion_prompts
+        ):
+            callback(message, prompts[index])
+        self._update_message_action_buttons()
 
     def _can_go_to_quoted_message(self, message: Message) -> bool:
         callback = getattr(self, "can_go_to_quoted_message", None)

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree as ET
 
 from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.ui.chat_list_panel import ChatListItem, ChatListPanel
@@ -20,6 +21,7 @@ from cliente_xmpp.ui.main_window import (
     PRELOAD_CHAT_LIMIT,
     MainWindow,
 )
+from cliente_xmpp.xmpp.client import BridgeXmppClient
 
 
 class _CapturingExecutor:
@@ -632,6 +634,56 @@ class MainWindowPerformanceTests(unittest.TestCase):
             [chat.jid for chat in visible],
             [preview_chat.jid, dated_chat.jid, unread_chat.jid],
         )
+
+    def test_discovered_empty_groups_stay_searchable_until_they_have_activity(self) -> None:
+        window = MainWindow.__new__(MainWindow)
+        stanza = SimpleNamespace(xml=ET.fromstring(
+            '<message><x xmlns="jabber:x:conference" jid="#invitation@example.test" '
+            'reason="Invitación" /></message>'
+        ))
+        parser = SimpleNamespace(
+            _group_name_from_invite_reason=BridgeXmppClient._group_name_from_invite_reason,
+        )
+        empty = BridgeXmppClient._group_chat_from_invite_stanza(parser, stanza)
+        self.assertIsNotNone(empty)
+        assert empty is not None
+        active = Chat(
+            jid="#active@example.test", name="Activo", is_group=True,
+            last_message_preview="mensaje",
+        )
+        visible_empty = Chat(jid="#opened@example.test", name="Abierto", is_group=True)
+        visible = {visible_empty.jid: visible_empty}
+        window.searchable_chats_by_jid = {visible_empty.jid: visible_empty}
+        window.chat_names_by_jid = {}
+        window.chat_list = SimpleNamespace(
+            has_chat=lambda jid: jid in visible,
+            upsert_chat=lambda chat: visible.__setitem__(chat.jid, chat),
+            is_searching=False,
+            force_refresh_visible=Mock(),
+        )
+        window._chat_by_jid = lambda jid: (
+            visible.get(jid) or window.searchable_chats_by_jid.get(jid)
+        )
+        window._chat_is_cleared_without_new_activity = Mock(return_value=False)
+        window._persist_chats = Mock()
+        window._refresh_chat_order = Mock()
+        window._select_first_chat_if_needed = Mock()
+        window.status_bar = Mock()
+        window.loaded_chat_summaries = 1
+        window.loading_initial_chat_activity = True
+        window.conversation = SimpleNamespace(current_chat=None)
+
+        window._upsert_discovered_chats([empty, active, visible_empty])
+
+        self.assertEqual(set(visible), {active.jid, visible_empty.jid})
+        self.assertIn(empty.jid, window.searchable_chats_by_jid)
+        self.assertEqual(window.loaded_chat_summaries, 2)
+        self.assertEqual(len(window._persist_chats.call_args.args[0]), 3)
+        window._ensure_chat_for_message(
+            Message(chat_jid=empty.jid, sender_jid="member@example.test", body="hola",
+                    chat_is_group=True)
+        )
+        self.assertIn(empty.jid, visible)
 
     def test_cached_messages_are_loaded_only_once_per_account_and_chat(self) -> None:
         window = MainWindow.__new__(MainWindow)

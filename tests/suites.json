@@ -373,6 +373,11 @@
       "area": "messaging",
       "layer": "fast"
     },
+    "test_meta_ai_assistants": {
+      "area": "messaging",
+      "layer": "fast",
+      "overrides": {"AssistantSuggestionNativeTests": {"layer": "integration", "area": "platform"}}
+    },
     "test_read_action_visibility": {
       "area": "platform",
       "layer": "integration"

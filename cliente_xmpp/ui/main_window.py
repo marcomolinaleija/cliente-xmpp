@@ -76,6 +76,11 @@ from cliente_xmpp.media.stickers import (
     lottie_sticker_description,
     sticker_display_text,
 )
+from cliente_xmpp.models.assistants import (
+    AssistantApproval,
+    approval_command,
+    is_meta_ai_assistant_jid,
+)
 from cliente_xmpp.models.calls import CallEvent
 from cliente_xmpp.models.chat import (
     Chat,
@@ -567,6 +572,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             on_forward_selected_messages=self._forward_selected_messages,
             on_copy_selected_messages=self._copy_selected_messages,
             on_delete_selected_messages=self._delete_selected_messages,
+            can_answer_voice_message=self._can_answer_voice_message,
+            on_voice_message_action=self._on_voice_message_action,
+            on_assistant_suggestion=self._send_assistant_suggestion,
+            on_assistant_approval=self._confirm_assistant_approval,
         )
         self.settings_panel = SettingsPanel(self.content_panel)
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
@@ -2447,6 +2456,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         )
         visible_cached_chats = self._chats_with_activity(cached_chats)
         visible_cached_jids = {chat.jid for chat in visible_cached_chats}
+        # Assistants only known from the roster have no cached row yet.
+        for chat in chats:
+            if chat.jid not in visible_cached_jids and is_meta_ai_assistant_jid(chat.jid):
+                visible_cached_chats.append(chat)
+                visible_cached_jids.add(chat.jid)
         self.loaded_chat_summaries = len(visible_cached_chats)
         self.loading_initial_chat_activity = True
         self.pending_chat_activity = {}
@@ -4567,6 +4581,85 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 message_id=message_id,
                 mentions=mentions,
             )
+
+    def _ask_assistant_approval(self, text: str) -> bool:
+        """Ask before answering a Muse approval; Cancel is the default button."""
+        dialog = wx.MessageDialog(
+            self,
+            text,
+            "Confirmar decisión para Muse",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+        )
+        dialog.SetYesNoLabels("&Enviar decisión", "&Cancelar")
+        try:
+            return dialog.ShowModal() == wx.ID_YES
+        finally:
+            dialog.Destroy()
+
+    def _confirm_assistant_approval(
+        self, source: Message, approval: AssistantApproval, option_index: int
+    ) -> None:
+        """Send a confirmed decision for a pending Muse approval through the bridge."""
+        chat = self.conversation.current_chat
+        if (
+            chat is None
+            or source.chat_jid != chat.jid
+            or not is_meta_ai_assistant_jid(chat.jid)
+            or not 0 <= option_index < len(approval.options)
+        ):
+            return
+        option = approval.options[option_index]
+        text = (
+            f"{approval.title}\n\n"
+            f"Vas a responder: «{option}».\n\n"
+            "La decisión se envía a Muse en tu nombre, igual que desde el teléfono. "
+            "¿Quieres enviarla?"
+        )
+        if not self._ask_assistant_approval(text):
+            self.status_bar.SetStatusText("Decisión cancelada; no se envió nada")
+            return
+        if not self._require_whatsapp_connection():
+            return
+        self.status_bar.SetStatusText("Enviando decisión a Muse...")
+        self.xmpp.send_message(
+            chat.jid,
+            approval_command(approval, option_index),
+            is_group=False,
+            ephemeral=True,
+        )
+
+    def _send_assistant_suggestion(self, source: Message, prompt: str) -> None:
+        """Send an assistant's suggested follow-up as a plain message.
+
+        The composer draft, reply and edit contexts are left untouched.
+        """
+        chat = self.conversation.current_chat
+        prompt = prompt.strip()
+        if (
+            chat is None
+            or not prompt
+            or source.chat_jid != chat.jid
+            or not is_meta_ai_assistant_jid(chat.jid)
+        ):
+            return
+        if not self._require_whatsapp_connection():
+            return
+        message_id = f"cliente-xmpp-{uuid.uuid4().hex}"
+        message = Message(
+            chat_jid=chat.jid,
+            sender_jid="me",
+            sender_name="Tú",
+            body=prompt,
+            sent_at=datetime.now().astimezone(),
+            outgoing=True,
+            chat_is_group=False,
+            message_id=message_id,
+            delivery_state="pending",
+        )
+        self._add_pending_outgoing_message(message)
+        self._mark_current_chat_displayed(chat.jid)
+        self.status_bar.SetStatusText("Enviando sugerencia...")
+        self.xmpp.send_message(chat.jid, prompt, is_group=False, message_id=message_id)
 
     @staticmethod
     def _reply_target_jid(chat: Chat, message: Message, current_jid: str) -> str:
@@ -9545,13 +9638,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
 
     @staticmethod
     def _chats_with_activity(chats: Iterable[Chat]) -> list[Chat]:
-        """Keep roster-only contacts searchable without rendering empty chat rows."""
+        """Keep roster-only contacts searchable without rendering empty chat rows.
+
+        WhatsApp assistants (Meta AI, Muse) stay visible so they can be started.
+        """
         return [
             chat
             for chat in chats
             if chat.last_message_at is not None
             or bool(chat.last_message_preview.strip())
             or chat.unread_count > 0
+            or is_meta_ai_assistant_jid(chat.jid)
         ]
 
     def _chat_recency_key(self, chat: Chat) -> tuple[int, float, str]:
@@ -10517,6 +10614,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         for chat in chats:
             if self._chat_is_cleared_without_new_activity(chat):
                 continue
+            already_visible = self.chat_list.has_chat(chat.jid)
             existing = self._chat_by_jid(chat.jid)
             if existing is not None:
                 merged_chat = Chat(
@@ -10541,8 +10639,6 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 )
             else:
                 merged_chat = chat
-                if not self.chat_list.has_chat(chat.jid):
-                    added += 1
 
             if not (
                 merged_chat.is_group
@@ -10550,7 +10646,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             ):
                 self.chat_names_by_jid[merged_chat.jid] = merged_chat.name
             self._upsert_searchable_chat(merged_chat)
-            self.chat_list.upsert_chat(merged_chat)
+            if already_visible or self._chats_with_activity([merged_chat]):
+                if not already_visible:
+                    added += 1
+                self.chat_list.upsert_chat(merged_chat)
             merged_chats.append(merged_chat)
 
         self._persist_chats(merged_chats)

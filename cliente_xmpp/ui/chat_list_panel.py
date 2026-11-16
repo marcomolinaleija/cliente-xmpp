@@ -7,6 +7,7 @@ import wx
 
 from cliente_xmpp.formatting import format_call_body
 from cliente_xmpp.media.downloads import has_media, media_description
+from cliente_xmpp.models.assistants import is_meta_ai_assistant_jid
 from cliente_xmpp.models.chat import Chat, Message
 
 
@@ -429,6 +430,8 @@ class ChatListPanel(wx.Panel):
             parts.append("fijado")
         if chat.is_self_group:
             parts.append("grupo personal")
+        if is_meta_ai_assistant_jid(chat.jid):
+            parts.append("asistente de Meta")
         if chat.notifications_muted:
             parts.append("silenciado")
         if chat.unread_count <= 0:

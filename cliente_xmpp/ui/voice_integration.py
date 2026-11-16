@@ -180,9 +180,35 @@ class VoiceIntegrationMixin:
         self._show_voice_dialog(activate=True)
 
     def _render_voice(self):
+        conversation = getattr(self, "conversation", None)
+        refresh = getattr(conversation, "refresh_voice_message_actions", None)
+        if refresh is not None:
+            refresh()
         dialog = getattr(self, "_voice_dialog", None)
         if dialog is not None and not dialog.IsBeingDeleted():
             dialog.render()
+
+    def _can_answer_voice_message(self, message):
+        c = getattr(self, "_voice_controller", None)
+        call = getattr(message, "call", None)
+        chat = getattr(getattr(self, "conversation", None), "current_chat", None)
+        return bool(
+            c is not None and self._voice_available() and c.connected and c.session_id
+            and c.state == "incoming_ringing" and not c.pending and c.call_id
+            and chat is not None and not chat.is_group and c.chat_jid == chat.jid
+            and message.chat_jid == chat.jid and not message.retracted
+            and call is not None and call.direction == "incoming" and call.state == "offered"
+            and call.call_id == c.call_id
+        )
+
+    def _on_voice_message_action(self, action, message):
+        if action not in {"answer", "reject"} or not self._can_answer_voice_message(message):
+            return
+        c = self._voice_controller
+        call_id = c.call_id
+        c.action(action)
+        if action == "answer" and c.pending == "answer" and c.call_id == call_id:
+            self._show_voice_dialog()
 
     def _voice_dialog_closed(self, dialog):
         if getattr(self, "_voice_dialog", None) is dialog:

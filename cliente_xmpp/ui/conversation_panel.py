@@ -2052,6 +2052,9 @@ class ConversationPanel(wx.Panel):
         if not message.audio_url:
             return self._body_without_reply_fallback(message)
 
+        if getattr(message, "download_state", "") == "downloading":
+            return audio_description(message)
+
         if message.media_duration_seconds > 0:
             return audio_description(message)
 

@@ -187,3 +187,5 @@ class Message:
     upload_state: str = ""
     upload_percent: int = 0
     upload_detail: str = ""
+    download_state: str = ""
+    download_percent: int = 0

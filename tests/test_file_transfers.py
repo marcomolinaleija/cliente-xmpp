@@ -430,6 +430,73 @@ class TransferUiTests(unittest.TestCase):
         window._refresh_file_transfer_preview(event.chat_jid)
         window.chat_list.set_file_transfer_preview.assert_called_with(event.chat_jid, "")
 
+    def test_media_download_progress_updates_row_preview_and_gauge(self):
+        window = self.window()
+        gauge = SimpleNamespace(
+            SetValue=Mock(),
+            IsShown=Mock(return_value=False),
+            Show=Mock(),
+            Hide=Mock(),
+        )
+        window.transfer_gauge = gauge
+        message = Message(
+            "chat@example.test", "other@example.test", "Archivo",
+            media_url="https://example.test/bigfile.bin",
+            media_kind="file",
+            media_filename="bigfile.bin",
+            media_size=200 * 1024 * 1024,
+            message_id="msg-download-1",
+        )
+        window.messages_by_chat["chat@example.test"] = [message]
+        window._handle_media_download_progress(
+            message, 35, 70 * 1024 * 1024, 200 * 1024 * 1024, silent=False
+        )
+        self.assertEqual(message.download_state, "downloading")
+        self.assertEqual(message.download_percent, 35)
+        window.conversation.refresh_message.assert_called_with(message)
+        window.status_bar.SetStatusText.assert_called_with("Descargando bigfile.bin: 35 %")
+        gauge.SetValue.assert_called_with(35)
+        gauge.Show.assert_called_once()
+        window.chat_list.set_file_transfer_preview.assert_called_with(
+            "chat@example.test", "Descargando 35 %: bigfile.bin"
+        )
+
+    def test_media_download_failed_resets_state_and_hides_gauge(self):
+        window = self.window()
+        gauge = SimpleNamespace(
+            SetValue=Mock(),
+            IsShown=Mock(return_value=True),
+            Show=Mock(),
+            Hide=Mock(),
+        )
+        window.transfer_gauge = gauge
+        message = Message(
+            "chat@example.test", "other@example.test", "Archivo",
+            media_url="https://example.test/bigfile.bin",
+            media_kind="file",
+            media_filename="bigfile.bin",
+            download_state="downloading",
+            download_percent=50,
+            message_id="msg-download-2",
+        )
+        window.messages_by_chat["chat@example.test"] = [message]
+        window._handle_media_download_failed(
+            message, TimeoutError("Conexión perdida"), silent=False
+        )
+        self.assertEqual(message.download_state, "")
+        self.assertEqual(message.download_percent, 0)
+        gauge.Hide.assert_called_once()
+        window.conversation.refresh_message.assert_called_with(message)
+        window.chat_list.set_file_transfer_preview.assert_called_with("chat@example.test", "")
+
+    def test_update_transfer_gauge_defends_against_missing_or_mock_controls(self):
+        window = self.window()
+        # Gauge is missing completely
+        window._update_transfer_gauge(50, visible=True)
+        # Gauge has no SetValue
+        window.transfer_gauge = object()
+        window._update_transfer_gauge(50, visible=True)
+
 
 if __name__ == "__main__":
     unittest.main()

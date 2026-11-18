@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import mimetypes
 import re
-import shutil
+import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -151,6 +152,21 @@ def media_description(message: Message) -> str:
         label = "Sticker" if message.is_sticker else "Foto"
         return f"{label}: {alt_text}"
 
+    if getattr(message, "download_state", "") == "downloading":
+        percent = getattr(message, "download_percent", 0)
+        kind = {
+            "audio": "audio",
+            "video": "video",
+            "file": "archivo",
+            "image": "foto",
+        }.get(message.media_kind, "archivo")
+        if message.is_sticker:
+            kind = "sticker"
+        name = media_display_name(message)
+        if message.media_kind in {"image", "audio"} and not message.media_filename:
+            return f"{kind}, descargando {percent} %"
+        return f"{kind}, {name}, descargando {percent} %"
+
     if message.is_sticker:
         body = message.body.strip()
         if body.casefold().startswith("sticker: "):
@@ -182,6 +198,9 @@ def media_description(message: Message) -> str:
 
 
 def audio_description(message: Message) -> str:
+    if getattr(message, "download_state", "") == "downloading":
+        return f"Mensaje de voz, descargando {getattr(message, 'download_percent', 0)} %"
+
     if message.media_duration_seconds > 0:
         return f"Mensaje de voz, {format_duration(message.media_duration_seconds)}"
 
@@ -231,7 +250,11 @@ def delete_local_media_file(
 
 
 def download_media(
-    message: Message, account_jid: str, *, maximum_bytes: int | None = None
+    message: Message,
+    account_jid: str,
+    *,
+    maximum_bytes: int | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> DownloadedMedia:
     url = media_url(message)
     if not url:
@@ -257,18 +280,21 @@ def download_media(
         with urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
             mime = str(response.headers.get("Content-Type") or message.media_mime or "")
             size = int(response.headers.get("Content-Length") or 0)
+            if size <= 0 and message.media_size > 0:
+                size = message.media_size
             if maximum_bytes is not None and size > maximum_bytes:
                 raise ValueError("El adjunto supera el tamaño permitido.")
             with temp_path.open("wb") as target:
-                if maximum_bytes is None:
-                    shutil.copyfileobj(response, target, CHUNK_SIZE)
-                else:
-                    total = 0
-                    while chunk := response.read(CHUNK_SIZE):
-                        total += len(chunk)
-                        if total > maximum_bytes:
-                            raise ValueError("El adjunto supera el tamaño permitido.")
-                        target.write(chunk)
+                total = 0
+                if progress:
+                    progress(0, size)
+                while chunk := response.read(CHUNK_SIZE):
+                    total += len(chunk)
+                    if maximum_bytes is not None and total > maximum_bytes:
+                        raise ValueError("El adjunto supera el tamaño permitido.")
+                    target.write(chunk)
+                    if progress:
+                        progress(total, size)
 
         actual_size = temp_path.stat().st_size
         if actual_size <= 0:
@@ -277,6 +303,8 @@ def download_media(
             raise OSError(
                 f"La descarga quedo incompleta: se esperaban {size} bytes y llegaron {actual_size}."
             )
+        if progress:
+            progress(actual_size, size or actual_size)
         temp_path.replace(target_path)
     except Exception:
         temp_path.unlink(missing_ok=True)
@@ -288,6 +316,47 @@ def download_media(
         mime=mime,
         filename=target_path.name,
     )
+
+
+def sanitize_upload_filename(filename: str) -> str:
+    """Normalize a filename for safe HTTP File Upload (XEP-0363) and WhatsApp delivery.
+
+    Removes commas, semicolons, quotes, apostrophes (both ASCII and typographic),
+    and normalizes unsafe characters while preserving extensions and accents.
+    """
+    raw_path = Path(filename.strip().replace("\\", "/"))
+    raw_name = raw_path.name or filename.strip()
+    if "." in raw_name:
+        if raw_name.startswith("."):
+            stem = ""
+            suffix = raw_name
+        else:
+            stem, suffix = raw_name.rsplit(".", 1)
+            suffix = f".{suffix}"
+    else:
+        stem, suffix = raw_name, ""
+
+    stem = unicodedata.normalize("NFC", stem)
+    # Strip quotes and apostrophes (ASCII and typographic like ’)
+    stem = re.sub(r"['\"’‘‚‛“”„‟`´]+", "", stem)
+    # Strip commas and semicolons which break Content-Disposition and header parsing
+    stem = re.sub(r"[,;]+", "", stem)
+    # Convert typographic dashes/minuses to ASCII hyphen
+    stem = re.sub(r"[–—―−]", "-", stem)
+    # Replace filesystem, URL, and control unsafe characters with underscore
+    stem = re.sub(r'[\x00-\x1f\x7f-\x9f\\/:*?<>|\"#%&+{}~^]+', "_", stem)
+    # Suffix: clean to safe alphanumeric + dot
+    suffix = re.sub(r"[^a-zA-Z0-9.]", "", suffix)
+    if not suffix.strip("."):
+        suffix = ""
+    # Collapse multiple spaces and underscores
+    stem = re.sub(r" +", " ", stem)
+    stem = re.sub(r"_+", "_", stem)
+    stem = stem.strip(" ._-")
+    if not stem:
+        stem = "archivo"
+    stem = stem[:200].rstrip(" ._-")
+    return f"{stem}{suffix}"
 
 
 def sanitize_filename(value: str) -> str:

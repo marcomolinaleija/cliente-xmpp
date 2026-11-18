@@ -55,6 +55,8 @@ from cliente_xmpp.media.downloads import (
     has_media,
     local_media_path,
     media_description,
+    media_display_name,
+    media_size_label,
     unique_path,
 )
 from cliente_xmpp.media.links import (
@@ -447,6 +449,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.chat_list: ChatListPanel
         self.conversation: ConversationPanel
         self.settings_panel: SettingsPanel
+        self.transfer_gauge: wx.Gauge
         self.status_bar = self.CreateStatusBar()
 
         self._layout()
@@ -590,10 +593,19 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         workspace_box.Add(self.content_panel, 1, wx.EXPAND)
         self.workspace_panel.SetSizer(workspace_box)
 
+        self.transfer_gauge = wx.Gauge(
+            self,
+            range=100,
+            style=wx.GA_HORIZONTAL | wx.GA_SMOOTH,
+            name="Progreso de transferencia",
+        )
+        self.transfer_gauge.Hide()
+
         box = wx.BoxSizer(wx.VERTICAL)
         box.Add(self.startup_panel, 1, wx.EXPAND)
         box.Add(self.login_panel, 0, wx.EXPAND)
         box.Add(self.workspace_panel, 1, wx.EXPAND)
+        box.Add(self.transfer_gauge, 0, wx.EXPAND)
         self.SetSizer(box)
 
     def _bind_events(self) -> None:
@@ -5050,6 +5062,28 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
 
+    def _update_transfer_gauge(self, percent: int, visible: bool) -> None:
+        gauge = getattr(self, "transfer_gauge", None)
+        if gauge is None or not hasattr(gauge, "SetValue"):
+            return
+        if visible:
+            gauge.SetValue(max(0, min(100, int(percent))))
+            if hasattr(gauge, "IsShown") and not gauge.IsShown():
+                gauge.Show()
+                self._safe_layout()
+        else:
+            if hasattr(gauge, "IsShown") and gauge.IsShown():
+                gauge.SetValue(0)
+                gauge.Hide()
+                self._safe_layout()
+
+    def _safe_layout(self) -> None:
+        try:
+            if hasattr(self, "Layout"):
+                self.Layout()
+        except RuntimeError:
+            pass
+
     def _handle_file_batch_completed(
         self,
         chat_jid: str,
@@ -5105,6 +5139,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             detail = f"{event.filename}: {event.detail}"
             self.status_bar.SetStatusText(detail)
             self.speaker.speak(detail)
+        if event.state == "uploading":
+            self._update_transfer_gauge(event.percent, visible=True)
+        elif event.state in {"failed", "uncertain", "sent"}:
+            self._update_transfer_gauge(0, visible=False)
 
     def _is_latest_chat_message(self, chat_jid: str, message: Message) -> bool:
         messages = getattr(self, "messages_by_chat", {}).get(chat_jid, [])
@@ -5151,6 +5189,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 "uncertain": "Envío sin confirmar",
             }.get(message.upload_state, "Subiendo")
             preview = f"{state}: {message.media_filename}"
+        else:
+            downloading = [
+                item for item in self.messages_by_chat.get(chat_jid, [])
+                if getattr(item, "download_state", "") == "downloading"
+            ]
+            if downloading:
+                active_dl = downloading[-1]
+                name = media_display_name(active_dl)
+                preview = f"Descargando {active_dl.download_percent} %: {name}"
         setter(chat_jid, preview)
 
     def _retry_file_transfer(self, message: Message) -> bool:
@@ -6636,14 +6683,45 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.speaker.speak(msg)
             return
 
+        message.download_state = "downloading"
+        message.download_percent = 0
         if not silent:
             desc = media_description(message)
             self.status_bar.SetStatusText(f"Descargando {desc}...")
             self.speaker.speak(f"Descargando {desc}")
+            self._update_transfer_gauge(0, visible=True)
+
+        chat = self.conversation.current_chat
+        if chat is not None and chat.jid == message.chat_jid:
+            self.conversation.refresh_message(message)
+        self._refresh_file_transfer_preview(message.chat_jid)
 
         def worker() -> None:
+            last_reported_percent = -1
+            last_reported_time = 0.0
+
+            def on_progress(downloaded_bytes: int, total_bytes: int) -> None:
+                nonlocal last_reported_percent, last_reported_time
+                percent = (
+                    min(99, downloaded_bytes * 100 // total_bytes)
+                    if total_bytes > 0
+                    else 0
+                )
+                now = time.monotonic()
+                if percent != last_reported_percent or (now - last_reported_time) >= 0.15:
+                    last_reported_percent = percent
+                    last_reported_time = now
+                    wx.CallAfter(
+                        self._handle_media_download_progress,
+                        message,
+                        percent,
+                        downloaded_bytes,
+                        total_bytes,
+                        silent,
+                    )
+
             try:
-                downloaded = download_media(message, self.current_jid)
+                downloaded = download_media(message, self.current_jid, progress=on_progress)
                 lottie_sticker_path = None
                 lottie_description = ""
                 if self._message_may_be_lottie_sticker(message):
@@ -6662,11 +6740,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     else 0.0
                 )
             except Exception as exc:
-                if not silent:
-                    error_msg = self._friendly_download_error_message(exc)
-                    wx.CallAfter(self._report_download_error, error_msg)
-                if silent:
-                    wx.CallAfter(self._discard_auto_media_download, message)
+                wx.CallAfter(self._handle_media_download_failed, message, exc, silent)
                 return
 
             wx.CallAfter(
@@ -6682,6 +6756,49 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_media_download_progress(
+        self,
+        message: Message,
+        percent: int,
+        downloaded_bytes: int,
+        total_bytes: int,
+        silent: bool,
+    ) -> None:
+        message.download_state = "downloading"
+        message.download_percent = percent
+        chat = self.conversation.current_chat
+        if chat is not None and chat.jid == message.chat_jid:
+            self.conversation.refresh_message(message)
+        if not silent:
+            filename = media_display_name(message)
+            status_text = (
+                f"Descargando {filename}: {percent} %"
+                if total_bytes > 0
+                else f"Descargando {filename}: {media_size_label(downloaded_bytes)}"
+            )
+            self.status_bar.SetStatusText(status_text)
+            self._update_transfer_gauge(percent, visible=True)
+        self._refresh_file_transfer_preview(message.chat_jid)
+
+    def _handle_media_download_failed(
+        self,
+        message: Message,
+        exc: Exception,
+        silent: bool,
+    ) -> None:
+        message.download_state = ""
+        message.download_percent = 0
+        chat = self.conversation.current_chat
+        if chat is not None and chat.jid == message.chat_jid:
+            self.conversation.refresh_message(message)
+        self._refresh_file_transfer_preview(message.chat_jid)
+        if not silent:
+            self._update_transfer_gauge(0, visible=False)
+            error_msg = self._friendly_download_error_message(exc)
+            self._report_download_error(error_msg)
+        if silent:
+            self._discard_auto_media_download(message)
 
     @staticmethod
     def _friendly_download_error_message(exc: Exception) -> str:
@@ -6711,6 +6828,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         lottie_description: str = "",
         open_after_download: bool = False,
     ) -> None:
+        message.download_state = ""
+        message.download_percent = 0
+        self._update_transfer_gauge(100, visible=False)
         message.media_local_path = str(downloaded.path)
         if normalized_lottie_sticker:
             message.is_sticker = True
@@ -6729,6 +6849,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.conversation.video_download_completed(message)
         self._update_chat_from_message(message)
         self._refresh_chat_order(message.chat_jid)
+        self._refresh_file_transfer_preview(message.chat_jid)
         if silent:
             self._discard_auto_media_download(message)
         else:

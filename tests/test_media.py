@@ -14,9 +14,11 @@ from cliente_xmpp.media import downloads
 from cliente_xmpp.media.downloads import (
     album_photo_count,
     album_photo_messages,
+    audio_description,
     delete_local_media_file,
     download_media,
     media_description,
+    sanitize_upload_filename,
 )
 from cliente_xmpp.models.chat import Message
 from cliente_xmpp.ui.conversation_panel import ConversationPanel
@@ -49,6 +51,40 @@ class MediaDescriptionTests(unittest.TestCase):
         self.assertEqual(
             media_description(message),
             "Foto: Una persona sostiene un paraguas rojo.",
+        )
+
+    def test_downloading_state_shows_percentage_in_media_description(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            media_url="https://example.test/document.epub",
+            media_kind="file",
+            media_filename="document.epub",
+            media_size=1024 * 1024,
+            download_state="downloading",
+            download_percent=42,
+        )
+        self.assertEqual(
+            media_description(message),
+            "archivo, document.epub, descargando 42 %",
+        )
+
+    def test_downloading_state_shows_percentage_in_audio_description(self) -> None:
+        message = Message(
+            chat_jid="contact@example.test",
+            sender_jid="contact@example.test",
+            body="",
+            audio_url="https://example.test/voice.m4a",
+            media_url="https://example.test/voice.m4a",
+            media_kind="audio",
+            media_filename="voice.m4a",
+            download_state="downloading",
+            download_percent=75,
+        )
+        self.assertEqual(
+            audio_description(message),
+            "Mensaje de voz, descargando 75 %",
         )
 
     def test_collects_all_photos_announced_by_album_marker(self) -> None:
@@ -308,6 +344,97 @@ class MediaDownloadTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertFalse(path.exists())
             self.assertEqual(message.media_local_path, "")
+
+    def test_download_media_reports_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            content = b"x" * (1024 * 512)
+            progress_calls: list[tuple[int, int]] = []
+            with (
+                patch.object(downloads, "DOWNLOADS_DIR", Path(temp_dir)),
+                patch.object(
+                    downloads,
+                    "urlopen",
+                    return_value=_DownloadResponse(content, len(content)),
+                ),
+            ):
+                result = download_media(
+                    self._audio_message(),
+                    "me@example.test",
+                    progress=lambda current, total: progress_calls.append((current, total)),
+                )
+
+            self.assertEqual(result.path.read_bytes(), content)
+            self.assertTrue(len(progress_calls) >= 2)
+            self.assertEqual(progress_calls[0], (0, len(content)))
+            self.assertEqual(progress_calls[-1], (len(content), len(content)))
+
+    def test_download_media_without_content_length_falls_back_to_message_media_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            content = b"custom payload"
+            progress_calls: list[tuple[int, int]] = []
+            response = _DownloadResponse(content, 0)
+            response.headers["Content-Length"] = "0"
+            message = self._audio_message()
+            message.media_size = len(content)
+            with (
+                patch.object(downloads, "DOWNLOADS_DIR", Path(temp_dir)),
+                patch.object(downloads, "urlopen", return_value=response),
+            ):
+                result = download_media(
+                    message,
+                    "me@example.test",
+                    progress=lambda current, total: progress_calls.append((current, total)),
+                )
+
+            self.assertEqual(result.path.read_bytes(), content)
+            self.assertEqual(progress_calls[0], (0, len(content)))
+            self.assertEqual(progress_calls[-1], (len(content), len(content)))
+
+
+class UploadFilenameSanitizationTests(unittest.TestCase):
+    def test_user_example_filename_is_normalized_safely(self) -> None:
+        problematic = (
+            "Una tribu_propia_autismo_y_Asperger_otras maneras de -- "
+            "Deza Guil, Gemma;Silberman, Steve -- 1a_ edición, 2016 -- "
+            "Editorial Ariel -- isbn13 9788434424500 -- "
+            "311ab3c4f2f6e3db8fe7b1de476d3dde -- Anna’s A.epub"
+        )
+        normalized = sanitize_upload_filename(problematic)
+        self.assertNotIn(";", normalized)
+        self.assertNotIn(",", normalized)
+        self.assertNotIn("’", normalized)
+        self.assertNotIn("'", normalized)
+        self.assertIn("edición", normalized)
+        self.assertIn("Annas A", normalized)
+        self.assertTrue(normalized.endswith(".epub"))
+
+    def test_preserves_extension_and_cleans_special_characters(self) -> None:
+        filename = "Reporte #1 (versión final: 50% + notas) *urgente*?.pdf"
+        normalized = sanitize_upload_filename(filename)
+        self.assertTrue(normalized.endswith(".pdf"))
+        self.assertNotIn("#", normalized)
+        self.assertNotIn("%", normalized)
+        self.assertNotIn("+", normalized)
+        self.assertNotIn(":", normalized)
+        self.assertNotIn("*", normalized)
+        self.assertNotIn("?", normalized)
+        self.assertIn("versión", normalized)
+
+    def test_strips_typographic_and_ascii_quotes(self) -> None:
+        filename = "“Documento” de ‘Juan’ y `Pedro´.docx"
+        normalized = sanitize_upload_filename(filename)
+        self.assertEqual(normalized, "Documento de Juan y Pedro.docx")
+
+    def test_empty_or_whitespace_name_falls_back_to_archivo(self) -> None:
+        self.assertEqual(sanitize_upload_filename("   "), "archivo")
+        self.assertEqual(sanitize_upload_filename(";;;,,,???"), "archivo")
+        self.assertEqual(sanitize_upload_filename("..."), "archivo")
+        self.assertEqual(sanitize_upload_filename("   .pdf"), "archivo.pdf")
+
+    def test_windows_path_uses_basename(self) -> None:
+        windows_path = r"C:\Users\Angel\Documents\Mi, archivo; de prueba.txt"
+        normalized = sanitize_upload_filename(windows_path)
+        self.assertEqual(normalized, "Mi archivo de prueba.txt")
 
 
 class RayoAiMediaTests(unittest.TestCase):

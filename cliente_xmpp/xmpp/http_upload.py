@@ -106,6 +106,7 @@ async def upload_file_with_system_resolver(
     timeout: int,
     progress: UploadProgress | None = None,
     system_resolver: bool = True,
+    filename: str | None = None,
 ) -> str:
     """Request a bounded slot; stream with an adaptive deadline and optional DNS fallback."""
     if size > upload.max_file_size:
@@ -113,7 +114,7 @@ async def upload_file_with_system_resolver(
 
     slot_iq = await upload.request_slot(
         upload.upload_service,
-        file_path.name,
+        filename or file_path.name,
         size,
         content_type,
         timeout=timeout,

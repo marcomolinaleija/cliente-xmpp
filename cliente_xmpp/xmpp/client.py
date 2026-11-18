@@ -31,6 +31,7 @@ from cliente_xmpp.audio.opus import (
     delete_temporary_voice_note,
 )
 from cliente_xmpp.config.settings import ConnectionSettings
+from cliente_xmpp.media.downloads import sanitize_upload_filename
 from cliente_xmpp.media.outgoing_stickers import prepare_outgoing_sticker
 from cliente_xmpp.media.stickers import looks_like_bridge_sticker, sticker_display_text
 from cliente_xmpp.models.chat import (
@@ -4919,10 +4920,16 @@ class BridgeXmppClient(ClientXMPP):
             await asyncio.to_thread(media_duration_seconds, file_path)
             if media_kind == "audio" else 0.0
         )
+        upload_filename = sanitize_upload_filename(file_path.name)
         try:
             upload_options = {"progress": upload_progress} if upload_progress else {}
             get_url = await self._upload_file(
-                file_path, size=size, content_type=upload_mime, timeout=60, **upload_options,
+                file_path,
+                size=size,
+                content_type=upload_mime,
+                timeout=60,
+                filename=upload_filename,
+                **upload_options,
             )
         except (Exception, asyncio.CancelledError):
             if as_voice_note:
@@ -4945,7 +4952,7 @@ class BridgeXmppClient(ClientXMPP):
         self._append_file_metadata(
             message,
             url=get_url,
-            filename=file_path.name,
+            filename=upload_filename,
             size=size,
             mime=mime,
             media_kind=media_kind,
@@ -5047,6 +5054,7 @@ class BridgeXmppClient(ClientXMPP):
         content_type: str,
         timeout: int,
         progress: UploadProgress | None = None,
+        filename: str | None = None,
     ) -> str:
         upload = self["xep_0363"]
         if upload.upload_service is None:
@@ -5060,6 +5068,7 @@ class BridgeXmppClient(ClientXMPP):
                 content_type=content_type,
                 timeout=timeout,
                 progress=progress,
+                filename=filename,
             )
         except ClientConnectorError as exc:
             if not is_dns_resolution_error(exc):
@@ -5075,6 +5084,7 @@ class BridgeXmppClient(ClientXMPP):
                     content_type=content_type,
                     timeout=timeout,
                     progress=progress,
+                    filename=filename,
                 )
             except (IqError, IqTimeout):
                 if attempt > 0:
@@ -5095,12 +5105,19 @@ class BridgeXmppClient(ClientXMPP):
         content_type: str,
         timeout: int,
         progress: UploadProgress | None = None,
+        filename: str | None = None,
     ) -> str:
         for attempt in range(2):
             try:
                 return await upload_file_with_system_resolver(
-                    upload, file_path, size=size, content_type=content_type,
-                    timeout=timeout, progress=progress, system_resolver=False,
+                    upload,
+                    file_path,
+                    size=size,
+                    content_type=content_type,
+                    timeout=timeout,
+                    progress=progress,
+                    system_resolver=False,
+                    filename=filename,
                 )
             except (IqError, IqTimeout):
                 if attempt > 0:
@@ -5227,9 +5244,10 @@ class XmppService:
         )
 
     def _emit_file_transfer(self, transfer: _FileTransfer, percent: int = 0) -> None:
+        filename = sanitize_upload_filename(Path(transfer.path).name)
         self._emit(FileTransferUpdated(
             chat_jid=transfer.chat_jid, transfer_id=transfer.transfer_id,
-            filename=Path(transfer.path).name, state=transfer.state, percent=percent,
+            filename=filename, state=transfer.state, percent=percent,
             size=transfer.size, detail=transfer.detail,
             is_group=bool(transfer.options.get("is_group")), account_jid=transfer.account[0],
             reply_to_jid=str(transfer.options.get("reply_to_jid", "")),

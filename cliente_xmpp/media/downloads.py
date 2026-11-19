@@ -152,21 +152,6 @@ def media_description(message: Message) -> str:
         label = "Sticker" if message.is_sticker else "Foto"
         return f"{label}: {alt_text}"
 
-    if getattr(message, "download_state", "") == "downloading":
-        percent = getattr(message, "download_percent", 0)
-        kind = {
-            "audio": "audio",
-            "video": "video",
-            "file": "archivo",
-            "image": "foto",
-        }.get(message.media_kind, "archivo")
-        if message.is_sticker:
-            kind = "sticker"
-        name = media_display_name(message)
-        if message.media_kind in {"image", "audio"} and not message.media_filename:
-            return f"{kind}, descargando {percent} %"
-        return f"{kind}, {name}, descargando {percent} %"
-
     if message.is_sticker:
         body = message.body.strip()
         if body.casefold().startswith("sticker: "):
@@ -198,9 +183,6 @@ def media_description(message: Message) -> str:
 
 
 def audio_description(message: Message) -> str:
-    if getattr(message, "download_state", "") == "downloading":
-        return f"Mensaje de voz, descargando {getattr(message, 'download_percent', 0)} %"
-
     if message.media_duration_seconds > 0:
         return f"Mensaje de voz, {format_duration(message.media_duration_seconds)}"
 

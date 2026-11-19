@@ -6683,24 +6683,25 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.speaker.speak(msg)
             return
 
-        message.download_state = "downloading"
-        message.download_percent = 0
         if not silent:
+            message.download_state = "downloading"
+            message.download_percent = 0
             desc = media_description(message)
             self.status_bar.SetStatusText(f"Descargando {desc}...")
             self.speaker.speak(f"Descargando {desc}")
             self._update_transfer_gauge(0, visible=True)
-
-        chat = self.conversation.current_chat
-        if chat is not None and chat.jid == message.chat_jid:
-            self.conversation.refresh_message(message)
-        self._refresh_file_transfer_preview(message.chat_jid)
+            chat = self.conversation.current_chat
+            if chat is not None and chat.jid == message.chat_jid:
+                self.conversation.refresh_message(message)
+            self._refresh_file_transfer_preview(message.chat_jid)
 
         def worker() -> None:
             last_reported_percent = -1
             last_reported_time = 0.0
 
             def on_progress(downloaded_bytes: int, total_bytes: int) -> None:
+                if silent:
+                    return
                 nonlocal last_reported_percent, last_reported_time
                 percent = (
                     min(99, downloaded_bytes * 100 // total_bytes)
@@ -6765,6 +6766,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         total_bytes: int,
         silent: bool,
     ) -> None:
+        if silent:
+            return
         message.download_state = "downloading"
         message.download_percent = percent
         chat = self.conversation.current_chat
@@ -6787,17 +6790,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         exc: Exception,
         silent: bool,
     ) -> None:
-        message.download_state = ""
-        message.download_percent = 0
-        chat = self.conversation.current_chat
-        if chat is not None and chat.jid == message.chat_jid:
-            self.conversation.refresh_message(message)
-        self._refresh_file_transfer_preview(message.chat_jid)
         if not silent:
+            message.download_state = ""
+            message.download_percent = 0
+            chat = self.conversation.current_chat
+            if chat is not None and chat.jid == message.chat_jid:
+                self.conversation.refresh_message(message)
+            self._refresh_file_transfer_preview(message.chat_jid)
             self._update_transfer_gauge(0, visible=False)
             error_msg = self._friendly_download_error_message(exc)
             self._report_download_error(error_msg)
-        if silent:
+        else:
             self._discard_auto_media_download(message)
 
     @staticmethod

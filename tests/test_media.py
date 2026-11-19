@@ -53,7 +53,7 @@ class MediaDescriptionTests(unittest.TestCase):
             "Foto: Una persona sostiene un paraguas rojo.",
         )
 
-    def test_downloading_state_shows_percentage_in_media_description(self) -> None:
+    def test_media_description_keeps_clean_label_during_download(self) -> None:
         message = Message(
             chat_jid="contact@example.test",
             sender_jid="contact@example.test",
@@ -67,10 +67,10 @@ class MediaDescriptionTests(unittest.TestCase):
         )
         self.assertEqual(
             media_description(message),
-            "archivo, document.epub, descargando 42 %",
+            "archivo, document.epub, 1.0 MB",
         )
 
-    def test_downloading_state_shows_percentage_in_audio_description(self) -> None:
+    def test_audio_description_keeps_clean_label_during_download(self) -> None:
         message = Message(
             chat_jid="contact@example.test",
             sender_jid="contact@example.test",
@@ -84,7 +84,7 @@ class MediaDescriptionTests(unittest.TestCase):
         )
         self.assertEqual(
             audio_description(message),
-            "Mensaje de voz, descargando 75 %",
+            "Mensaje de voz",
         )
 
     def test_collects_all_photos_announced_by_album_marker(self) -> None:

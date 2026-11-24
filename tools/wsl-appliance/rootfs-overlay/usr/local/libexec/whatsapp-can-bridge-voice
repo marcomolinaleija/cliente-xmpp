@@ -5,6 +5,7 @@ config_dir="${WHATSAPP_CAN_CONFIG_DIR:-/etc/whatsapp-can-bridge}"
 voice_tls="$config_dir/voice-tls"
 control=/usr/local/sbin/whatsapp-can-bridge
 image_manager=/usr/local/libexec/whatsapp-can-bridge-image
+voice_check="${WHATSAPP_CAN_VOICE_CHECK:-/usr/local/libexec/whatsapp-can-bridge-voice-check.py}"
 
 require_root() {
     [[ "$(id -u)" == 0 ]] || { echo "Se requiere root." >&2; return 1; }
@@ -68,8 +69,10 @@ check_image() {
     local image_id
     image_id="$("$image_manager" status | jq -er '.image_id')" || return 1
     # No accounts, persistent volumes or external network in the capability check.
-    podman run --rm --pull=never --network none --env CAN_VOICE_ENABLE=0 \
-        --entrypoint python "$image_id" -B /opt/voice-tools/smoke_voice_integration.py
+    # The check travels on stdin: images do not share an internal tools path.
+    [[ -f "$voice_check" && ! -L "$voice_check" ]] || return 1
+    podman run --rm -i --pull=never --network none --env CAN_VOICE_ENABLE=0 \
+        --entrypoint python "$image_id" -B - < "$voice_check"
 }
 
 smoke_voice() {

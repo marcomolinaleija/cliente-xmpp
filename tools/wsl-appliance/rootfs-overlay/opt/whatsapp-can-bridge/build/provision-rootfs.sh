@@ -50,6 +50,7 @@ chmod 0755 \
     /usr/local/sbin/whatsapp-can-bridge \
     /usr/local/libexec/whatsapp-can-bridge-image \
     /usr/local/libexec/whatsapp-can-bridge-voice
+chmod 0644 /usr/local/libexec/whatsapp-can-bridge-voice-check.py
 chmod 0644 /etc/systemd/system/whatsapp-can-slidge.service
 
 if $image_bundle; then
@@ -67,8 +68,8 @@ if $image_bundle; then
     podman load -i "$image_directory/$archive"
     imported_id="$(podman image inspect "$bridge_image" --format '{{.Id}}')"
     [[ "${imported_id#sha256:}" == "${expected_id#sha256:}" ]]
-    podman run --rm --pull=never --network none --env CAN_VOICE_ENABLE=0 \
-        --entrypoint python "$imported_id" -B /opt/voice-tools/smoke_voice_integration.py
+    podman run --rm -i --pull=never --network none --env CAN_VOICE_ENABLE=0 \
+        --entrypoint python "$imported_id" -B - < /usr/local/libexec/whatsapp-can-bridge-voice-check.py
     printf '%s\n' "$imported_id" > "$image_directory/${archive%.oci}.image-id"
     jq --arg image "$bridge_image" --arg digest "$bridge_digest" \
         --argjson voice "$(jq -r '.voice // false' "$metadata")" \

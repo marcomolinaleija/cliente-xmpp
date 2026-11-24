@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ModernPackageSha256,
     [Parameter(Mandatory = $true)][string]$LegacyPackageSha256,
     [Parameter(Mandatory = $true)][string]$PythonExe,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '../../.test-results/appliance-native'),
+    [string]$OutputDirectory = '',
     [ValidateNotNullOrEmpty()][ValidateSet('clean', 'legacy', 'modern', 'rollback')]
     [string[]]$Scenarios = @('clean', 'legacy', 'modern', 'rollback'),
     [switch]$KeepDistributions
@@ -16,6 +16,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (@($Scenarios | Select-Object -Unique).Count -ne $Scenarios.Count) { throw 'No se permiten escenarios duplicados.' }
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+# $PSScriptRoot is empty in Windows PowerShell 5.1 parameter defaults.
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot '.test-results/appliance-native' }
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $candidate = (Resolve-Path -LiteralPath $CandidatePackage).Path
 $modern = (Resolve-Path -LiteralPath $ModernPackage).Path
@@ -65,7 +67,8 @@ function Invoke-LocalSmokes {
     Assert-TestName $Name
     Invoke-Native wsl.exe @('-d', $Name, '-u', 'root', '--', '/usr/local/sbin/whatsapp-can-bridge', 'smoke')
     $connectionPath = Join-Path $Directory 'connection.json'
-    $runner = 'import runpy,sys; p=sys.argv.pop(1); runpy.run_path(p, run_name="__main__")'
+    # Windows PowerShell 5.1 drops embedded double quotes from native arguments.
+    $runner = 'import runpy,sys; p=sys.argv.pop(1); runpy.run_path(p, run_name=''__main__'')'
     Invoke-Native $PythonExe @('-c', $runner, (Join-Path $PSScriptRoot 'smoke_local_xmpp.py'), $connectionPath, '--wait-whatsapp-status')
     $connection = Get-Content -LiteralPath $connectionPath -Raw | ConvertFrom-Json
     $priorPassword = $env:WHATSAPP_CAN_LOCAL_SMOKE_PASSWORD
@@ -154,7 +157,8 @@ try {
                 if ($scenario -eq 'legacy') { Install-OldFixture $name $legacy $LegacyPackageSha256 $directory }
                 else { Install-OldFixture $name $modern $ModernPackageSha256 $directory }
                 Invoke-Native wsl.exe @('-d', $name, '-u', 'root', '--', '/bin/bash', '-c',
-                    'set -eu; printf "synthetic-session\n" > /var/lib/whatsapp-can-bridge/slidge/migration-fixture; printf "synthetic-attachment\n" > /var/lib/whatsapp-can-bridge/attachments/migration-fixture; sed -i "/^SLIDGE_CONVERT_STICKERS=/d" /etc/whatsapp-can-bridge/environment; printf "CAN_MIGRATION_FIXTURE=synthetic-option\nSLIDGE_CONVERT_STICKERS=false\nCAN_VOICE_ENABLE=0\n" >> /etc/whatsapp-can-bridge/environment')
+                    # Single quotes only: Windows PowerShell 5.1 strips embedded double quotes.
+                    'set -eu; printf ''synthetic-session\n'' > /var/lib/whatsapp-can-bridge/slidge/migration-fixture; printf ''synthetic-attachment\n'' > /var/lib/whatsapp-can-bridge/attachments/migration-fixture; sed -i ''/^SLIDGE_CONVERT_STICKERS=/d'' /etc/whatsapp-can-bridge/environment; printf ''CAN_MIGRATION_FIXTURE=synthetic-option\nSLIDGE_CONVERT_STICKERS=false\nCAN_VOICE_ENABLE=0\n'' >> /etc/whatsapp-can-bridge/environment')
                 $before = Get-TestSnapshot $name
                 $imageBefore = ''
                 if ($scenario -eq 'modern') {
@@ -220,11 +224,27 @@ try {
                     if ($LASTEXITCODE -ne 0 -or $kept.image -cne $newerImage.image -or $kept.image_id -cne $newerImage.image_id) { throw 'Se sustituyó una imagen más nueva por el bundle.' }
                     # An incompatible newer image must be rejected without
                     # silently delivering a configured appliance without voice.
+                    # Published stable images already carry voice, so derive a
+                    # local image without the voice module instead of assuming
+                    # the previous one lacks it. Offline; never published.
+                    $voicelessFile = Join-Path $directory 'voiceless.Containerfile'
+                    [IO.File]::WriteAllText($voicelessFile, "FROM $($previousImage.image_id)`nUSER root`nRUN python -c `"import os, slidge_whatsapp.voice as m; os.remove(m.__file__)`"`n", [Text.UTF8Encoding]::new($false))
+                    $voicelessWsl = Convert-ToWslPath -Distribution $name -WindowsPath $voicelessFile
+                    $voicelessContext = Join-Path $directory 'voiceless-context'
+                    New-Item -ItemType Directory -Force -Path $voicelessContext | Out-Null
+                    $voicelessContextWsl = Convert-ToWslPath -Distribution $name -WindowsPath $voicelessContext
+                    Invoke-Native wsl.exe @('-d', $name, '-u', 'root', '--', 'podman', 'build', '--pull=never', '--network', 'none', '-q', '-t', 'localhost/can-voiceless-fixture', '-f', $voicelessWsl, $voicelessContextWsl)
+                    $voicelessId = (& wsl.exe -d $name -u root -- podman image inspect localhost/can-voiceless-fixture --format '{{.Id}}' | Out-String).Trim()
+                    if ($LASTEXITCODE -ne 0 -or $voicelessId -notmatch '^(sha256:)?[0-9a-f]{64}$') { throw 'No se pudo preparar la imagen sin voz.' }
+                    $previousImage.image_id = 'sha256:' + ($voicelessId -replace '^sha256:', '')
                     $incompatiblePath = Join-Path $directory 'incompatible-image-fixture.json'
                     $previousImage.image = 'ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v1000'
                     [IO.File]::WriteAllText($incompatiblePath, (($previousImage | ConvertTo-Json) + "`n"), [Text.UTF8Encoding]::new($false))
                     $incompatibleWsl = Convert-ToWslPath -Distribution $name -WindowsPath $incompatiblePath
                     Invoke-Native wsl.exe @('-d', $name, '-u', 'root', '--', 'cp', '--', $incompatibleWsl, '/etc/whatsapp-can-bridge/bridge-image.json')
+                    # The voice step of configure must be what rejects the fixture.
+                    & wsl.exe -d $name -u root -- /usr/local/libexec/whatsapp-can-bridge-voice prepare
+                    if ($LASTEXITCODE -eq 0) { throw 'La comprobación de voz aceptó una imagen sin motor de voz.' }
                     & wsl.exe -d $name -u root -- /usr/local/sbin/whatsapp-can-bridge configure
                     if ($LASTEXITCODE -eq 0) { throw 'Se aceptó configurar una imagen sin motor de voz.' }
                     Invoke-Native wsl.exe @('-d', $name, '-u', 'root', '--', 'cp', '--', $newerFixtureWsl, '/etc/whatsapp-can-bridge/bridge-image.json')

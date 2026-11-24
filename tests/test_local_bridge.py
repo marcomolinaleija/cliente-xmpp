@@ -294,6 +294,19 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("normalize_image_id", updater)
         self.assertIn("--proto '=https'", updater)
         self.assertIn('exec podman run --rm --name whatsapp-can-slidge', updater)
+        voice_helper = (
+            overlay / "usr" / "local" / "libexec" / "whatsapp-can-bridge-voice"
+        ).read_text(encoding="utf-8")
+        voice_check = (
+            overlay / "usr" / "local" / "libexec" / "whatsapp-can-bridge-voice-check.py"
+        ).read_text(encoding="utf-8")
+        # Published bridge images keep no shared tools path; the appliance
+        # sends its own capability check on stdin to every image it accepts.
+        self.assertIn("whatsapp.NewGateway()", voice_check)
+        for script in (provision, voice_helper):
+            self.assertNotIn("/opt/voice-tools", script)
+            self.assertIn("--network none", script)
+            self.assertIn("-B - <", script)
         self.assertIn('curl \\\n', provision)
         self.assertIn(
             f'{version["bridge_image"]}@{version["bridge_digest"]}', provision

@@ -4,6 +4,7 @@ set -euo pipefail
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 export WHATSAPP_CAN_CONFIG_DIR="$test_root/config"
+export WHATSAPP_CAN_VOICE_CHECK="$test_root/voice-check.py"
 mkdir -p "$WHATSAPP_CAN_CONFIG_DIR/tls"
 umask 077
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 2 \
@@ -40,8 +41,15 @@ chmod 0700 "$image_manager"
 image_ok=false
 podman() {
     [[ " $* " == *' --network none '* && " $* " != *' -v '* ]]
+    # The capability check must arrive on stdin, not from a path inside the image.
+    [[ " $* " == *' -i '* && " $* " == *' -B - ' && " $* " != *'/opt/'* ]]
+    grep -q 'NewGateway' -
     $image_ok
 }
+image_ok=true
+if enable_voice; then echo 'Missing voice check enabled' >&2; exit 1; fi
+printf 'gateway = whatsapp.NewGateway()\n' > "$WHATSAPP_CAN_VOICE_CHECK"
+image_ok=false
 systemctl() { printf '%s\n' "$*" >> "$test_root/services"; }
 control="$test_root/control"
 printf '#!/bin/sh\ntest ! -f "%s/fail-smoke"\n' "$test_root" > "$control"

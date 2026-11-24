@@ -1,5 +1,63 @@
 # Validación de la appliance 1.2 con voz obligatoria
 
+## Candidata con v39 — 24 de noviembre de 2026
+
+Sustituye a la candidata de octubre, que incluía un v36 compilado localmente.
+Sigue sin publicarse; el canal estable continúa en 1.1.0.
+
+| Elemento | Valor |
+| --- | --- |
+| Paquete | `WhatsAppCAN-Bridge-amd64.wsl`, 751022080 bytes |
+| SHA-256 del paquete | `b3d1e3c7ee31e28826799d0e7bc44a0229bb6235f64aa19d8514fe42598f321e` |
+| Imagen incluida | `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v39`, copia exacta de GHCR |
+| Manifiesto | `sha256:016af7dc331cb2bd173449485e49638123814acbb497dda3e742f8f09a3fb5b6` |
+| Configuración de imagen | `sha256:556d4786c2d2c38dc642a5bb42dc2bb29384cfa0823366d1e9ec764cf5323459` |
+| Instalador | `install-appliance.ps1`, SHA-256 `a67401cd223698ad3b05d351c67c9d858c1466f7641bfdddcad7d4ad91c8a6a8` |
+
+El OCI se obtuvo descargando el manifiesto y cada blob publicados y
+comprobando sus digests, sin `docker save` ni retag; un blob repetido entre
+capas se guarda una sola vez. Artefactos locales ignorados por Git en
+`dist/wsl/appliance-1.2-v39/`, con el manifiesto candidato
+`release-manifest-candidate.json`.
+
+### Corrección de la comprobación de voz
+
+Las imágenes publicadas desde `puente-whatsapp` (v36 a v39) no contienen
+`/opt/voice-tools/smoke_voice_integration.py`: allí sólo existe en la etapa de
+pruebas. La candidata de octubre lo tenía porque su v36 era un build local.
+Con una imagen publicada, el build fallaba y una appliance 1.2 actualizada a
+v37 o posterior rechazaba la voz.
+
+La appliance lleva ahora su comprobación en
+`/usr/local/libexec/whatsapp-can-bridge-voice-check.py` y la entrega por stdin
+(`python -B -`), sin red ni montajes, tanto al aprovisionar como en
+`whatsapp-can-bridge-voice`. No depende de rutas internas de la imagen.
+
+### Validación nativa
+
+Informe `.test-results/appliance-native/native-82a7d675.json`: los cuatro
+escenarios (`clean`, `legacy`, `modern`, `rollback`) aprobados y
+`completed=true`, con los paquetes públicos 1.0 (`983e3622…`) y 1.1
+(`5c9efa86…`) verificados por hash. Se retiraron las distribuciones
+desechables.
+
+Cambios del validador necesarios para Windows PowerShell 5.1, que elimina las
+comillas dobles de los argumentos nativos y deja `$PSScriptRoot` vacío en los
+valores por defecto: carpeta de salida calculada tras el `param`, runner de
+`python -c` y preparación de datos sintéticos con comillas simples. El
+instalador y el actualizador no usan ese patrón.
+
+El escenario `modern` suponía que la imagen anterior carecía de voz; la del
+canal estable (v37) ya la incluye y la comprobación la acepta con razón. El
+validador construye ahora, sin red, una imagen derivada sin el módulo de voz y
+exige que `whatsapp-can-bridge-voice prepare` y `configure` la rechacen.
+
+Pasaron Ruff, `git diff --check`, el área `bridge` de la suite Python y
+`test-voice-configuration.sh` como root en Linux. Las cuentas son sintéticas:
+no acredita una llamada real ni audio audible.
+
+## Candidata de octubre (histórica)
+
 Candidata local del 21 de octubre de 2026. Sustituye la candidata anterior con
 activación opcional: voz se configura automáticamente, permanece habilitada al
 reiniciar y no permite `voice disable`. El micrófono sólo se abre al llamar o

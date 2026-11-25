@@ -2,7 +2,7 @@
     [switch]$SkipChecks,
     [ValidateSet("zip", "installer")]
     [string]$ReleaseMode = "",
-    [string]$WslManifestPath = (Join-Path $PSScriptRoot "tools\wsl-appliance\release-manifest.json")
+    [string]$WslManifestPath = (Join-Path $PSScriptRoot "tools\wsl-appliance\installer-manifest.json")
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,7 +63,7 @@ if ($ReleaseMode -eq "installer") {
         $localWslItem = Get-Item -LiteralPath $localWslArtifact
         $localWslHash = (Get-FileHash -LiteralPath $localWslArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($localWslItem.Length -ne $wslPackageSize -or $localWslHash -ne $wslPackageSha256) {
-            throw "El artefacto WSL local no coincide con release-manifest.json."
+            throw "El artefacto WSL local no coincide con el manifiesto $resolvedWslManifest."
         }
     }
 }

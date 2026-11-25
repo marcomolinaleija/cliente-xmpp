@@ -1,3 +1,26 @@
+WhatsApp CAN 1.4.22
+
+Esta actualización incorpora llamadas de voz individuales de WhatsApp como función experimental, añade la integración con Meta AI y Muse y mejora la conexión, las descargas y la accesibilidad.
+
+Llamadas de voz y puente local
+- Usa «Llamar» desde un chat individual. Puedes contestar o rechazar una llamada entrante desde la conversación o desde la ventana de llamada. En esa ventana también puedes silenciar el micrófono, elegir los dispositivos de audio y colgar.
+- Para instalar o actualizar el puente local, ejecuta el nuevo instalador de Windows y elige «Puente local en este equipo». El instalador descarga la appliance 1.2.0, que incluye el puente v39 y configura la voz automáticamente. La migración desde 1.0 o 1.1 conserva la sesión, la configuración y los adjuntos.
+- La actualización por ZIP instala el cliente de Windows. Si usas un servidor propio, el administrador debe preparar un puente compatible con llamadas. Con un puente anterior puedes seguir usando mensajes, historial y adjuntos.
+
+Meta AI y Muse
+- Los chats de Meta AI y Muse aparecen identificados como asistentes de Meta. Desde una respuesta con sugerencias, Tab lleva a sus botones. Al elegir una sugerencia se envía como mensaje y se conserva tu borrador.
+- Las solicitudes de aprobación de Muse muestran las opciones disponibles y piden confirmación antes de enviar la decisión al puente.
+
+Archivos y stickers
+- Las descargas manuales muestran el progreso y anuncian cuando el archivo está listo. Al elegir abrir un archivo, CAN lo descarga si hace falta y lo abre al terminar.
+- Se corrigen fallos de envío por nombres de archivo incompatibles y avisos de archivos fallidos que quedaban en la lista de chats después de recibir mensajes nuevos.
+- La biblioteca admite más variantes de paquetes .wastickers y reutiliza los paquetes idénticos. Puedes completar nombres y textos alternativos por lote con RayoAI, previa confirmación.
+
+Conexión, lectura y accesibilidad
+- Se corrigen atascos al vincular WhatsApp o recuperar la conexión tras un corte, y bloqueos al sincronizar mensajes de grupo.
+- El historial que llega tarde respeta los mensajes no leídos de chats ocultos. CAN reintenta la sincronización de lectura en segundo plano.
+- La lista de chats conserva la selección durante las actualizaciones para evitar anuncios repetidos del lector de pantalla. Las reacciones muestran una referencia más breve al mensaje original.
+
 WhatsApp CAN 1.4.21
 
 Esta actualización corrige los avisos de error que aparecían al abrir grupos aunque el envío y la recepción de mensajes funcionaran.

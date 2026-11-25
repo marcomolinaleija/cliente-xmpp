@@ -58,9 +58,10 @@ se rechaza porque voz es una función obligatoria de la appliance. Un fallo de
 su comprobación se comunica como error y no cambia automáticamente el entorno
 a `CAN_VOICE_ENABLE=0`.
 
-Los actualizadores antiguos descargados desde la release 1.1 siguen fijados a
-esa entrega. Hay que obtener el actualizador nuevo cuando se publique. Mientras
-el manifiesto estable siga en 1.1, su ejecución no instala una candidata 1.2.
+Para pasar a 1.2, ejecuta el instalador de CAN 1.4.22 y elige «Puente local en
+este equipo». El actualizador descargado desde la release 1.1 sigue fijado a
+esa entrega. El actualizador de la release 1.2 sigue la versión que indique
+el manifiesto del canal estable.
 
 ## Servidor propio, VPS o NAS
 

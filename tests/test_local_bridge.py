@@ -123,8 +123,11 @@ class WslApplianceBuildTests(unittest.TestCase):
 
     def test_online_setup_manifest_matches_the_local_appliance(self) -> None:
         appliance_root = self._appliance_root()
+        project_root = Path(__file__).resolve().parents[1]
+        build_script = (project_root / "build_release.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn(r"tools\wsl-appliance\installer-manifest.json", build_script)
         manifest = json.loads(
-            (appliance_root / "release-manifest.json").read_text(encoding="utf-8")
+            (appliance_root / "installer-manifest.json").read_text(encoding="utf-8")
         )
 
         self.assertEqual(manifest["schema_version"], 1)
@@ -133,15 +136,11 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertTrue(manifest["download_url"].endswith(manifest["asset_name"]))
         self.assertGreater(manifest["size_bytes"], 0)
 
-        artifact = (
-            Path(__file__).resolve().parents[1]
-            / "dist"
-            / "wsl"
-            / manifest["asset_name"]
-        )
+        artifact = project_root / "dist" / "wsl" / manifest["asset_name"]
         if artifact.is_file():
-            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
             self.assertEqual(artifact.stat().st_size, manifest["size_bytes"])
+            with artifact.open("rb") as package:
+                digest = hashlib.file_digest(package, "sha256").hexdigest()
             self.assertEqual(digest, manifest["sha256"])
 
     def test_public_legacy_updater_is_pinned_and_utf8_bom(self) -> None:

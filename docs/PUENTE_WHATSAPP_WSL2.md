@@ -12,15 +12,11 @@ conservan debajo de la preparación de 1.2.
 
 ## Estado
 
-Las fuentes preparan la appliance **1.2.0**: migración por versión desde 1.0/1.1,
-respaldo de la imagen activa del puente y configuración obligatoria de voz
-local. El manifiesto público sigue identificando el artefacto **1.1.0**; no se
-ha sustituido por hashes de una candidata aún no publicada. Las
-validaciones históricas siguientes corresponden a las entregas anteriores.
-
-La candidata anterior con activación opcional quedó sustituida. La nueva
-candidata se reconstruyó y validó con voz activa desde la instalación y la
-migración; la [auditoría de 1.2](VALIDACION_APPLIANCE_1_2.md) identifica cada paquete.
+La appliance **1.2.0** con el puente v39 está disponible en su
+[release de GitHub](https://github.com/marcomolinaleija/cliente-xmpp/releases/tag/wsl-appliance-v1.2.0).
+El instalador de Windows 1.4.22 la descarga al elegir «Puente local en este equipo».
+La [validación de 1.2](VALIDACION_APPLIANCE_1_2.md) registra la instalación limpia,
+las migraciones desde 1.0 y 1.1 y la recuperación ante un fallo.
 
 ### Actualización completa a 1.2 y activación de voz
 
@@ -35,9 +31,8 @@ y del instalador y solicita `ACTUALIZAR` antes de migrar. El instalador contrast
 la versión declarada dentro del `.wsl`; la mera presencia del actualizador de
 imágenes ya no basta para omitir la migración.
 
-Los scripts antiguos descargados desde la release 1.1 siguen fijados a 1.1:
-el usuario deberá obtener el actualizador de la nueva entrega. El comando de
-uso sigue siendo:
+Los scripts descargados desde la release 1.1 siguen fijados a 1.1. El
+actualizador de la release 1.2 consulta el canal mantenido. El comando de uso es:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\actualizar-puente-local.ps1
@@ -201,8 +196,9 @@ El instalador de WhatsApp CAN presenta una página titulada `Forma de conexión`
 - `Servidor XMPP o VPS`. Instala exclusivamente el cliente de Windows y no descarga ni modifica
   ninguna distribución WSL.
 
-El appliance no se incrusta en el EXE. Vive en la release dedicada e inmutable
-`wsl-appliance-v1.0.0`; `tools/wsl-appliance/release-manifest.json` fija su URL, tamaño y SHA-256.
+El EXE descarga el paquete de una release dedicada e inmutable.
+`tools/wsl-appliance/installer-manifest.json` fija la URL, el tamaño y el SHA-256 del paquete
+1.2.0. El actualizador de instalaciones existentes consulta `release-manifest.json`.
 En el modo completo, `build_release.ps1` copia esos valores al instalador y rechaza la compilación
 si el artefacto local no coincide. El modo de sólo ZIP no necesita ese manifiesto. Inno Setup
 vuelve a comprobar el SHA-256 durante la descarga antes de ejecutar

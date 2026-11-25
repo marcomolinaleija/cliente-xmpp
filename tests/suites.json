@@ -26,6 +26,10 @@
       "area": "connection",
       "layer": "fast"
     },
+    "test_whatsapp_linking_contract": {
+      "area": "connection",
+      "layer": "fast"
+    },
     "test_xmpp_reconnection": {
       "area": "connection",
       "layer": "fast",

@@ -30,10 +30,23 @@ como prueba de autenticación ni en presencias heredadas cuando existe el contra
 
 | Operación | Semántica |
 | --- | --- |
-| `status` (IQ get) | Snapshot de la cuenta XMPP solicitante; no genera QR ni inicia sesión. |
-| `start` (IQ set) | Inicia o adopta un único intento; `request` permite repetir un IQ sin duplicarlo. |
-| `phone` (IQ set) | Exige el intento actual y espera preparación nativa de su WebSocket. |
-| `cancel` (IQ set) | Exige el intento actual; desconecta el intento sin llamar a `Logout` ni borrar credenciales. |
+| `status` (IQ get) | Snapshot de la cuenta XMPP solicitante; no genera QR ni inicia sesión y nunca cambia el estado. Reentrega el QR y el código vigentes a su dueño. |
+| `start` (IQ set) | Inicia o adopta un único intento; `request` permite repetir un IQ sin duplicarlo mientras ese intento sigue vivo. Un token de un intento terminado responde `stale_request`. Un intento terminado (`expired`, `connection_error`, `logged_out`, `needs_relogin`) se retira con `Disconnect` dentro del mismo `start`. |
+| `phone` (IQ set) | Exige el intento actual y vivo; espera preparación nativa de su WebSocket. Un intento terminado responde `attempt_ended` al instante. Un número inválido o un fallo de `PairPhone` no destruye el intento. |
+| `cancel` (IQ set) | Exige el intento actual; desconecta el intento sin llamar a `Logout` ni borrar credenciales. Si el teléfono acepta el escaneo durante la cancelación, responde `canceled` con `paired_after_cancel`. |
+| `sync` (IQ set) | Reintenta contactos y grupos de una sesión autenticada con `sync=error`; no revincula. |
+
+Cada cambio de revisión envía al JID desnudo de la cuenta un aviso `normal` sin
+cuerpo, con `<state version attempt revision/>` y las pistas XEP-0334
+`no-store`/`no-permanent-store`. El aviso no lleva QR, código ni credenciales y no
+se archiva en MAM; el cliente sólo lo usa para adelantar un `status`. Como slixmpp
+sólo emite `message` para stanzas con cuerpo, el cliente lo recibe con un handler
+propio. Prosody descarta los `headline` dirigidos al JID desnudo, por eso no se usan.
+
+El cliente consulta cada 3 s mientras hay vinculación en curso y cada 60 s con la
+sesión autenticada y sincronizada; los avisos despiertan la consulta antes. El
+plazo de 190 s de `connecting`/`paired` es un temporizador del puente, no un efecto
+de leer el estado.
 
 La respuesta incluye versión, intento, revisión, fase, autenticación y fase de
 sincronización. Cada QR tiene revisión y vigencia restantes; la PNG se transporta
@@ -53,7 +66,12 @@ contrato: para obtenerlas hay que instalar una imagen que anuncie la extensión.
 El número de imagen por sí solo no acredita esa capacidad.
 
 `client_outdated`, `stream_replaced`, `unsupported_pairing`, `cancel_failed`,
-`stale_attempt` y `status_unavailable` producen acciones y mensajes distintos.
+`stale_attempt`, `status_unavailable`, `expired`, `device_removed`, `invalid_phone`,
+`phone_pair_failed`, `attempt_ended`, `already_paired`, `already_connected`,
+`stale_request`, `paired_after_cancel` y `not_connected` producen acciones y
+mensajes distintos. Un QR caducado es la fase `expired`, no un error de conexión.
+Los errores de una operación no cambian la revisión; la interfaz los conserva
+hasta que el estado cambia de verdad.
 No hay recuperación automática mediante `wa_logout`, esperas fijas para adivinar
 preparación, borrado de SQLite ni desvinculación de dispositivos humanos.
 
@@ -76,6 +94,29 @@ los mismos volúmenes y verificar arranque, imagen efectiva, extensión anunciad
 y estado autenticado. Un smoke de servicios no acredita una vinculación real.
 La publicación en GHCR, un appliance nuevo y el binario Windows son entregas
 separadas, no efectos secundarios de este despliegue.
+
+Desde v36 la fuente del puente es el repositorio `puente-whatsapp`
+(`src/slidge_whatsapp/linking.py`); `tools/bridge_linking.py` es la copia que
+usan las pruebas de contrato de este cliente y debe mantenerse idéntica.
+
+### Despliegue del 25 de noviembre de 2026
+
+`marco-vps` ejecuta `cliente-xmpp-bridge:linking-20261125`: el target `release`
+de `puente-whatsapp` (base v39, código sin publicar) más una capa que sólo
+restaura el `HEALTHCHECK` que Podman descarta al construir en formato OCI. No
+está en GHCR. El respaldo consistente de `/opt/xmpp/slidge` y el `compose.yml`
+previo (v39 por digest, que sigue en el host) están en
+`/opt/xmpp/backups/linking-20261125T231929Z/`; el rollback restaura ese
+`compose.yml` y recrea sólo `slidge-whatsapp`
+(`/opt/xmpp/candidates/linking-20261125/rollback_linking.sh`).
+
+Tras recrear: `healthy`, sin reinicios, las cuentas existentes autenticaron
+sin errores. Una sonda con cuenta XMPP ficticia aprobó 14 pasos contra el
+puente real: contrato anunciado, registro, QR real de WhatsApp en PNG, aviso de
+estado, número inválido sin perder el intento, cancelación, token repetido
+`stale_request`, ningún aviso como mensaje de chat, baja del registro. El QR no
+se escaneó; la cuenta se eliminó. La vinculación real y NVDA quedan para una
+prueba humana.
 
 ## Verificación
 
@@ -100,7 +141,14 @@ usar `conda run --no-capture-output -n XMPP python -m cliente_xmpp.app.main`.
 ### Comprobaciones por capa
 
 - Python: `conda run -n XMPP python tools/run_tests.py --suite all`.
-- Foco: añadir `--match test_whatsapp_linking` para el contrato y aislamiento.
+- Foco: añadir `--match test_whatsapp_linking` para el contrato y aislamiento;
+  `test_whatsapp_linking_contract` conecta en proceso el `LinkingProtocol` real
+  con el handler IQ real del puente.
+- Extremo a extremo con cuentas ficticias, sólo en un appliance **de pruebas**:
+  `wsl -d <distro-de-pruebas> -u root -- env E2E_TEST_APPLIANCE=1 sh tools/wsl-appliance/run_e2e_linking.sh`.
+  Usa Prosody real, `bridge_linking.py` y `XmppService` reales; WhatsMeow está
+  simulado. Detiene el servicio del puente durante la prueba, crea una cuenta
+  XMPP ficticia y la borra al terminar.
 - Estática: `conda run -n XMPP python -m ruff check .` y `git diff --check`.
 - Imagen: Go, race y smoke offline del Dockerfile, sin volúmenes de producción.
 - Manual: cuenta nueva por QR y número; cerrar/reabrir; cancelación; QR rotado;

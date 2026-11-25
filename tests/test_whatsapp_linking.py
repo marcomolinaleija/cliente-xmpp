@@ -13,11 +13,22 @@ from slixmpp import Presence
 from slixmpp.exceptions import PresenceError
 
 from cliente_xmpp.xmpp.client import BridgeXmppClient
-from cliente_xmpp.xmpp.events import WhatsAppLinkState, XmppDisconnected, XmppError
+from cliente_xmpp.xmpp.events import (
+    WhatsAppLinkCancelResult,
+    WhatsAppLinkState,
+    XmppDisconnected,
+    XmppError,
+)
 from cliente_xmpp.xmpp.linking import DISCO_NS, NAMESPACE, LinkingProtocol
 from tools.bridge_linking import LinkingError, LinkingSession, install, install_session, state
 
 PNG = b"\x89PNG\r\n\x1a\nfictional"
+
+
+def device_removed_message():
+    from cliente_xmpp.ui.main_window import WHATSAPP_LINK_REASON_MESSAGES
+
+    return WHATSAPP_LINK_REASON_MESSAGES["device_removed"]
 
 
 class LinkingOwnerTests(unittest.IsolatedAsyncioTestCase):
@@ -45,13 +56,24 @@ class LinkingOwnerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         session.xmpp.login_wrap.assert_awaited_once()
         owner.change("connection_error", "fixture")
-        with self.assertRaisesRegex(LinkingError, "cancel_required"):
-            await owner.start("new-request")
-        await owner.cancel(attempt)
+        # A finished attempt cannot be reopened by its own token...
+        with self.assertRaisesRegex(LinkingError, "stale_request"):
+            await owner.start("fixture-request")
+        session.whatsapp.Disconnect.assert_not_called()
+        # ...and a new request retires it (Disconnect, never Logout) in one round trip.
+        await owner.start("new-request")
+        session.whatsapp.Disconnect.assert_called_once()
+        self.assertNotEqual(owner.attempt, attempt)
+        self.assertEqual(owner.phase, "connecting")
+        self.assertFalse(hasattr(session.whatsapp, "Logout"))
+        await asyncio.sleep(0)
+        self.assertEqual(session.xmpp.login_wrap.await_count, 2)
+        replacement = owner.attempt
+        await owner.cancel(replacement)
         self.assertEqual(owner.phase, "canceled")
-        session.whatsapp.Disconnect.assert_called_once()
-        await owner.cancel(attempt)
-        session.whatsapp.Disconnect.assert_called_once()
+        self.assertEqual(session.whatsapp.Disconnect.call_count, 2)
+        await owner.cancel(replacement)
+        self.assertEqual(session.whatsapp.Disconnect.call_count, 2)
 
     async def test_failed_cancel_retains_attempt_and_never_logs_out(self):
         session, owner = self.session()
@@ -139,6 +161,8 @@ class LinkingOwnerTests(unittest.IsolatedAsyncioTestCase):
         _, owner = self.session()
         owner.reserve()
         owner.clock = lambda: owner.changed_at + 191
+        self.assertEqual(owner.snapshot()["phase"], "connecting")  # A read never mutates.
+        owner.expire_if_due()
         self.assertEqual(owner.snapshot()["phase"], "connection_error")
         self.assertEqual(owner.reason, "connection_timeout")
 
@@ -516,8 +540,15 @@ class LinkingProtocolTests(unittest.IsolatedAsyncioTestCase):
                     _emit=emitted.append,
                 )
                 await getattr(BridgeXmppClient, action)(client, "whatsapp.example.invalid", *args)
-                self.assertEqual(len(emitted), 1)
                 self.assertIsInstance(emitted[0], XmppError)
+                if action == "cancel_whatsapp_linking":
+                    # The UI also learns the cancel was not confirmed, so a pending
+                    # restart intent cannot fire later.
+                    self.assertEqual(len(emitted), 2)
+                    self.assertIsInstance(emitted[1], WhatsAppLinkCancelResult)
+                    self.assertFalse(emitted[1].confirmed)
+                else:
+                    self.assertEqual(len(emitted), 1)
 
     async def test_successful_discovery_without_feature_retains_legacy_support(self):
         component = "whatsapp.example.invalid"
@@ -720,6 +751,8 @@ class LinkingUiIsolationTests(unittest.TestCase):
             whatsapp_link_protocol=True, whatsapp_qr_restart_after_cancel=True,
             whatsapp_link_state_key=None, whatsapp_qr_deadline=0,
             whatsapp_pair_phone_pending="", whatsapp_pairing_bootstrap_generation=0,
+            whatsapp_link_error=None, whatsapp_pair_code=None, whatsapp_code_dialog=None,
+            whatsapp_sync_menu_item=Mock(),
             _close_whatsapp_qr_dialog=Mock(), _begin_whatsapp_qr_request=Mock(),
             _handle_whatsapp_bridge_status=Mock(), _handle_whatsapp_qr_image_data=Mock(),
             _handle_whatsapp_pairing_code=Mock(),
@@ -802,7 +835,8 @@ class LinkingUiIsolationTests(unittest.TestCase):
         self.assertFalse(window.whatsapp_verified)
         self.assertFalse(window.whatsapp_link_recovering)
         window._handle_whatsapp_bridge_status.assert_called_once_with(
-            "logged_out", "whatsapp.example.invalid", "",
+            "logged_out", "whatsapp.example.invalid",
+            device_removed_message(),
         )
 
     def test_outage_past_bridge_deadline_keeps_chat_until_recovery_or_real_logout(self):
@@ -816,6 +850,7 @@ class LinkingUiIsolationTests(unittest.TestCase):
                 owner.change("connecting", "disconnected")
                 for elapsed in (0, 189, 191, 600):
                     owner.clock = lambda elapsed=elapsed: 100.0 + elapsed
+                    owner.expire_if_due()  # What the bridge timer does at the deadline.
                     snapshot = owner.snapshot()
                     event = WhatsAppLinkState(
                         window.current_jid, "whatsapp.example.invalid", 10,
@@ -838,7 +873,8 @@ class LinkingUiIsolationTests(unittest.TestCase):
                     window._apply_pending_roster_if_ready.assert_not_called()
                 else:
                     window._handle_whatsapp_bridge_status.assert_called_once_with(
-                        "logged_out", "whatsapp.example.invalid", "",
+                        "logged_out", "whatsapp.example.invalid",
+            device_removed_message(),
                     )
 
     def test_initial_login_timeout_does_not_masquerade_as_authenticated_recovery(self):

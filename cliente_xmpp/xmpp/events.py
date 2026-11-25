@@ -132,6 +132,15 @@ class WhatsAppLinkSessionStarted:
 
 
 @dataclass(slots=True)
+class WhatsAppLinkCancelResult:
+    """Outcome of a user cancel; lets the UI drop a pending restart intent."""
+
+    component_jid: str
+    confirmed: bool
+    nothing_to_cancel: bool = False
+
+
+@dataclass(slots=True)
 class WhatsAppLinkSessionEnded:
     component_jid: str
     command_node: str = ""
@@ -302,6 +311,7 @@ XmppEvent = (
     | WhatsAppPairingCodeReceived
     | WhatsAppLinkSessionStarted
     | WhatsAppLinkSessionEnded
+    | WhatsAppLinkCancelResult
     | WhatsAppQrImageReceived
     | WhatsAppQrImageDataReceived
     | RosterLoaded

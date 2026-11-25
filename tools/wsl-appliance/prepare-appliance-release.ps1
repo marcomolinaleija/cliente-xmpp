@@ -12,7 +12,10 @@ $output = [IO.Path]::GetFullPath($OutputManifestPath)
 if (Test-Path -LiteralPath $output) { throw 'El manifiesto de salida ya existe; no se reemplazará.' }
 if ($package.Extension -ne '.wsl') { throw 'Se requiere un paquete .wsl construido.' }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Repositorio inválido.' }
-$json = (& tar.exe -xOf $package.FullName --include 'opt/whatsapp-can-bridge/version.json' --include './opt/whatsapp-can-bridge/version.json' | Out-String).Trim()
+# --include is a bsdtar option: use Windows' tar, not a GNU tar that Git may put first on PATH.
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $tar)) { $tar = 'tar.exe' }
+$json = (& $tar -xOf $package.FullName --include 'opt/whatsapp-can-bridge/version.json' --include './opt/whatsapp-can-bridge/version.json' | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'No se pudo leer la versión del paquete.' }
 $version = $json | ConvertFrom-Json
 if ([string]$version.appliance_version -notmatch '^\d+\.\d+\.\d+$') { throw 'El paquete no declara una versión de entrega válida.' }

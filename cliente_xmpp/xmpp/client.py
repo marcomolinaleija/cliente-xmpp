@@ -21,6 +21,8 @@ from aiohttp.client_exceptions import ClientConnectorError, ClientError
 from slixmpp import ClientXMPP
 from slixmpp.exceptions import IqError, IqTimeout, PresenceError
 from slixmpp.plugins.xep_0363.http_upload import FileTooBig, HTTPError
+from slixmpp.xmlstream.handler import Callback
+from slixmpp.xmlstream.matcher import MatchXPath
 
 from cliente_xmpp.audio.duration import media_duration_seconds
 from cliente_xmpp.audio.live_call import LiveAudioError
@@ -76,6 +78,7 @@ from cliente_xmpp.xmpp.events import (
     VoiceChannelChanged,
     VoiceDiagnostics,
     WhatsAppBridgeStatus,
+    WhatsAppLinkCancelResult,
     WhatsAppLinkSessionEnded,
     WhatsAppLinkSessionStarted,
     WhatsAppPairingCodeReceived,
@@ -91,6 +94,7 @@ from cliente_xmpp.xmpp.http_upload import (
     is_dns_resolution_error,
     upload_file_with_system_resolver,
 )
+from cliente_xmpp.xmpp.linking import NAMESPACE as LINKING_NS
 from cliente_xmpp.xmpp.linking import LinkingProtocol
 from cliente_xmpp.xmpp.message_info import MESSAGE_INFO_NS, parse_message_info
 from cliente_xmpp.xmpp.voice_worker import IsolatedVoiceTransport as VoiceTransport
@@ -219,6 +223,23 @@ class UnsupportedAudioModeError(ValueError):
     """Safe, actionable explanation that can be announced once for a file batch."""
 
 
+def _linking_failure_text(action: str, exc: BaseException) -> str:
+    if isinstance(exc, IqTimeout):
+        return (f"El puente no respondió a tiempo al {action}. "
+                "El intento puede seguir en curso; consulta el estado antes de reintentar.")
+    if isinstance(exc, IqError):
+        try:
+            condition = str(exc.iq["error"]["condition"] or "")
+        except Exception:
+            condition = ""
+        if condition == "registration-required":
+            return "La cuenta todavía no está registrada en el puente de WhatsApp."
+        if condition in {"forbidden", "not-allowed"}:
+            return "El puente rechazó esta cuenta para la vinculación."
+        return f"El puente rechazó la solicitud al {action} ({condition or 'error'})."
+    return f"No se pudo completar la solicitud al {action}. Consulta el estado y reintenta."
+
+
 class BridgeXmppClient(ClientXMPP):
     def __init__(self, settings: ConnectionSettings, password: str, emit: EventHandler) -> None:
         super().__init__(settings.jid, password)
@@ -262,6 +283,13 @@ class BridgeXmppClient(ClientXMPP):
         self.add_event_handler("disconnected", self._on_disconnected)
         self.add_event_handler("failed_auth", self._on_failed_auth)
         self.add_event_handler("message", self._on_message)
+        # The bridge's state hint is bodyless on purpose, and slixmpp only raises
+        # the "message" event for stanzas with a body, so it needs its own matcher.
+        self.register_handler(Callback(
+            "CAN WhatsApp linking hint",
+            MatchXPath(f"{{jabber:client}}message/{{{LINKING_NS}}}state"),
+            self._on_whatsapp_linking_hint,
+        ))
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("carbon_received", self._on_carbon_received)
         self.add_event_handler("carbon_sent", self._on_carbon_sent)
@@ -433,6 +461,9 @@ class BridgeXmppClient(ClientXMPP):
 
         if message_type == "error":
             self._handle_message_error(msg, bare_jid)
+            return
+
+        if self._handle_whatsapp_linking_hint(msg, bare_jid):
             return
 
         self._emit_chat_state_from_message(bare_jid, message_type, msg)
@@ -1850,16 +1881,47 @@ class BridgeXmppClient(ClientXMPP):
                 discovered.append((node, name))
         return discovered
 
+    def _on_whatsapp_linking_hint(self, msg: object) -> None:
+        try:
+            if msg["type"] == "error":
+                return
+            bare_jid = str(msg["from"].bare)
+        except Exception:
+            return
+        self._handle_whatsapp_linking_hint(msg, bare_jid)
+
+    def _handle_whatsapp_linking_hint(self, msg: object, bare_jid: str) -> bool:
+        xml = getattr(msg, "xml", None)
+        if xml is None or xml.find(f"{{{LINKING_NS}}}state") is None:
+            return False
+        linking = getattr(self, "_linking", None)
+        # Only a bare component JID that advertised the contract may wake polling;
+        # the hint itself is never trusted as state and never reaches chats.
+        if linking is not None and "@" not in bare_jid and linking.supported.get(bare_jid):
+            linking.wake(bare_jid)
+        return True
+
     async def request_whatsapp_link_status(self, component_jid: str) -> None:
         linking = getattr(self, "_linking", None)
         try:
             if linking is not None and await linking.available(component_jid):
                 await linking.probe(component_jid)
                 return
-        except Exception:
-            self._emit(XmppError("No se pudo consultar el estado de vinculación."))
+        except Exception as exc:
+            self._emit(XmppError(_linking_failure_text("consultar el estado", exc)))
             return
         await self._debug_whatsapp_component_commands(component_jid)
+
+    async def request_whatsapp_sync(self, component_jid: str) -> None:
+        linking = getattr(self, "_linking", None)
+        try:
+            if linking is not None and await linking.available(component_jid):
+                await linking.sync(component_jid)
+                return
+        except Exception as exc:
+            self._emit(XmppError(_linking_failure_text("reintentar la sincronización", exc)))
+            return
+        self._emit(XmppError("Este puente no permite reintentar la sincronización."))
 
     async def request_whatsapp_relogin(
         self,
@@ -1873,10 +1935,8 @@ class BridgeXmppClient(ClientXMPP):
             if linking is not None and await linking.available(component_jid):
                 await linking.start(component_jid)
                 return
-        except Exception:
-            self._emit(XmppError(
-                "No se pudo iniciar la vinculación. Consulta el estado y reintenta."
-            ))
+        except Exception as exc:
+            self._emit(XmppError(_linking_failure_text("iniciar la vinculación", exc)))
             return
         if cancel_existing:
             if component_jid in self._whatsapp_link_sessions:
@@ -1995,6 +2055,8 @@ class BridgeXmppClient(ClientXMPP):
                     "Slidge solicito datos de registro que el cliente no puede completar."
                 )
         except IqTimeout:
+            if await BridgeXmppClient._probe_linking_after_registration(self, component_jid):
+                return
             self._emit_whatsapp_status(
                 component_jid,
                 "needs_qr",
@@ -2014,11 +2076,24 @@ class BridgeXmppClient(ClientXMPP):
             )
             return
 
+        if await BridgeXmppClient._probe_linking_after_registration(self, component_jid):
+            return
         self._emit_whatsapp_status(
             component_jid,
             "needs_qr",
             command_text or "Registro completado. Esperando el QR de WhatsApp.",
         )
+
+    async def _probe_linking_after_registration(self, component_jid: str) -> bool:
+        """Legacy status text is ignored on contract bridges; ask the snapshot."""
+        linking = getattr(self, "_linking", None)
+        if linking is None or not linking.supported.get(component_jid.split("/", 1)[0]):
+            return False
+        try:
+            await linking.probe(component_jid)
+        except Exception as exc:
+            self._emit(XmppError(_linking_failure_text("consultar el registro", exc)))
+        return True
 
     def _remember_whatsapp_link_session(
         self,
@@ -2070,11 +2145,23 @@ class BridgeXmppClient(ClientXMPP):
         linking = getattr(self, "_linking", None)
         try:
             if linking is not None and await linking.available(component_jid):
-                return await linking.cancel(component_jid)
-        except Exception:
+                bare = component_jid.split("/", 1)[0]
+                current = linking.states.get(bare)
+                confirmed = await linking.cancel(component_jid)
+                if not silent:
+                    current = linking.states.get(bare) or current
+                    self._emit(WhatsAppLinkCancelResult(
+                        component_jid=bare,
+                        confirmed=confirmed,
+                        nothing_to_cancel=not confirmed
+                        and (current is None or not current.attempt),
+                    ))
+                return confirmed
+        except Exception as exc:
             if not silent:
-                self._emit(XmppError(
-                    "No se confirmó la cancelación. El intento sigue pendiente."
+                self._emit(XmppError(_linking_failure_text("cancelar", exc)))
+                self._emit(WhatsAppLinkCancelResult(
+                    component_jid=component_jid.split("/", 1)[0], confirmed=False,
                 ))
             return False
         session = self._whatsapp_link_sessions.get(component_jid)
@@ -2142,11 +2229,11 @@ class BridgeXmppClient(ClientXMPP):
         linking = getattr(self, "_linking", None)
         try:
             if linking is not None and await linking.available(component_jid):
-                await linking.phone(component_jid, phone)
+                await linking.phone(component_jid, phone.strip())
                 return
-        except Exception:
+        except Exception as exc:
             self._emit(XmppError(
-                "No se pudo obtener el código de vinculación. Consulta el estado."
+                _linking_failure_text("pedir el código de vinculación", exc)
             ))
             return
         existing_session = self._whatsapp_link_sessions.get(component_jid)
@@ -6048,6 +6135,13 @@ class XmppService:
                 )
 
         self._loop.call_soon_threadsafe(request)
+
+    def request_whatsapp_sync(self, component_jid: str) -> None:
+        client = self._client
+        if self._loop is None or client is None:
+            self._emit(XmppError("No hay una conexion XMPP activa."))
+            return
+        asyncio.run_coroutine_threadsafe(client.request_whatsapp_sync(component_jid), self._loop)
 
     def cancel_whatsapp_linking(self, component_jid: str) -> None:
         if not self._client or not self._loop:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import secrets
 import time
 from xml.etree import ElementTree as ET
@@ -14,6 +15,12 @@ DISCO_NS = "http://jabber.org/protocol/disco#info"
 STATUSES = {"needs_registration", "needs_pairing", "connecting", "needs_qr", "paired",
             "connected", "needs_pair_code", "connection_error", "logged_out", "canceled",
             "canceling", "expired", "needs_relogin"}
+# The native client still owns a handshake; a phone code can be requested.
+PHONE_LIVE = {"connecting", "needs_qr", "needs_pair_code"}
+# A start token may only be replayed while its attempt is still pairing.
+START_LIVE = PHONE_LIVE | {"paired"}
+LINKING_INTERVAL = 3.0
+STABLE_INTERVAL = 60.0
 
 
 class LinkingProtocol:
@@ -27,7 +34,10 @@ class LinkingProtocol:
         self.session_generation = client._session_generation
         self.generation = time.monotonic_ns()
         self.pending_requests: dict[str, str] = {}
-        self.qr_revisions: dict[str, tuple[str, int]] = {}
+        self.request_attempts: dict[str, str] = {}
+        self.qr_revisions: dict[str, tuple[str, int, str]] = {}
+        self.codes_shown: dict[str, tuple[str, str]] = {}
+        self.wakeups: dict[str, asyncio.Event] = {}
         self.closed = False
 
     async def available(self, component):
@@ -85,16 +95,28 @@ class LinkingProtocol:
         qr_revision = int(node.get("qr_revision", "0"))
         image = b""
         qr = node.find(f"{{{NAMESPACE}}}qr")
-        key = attempt, qr_revision
-        if (qr is not None and deadline > time.monotonic()
-                and self.qr_revisions.get(component) != key):
+        if qr is not None and deadline > time.monotonic():
             if len(qr.text or "") > 256 * 1024:
                 raise ValueError("QR demasiado grande")
-            image = base64.b64decode(qr.text or "", validate=True)
-            if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            decoded = base64.b64decode(qr.text or "", validate=True)
+            if not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise ValueError("QR inválido")
-            self.qr_revisions[component] = key
-        code = node.findtext(f"{{{NAMESPACE}}}code", "")
+            # The image digest is part of the key: a bridge that served a stale PNG
+            # under a new revision cannot suppress the real image that follows.
+            key = attempt, qr_revision, hashlib.sha256(decoded).hexdigest()
+            if self.qr_revisions.get(component) != key:
+                image = decoded
+                self.qr_revisions[component] = key
+        code = node.findtext(f"{{{NAMESPACE}}}code", "").strip()
+        if code:
+            if len(code) > 32:
+                raise ValueError("Código de vinculación inválido")
+            # Status re-delivers a live code (a lost phone reply must not strand the
+            # user), but each code is announced once; the UI keeps it for re-display.
+            if self.codes_shown.get(component) == (attempt, code):
+                code = ""
+            else:
+                self.codes_shown[component] = attempt, code
         event = WhatsAppLinkState(
             account_jid=str(self.client.boundjid.bare), component_jid=component,
             generation=self.generation, attempt=attempt, revision=revision, status=status,
@@ -103,6 +125,11 @@ class LinkingProtocol:
             sync_phase=node.get("sync", "pending"),
         )
         self.states[component] = event
+        bound = self.request_attempts.get(component)
+        if bound and attempt == bound and (authenticated or status not in START_LIVE):
+            # The attempt created by this token ended; the next start is a new request.
+            self.pending_requests.pop(component, None)
+            self.request_attempts.pop(component, None)
         self.client._whatsapp_session_ready = authenticated
         if authenticated and not (previous and previous.authenticated):
             self.client._start_initial_remote_sync_if_ready()
@@ -124,11 +151,41 @@ class LinkingProtocol:
         if component not in self.pollers or self.pollers[component].done():
             self.pollers[component] = asyncio.create_task(self.poll(component))
 
+    def wake(self, component):
+        """A bridge hint only schedules an authoritative status IQ."""
+        if not self.current() or not self.supported.get(component):
+            return
+        self.wakeups.setdefault(component, asyncio.Event()).set()
+        self.monitor(component)
+
+    def interval(self, component, failures):
+        if failures:
+            return min(30.0, LINKING_INTERVAL * 2 ** min(failures, 4))
+        state = self.states.get(component)
+        if state is not None and state.authenticated and state.sync_phase == "ready":
+            # Stable sessions rely on bridge hints; polling is only a safety net.
+            return STABLE_INTERVAL
+        return LINKING_INTERVAL
+
+    async def _wait(self, component, delay):
+        wakeup = self.wakeups.setdefault(component, asyncio.Event())
+        if wakeup.is_set():
+            wakeup.clear()
+            return
+        sleeper = asyncio.ensure_future(asyncio.sleep(delay))
+        waiter = asyncio.ensure_future(wakeup.wait())
+        try:
+            await asyncio.wait({sleeper, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            sleeper.cancel()
+            waiter.cancel()
+            wakeup.clear()
+
     async def poll(self, component):
         failures = 0
         while self.current():
             try:
-                await asyncio.sleep(min(30, 3 * 2 ** min(failures, 4)))
+                await self._wait(component, self.interval(component, failures))
                 if not self.current():
                     return
                 if not await self.available(component):
@@ -159,10 +216,26 @@ class LinkingProtocol:
 
     async def start(self, component):
         async with self.lock:
+            return await self._start(component)
+
+    async def _start(self, component):
+        for _ in range(2):
             # Reuse on IQ timeout: a lost response must not create another transaction.
             request = self.pending_requests.setdefault(component, secrets.token_hex(16))
-            await self.request(component, "start", request=request)
-            await self.probe(component)
+            event = await self.request(component, "start", request=request)
+            if event.reason == "stale_request":
+                # The bridge refuses to reopen a finished attempt with an old token.
+                self.pending_requests.pop(component, None)
+                self.request_attempts.pop(component, None)
+                continue
+            if event.attempt and not event.reason and (
+                    event.authenticated or event.status in START_LIVE):
+                self.request_attempts[component] = event.attempt
+            else:
+                self.pending_requests.pop(component, None)
+            break
+        await self.probe(component)
+        return self.states.get(component)
 
     async def cancel(self, component):
         async with self.lock:
@@ -174,19 +247,37 @@ class LinkingProtocol:
             # Cancellation must not wait behind a phone-readiness IQ. The attempt
             # and monotone revision reject any delayed response from that operation.
             result = await self._request(component, "cancel", attempt=current.attempt)
-            if result.status != "canceled" or result.reason:
+            if result.status != "canceled" or (
+                    result.reason and result.reason != "paired_after_cancel"):
                 return False
             self.pending_requests.pop(component, None)
+            self.request_attempts.pop(component, None)
             self.qr_revisions.pop(component, None)
+            self.codes_shown.pop(component, None)
             return True
 
     async def phone(self, component, phone):
         current = await self.request(component)
-        if not current.attempt or current.status in {"canceled", "expired", "needs_pairing"}:
-            await self.start(component)
-            current = self.states[component]
-        # The bridge waits for native readiness belonging to this exact attempt.
-        await self.request(component, "phone", attempt=current.attempt, phone=phone)
+        for _ in range(2):
+            if current.authenticated:
+                return current
+            if not current.attempt or current.status not in PHONE_LIVE:
+                # Finished attempts are retired by the bridge's start.
+                current = await self.start(component)
+                if current is None or current.reason or current.status not in PHONE_LIVE:
+                    return current
+            # The bridge waits up to 35 s for native readiness of this exact attempt.
+            # Like cancel, it bypasses the wire lock so status polls keep flowing;
+            # attempt and monotone revision reject whichever reply is older.
+            current = await self._request(
+                component, "phone", attempt=current.attempt, phone=phone,
+            )
+            if current.reason != "attempt_ended":
+                return current
+        return current
+
+    async def sync(self, component):
+        return await self.request(component, "sync")
 
     def close(self):
         self.closed = True

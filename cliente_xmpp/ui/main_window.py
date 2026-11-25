@@ -199,6 +199,7 @@ from cliente_xmpp.xmpp.events import (
     MessageReceived,
     RosterLoaded,
     WhatsAppBridgeStatus,
+    WhatsAppLinkCancelResult,
     WhatsAppLinkSessionEnded,
     WhatsAppLinkSessionStarted,
     WhatsAppLinkState,
@@ -274,6 +275,38 @@ class _MergedMessages(list[Message]):
     """Canonical merge output, with conservative eligibility for live appends."""
 
     appendable = False
+
+
+# Reasons a bridge attaches to a refused operation without changing its revision.
+WHATSAPP_LINK_OPERATION_ERRORS = frozenset({
+    "invalid_phone", "phone_pair_failed", "not_ready", "attempt_ended", "already_paired",
+    "already_connected", "stale_attempt", "stale_request", "cancel_required",
+    "invalid_request", "unsupported_operation", "not_connected", "expired",
+})
+
+WHATSAPP_LINK_REASON_MESSAGES = {
+    "expired": "El QR o el código caducó. Genera uno nuevo para volver a intentarlo.",
+    "device_removed": ("Este dispositivo se eliminó desde el teléfono. Tus chats locales "
+                       "se conservan; vuelve a vincular para recibir mensajes nuevos."),
+    "disconnected": "Se cerró la sesión de WhatsApp. Vuelve a vincular para continuar.",
+    "already_connected": "WhatsApp ya está conectado; no hace falta otra vinculación.",
+    "already_paired": ("El teléfono ya aceptó la vinculación. Espera a que termine de "
+                       "conectar."),
+    "invalid_phone": ("El número no es válido. Escríbelo en formato internacional, por "
+                      "ejemplo +52 202 555 0100."),
+    "phone_pair_failed": ("WhatsApp rechazó la solicitud del código. Revisa el número y "
+                          "vuelve a intentarlo; el intento sigue activo."),
+    "attempt_ended": "El intento anterior terminó. Vuelve a solicitar el código.",
+    "pair_failed": "WhatsApp rechazó la vinculación. Vuelve a intentarlo.",
+    "stale_request": "La solicitud anterior ya terminó. Vuelve a intentarlo.",
+    "invalid_request": "El puente rechazó una solicitud mal formada.",
+    "unsupported_operation": "El puente no admite esta acción. Actualiza el puente.",
+    "not_connected": "WhatsApp no está conectado; no se puede sincronizar todavía.",
+    "invalid_qr_event": "El puente recibió un QR inválido. Genera uno nuevo.",
+    "paired_after_cancel": ("El teléfono terminó la vinculación justo al cancelar. Pulsa "
+                            "Vincular para conectar ese dispositivo o elimínalo desde el "
+                            "teléfono."),
+}
 
 
 class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegrationMixin, wx.Frame):
@@ -410,6 +443,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_link_attempt = ""
         self.whatsapp_link_revision = -1
         self.whatsapp_link_state_key = None
+        self.whatsapp_link_error: tuple[str, int, str] | None = None
+        self.whatsapp_pair_code: tuple[str, str] | None = None
         self.whatsapp_qr_context = None
         self.whatsapp_code_dialog = None
         self._voice_controller = None
@@ -501,6 +536,12 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             "&Desconectar esta ventana...",
             "Cierra la conexión XMPP de esta ventana sin desvincular WhatsApp ni borrar chats",
         )
+        self.whatsapp_sync_menu_item = connection_menu.Append(
+            wx.ID_ANY,
+            "&Reintentar sincronización de WhatsApp",
+            "Vuelve a pedir contactos y grupos al puente sin desvincular ni borrar chats",
+        )
+        self.whatsapp_sync_menu_item.Enable(False)
         account_menu.AppendSubMenu(connection_menu, "&Conexión")
         account_menu.AppendSeparator()
         self.exit_menu_item = account_menu.Append(
@@ -644,6 +685,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
         self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
         self.Bind(wx.EVT_MENU, self._on_disconnect, self.disconnect_menu_item)
+        self.Bind(wx.EVT_MENU, self._on_retry_whatsapp_sync, self.whatsapp_sync_menu_item)
         self.Bind(wx.EVT_MENU, self._on_exit_application, self.exit_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_storage_manager, self.storage_manager_menu_item)
@@ -716,6 +758,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_link_attempt = ""
         self.whatsapp_link_revision = -1
         self.whatsapp_link_state_key = None
+        self.whatsapp_link_error = None
+        self.whatsapp_pair_code = None
         self.whatsapp_qr_context = None
         self.whatsapp_pairing_bootstrap_generation += 1
         self.whatsapp_link_session = None
@@ -1654,6 +1698,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 and event.attempt == self.whatsapp_link_attempt
                 and event.revision < self.whatsapp_link_revision):
             return
+        if event.reason in WHATSAPP_LINK_OPERATION_ERRORS:
+            # An operation error does not change the bridge revision; remember it
+            # so the next identical status poll does not erase the explanation.
+            self.whatsapp_link_error = (event.attempt, event.revision, event.reason)
+        elif (not event.reason and not event.code and not event.image_data
+                and self.whatsapp_link_error is not None
+                and self.whatsapp_link_error[:2] == (event.attempt, event.revision)
+                and event.generation == self.whatsapp_link_generation):
+            return
+        else:
+            self.whatsapp_link_error = None
         self.whatsapp_link_protocol = True
         still_authenticated = self.whatsapp_verified and event.authenticated
         was_ready = self.whatsapp_verified or getattr(self, "whatsapp_link_recovering", False)
@@ -1672,6 +1727,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_verified = event.authenticated
         if event.attempt != self.whatsapp_link_attempt:
             self._close_whatsapp_qr_dialog()
+        if self.whatsapp_pair_code and (
+                self.whatsapp_pair_code[0] != event.attempt or event.authenticated
+                or event.status not in {"needs_pair_code", "connecting"}):
+            self.whatsapp_pair_code = None
+        self.whatsapp_sync_menu_item.Enable(
+            bool(event.authenticated and event.sync_phase == "error")
+        )
         self.whatsapp_link_generation = event.generation
         self.whatsapp_link_attempt = event.attempt
         self.whatsapp_link_revision = event.revision
@@ -1682,6 +1744,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if event.attempt and not event.authenticated and event.status != "canceled" else None
         )
         messages = {
+            **WHATSAPP_LINK_REASON_MESSAGES,
             "status_unavailable": ("No se pudo confirmar el estado del puente. "
                                    "No se inició otro intento."),
             "stale_attempt": "El intento cambió. Consulta el estado antes de reintentar.",
@@ -1714,16 +1777,23 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.whatsapp_pair_phone_pending = ""
             self.whatsapp_qr_context = None
             self._close_whatsapp_qr_dialog()
+            if event.reason == "paired_after_cancel":
+                # The phone finished linking during the cancel: never stack a new QR
+                # on top of a device that now exists.
+                self.whatsapp_qr_restart_after_cancel = False
             if self.whatsapp_qr_restart_after_cancel:
                 self.whatsapp_qr_restart_after_cancel = False
                 self.whatsapp_qr_request_in_flight = False
                 wx.CallAfter(self._begin_whatsapp_qr_request)
                 return
-        if event.reason in {"cancel_failed", "stale_attempt", "status_unavailable"}:
+        if event.reason in {"cancel_failed", "stale_attempt", "status_unavailable",
+                            "already_connected", "paired_after_cancel"}:
             self.whatsapp_qr_restart_after_cancel = False
         if self.whatsapp_link_state_key != key:
             self.whatsapp_link_state_key = key
             detail = messages.get(event.reason, "")
+            if event.reason == "disconnected" and event.status == "connecting":
+                detail = ""  # A transient transport drop is reconnection, not logout.
             if event.authenticated and event.sync_phase != "ready":
                 detail = ("La sincronización inicial necesita revisión; puedes usar tus chats."
                           if event.sync_phase == "error" else "Sincronizando contactos y grupos...")
@@ -1751,7 +1821,47 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if event.code:
             self.whatsapp_pair_phone_pending = ""
             self.whatsapp_pairing_bootstrap_generation += 1
-            self._handle_whatsapp_pairing_code(event.component_jid, event.code)
+            self.whatsapp_pair_code = (event.attempt, event.code)
+            if self.whatsapp_code_dialog is None:
+                self._handle_whatsapp_pairing_code(event.component_jid, event.code)
+        elif (self.whatsapp_pair_phone_pending
+                and event.reason in WHATSAPP_LINK_OPERATION_ERRORS):
+            # A refused phone request must not keep suppressing later QR images.
+            self.whatsapp_pair_phone_pending = ""
+
+    def _handle_whatsapp_link_cancel_result(
+        self, component_jid: str, confirmed: bool, nothing_to_cancel: bool,
+    ) -> None:
+        if not self.whatsapp_qr_restart_after_cancel:
+            return
+        if confirmed:
+            return  # The canceled snapshot itself resumes the pending restart.
+        self.whatsapp_qr_restart_after_cancel = False
+        self.whatsapp_qr_request_in_flight = False
+        if nothing_to_cancel:
+            # No attempt existed: there is nothing to stack on, so start directly.
+            self.whatsapp_link_session = None
+            wx.CallAfter(self._begin_whatsapp_qr_request)
+            return
+        message = "No se confirmó la cancelación. No se inició otro intento."
+        if self.whatsapp_qr_dialog is not None:
+            self.whatsapp_qr_dialog.set_error(
+                message, can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+            )
+        self.whatsapp_link_panel.set_status(
+            message, action_label="Consultar estado",
+            can_cancel=self._has_cancelable_whatsapp_link(component_jid),
+        )
+        self.workspace_panel.Layout()
+        self.status_bar.SetStatusText(message)
+        wx.CallAfter(self.speaker.speak, message)
+
+    def _on_retry_whatsapp_sync(self, _event: wx.CommandEvent) -> None:
+        if not self.whatsapp_component_jid:
+            return
+        self.whatsapp_sync_menu_item.Enable(False)
+        self.status_bar.SetStatusText("Reintentando la sincronización de WhatsApp...")
+        self.xmpp.request_whatsapp_sync(self.whatsapp_component_jid)
 
     def _handle_whatsapp_link_session_started(
         self,
@@ -2123,6 +2233,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             )
             return
 
+        if (getattr(self, "whatsapp_link_protocol", False) and self.whatsapp_pair_code
+                and self.whatsapp_pair_code[0] == self.whatsapp_link_attempt
+                and self.whatsapp_link_status == "needs_pair_code"):
+            self._handle_whatsapp_pairing_code(
+                self.whatsapp_component_jid, self.whatsapp_pair_code[1],
+            )
+            return
         method = self._choose_whatsapp_link_method()
         if getattr(self, "whatsapp_link_protocol", False):
             if method == "phone":
@@ -7430,6 +7547,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 if getattr(self, "whatsapp_link_protocol", False):
                     return
                 self._handle_whatsapp_bridge_status(status, component_jid, detail)
+            case WhatsAppLinkCancelResult(
+                component_jid=component_jid,
+                confirmed=confirmed,
+                nothing_to_cancel=nothing_to_cancel,
+            ):
+                self._handle_whatsapp_link_cancel_result(
+                    component_jid, confirmed, nothing_to_cancel,
+                )
             case WhatsAppPairingCodeReceived(component_jid=component_jid, code=code):
                 self._handle_whatsapp_pairing_code(component_jid, code)
             case WhatsAppLinkSessionStarted(

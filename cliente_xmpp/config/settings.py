@@ -416,6 +416,27 @@ class SettingsStore:
         payload["cleared_chats"] = cleared_by_account
         self._save_payload(payload)
 
+    def load_whatsapp_identity(self, account_jid: str, component_jid: str) -> str:
+        """Opaque bridge tag of the last linked WhatsApp account; never a number."""
+        if not account_jid or not component_jid:
+            return ""
+        stored = self._load_payload().get("whatsapp_identities", {})
+        if not isinstance(stored, dict):
+            return ""
+        value = stored.get(f"{account_jid}|{component_jid}", "")
+        return value if isinstance(value, str) and value.isalnum() else ""
+
+    def save_whatsapp_identity(self, account_jid: str, component_jid: str, identity: str) -> None:
+        if not account_jid or not component_jid or not identity.isalnum():
+            return
+        payload = self._load_payload()
+        stored = payload.get("whatsapp_identities", {})
+        if not isinstance(stored, dict):
+            stored = {}
+        stored[f"{account_jid}|{component_jid}"] = identity[:64]
+        payload["whatsapp_identities"] = stored
+        self._save_payload(payload)
+
     def _load_payload(self) -> dict[str, object]:
         if not self.path.exists():
             return {}

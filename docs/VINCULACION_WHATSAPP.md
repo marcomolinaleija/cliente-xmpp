@@ -54,6 +54,33 @@ en el IQ, sin depender del servidor HTTP de adjuntos. La vigencia se reduce por
 el tiempo de ida y vuelta. QR y código son secretos: no deben copiarse a logs,
 informes, fixtures reales ni diagnósticos compartidos.
 
+Atributos opcionales (los clientes anteriores los ignoran): con `sync=error`,
+`sync_reason` (`rate_limited` o `failed`) y `sync_retry_in` (segundos hasta el
+próximo intento programado; `0` si no hay ninguno). Con la sesión autenticada,
+`identity`: una etiqueta HMAC opaca de la cuenta WhatsApp, derivada del secreto
+del componente y de la cuenta XMPP. No revela el número; el cliente sólo la compara
+para detectar que se vinculó otro número. Cada intento fallido de sincronización,
+cada `op="sync"` aceptado y el final con éxito incrementan la revisión y envían aviso.
+
+### Sincronización tras vincular
+
+- **Historial**: toda stanza derivada del history sync lleva
+  `<history xmlns="urn:can:whatsapp:history:0"/>`. El cliente la persiste y actualiza
+  previews con `notify=False`: sin toast, sonido, anuncio, no leídos ni marcadores de
+  leído. Sin esa marca (puentes anteriores), un mensaje 1:1 con `<delay>` anterior a
+  una vinculación completada en este proceso también es historial; los mensajes
+  offline de una sesión ya vinculada siguen notificando.
+- **No leídos del teléfono**: tras los mensajes de cada conversación (bootstrap y
+  recientes, no páginas bajo demanda), el puente envía desde su JID desnudo un
+  mensaje sin cuerpo `<unread xmlns="urn:can:whatsapp:history:0" chat count marked
+  group/>` con `no-permanent-store`. Es autoritativo para el contador del chat; nunca
+  confirma la lectura de ningún mensaje. El cliente sólo lo acepta del componente
+  configurado y para chats de ese componente.
+- **Grupos pendientes**: los chats individuales sólo esperan los contactos; los
+  eventos y stanzas de grupo esperan la lista de grupos. Una unión rechazada con
+  «Legacy session is not fully initialized» se repite cuando el puente informa
+  `sync=ready`, que también vuelve a leer el roster y descubre los grupos.
+
 El cliente descarta respuestas de otra cuenta, componente, conexión o revisión
 anterior. Los eventos nativos de un cliente retirado se descartan en el puente.
 Las descargas heredadas comprueban el contexto antes de abrir la ventana.

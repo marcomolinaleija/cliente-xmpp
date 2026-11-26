@@ -115,6 +115,34 @@ class WhatsAppLinkState:
     image_data: bytes = b""
     code: str = ""
     sync_phase: str = "pending"
+    # Optional bridge details; older bridges omit them.
+    sync_reason: str = ""
+    sync_retry_in: float = 0.0
+    identity: str = ""
+
+
+@dataclass(slots=True)
+class WhatsAppUnreadSummary:
+    """The phone's unread state for one chat, from WhatsApp's history sync."""
+
+    chat_jid: str
+    unread_count: int
+    marked_unread: bool = False
+    is_group: bool = False
+
+
+@dataclass(slots=True)
+class WhatsAppSyncReady:
+    """The bridge finished its contact and group sync for this XMPP session."""
+
+    component_jid: str
+
+
+@dataclass(slots=True)
+class RosterChanged:
+    """Incremental roster update; it never replaces the visible chat list."""
+
+    chats: list[Chat]
 
 
 @dataclass(slots=True)
@@ -314,7 +342,10 @@ XmppEvent = (
     | WhatsAppLinkCancelResult
     | WhatsAppQrImageReceived
     | WhatsAppQrImageDataReceived
+    | WhatsAppUnreadSummary
+    | WhatsAppSyncReady
     | RosterLoaded
+    | RosterChanged
     | ChatsDiscovered
     | GroupParticipantUpdated
     | GroupParticipantsLoaded

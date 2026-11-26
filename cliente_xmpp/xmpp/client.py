@@ -73,6 +73,7 @@ from cliente_xmpp.xmpp.events import (
     MessageHistoryLoaded,
     MessageReactionReceived,
     MessageReceived,
+    RosterChanged,
     RosterLoaded,
     VoiceActionFailed,
     VoiceChannelChanged,
@@ -81,9 +82,12 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppLinkCancelResult,
     WhatsAppLinkSessionEnded,
     WhatsAppLinkSessionStarted,
+    WhatsAppLinkState,
     WhatsAppPairingCodeReceived,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
+    WhatsAppSyncReady,
+    WhatsAppUnreadSummary,
     XmppConnected,
     XmppDisconnected,
     XmppError,
@@ -161,6 +165,13 @@ FALLBACK_NS = "urn:xmpp:fallback:0"
 MESSAGE_RETRACT_NS = "urn:xmpp:message-retract:1"
 MESSAGE_CORRECT_NS = "urn:xmpp:message-correct:0"
 DELAY_NS = "urn:xmpp:delay"
+CAN_HISTORY_NS = "urn:can:whatsapp:history:0"
+ROSTER_UPDATE_DEBOUNCE_SECONDS = 1.0
+# Bridge phases with no linked WhatsApp account: the next "connected" is a new link.
+WHATSAPP_UNLINKED_STATUSES = frozenset({
+    "needs_pairing", "needs_qr", "needs_pair_code", "paired", "logged_out",
+    "needs_relogin", "expired", "canceled",
+})
 FILE_METADATA_NS = "urn:xmpp:file:metadata:0"
 SFS_NS = "urn:xmpp:sfs:0"
 SIMS_NS = "urn:xmpp:sims:1"
@@ -267,6 +278,13 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_roster_chats: list[Chat] | None = None
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
+        # Post-link sync: a link completed in this process makes older WhatsApp
+        # timestamps history. Kept across XMPP reconnects, never across a new link.
+        self._whatsapp_unlinked_seen = False
+        self._whatsapp_link_completed_at: datetime | None = None
+        self._whatsapp_sync_ready_seen = False
+        self._groups_waiting_bridge_ready: set[str] = set()
+        self._inbox_supported: bool | None = None
         self._session_generation = 0
         self._pending_poll_votes: dict[str, _PendingPollVote] = {}
         self._pending_read_markers: dict[str, tuple[str, float]] = {}
@@ -290,6 +308,8 @@ class BridgeXmppClient(ClientXMPP):
             MatchXPath(f"{{jabber:client}}message/{{{LINKING_NS}}}state"),
             self._on_whatsapp_linking_hint,
         ))
+        # The bridge adds contacts after linking: names must not wait for a reconnect.
+        self.add_event_handler("roster_update", self._on_roster_update)
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("carbon_received", self._on_carbon_received)
         self.add_event_handler("carbon_sent", self._on_carbon_sent)
@@ -320,6 +340,9 @@ class BridgeXmppClient(ClientXMPP):
         self._initial_roster_chats = None
         self._whatsapp_session_ready = False
         self._initial_remote_sync_started = False
+        self._whatsapp_sync_ready_seen = False
+        self._groups_waiting_bridge_ready = set()
+        self._inbox_supported = None
         self._clear_transient_message_retries()
         getattr(self, "_pending_read_markers", {}).clear()
         self._joined_group_chat_jids.clear()
@@ -380,6 +403,107 @@ class BridgeXmppClient(ClientXMPP):
         asyncio.create_task(self._discover_group_chats_with_retries(chats))
         asyncio.create_task(self.load_inbox())
         asyncio.create_task(self._load_displayed_states())
+
+    def _note_whatsapp_link_state(
+        self, component_jid: str, previous: object, event: WhatsAppLinkState,
+    ) -> None:
+        """Track link completion and bridge sync readiness (post-link sync)."""
+        if not event.authenticated:
+            transient = event.status == "connecting" and event.reason == "disconnected"
+            if event.status in WHATSAPP_UNLINKED_STATUSES:
+                # A new link follows: it gets its own initial sync and history window.
+                self._whatsapp_unlinked_seen = True
+                self._initial_remote_sync_started = False
+            if not transient:
+                self._whatsapp_sync_ready_seen = False
+            return
+        if getattr(self, "_whatsapp_unlinked_seen", False):
+            self._whatsapp_unlinked_seen = False
+            self._whatsapp_link_completed_at = datetime.now().astimezone()
+            self._whatsapp_sync_ready_seen = False
+        if event.sync_phase == "ready" and not getattr(self, "_whatsapp_sync_ready_seen", False):
+            self._whatsapp_sync_ready_seen = True
+            self._emit(WhatsAppSyncReady(component_jid))
+            asyncio.create_task(
+                self._on_whatsapp_sync_ready(component_jid, self._session_generation)
+            )
+
+    def _on_roster_update(self, _iq: object) -> None:
+        """Coalesce roster pushes (a link adds hundreds) into one incremental event."""
+        if getattr(self, "_initial_roster_chats", None) is None:
+            return  # The initial load emits the whole roster itself.
+        if getattr(self, "_roster_update_scheduled", False):
+            return
+        self._roster_update_scheduled = True
+        generation = self._session_generation
+
+        def flush() -> None:
+            self._roster_update_scheduled = False
+            if generation != self._session_generation:
+                return
+            chats = self._build_roster_chats()
+            self._initial_roster_chats = chats
+            self._emit(RosterChanged(chats))
+
+        self.loop.call_later(ROSTER_UPDATE_DEBOUNCE_SECONDS, flush)
+
+    async def _on_whatsapp_sync_ready(self, component_jid: str, generation: int) -> None:
+        """The bridge finished contacts and groups: complete what started too early."""
+        if generation != self._session_generation:
+            return
+        try:
+            await self.get_roster()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._debug_whatsapp(f"roster refresh error: {_format_xmpp_error(exc)}")
+        if generation != self._session_generation:
+            return
+        chats = self._build_roster_chats()
+        self._initial_roster_chats = chats
+        self._emit(RosterChanged(chats))
+        waiting = set(getattr(self, "_groups_waiting_bridge_ready", set()))
+        self._groups_waiting_bridge_ready = set()
+        for group_jid in sorted(waiting):
+            if group_jid in self._group_chat_jids:
+                self._join_group_chat(group_jid)
+        await self._discover_group_chats(chats)
+
+    def _message_is_whatsapp_history(self, xml: ET.Element, sent_at: datetime | None) -> bool:
+        """History never looks new: explicit bridge marker, or older than a new link."""
+        if xml is not None and xml.find(f"{{{CAN_HISTORY_NS}}}history") is not None:
+            return True
+        linked_at = getattr(self, "_whatsapp_link_completed_at", None)
+        if linked_at is None or sent_at is None or xml is None:
+            return False
+        # Only delayed stanzas can be history; a live stanza is new by definition.
+        if xml.find(f"{{{DELAY_NS}}}delay") is None:
+            return False
+        return sent_at.timestamp() < linked_at.timestamp()
+
+    def _emit_unread_summary(self, msg: object, bare_jid: str) -> bool:
+        xml = getattr(msg, "xml", None)
+        node = xml.find(f"{{{CAN_HISTORY_NS}}}unread") if xml is not None else None
+        if node is None:
+            return False
+        # Only the configured bridge, from its bare JID, is an authority here.
+        component = (
+            self._configured_local_whatsapp_component()
+            or self._configured_remote_whatsapp_component()
+        )
+        if not component or bare_jid != component:
+            return True
+        chat_jid = node.get("chat", "").strip()
+        count = node.get("count", "")
+        if not chat_jid or "@" not in chat_jid or not count.isdigit():
+            return True
+        if chat_jid.split("@", 1)[1] != component:
+            return True  # A summary never concerns a chat outside its bridge.
+        self._emit(WhatsAppUnreadSummary(
+            chat_jid=chat_jid, unread_count=min(int(count), 100_000),
+            marked_unread=node.get("marked") == "1", is_group=node.get("group") == "1",
+        ))
+        return True
 
     def _on_disconnected(self, _event: object) -> None:
         linking = getattr(self, "_linking", None)
@@ -464,6 +588,8 @@ class BridgeXmppClient(ClientXMPP):
             return
 
         if self._handle_whatsapp_linking_hint(msg, bare_jid):
+            return
+        if self._emit_unread_summary(msg, bare_jid):
             return
 
         self._emit_chat_state_from_message(bare_jid, message_type, msg)
@@ -603,9 +729,14 @@ class BridgeXmppClient(ClientXMPP):
             replaces_id=self._message_correction_id_from_xml(msg.xml),
             call=call,
         )
-        notify = True
+        # WhatsApp history delivered after a link is persisted, never announced.
+        notify = not self._message_is_whatsapp_history(
+            msg.xml, self._sent_at_from_stanza_delay(msg)
+        )
         if call is not None:
-            notify = call.source != "history_sync" and not self._message_predates_session(message)
+            notify = notify and call.source != "history_sync" and not (
+                self._message_predates_session(message)
+            )
         self._emit(MessageReceived(message, notify=notify))
 
     def _on_groupchat_message(self, msg: object) -> None:
@@ -639,7 +770,11 @@ class BridgeXmppClient(ClientXMPP):
                     f"chat={message.chat_jid}"
                 )
             self._group_chat_jids.add(message.chat_jid)
-            notify = not self._message_predates_session(message)
+            notify = not self._message_predates_session(message) and not (
+                self._message_is_whatsapp_history(
+                    msg.xml, self._sent_at_from_stanza_delay(msg)
+                )
+            )
             self._emit(MessageReceived(message, notify=notify))
 
     def _message_predates_session(self, message: Message) -> bool:
@@ -1489,10 +1624,20 @@ class BridgeXmppClient(ClientXMPP):
 
         self._monitor_discovered_group_chats(chats)
 
-    async def _discover_group_chats_with_retries(self, roster_chats: list[Chat]) -> None:
+    async def _discover_group_chats_with_retries(
+        self, roster_chats: list[Chat], generation: int | None = None,
+    ) -> None:
+        # Early passes cover cached groups; the bridge's "sync ready" runs the
+        # authoritative pass. A replaced XMPP session stops this task.
+        if generation is None:
+            generation = getattr(self, "_session_generation", None)
         for delay in (0, 5, 15, 45):
             if delay:
                 await asyncio.sleep(delay)
+            if generation is not None and generation != self._session_generation:
+                return
+            if getattr(self, "_whatsapp_sync_ready_seen", False) and delay:
+                return
             await self._discover_group_chats(roster_chats)
 
     def _monitor_discovered_group_chats(self, chats: list[Chat]) -> None:
@@ -3032,6 +3177,19 @@ class BridgeXmppClient(ClientXMPP):
         except (IqError, PresenceError) as exc:
             self._joined_group_chat_jids.discard(jid)
             condition = str(exc.condition or "")
+            text = str(getattr(exc, "text", "") or "").casefold()
+            if condition == "recipient-unavailable" and LEGACY_SESSION_NOT_READY_TEXT in text:
+                # The bridge is still syncing groups: rejoin once its sync is
+                # ready, event-driven, instead of a timer or a generic retry.
+                if getattr(self, "_whatsapp_sync_ready_seen", False):
+                    self._schedule_group_rejoin(jid, delay=5)
+                else:
+                    waiting = getattr(self, "_groups_waiting_bridge_ready", None)
+                    if waiting is None:
+                        waiting = self._groups_waiting_bridge_ready = set()
+                    waiting.add(jid)
+                self._group_roster_requests.discard(jid)
+                return
             delays = (2, 5, 15, 30)
             attempts = self._group_join_retry_attempts.get(jid, 0)
             if (
@@ -3449,7 +3607,22 @@ class BridgeXmppClient(ClientXMPP):
         finally:
             self._emit(ChatActivityLoadFinished(loaded_count=len(loaded_chat_jids)))
 
+    async def _server_supports_inbox(self) -> bool:
+        if getattr(self, "_inbox_supported", None) is None:
+            try:
+                info = await self["xep_0030"].get_info(jid=self.boundjid.bare, timeout=8)
+            except Exception:
+                return False  # Unknown is not "unsupported": ask again next time.
+            self._inbox_supported = any(
+                feature.get("var") == INBOX_NS
+                for feature in info.xml.findall(f".//{{{DISCO_INFO_NS}}}feature")
+            )
+        return self._inbox_supported
+
     async def load_inbox(self) -> None:
+        # An unsupported query costs a full timeout on every sync; skip it.
+        if not await self._server_supports_inbox():
+            return
         try:
             iq = self.make_iq_get(ito=self.boundjid.bare)
             inbox = ET.Element(f"{{{INBOX_NS}}}inbox", {"messages": "true"})
@@ -3704,6 +3877,12 @@ class BridgeXmppClient(ClientXMPP):
                 stanza.xml,
                 is_sticker=is_sticker,
             )
+        delayed_at = self._sent_at_from_stanza_delay(stanza)
+        # History (bridge marker, or older than a link made in this process)
+        # is persisted and previewed, but never announced or counted unread.
+        history = self._message_is_whatsapp_history(stanza.xml, delayed_at) or (
+            call is not None and call.source == "history_sync"
+        )
         self._emit(
             MessageReceived(
                 Message(
@@ -3714,7 +3893,7 @@ class BridgeXmppClient(ClientXMPP):
                     sent_at=(
                         call.event_timestamp
                         if call is not None
-                        else self._sent_at_from_stanza_delay(stanza)
+                        else delayed_at
                         or datetime.now().astimezone()
                     ),
                     outgoing=outgoing,
@@ -3740,7 +3919,8 @@ class BridgeXmppClient(ClientXMPP):
                     replaces_id=self._message_correction_id_from_xml(stanza.xml),
                     delivery_state="sent" if outgoing else "",
                     call=call,
-                )
+                ),
+                notify=not history,
             )
         )
 

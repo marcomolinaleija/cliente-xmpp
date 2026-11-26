@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import shutil
 import threading
@@ -197,6 +198,7 @@ from cliente_xmpp.xmpp.events import (
     MessageHistoryLoaded,
     MessageReactionReceived,
     MessageReceived,
+    RosterChanged,
     RosterLoaded,
     WhatsAppBridgeStatus,
     WhatsAppLinkCancelResult,
@@ -206,6 +208,8 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppPairingCodeReceived,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
+    WhatsAppSyncReady,
+    WhatsAppUnreadSummary,
     XmppConnected,
     XmppDisconnected,
     XmppError,
@@ -233,6 +237,8 @@ BATCHED_XMPP_EVENTS = (
     RosterLoaded, ChatsDiscovered, ChatActivityLoaded, ChatActivityLoadFinished,
     GroupParticipantUpdated, GroupParticipantsLoaded, ChatDisplayedSynced,
     ContactPresenceUpdated,
+    # Kept in order with the history messages they summarize.
+    WhatsAppUnreadSummary, RosterChanged,
 )
 SEARCH_DEBOUNCE_MS = 250
 WHATSAPP_QR_TIMEOUT_SECONDS = 60
@@ -283,6 +289,23 @@ WHATSAPP_LINK_OPERATION_ERRORS = frozenset({
     "already_connected", "stale_attempt", "stale_request", "cancel_required",
     "invalid_request", "unsupported_operation", "not_connected", "expired",
 })
+
+def whatsapp_sync_detail(phase: str, reason: str = "", retry_in: float = 0.0) -> str:
+    """Truthful post-link sync text: groups wait; individual chats already work."""
+    if phase != "error":
+        return ("Sincronizando contactos y grupos. Los chats individuales ya funcionan; "
+                "los grupos estarán disponibles al terminar.")
+    if reason == "rate_limited" and retry_in > 0:
+        minutes = max(1, math.ceil(retry_in / 60))
+        unit = "minuto" if minutes == 1 else "minutos"
+        return (f"WhatsApp limitó temporalmente la carga de grupos. Próximo intento en "
+                f"{minutes} {unit}; los chats individuales funcionan.")
+    if retry_in > 0:
+        return ("La carga de grupos falló y se reintentará en breve; "
+                "los chats individuales funcionan.")
+    return ("No se completó la carga de grupos; los chats individuales funcionan. "
+            "Usa Reintentar sincronización de WhatsApp en el menú Conexión.")
+
 
 WHATSAPP_LINK_REASON_MESSAGES = {
     "expired": "El QR o el código caducó. Genera uno nuevo para volver a intentarlo.",
@@ -436,6 +459,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_link_status = "unknown"
         self.whatsapp_link_detail = ""
         self.whatsapp_verified = False
+        self.roster_presented = False
+        # Post-link sync: last bridge sync phase (announce transitions once),
+        # pending manual retry feedback, and discoveries waiting for verification.
+        self.whatsapp_last_sync_phase = ""
+        self.whatsapp_sync_retry_pending = False
+        self.whatsapp_identity_changed = False
+        self.pending_discovered_chats: dict[str, Chat] = {}
         self.whatsapp_link_protocol = False
         self.whatsapp_link_recovering = False
         self.whatsapp_recovery_roster: list[Chat] | None = None
@@ -776,6 +806,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.whatsapp_link_detail = ""
         self.pending_roster_chats = None
         self.roster_jids = set()
+        # A new login (possibly another account) presents its chats afresh.
+        self.roster_presented = False
+        self.whatsapp_last_sync_phase = ""
         self.login_panel.set_connecting(True)
         self.status_bar.SetStatusText("Conectando...")
         self.xmpp.connect(login.settings, login.password)
@@ -1731,9 +1764,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.whatsapp_pair_code[0] != event.attempt or event.authenticated
                 or event.status not in {"needs_pair_code", "connecting"}):
             self.whatsapp_pair_code = None
+        # A scheduled bridge retry (rate limit) already covers a manual one.
         self.whatsapp_sync_menu_item.Enable(
-            bool(event.authenticated and event.sync_phase == "error")
+            bool(event.authenticated and event.sync_phase == "error"
+                 and event.sync_retry_in <= 0)
         )
+        if event.authenticated and event.identity:
+            MainWindow._check_whatsapp_identity(self, event.component_jid, event.identity)
         self.whatsapp_link_generation = event.generation
         self.whatsapp_link_attempt = event.attempt
         self.whatsapp_link_revision = event.revision
@@ -1770,7 +1807,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             status = "needs_relogin"
         elif status == "canceling":
             status = "connecting"
-        key = (event.generation, event.attempt, status, event.reason, event.sync_phase)
+        # The retry wait is part of the key in whole minutes, so a manual retry or a
+        # new cooldown updates the text without re-rendering every poll.
+        key = (event.generation, event.attempt, status, event.reason, event.sync_phase,
+               event.sync_reason, math.ceil(event.sync_retry_in / 60))
         if event.image_data:
             self.whatsapp_qr_deadline = event.qr_deadline
         if event.status == "canceled":
@@ -1795,8 +1835,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if event.reason == "disconnected" and event.status == "connecting":
                 detail = ""  # A transient transport drop is reconnection, not logout.
             if event.authenticated and event.sync_phase != "ready":
-                detail = ("La sincronización inicial necesita revisión; puedes usar tus chats."
-                          if event.sync_phase == "error" else "Sincronizando contactos y grupos...")
+                detail = whatsapp_sync_detail(event.sync_phase, event.sync_reason,
+                                              event.sync_retry_in)
+            if event.authenticated:
+                MainWindow._announce_whatsapp_sync_transition(self, event.sync_phase, detail)
             if recovering or recovered or still_authenticated:
                 # Revoke send permission without replacing the conversation or
                 # stealing focus. A temporary transport outage is not unlinking.
@@ -1860,8 +1902,44 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if not self.whatsapp_component_jid:
             return
         self.whatsapp_sync_menu_item.Enable(False)
-        self.status_bar.SetStatusText("Reintentando la sincronización de WhatsApp...")
+        message = "Reintentando la sincronización de WhatsApp..."
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+        # The bridge's next state answers the request; it is announced once.
+        self.whatsapp_sync_retry_pending = True
         self.xmpp.request_whatsapp_sync(self.whatsapp_component_jid)
+
+    def _announce_whatsapp_sync_transition(self, phase: str, detail: str) -> None:
+        """One NVDA announcement per sync transition, never one per message."""
+        previous = getattr(self, "whatsapp_last_sync_phase", "")
+        self.whatsapp_last_sync_phase = phase
+        retry_pending = getattr(self, "whatsapp_sync_retry_pending", False)
+        self.whatsapp_sync_retry_pending = False
+        message = ""
+        if phase == "ready" and previous in {"syncing", "error"}:
+            message = "WhatsApp: contactos y grupos sincronizados."
+        elif phase == "error" and (previous != "error" or retry_pending):
+            message = f"WhatsApp: {detail}"
+        speaker = getattr(self, "speaker", None)
+        if message and speaker is not None:
+            wx.CallAfter(speaker.speak, message)
+
+    def _check_whatsapp_identity(self, component_jid: str, identity: str) -> None:
+        """Warn once when another WhatsApp number is linked; never delete data."""
+        account = self.current_jid
+        store = self.settings_store
+        previous = store.load_whatsapp_identity(account, component_jid)
+        if previous == identity:
+            return
+        store.save_whatsapp_identity(account, component_jid, identity)
+        if not previous:
+            return
+        self.whatsapp_identity_changed = True
+        message = ("Se vinculó un número de WhatsApp distinto al anterior. Los chats del "
+                   "número anterior se conservan en este equipo, pero sus grupos no se "
+                   "abrirán automáticamente.")
+        self.status_bar.SetStatusText(message)
+        wx.CallAfter(self.speaker.speak, message)
 
     def _handle_whatsapp_link_session_started(
         self,
@@ -2517,11 +2595,45 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             return
 
         self._apply_roster_chats(self.pending_roster_chats)
+        self._apply_pending_discovered_chats()
         self._debug_perf(
             "_apply_pending_roster_if_ready.applied",
             started_at,
             chats=len(self.pending_roster_chats),
         )
+
+    def _apply_pending_discovered_chats(self) -> None:
+        pending = getattr(self, "pending_discovered_chats", None)
+        if not pending or not self.whatsapp_verified:
+            return
+        self.pending_discovered_chats = {}
+        self._upsert_discovered_chats(list(pending.values()))
+
+    def _handle_roster_changed(self, chats: list[Chat]) -> None:
+        """Incremental roster: names and searchable chats, never focus or order."""
+        self.pending_roster_chats = chats
+        self.roster_jids = {chat.jid for chat in chats}
+        self._update_chat_names(chats)
+        if not self.whatsapp_verified or not getattr(self, "roster_presented", False):
+            return  # The first presentation applies this roster itself.
+        self._upsert_discovered_chats(chats, update_status=False)
+
+    def _handle_whatsapp_unread_summary(self, event: WhatsAppUnreadSummary) -> None:
+        """The phone's unread state from the history sync is authoritative."""
+        unread = max(event.unread_count, 1 if event.marked_unread else 0)
+        current = self.conversation.current_chat
+        if (current is not None and current.jid == event.chat_jid
+                and self.conversation.IsShown() and self.IsActive()):
+            return  # The user is reading this chat right now.
+        if self.loading_initial_chat_activity:
+            pending = self.pending_chat_activity.get(event.chat_jid)
+            self.pending_chat_activity[event.chat_jid] = (
+                replace(pending, unread_count=unread) if pending is not None
+                else ChatActivityLoaded(chat_jid=event.chat_jid, sent_at=None,
+                                        unread_count=unread, is_group=event.is_group)
+            )
+        self._update_chat_summary(event.chat_jid, unread_count=unread, is_group=event.is_group)
+        MainWindow._request_chat_list_refresh(self)
 
     def _apply_cached_chats_after_whatsapp_verified(self) -> None:
         cached_chats = self._load_cached_chats()
@@ -2598,7 +2710,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             for chat in cached_chats
             if chat.is_group and (chat.auto_join or chat.jid in visible_cached_jids)
         ]
-        self.xmpp.monitor_group_chats(active_group_jids)
+        # Cached groups may belong to a previously linked number: do not join them
+        # automatically (the bridge would reject them). Opening one still joins it.
+        if not getattr(self, "whatsapp_identity_changed", False):
+            self.xmpp.monitor_group_chats(active_group_jids)
         render_started_at = time.perf_counter()
         self.chat_list.set_chats(self._sort_chats_by_recency(visible_cached_chats))
         self._debug_perf(
@@ -2609,7 +2724,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         )
         if not self.chat_list.selected_chat():
             self.chat_list.select_first()
-        self.chat_list.focus()
+        # Only the first presentation moves focus. A reconnect or relink keeps
+        # the user's focus, open conversation and reading position.
+        if not getattr(self, "roster_presented", False):
+            self.chat_list.focus()
+        self.roster_presented = True
         self.status_bar.SetStatusText(
             f"{self.loaded_chat_summaries} chats locales. Cargando actualizaciones..."
         )
@@ -7501,7 +7620,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.whatsapp_pair_phone_pending = ""
                 self.pending_roster_chats = None
                 self._set_whatsapp_remote_actions_enabled(False)
-                if not getattr(self, "development_mode", False):
+                # Once chats are on screen, a reconnect must not wipe the list or
+                # close the open conversation: sending is already disabled above.
+                if (not getattr(self, "development_mode", False)
+                        and not getattr(self, "roster_presented", False)):
                     self._show_chat_placeholder("Conexión interrumpida. Esperando reconexión...")
                 self.login_panel.set_connecting(False)
                 if reason:
@@ -7609,9 +7731,21 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     self.status_bar.SetStatusText(message)
             case ChatsDiscovered(chats=chats):
                 if not self.whatsapp_verified:
+                    # Discovery is not repeated: keep it until WhatsApp is verified.
+                    pending = getattr(self, "pending_discovered_chats", None)
+                    if pending is None:
+                        pending = self.pending_discovered_chats = {}
+                    for chat in chats:
+                        pending[chat.jid] = chat
                     return
                 self._upsert_discovered_chats(chats)
                 self._preload_recent_histories()
+            case RosterChanged(chats=chats):
+                self._handle_roster_changed(chats)
+            case WhatsAppUnreadSummary():
+                self._handle_whatsapp_unread_summary(event)
+            case WhatsAppSyncReady():
+                pass  # Announced from the link state; the service completes the sync.
             case GroupParticipantUpdated(participant=participant):
                 self._remember_group_participant(participant)
             case GroupParticipantsLoaded(group_jid=group_jid, participants=participants):
@@ -10264,6 +10398,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
 
     def _apply_synced_chat_displayed(self, chat_jid: str) -> None:
         marker_id = self.synced_displayed_marker_ids_by_chat.get(chat_jid, "")
+        if not marker_id:
+            # Without a marker there is nothing to apply: never sort the whole
+            # history once per message (bursts after linking were O(n^2 log n)).
+            return
         chat = self._chat_by_jid(chat_jid)
         position = self._displayed_marker_position(chat_jid, marker_id)
         if chat is None or position is None:
@@ -10854,7 +10992,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             f"{hour_12}:{minute:02d} {suffix}"
         )
 
-    def _upsert_discovered_chats(self, chats: list[Chat]) -> None:
+    def _upsert_discovered_chats(self, chats: list[Chat], *, update_status: bool = True) -> None:
         if not chats:
             return
 
@@ -10908,7 +11046,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if added and self.loading_initial_chat_activity and not self.chat_list.is_searching:
             self.chat_list.force_refresh_visible()
         self._select_first_chat_if_needed()
-        self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
+        if update_status:
+            self.status_bar.SetStatusText(f"{self.loaded_chat_summaries} chats disponibles")
 
     def _chat_by_jid(self, jid: str) -> Chat | None:
         return (

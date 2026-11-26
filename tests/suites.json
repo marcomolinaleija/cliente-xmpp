@@ -30,6 +30,10 @@
       "area": "connection",
       "layer": "fast"
     },
+    "test_post_link_sync": {
+      "area": "connection",
+      "layer": "fast"
+    },
     "test_xmpp_reconnection": {
       "area": "connection",
       "layer": "fast",

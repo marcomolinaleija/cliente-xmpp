@@ -23,6 +23,22 @@ LINKING_INTERVAL = 3.0
 STABLE_INTERVAL = 60.0
 
 
+def _short_token(value: str) -> str:
+    """Optional bridge tokens: bounded, alphanumeric/underscore, never free text."""
+    value = (value or "").strip()
+    if len(value) > 64 or not value.replace("_", "").isalnum():
+        return ""
+    return value
+
+
+def _bounded_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(3600.0, max(0.0, seconds)) if seconds == seconds else 0.0
+
+
 class LinkingProtocol:
     def __init__(self, client):
         self.client = client
@@ -123,6 +139,9 @@ class LinkingProtocol:
             authenticated=authenticated, reason=node.get("error") or node.get("reason", ""),
             qr_revision=qr_revision, qr_deadline=deadline, image_data=image, code=code,
             sync_phase=node.get("sync", "pending"),
+            sync_reason=_short_token(node.get("sync_reason", "")),
+            sync_retry_in=_bounded_seconds(node.get("sync_retry_in", "0")),
+            identity=_short_token(node.get("identity", "") if authenticated else ""),
         )
         self.states[component] = event
         bound = self.request_attempts.get(component)
@@ -131,6 +150,10 @@ class LinkingProtocol:
             self.pending_requests.pop(component, None)
             self.request_attempts.pop(component, None)
         self.client._whatsapp_session_ready = authenticated
+        note = getattr(self.client, "_note_whatsapp_link_state", None)
+        if callable(note):
+            # Before the initial sync starts: it must know whether this is a new link.
+            note(component, previous, event)
         if authenticated and not (previous and previous.authenticated):
             self.client._start_initial_remote_sync_if_ready()
         self.client._emit(event)

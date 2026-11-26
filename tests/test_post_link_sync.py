@@ -386,6 +386,24 @@ class UiIdentityTests(unittest.TestCase):
             store.save_whatsapp_identity(ACCOUNT, COMPONENT, "not a token")
             self.assertEqual(store.load_whatsapp_identity(ACCOUNT, COMPONENT), "bbb222")
 
+    def test_locked_settings_file_neither_breaks_link_handling_nor_repeats_warning(self):
+        from cliente_xmpp.ui.main_window import MainWindow
+
+        store = Mock()
+        store.load_whatsapp_identity.return_value = "aaa111"
+        store.save_whatsapp_identity.side_effect = PermissionError("settings.json bloqueado")
+        window = SimpleNamespace(current_jid=ACCOUNT, settings_store=store,
+                                 whatsapp_identity_changed=False, status_bar=Mock(),
+                                 speaker=Mock())
+        with patch("cliente_xmpp.ui.main_window.wx.CallAfter") as call_after:
+            MainWindow._check_whatsapp_identity(window, COMPONENT, "bbb222")
+            MainWindow._check_whatsapp_identity(window, COMPONENT, "bbb222")
+        self.assertTrue(window.whatsapp_identity_changed)
+        call_after.assert_called_once()
+        # Repeated polls of the same identity do not touch the settings file again.
+        store.load_whatsapp_identity.assert_called_once()
+        store.save_whatsapp_identity.assert_called_once()
+
 
 class UiChatStateTests(unittest.TestCase):
     """M1/E4/E7/P2/P3 on the wx side, with a minimal fake window."""

@@ -1960,11 +1960,22 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
     def _check_whatsapp_identity(self, component_jid: str, identity: str) -> None:
         """Warn once when another WhatsApp number is linked; never delete data."""
         account = self.current_jid
+        # Link states repeat on every poll: check each identity once per process,
+        # without reading settings.json again.
+        checked = (account, component_jid, identity)
+        if getattr(self, "_whatsapp_identity_checked", None) == checked:
+            return
+        self._whatsapp_identity_checked = checked
         store = self.settings_store
         previous = store.load_whatsapp_identity(account, component_jid)
         if previous == identity:
             return
-        store.save_whatsapp_identity(account, component_jid, identity)
+        try:
+            store.save_whatsapp_identity(account, component_jid, identity)
+        except OSError:
+            # A locked settings file must not interrupt the link-state handling;
+            # the warning below still applies and the next session saves it.
+            pass
         if not previous:
             return
         self.whatsapp_identity_changed = True

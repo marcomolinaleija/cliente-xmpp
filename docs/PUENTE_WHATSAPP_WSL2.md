@@ -210,6 +210,34 @@ automatizadas. Desinstalar el cliente no elimina automáticamente `WhatsAppCAN-B
 distribución contiene la sesión y los datos del usuario; se elimina sólo mediante el flujo con
 respaldo y confirmación descrito más adelante.
 
+### Fallos de la configuración del puente local
+
+`install-appliance.ps1` se ejecuta oculto. El instalador le pasa `-LogPath` y cada intento
+queda en `%LOCALAPPDATA%\WhatsAppCAN\logs\bridge-install-<fecha>.log`: la transcripción de
+PowerShell, la salida de WSL y podman, y al fallar `ERROR`, `POSIBLE CAUSA (n)` y `QUÉ HACER`.
+Las líneas con contraseñas, secretos o claves privadas se sustituyen por un aviso; la cabecera
+de PowerShell incluye el usuario y el nombre del equipo de Windows.
+
+Al fallar, salvo en modo silencioso, un diálogo muestra la sugerencia y ofrece «Copiar registro»
+y «Abrir registro»; el mensaje final repite la sugerencia y la ruta. El código de salida
+identifica la causa; `Get-InstallFailure` y `GetBridgeFailureHint` deben mantener los mismos:
+
+| Código | Causa probable |
+| --- | --- |
+| 10 | Un puerto local (5222, 5280, 8080 u 8766) ya está en uso |
+| 11 | Restos de un intento anterior en la carpeta de instalación |
+| 12 | Virtualización no disponible para WSL2 |
+| 13 | WSL ausente o desactualizado |
+| 14 | Falta espacio en disco |
+| 15 | Paquete descargado dañado o inesperado |
+| 16 | Ya hay un puente instalado que no se reemplaza automáticamente |
+| 17 | Otra instalación o una migración sin terminar |
+| 18 | Instalado, pero los servicios no terminaron de configurarse |
+| 1 | Causa no reconocida |
+
+Ningún caso borra datos: la carpeta sobrante (11) sólo se renombra a mano tras comprobar con
+`wsl -l -v` que no existe `WhatsAppCAN-Bridge`.
+
 ## Construir
 
 Desde PowerShell, sin permisos administrativos:

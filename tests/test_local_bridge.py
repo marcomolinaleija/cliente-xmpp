@@ -386,12 +386,16 @@ class WslApplianceBuildTests(unittest.TestCase):
         self.assertIn("ResultCode <> 0", setup_script)
         self.assertIn("{sysnative}\\wsl.exe", setup_script)
         self.assertIn("--set-connection-mode", setup_script)
+        self.assertIn("' -LogPath \"' + BridgeInstallLogPath", setup_script)
+        self.assertIn("'Detalles en: ' + BridgeInstallLogPath", setup_script)
+        self.assertIn(r"WhatsAppCAN\logs\bridge-install-", setup_script)
 
         install_script = (
             self._appliance_root() / "install-appliance.ps1"
         ).read_text(encoding="utf-8-sig")
         self.assertRegex(install_script, re.compile(r"\[string\]\$ExpectedPackageSha256"))
         self.assertIn("[switch]$InstallOrResume", install_script)
+        self.assertIn("Start-Transcript -LiteralPath $LogPath", install_script)
         self.assertIn("function Invoke-LegacyMigration", install_script)
         self.assertIn("function Restore-LegacyBackup", install_script)
         self.assertIn("function Recover-InterruptedMigration", install_script)

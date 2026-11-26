@@ -89,6 +89,7 @@ var
   UsagePage: TInputOptionWizardPage;
   BridgePackageReady: Boolean;
   BridgeInstallReady: Boolean;
+  BridgeInstallLogPath: String;
 
 function ShouldInstallLocalBridge: Boolean;
 begin
@@ -173,12 +174,83 @@ begin
     '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
     ExpandConstant('{tmp}\') + ExtractFileName('{#WslInstallScript}') +
     '" -PackagePath "' + ExpandConstant('{tmp}\{#WslPackageName}') +
-    '" -ExpectedPackageSha256 "{#WslPackageSha256}" -InstallOrResume';
+    '" -ExpectedPackageSha256 "{#WslPackageSha256}" -InstallOrResume' +
+    ' -LogPath "' + BridgeInstallLogPath + '"';
+end;
+
+// Keep in step with Get-InstallFailure in install-appliance.ps1 (same exit codes).
+function GetBridgeFailureHint(Code: Integer): String;
+begin
+  case Code of
+    10: Result := 'Otro programa ya usa un puerto que necesita el puente (5222, 5280, 8080 u 8766). ' +
+      'Ciérralo (otro servidor XMPP, Docker o un servidor web en el puerto 8080) y vuelve a intentarlo.';
+    11: Result := 'Quedaron archivos de un intento anterior en la carpeta del puente local. ' +
+      'Si "wsl -l -v" no muestra WhatsAppCAN-Bridge, cambia el nombre de la carpeta indicada en el registro y vuelve a intentarlo.';
+    12: Result := 'La virtualización no está disponible para WSL2. Actívala en la BIOS/UEFI junto con ' +
+      'la característica "Plataforma de máquina virtual", ejecuta "wsl --install --no-distribution" y reinicia Windows.';
+    13: Result := 'WSL no está instalado o está desactualizado. Ejecuta "wsl --update", reinicia Windows y vuelve a intentarlo.';
+    14: Result := 'No hay espacio suficiente en el disco. Libera al menos 4 GB y vuelve a intentarlo.';
+    15: Result := 'El paquete descargado del puente está incompleto. Vuelve a intentarlo para descargarlo de nuevo.';
+    16: Result := 'Ya hay un puente local instalado que no se puede reemplazar automáticamente. ' +
+      'Usa el actualizador del puente local o comparte el registro; no se borró nada.';
+    17: Result := 'Hay otra instalación o una migración sin terminar. Espera o reinicia Windows y vuelve a intentarlo.';
+    18: Result := 'El puente se instaló, pero sus servicios no terminaron de configurarse. Vuelve a intentarlo; ' +
+      'se retoma sin borrar datos.';
+  else
+    Result := 'No se reconoció la causa. Comparte el registro para revisarlo.';
+  end;
+end;
+
+function CopyBridgeLogToClipboard: Boolean;
+var
+  ResultCode: Integer;
+  QuotedPath: String;
+begin
+  QuotedPath := BridgeInstallLogPath;
+  StringChangeEx(QuotedPath, '''', '''''', True);
+  Result :=
+    Exec(
+      ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -NonInteractive -Command "Get-Content -Raw -Encoding UTF8 -LiteralPath ''' +
+        QuotedPath + ''' | Set-Clipboard"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode
+    ) and (ResultCode = 0);
+end;
+
+procedure OfferBridgeLog(Hint: String);
+var
+  Choice: Integer;
+  Status: String;
+  ErrorCode: Integer;
+begin
+  if WizardSilent or not FileExists(BridgeInstallLogPath) then
+    Exit;
+  Status := '';
+  repeat
+    Choice := TaskDialogMsgBox(
+      'No se pudo configurar el puente local.',
+      Hint + #13#13 + 'Registro: ' + BridgeInstallLogPath + Status,
+      mbError, MB_YESNOCANCEL, ['Copiar registro', 'Abrir registro'], 0);
+    if Choice = IDYES then
+    begin
+      if CopyBridgeLogToClipboard then
+        Status := #13#13 + 'El registro se copió al portapapeles.'
+      else
+        Status := #13#13 + 'No se pudo copiar el registro; usa "Abrir registro".';
+    end
+    else if Choice = IDNO then
+    begin
+      if not ShellExec('open', 'notepad.exe', '"' + BridgeInstallLogPath + '"', '',
+          SW_SHOWNORMAL, ewNoWait, ErrorCode) then
+        Status := #13#13 + 'No se pudo abrir el registro.';
+    end;
+  until Choice = IDCANCEL;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  Hint: String;
 begin
   Result := '';
   if not ShouldInstallLocalBridge or BridgeInstallReady then
@@ -212,6 +284,10 @@ begin
 
   WizardForm.StatusLabel.Caption :=
     'Configurando el puente local de WhatsApp. Esto puede tardar varios minutos...';
+  // Each attempt gets its own log; the hidden PowerShell window shows nothing.
+  BridgeInstallLogPath :=
+    ExpandConstant('{localappdata}\WhatsAppCAN\logs\bridge-install-') +
+    GetDateTimeString('yyyymmddhhnnss', #0, #0) + '.log';
   if not Exec(
     ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe'),
     GetBridgeInstallParameters(''),
@@ -228,10 +304,13 @@ begin
   end;
   if ResultCode <> 0 then
   begin
+    Hint := GetBridgeFailureHint(ResultCode);
+    OfferBridgeLog(Hint);
     Result :=
-      'No se pudo completar la configuración del puente local. ' +
+      'No se pudo completar la configuración del puente local.'#13#13 + Hint + #13#13 +
       'El instalador puede volver a intentarlo sin borrar los datos ya creados. ' +
-      'Código de salida: ' + IntToStr(ResultCode) + '.';
+      'Código de salida: ' + IntToStr(ResultCode) + '.'#13#13 +
+      'Detalles en: ' + BridgeInstallLogPath;
     Exit;
   end;
   BridgeInstallReady := True;

@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -65,6 +66,80 @@ function Assert($condition, $message) { if (-not $condition) { throw $message } 
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
             return result.stdout.decode(errors="replace")
+
+    def test_hidden_install_failure_is_recorded_in_the_log(self):
+        # The Windows installer runs the script hidden; the log must explain the failure.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "fixture-package.txt"
+            package.write_text("fictitious", encoding="utf-8")
+            log = root / "logs" / "bridge-install-fixture.log"
+            result = subprocess.run(
+                [
+                    "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", str(ROOT / "install-appliance.ps1"),
+                    "-PackagePath", str(package), "-InstallOrResume", "-LogPath", str(log),
+                ],
+                env=powershell_environment(),
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(result.returncode, 15)  # Damaged or unexpected package.
+            self.assertTrue(log.is_file())
+            text = log.read_bytes().decode("utf-8", errors="replace").replace(chr(0), "")
+            self.assertIn("Configuración del puente local", text)
+            self.assertIn("ERROR: El paquete debe tener extensión .wsl.", text)
+            self.assertIn("POSIBLE CAUSA (15):", text)
+            self.assertIn("QUÉ HACER:", text)
+
+    def test_install_failures_map_to_stable_codes_and_hints(self):
+        output = self.run_ps(
+            r"""
+$cases = @(
+    @(10, 'El puerto local 8080 ya está en uso. Detén la otra instancia.', @()),
+    @(11, 'La carpeta de instalación no está vacía: C:/fixture/WSL', @()),
+    @(15, 'El paquete .wsl no coincide con el SHA-256 esperado.', @()),
+    @(16, 'Se rechazó reemplazar el appliance 1.3.0 por una versión anterior (1.2.0).', @()),
+    @(17, 'Ya hay una instalación o migración activa para esta distribución.', @()),
+    @(14, "El comando 'wsl.exe --install' terminó con código 1.", @('Error code: Wsl/0x80070070')),
+    @(12, "El comando 'wsl.exe --install' terminó con código 1.", @('Error: 0x80370102 fixture')),
+    @(13, 'Se requiere WSL 2.4.4.0 o posterior; está instalada la versión 2.0.9.0.', @()),
+    @(18, 'La instalación no confirmó la versión y las capacidades requeridas, incluida voz.', @()),
+    @(1, 'Algo inesperado del fixture.', @())
+)
+foreach ($case in $cases) {
+    $failure = Get-InstallFailure -Message $case[1] -NativeOutput $case[2]
+    Assert ($failure.Code -eq $case[0]) "expected $($case[0]) got $($failure.Code) for $($case[1])"
+    Assert ([bool]$failure.Cause -and [bool]$failure.Action) "missing hint for $($case[0])"
+}
+'classified'
+"""
+        )
+        self.assertIn("classified", output)
+
+    def test_installer_hints_cover_every_script_failure_code(self):
+        script = (ROOT / "install-appliance.ps1").read_text(encoding="utf-8-sig")
+        setup = (ROOT.parents[1] / "installer" / "WhatsApp-CAN.iss").read_text(encoding="utf-8")
+        codes = set(re.findall(r"@\{ Code = (\d+);", script))
+        self.assertGreaterEqual(len(codes), 9)
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertRegex(setup, rf"(?m)^\s+{code}: Result :=")
+        self.assertIn("'Copiar registro', 'Abrir registro'", setup)
+        self.assertIn("Set-Clipboard", setup)
+        self.assertIn("if WizardSilent or not FileExists(BridgeInstallLogPath)", setup)
+
+    def test_native_output_is_logged_without_credentials(self):
+        output = self.run_ps(
+            r"""
+Write-NativeLine 'wsl: fictitious failure 0x80370102'
+Write-NativeLine '{"jid":"x@example.invalid","password":"fixture-secret"}'
+Write-NativeLine ''
+"""
+        )
+        self.assertIn("fictitious failure 0x80370102", output)
+        self.assertNotIn("fixture-secret", output)
+        self.assertIn("nea omitida del registro", output)
 
     def test_version_detection_rejects_unknown_and_requires_voice_capability(self):
         self.run_ps(

@@ -9,12 +9,115 @@ param(
     [string]$ExpectedPackageSha256 = "",
     [string]$ExpectedApplianceVersion = "",
     [switch]$Resume,
-    [switch]$InstallOrResume
+    [switch]$InstallOrResume,
+    [string]$LogPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $minimumWslVersion = [Version]"2.4.4.0"
+
+# The Windows installer runs this script hidden; a log is the only way to see why it failed.
+$script:LogEnabled = $false
+if ($LogPath) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
+        Start-Transcript -LiteralPath $LogPath -Append -Force | Out-Null
+        $script:LogEnabled = $true
+        Write-Host "Configuración del puente local de WhatsApp CAN - $(Get-Date -Format o)"
+        Write-Host "Windows $([Environment]::OSVersion.Version); PowerShell $($PSVersionTable.PSVersion)"
+    }
+    catch {
+        Write-Warning "No se pudo abrir el registro de instalación: $($_.Exception.Message)"
+    }
+}
+
+$script:NativeTail = [Collections.Generic.List[string]]::new()
+
+function Get-InstallFailure {
+    # Maps a failure to a stable exit code and a hint; the Windows installer shows the
+    # same hint for each code. Order matters: the script's own message is the most precise.
+    param(
+        [string]$Message = "",
+        [string[]]$NativeOutput = @()
+    )
+
+    $native = ($NativeOutput -join "`n")
+    $rules = @(
+        @{ Code = 10; Source = $Message; Pattern = 'puerto local \d+'
+           Cause = 'Otro programa ya usa un puerto que necesita el puente (5222, 5280, 8080 u 8766).'
+           Action = 'Cierra ese programa (otro servidor XMPP, Docker o un servidor web en el puerto 8080) y vuelve a ejecutar el instalador.' },
+        @{ Code = 11; Source = $Message; Pattern = 'carpeta (de instalación|temporal de la nueva distribución|de rollback) (no está vacía|ya existe)'
+           Cause = 'Quedaron archivos de un intento anterior en la carpeta del puente local.'
+           Action = 'Si "wsl -l -v" no muestra WhatsAppCAN-Bridge, cambia el nombre de la carpeta indicada en el registro y vuelve a ejecutar el instalador. No la borres hasta confirmar que no la necesitas.' },
+        @{ Code = 15; Source = $Message; Pattern = 'SHA-256|extensión \.wsl|versión del paquete'
+           Cause = 'El paquete descargado del puente está incompleto o no es el esperado.'
+           Action = 'Vuelve a ejecutar el instalador para descargarlo de nuevo.' },
+        @{ Code = 16; Source = $Message; Pattern = 'versión anterior|No se pudo leer la versión del appliance instalado|Ya existe una distribución llamada'
+           Cause = 'Ya hay un puente local instalado que el instalador no puede reemplazar automáticamente.'
+           Action = 'Usa el actualizador del puente local o comparte este registro para revisarlo; no se borró nada.' },
+        @{ Code = 17; Source = $Message; Pattern = 'instalación o migración activa|migración pendiente|journal de migración'
+           Cause = 'Hay otra instalación o una migración anterior sin terminar.'
+           Action = 'Espera a que termine o reinicia Windows y vuelve a ejecutar el instalador; retomará la migración.' },
+        @{ Code = 14; Source = "$Message`n$native"; Pattern = '0x80070070|espacio suficiente|not enough space|No space left|ENOSPC'
+           Cause = 'No hay espacio suficiente en el disco.'
+           Action = 'Libera al menos 4 GB en la unidad de Windows y vuelve a ejecutar el instalador.' },
+        @{ Code = 12; Source = "$Message`n$native"; Pattern = '0x80370102|0x8037010[0-9a-f]|0x80370114|HCS_E_HYPERV|virtualiza|Virtual Machine Platform|Plataforma de máquina virtual'
+           Cause = 'La virtualización no está disponible para WSL2.'
+           Action = 'Activa la virtualización en la BIOS/UEFI y la característica "Plataforma de máquina virtual", ejecuta "wsl --install --no-distribution", reinicia Windows y vuelve a intentarlo.' },
+        @{ Code = 13; Source = "$Message`n$native"; Pattern = 'Se requiere WSL|WSL no está instalado|0x8007019e|0x800701bc|wsl --update'
+           Cause = 'WSL no está instalado o está desactualizado.'
+           Action = 'Ejecuta "wsl --update" (o "wsl --install --no-distribution"), reinicia Windows y vuelve a ejecutar el instalador.' },
+        @{ Code = 18; Source = $Message; Pattern = 'no confirmó la versión|configuración local del cliente|CA local'
+           Cause = 'El puente se instaló, pero sus servicios no terminaron de configurarse.'
+           Action = 'Vuelve a ejecutar el instalador: retoma la configuración sin borrar datos. Si se repite, comparte este registro.' }
+    )
+    foreach ($rule in $rules) {
+        if ($rule.Source -match $rule.Pattern) {
+            return [pscustomobject]@{ Code = $rule.Code; Cause = $rule.Cause; Action = $rule.Action }
+        }
+    }
+    return [pscustomobject]@{
+        Code = 1
+        Cause = 'No se reconoció la causa.'
+        Action = 'Comparte este registro para revisarlo; el instalador puede volver a intentarlo sin borrar datos.'
+    }
+}
+
+trap {
+    $failure = Get-InstallFailure -Message $_.Exception.Message -NativeOutput @($script:NativeTail)
+    if ($script:LogEnabled) {
+        Write-Host "ERROR: $($_.Exception.Message)"
+        Write-Host $_.ScriptStackTrace
+        Write-Host "POSIBLE CAUSA ($($failure.Code)): $($failure.Cause)"
+        Write-Host "QUÉ HACER: $($failure.Action)"
+        try { Stop-Transcript | Out-Null } catch { }
+    }
+    else {
+        Write-Warning "$($failure.Cause) $($failure.Action)"
+    }
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit $failure.Code
+}
+
+function Write-NativeLine {
+    param($Line)
+
+    $text = if ($Line -is [Management.Automation.ErrorRecord]) { $Line.Exception.Message } else { [string]$Line }
+    $text = ($text -replace "`0", "").TrimEnd()
+    if (-not $text) {
+        return
+    }
+    # Native output goes to the log; never let a credential reach it.
+    if ($text -match '(?i)password|contraseña|secret|BEGIN [A-Z ]*PRIVATE KEY') {
+        $text = "[línea omitida del registro: puede contener credenciales]"
+    }
+    if (Test-Path variable:script:NativeTail) {
+        $script:NativeTail.Add($text)
+        if ($script:NativeTail.Count -gt 60) { $script:NativeTail.RemoveAt(0) }
+    }
+    Write-Host $text
+}
 
 function Invoke-Native {
     param(
@@ -22,9 +125,19 @@ function Invoke-Native {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "El comando '$FilePath $($Arguments -join ' ')' terminó con código $LASTEXITCODE."
+    # Route output through the host so the transcript records it. Windows PowerShell
+    # turns redirected stderr into errors, which must not abort under "Stop".
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>&1 | ForEach-Object { Write-NativeLine $_ }
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "El comando '$FilePath $($Arguments -join ' ')' terminó con código $exitCode."
     }
 }
 
@@ -566,7 +679,13 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not $connectionJson) {
         throw "No se pudo obtener la configuración local del cliente."
     }
-    $connection = $connectionJson | ConvertFrom-Json
+    try {
+        $connection = $connectionJson | ConvertFrom-Json
+    }
+    catch {
+        # The text holds the local password; keep it out of the error and the log.
+        throw "La configuración local del cliente no tiene un formato válido."
+    }
     $caCertificate = (& wsl.exe -d $DistroName -u root -- /usr/local/sbin/whatsapp-can-bridge ca-certificate | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $caCertificate -notmatch 'BEGIN CERTIFICATE') {
         throw "No se pudo exportar la CA local del appliance."
@@ -602,4 +721,7 @@ catch {
 finally {
     $applianceMigrationLock.ReleaseMutex()
     $applianceMigrationLock.Dispose()
+}
+if ($script:LogEnabled) {
+    Stop-Transcript | Out-Null
 }

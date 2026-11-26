@@ -82,6 +82,8 @@ class PreferencesDialog(wx.Dialog):
         self._transcription_chats: list[tuple[str, str]] = []
         self._transcription_checked: set[str] = set()
         self._visible_chat_jids: list[str] = []
+        # Native look: the yellow-on-blue theme would owner-draw the checkboxes.
+        self.keep_native_appearance = True
 
         self.notebook = wx.Notebook(self)
         self.notebook.SetName("Categorías de preferencias")
@@ -119,7 +121,8 @@ class PreferencesDialog(wx.Dialog):
         self.transcription_auto_mode.Bind(wx.EVT_CHOICE, self._on_dependent_toggle)
         self.clear_api_key.Bind(wx.EVT_CHECKBOX, self._on_dependent_toggle)
         self.transcription_chat_filter.Bind(wx.EVT_TEXT, self._on_chat_filter)
-        self.transcription_chats.Bind(wx.EVT_CHECKLISTBOX, self._on_chat_checked)
+        self.transcription_chats.Bind(wx.EVT_LIST_ITEM_CHECKED, self._on_chat_checked)
+        self.transcription_chats.Bind(wx.EVT_LIST_ITEM_UNCHECKED, self._on_chat_checked)
         self.transcription_reload_button.Bind(wx.EVT_BUTTON, self._on_transcription_reload)
 
     # -- construcción ----------------------------------------------------------
@@ -264,7 +267,13 @@ class PreferencesDialog(wx.Dialog):
         self.transcription_chat_filter = wx.SearchCtrl(page)
         self.transcription_chat_filter.SetDescriptiveText("Buscar chat")
         self._labelled(page, sizer, "Filtrar chats:", self.transcription_chat_filter)
-        self.transcription_chats = wx.CheckListBox(page, size=(-1, 180))
+        # A native list-view with checkboxes: NVDA reads "marcado" per row and Space
+        # toggles it (wx.CheckListBox is owner-drawn and does not expose the state).
+        self.transcription_chats = wx.ListCtrl(
+            page, size=(-1, 180), style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.LC_NO_HEADER
+        )
+        self.transcription_chats.InsertColumn(0, "Chat", width=520)
+        self.transcription_chats.EnableCheckBoxes(True)
         self._labelled(page, sizer, "Chats seleccionados:", self.transcription_chats)
         self.transcription_reload_button = wx.Button(page, label="Volver a cargar desde el puente")
         sizer.Add(self.transcription_reload_button, 0, wx.ALL, 8)
@@ -528,23 +537,29 @@ class PreferencesDialog(wx.Dialog):
             for jid, label in self._transcription_chats
             if not query or query in label.casefold() or query in jid
         ]
-        self.transcription_chats.Freeze()
+        chats = self.transcription_chats
+        chats.Freeze()
+        self._filling_chats = True
         try:
-            self.transcription_chats.Set([label for _jid, label in visible])
+            chats.DeleteAllItems()
             self._visible_chat_jids = [jid for jid, _label in visible]
-            for index, jid in enumerate(self._visible_chat_jids):
-                self.transcription_chats.Check(index, jid in self._transcription_checked)
+            for index, (jid, label) in enumerate(visible):
+                chats.InsertItem(index, label)
+                chats.CheckItem(index, jid in self._transcription_checked)
         finally:
-            self.transcription_chats.Thaw()
+            self._filling_chats = False
+            chats.Thaw()
 
     def _on_chat_filter(self, _event: wx.CommandEvent) -> None:
         self._fill_chat_list()
 
-    def _on_chat_checked(self, event: wx.CommandEvent) -> None:
-        index = event.GetInt()
+    def _on_chat_checked(self, event: wx.ListEvent) -> None:
+        if getattr(self, "_filling_chats", False):
+            return
+        index = event.GetIndex()
         if 0 <= index < len(self._visible_chat_jids):
             jid = self._visible_chat_jids[index]
-            if self.transcription_chats.IsChecked(index):
+            if self.transcription_chats.IsItemChecked(index):
                 self._transcription_checked.add(jid)
             else:
                 self._transcription_checked.discard(jid)

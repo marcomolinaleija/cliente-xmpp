@@ -14,7 +14,16 @@ SECTION_BLUE = wx.Colour(6, 32, 78)
 UNREAD_BLUE = wx.Colour(12, 57, 117)
 
 
+# Windows only reports "checked" to screen readers while these controls are
+# native. A custom text colour makes wxMSW owner-draw them, and NVDA then reads
+# a bare button without its state. They keep the system look instead.
+NATIVE_STATE_CONTROLS = (wx.CheckBox, wx.RadioButton, wx.RadioBox)
+
+
 def apply_theme(window: wx.Window) -> None:
+    # Windows that opt out (e.g. Preferences) keep the native system appearance.
+    if getattr(window, "keep_native_appearance", False):
+        return
     _apply_theme_to_window(window)
     for child in window.GetChildren():
         apply_theme(child)
@@ -22,6 +31,11 @@ def apply_theme(window: wx.Window) -> None:
 
 
 def _apply_theme_to_window(window: wx.Window) -> None:
+    if isinstance(window, NATIVE_STATE_CONTROLS):
+        # A colour inherited at creation already owner-draws them: undo it.
+        window.SetForegroundColour(wx.NullColour)
+        window.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
+        return
     background = (
         DARKER_BLUE
         if isinstance(window, (wx.TextCtrl, wx.ListBox, wx.ListCtrl))

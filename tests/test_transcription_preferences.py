@@ -174,10 +174,10 @@ class PreferencesDialogNativeTests(unittest.TestCase):
         # Filtering keeps the hidden selection.
         self.dialog.transcription_chat_filter.SetValue("grupo")
         self.dialog._fill_chat_list()
-        self.assertEqual(self.dialog.transcription_chats.GetCount(), 1)
-        self.dialog.transcription_chats.Check(0, True)
-        event = wx.CommandEvent(wx.wxEVT_CHECKLISTBOX)
-        event.SetInt(0)
+        self.assertEqual(self.dialog.transcription_chats.GetItemCount(), 1)
+        self.dialog.transcription_chats.CheckItem(0, True)
+        event = wx.ListEvent(wx.wxEVT_LIST_ITEM_CHECKED)
+        event.SetIndex(0)
         self.dialog._on_chat_checked(event)
         self.dialog.transcription_delivery.SetSelection(1)
 
@@ -193,6 +193,20 @@ class PreferencesDialogNativeTests(unittest.TestCase):
         self.dialog.api_key.SetValue("clave con espacios")
         with self.assertRaises(ValueError):
             self.dialog.transcription_update()
+
+    def test_checkboxes_stay_native_so_screen_readers_get_their_state(self) -> None:
+        from cliente_xmpp.ui.theme import YELLOW, apply_theme
+
+        apply_theme(self.frame)  # the dialog is the frame's child, like in CAN
+        for box in (self.dialog.windows_notifications, self.dialog.emoticon_conversion,
+                    self.dialog.transcription_service):
+            self.assertNotEqual(box.GetForegroundColour(), YELLOW)
+        themed = wx.CheckBox(self.frame, label="Fuera de Preferencias")
+        apply_theme(self.frame)
+        self.assertNotEqual(themed.GetForegroundColour(), YELLOW)
+        themed.SetValue(True)
+        self.assertTrue(themed.IsChecked())
+        self.assertTrue(self.dialog.transcription_chats.HasCheckBoxes())
 
     def test_emoticon_checkbox_round_trips_through_set_values(self) -> None:
         self.dialog.set_values(

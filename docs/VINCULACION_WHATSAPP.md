@@ -99,7 +99,16 @@ Desde v36 la fuente del puente es el repositorio `puente-whatsapp`
 (`src/slidge_whatsapp/linking.py`); `tools/bridge_linking.py` es la copia que
 usan las pruebas de contrato de este cliente y debe mantenerse idéntica.
 
-### Despliegue del 25 de noviembre de 2026
+### v40
+
+El mismo código se publicó como `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v40`
+(`sha256:baaec66aeecadea05fc732a915d6039d1df54febdb37440c7f7e7334c31176c9`,
+commit `142fe3b` de `puente-whatsapp`) y sustituyó por digest a la candidata en
+`marco-vps`, con respaldo SQLite verificado en
+`/opt/xmpp/backups/before-v40-20261126T000713Z/`. La sonda de 14 pasos volvió
+a aprobar. `bridge-update-manifest.json` apunta a v40 para los puentes locales.
+
+### Candidata previa (25 de noviembre de 2026)
 
 `marco-vps` ejecuta `cliente-xmpp-bridge:linking-20261125`: el target `release`
 de `puente-whatsapp` (base v39, código sin publicar) más una capa que sólo

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "channel": "stable",
-  "bridge_version": 37,
-  "image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v37",
-  "digest": "sha256:b2cb1b5418238e8b9090fc45dcda0460f2a8b7e47d33ff7100f9e968f7add825"
+  "bridge_version": 40,
+  "image": "ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v40",
+  "digest": "sha256:baaec66aeecadea05fc732a915d6039d1df54febdb37440c7f7e7334c31176c9"
 }

@@ -1,3 +1,17 @@
+WhatsApp CAN 1.4.23
+
+Esta actualización hace más fiable la vinculación de WhatsApp con QR o con número de teléfono y requiere el puente v40 para aprovecharla por completo.
+
+Vinculación de WhatsApp
+- CAN se entera al momento de los cambios de la vinculación: un QR nuevo, el código para el teléfono, la conexión o un cierre de sesión. Con la sesión estable, consulta el estado mucho menos a menudo.
+- Volver a vincular después de cerrar sesión, de que caduque el QR o de cancelar ya no exige cancelar a mano ni esperar.
+- Un número de teléfono mal escrito o rechazado por WhatsApp se informa sin perder el QR; puedes corregirlo y pedir el código otra vez. El código se anuncia una sola vez y puede volver a mostrarse.
+- Se informan con un mensaje claro el QR caducado, el dispositivo eliminado desde el teléfono y el caso en que el teléfono terminó de vincular justo al cancelar.
+- Si la sincronización de contactos y grupos falla tras vincular, el menú WhatsApp ofrece «Reintentar sincronización de WhatsApp» sin tener que vincular de nuevo.
+
+Puente
+- El puente v40 incluye estas correcciones y conserva todo lo de v39. El puente local se actualiza con «whatsapp-can-bridge update». Con un puente anterior la vinculación sigue funcionando como antes.
+
 WhatsApp CAN 1.4.22
 
 Esta actualización incorpora llamadas de voz individuales de WhatsApp como función experimental, añade la integración con Meta AI y Muse y mejora la conexión, las descargas y la accesibilidad.

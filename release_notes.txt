@@ -1,3 +1,36 @@
+WhatsApp CAN 1.4.24
+
+Esta actualización completa la sincronización después de vincular WhatsApp, reúne las preferencias en un diálogo con pestañas y añade la transcripción de notas de voz desde CAN. Requiere el puente v42 para aprovecharla por completo.
+
+Sincronización tras vincular
+- El historial que llega al vincular se guarda sin sonar, sin avisos de Windows y sin contarse como no leído. Los no leídos de cada chat coinciden con los del teléfono.
+- Los chats individuales funcionan en cuanto termina la vinculación. Los grupos se abren cuando el puente termina de cargarlos, sin reintentos a ciegas. Si WhatsApp limita la carga, CAN indica cuándo será el próximo intento.
+- Los nombres de los contactos aparecen en cuanto el puente los recibe, sin reconectar.
+- Una reconexión ya no vacía la lista de chats ni cierra la conversación abierta, y conserva el foco.
+- Si se vincula un número distinto al anterior, CAN lo avisa una vez. Los chats del número anterior se conservan y sus grupos no se abren automáticamente.
+
+Preferencias y transcripción
+- Cuenta > Preferencias (Ctrl+P) abre un diálogo con pestañas. Los cambios se aplican al aceptar y se descartan al cancelar.
+- La pestaña Transcripción configura Deepgram en el puente: clave API propia, servicio, transcripción automática en todos los chats, en ninguno, sólo en los elegidos o en todos menos los elegidos, y entrega privada o como respuesta en el chat. Comparte el mismo estado que los comandos /transcribe.
+- El menú contextual de una nota de voz ofrece «Transcribir (sólo para mí)» y «Transcribir y responder en el chat».
+- La conversión de emoticonos como :-) en emojis puede desactivarse.
+
+Mensajes y nuevos chats
+- Las reacciones aparecen al momento, también en chats que no están abiertos, y ya no desaparecen al recargar el historial.
+- Al responder, WhatsApp muestra el mensaje citado; en grupos se cita el mensaje correcto, también los propios. Las citas de fotos se leen como «foto, 80 KB» en lugar de un nombre técnico.
+- Al iniciar un chat con un número nuevo, CAN confirma con WhatsApp el número real antes de abrirlo. Si el número no tiene WhatsApp, es el tuyo o no se pudo confirmar, lo explica y no abre el chat.
+
+Accesibilidad y atajos
+- NVDA vuelve a anunciar si una casilla está marcada.
+- En la lista de mensajes, Ctrl+C copia el texto o el archivo y Ctrl+D descarga el archivo o describe la imagen. Enter reproduce o pausa una nota de voz.
+
+Instalador del puente local
+- Si la configuración del puente local falla, el instalador guarda un registro, sugiere la causa probable y permite copiarlo o abrirlo.
+- Un registro huérfano del puente en WSL se puede quitar con confirmación para volver a instalar.
+
+Puente
+- El puente v42 incluye estas funciones y conserva todo lo de v40. El puente local se actualiza con «whatsapp-can-bridge update». Con un puente anterior CAN sigue funcionando, pero sin la transcripción desde Preferencias ni la confirmación de números nuevos; el historial tras vincular sólo se reconoce por su fecha.
+
 WhatsApp CAN 1.4.23
 
 Esta actualización hace más fiable la vinculación de WhatsApp con QR o con número de teléfono y requiere el puente v40 para aprovecharla por completo.

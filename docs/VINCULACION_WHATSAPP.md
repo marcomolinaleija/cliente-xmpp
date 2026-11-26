@@ -126,6 +126,16 @@ Desde v36 la fuente del puente es el repositorio `puente-whatsapp`
 (`src/slidge_whatsapp/linking.py`); `tools/bridge_linking.py` es la copia que
 usan las pruebas de contrato de este cliente y debe mantenerse idéntica.
 
+### v42
+
+`ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v42`
+(`sha256:d0e5b5fd152a95f9ccadbabf0e27d2a01cafdc810d28d4f9c9e7f4b724efe7ae`,
+commit `67e90d8` de `puente-whatsapp`) añade la marca de historial, el resumen de
+no leídos, la sincronización tras vincular que se completa, la etiqueta `identity`,
+la búsqueda de números con `own-number` y la transcripción configurable. Incluye v41,
+que se desplegó sin publicarse. `bridge-update-manifest.json` apunta a v42 desde
+WhatsApp CAN 1.4.24; `tools/bridge_linking.py` sigue idéntico a `linking.py` del puente.
+
 ### v40
 
 El mismo código se publicó como `ghcr.io/marcomolinaleija/cliente-xmpp-bridge:v40`

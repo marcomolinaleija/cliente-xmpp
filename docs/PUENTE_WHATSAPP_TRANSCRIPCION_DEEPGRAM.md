@@ -122,3 +122,40 @@ El formato visible incluye duración y tiempo de la petición a Deepgram:
 ```text
 Transcripción: "Texto reconocido". Audio: 1 min 2 s. Transcrito en 4.8 s.
 ```
+
+## Configuración desde Preferencias (puente v42)
+
+**Cuenta > Preferencias** (`Ctrl+P`) incluye la pestaña **Transcripción**. Lee y escribe
+el mismo estado del puente que los comandos, así que un cambio hecho con un comando
+aparece al abrir la pestaña y viceversa. Si el puente no anuncia
+`urn:can:whatsapp:transcription:0`, la pestaña lo indica y los comandos siguen
+funcionando.
+
+- **Clave API**: es de sólo escritura. Se guarda en el puente, por cuenta, en
+  `deepgram-credentials.sqlite3` con permisos `600`, separado del estado general.
+  El puente comprueba la clave con Deepgram antes de guardarla y sólo devuelve sus
+  últimos cuatro caracteres. Sin clave propia se usa `DEEPGRAM_API_KEY` sólo para
+  las cuentas de `DEEPGRAM_ALLOWED_JIDS`. Una cuenta con clave propia puede usar
+  `/transcribe` aunque no esté en `DEEPGRAM_COMMAND_JIDS`; `/stats` sigue limitado.
+- **Servicio**: lo apaga todo, incluidas las transcripciones bajo demanda.
+- **Transcripciones automáticas**: desactivadas, en todos los chats, sólo en los
+  seleccionados o en todos excepto los seleccionados. Corresponde a
+  `/transcribe on|off` más las excepciones de `/transcribe here`.
+- **Entrega**: privadas (sólo por XMPP, citando la nota de voz) o como respuesta en
+  el chat de WhatsApp (el contacto o grupo la ve). Si la respuesta falla, el puente
+  conserva la copia privada.
+
+Comandos nuevos, además de los existentes:
+
+```text
+/transcribe reply      (o responder)
+/transcribe private    (o privado)
+/transcribe service on|off
+/transcribe status
+```
+
+Una nota de voz se puede transcribir bajo demanda desde su menú contextual:
+**Transcribir (sólo para mí)** o **Transcribir y responder en el chat**. El puente
+lee el audio de su directorio de adjuntos (`--no-upload-path`); no descarga URLs
+arbitrarias. Las transcripciones automáticas sólo ocurren con el puente activo; no
+dependen de que WhatsApp CAN esté abierto.

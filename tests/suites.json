@@ -381,6 +381,15 @@
       "area": "messaging",
       "layer": "fast"
     },
+    "test_goal_regressions": {
+      "area": "messaging",
+      "layer": "fast"
+    },
+    "test_transcription_preferences": {
+      "area": "messaging",
+      "layer": "fast",
+      "overrides": {"PreferencesDialogNativeTests": {"layer": "integration", "area": "platform"}}
+    },
     "test_meta_ai_assistants": {
       "area": "messaging",
       "layer": "fast",

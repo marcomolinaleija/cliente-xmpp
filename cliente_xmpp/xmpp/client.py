@@ -52,6 +52,13 @@ from cliente_xmpp.models.names import (
     unescape_jid_text,
 )
 from cliente_xmpp.models.reactions import ReactionUpdate, normalized_reactions
+from cliente_xmpp.models.transcription import (
+    TRANSCRIPTION_NS,
+    TranscriptionSettingsUpdate,
+    build_transcription_settings_update,
+    parse_transcription_settings,
+    transcription_error_text,
+)
 from cliente_xmpp.models.voice import VoiceAudioSettings
 from cliente_xmpp.xmpp.calls import call_event_from_xml, routed_chat_jid
 from cliente_xmpp.xmpp.events import (
@@ -75,9 +82,11 @@ from cliente_xmpp.xmpp.events import (
     MessageReceived,
     RosterChanged,
     RosterLoaded,
+    TranscriptionSettingsLoaded,
     VoiceActionFailed,
     VoiceChannelChanged,
     VoiceDiagnostics,
+    VoiceTranscriptionFinished,
     WhatsAppBridgeStatus,
     WhatsAppLinkCancelResult,
     WhatsAppLinkSessionEnded,
@@ -163,6 +172,8 @@ OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
 GATEWAY_NS = "jabber:iq:gateway"
 PHONE_RESOLUTION_TIMEOUT_SECONDS = 8
+TRANSCRIPTION_SETTINGS_TIMEOUT_SECONDS = 25
+VOICE_TRANSCRIPTION_TIMEOUT_SECONDS = 180
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
 MESSAGE_RETRACT_NS = "urn:xmpp:message-retract:1"
@@ -3399,6 +3410,103 @@ class BridgeXmppClient(ClientXMPP):
             return
         self._emit(WhatsAppPhoneResolved(request_id, phone, "found", jid=bare))
 
+    async def transcription_settings_request(
+        self,
+        component_jid: str,
+        request_id: str,
+        update: TranscriptionSettingsUpdate | None = None,
+    ) -> None:
+        """Read (or write then read) the bridge transcription preferences."""
+        try:
+            iq = self.Iq()
+            iq["to"] = component_jid
+            if update is None:
+                iq["type"] = "get"
+                iq.append(ET.Element(f"{{{TRANSCRIPTION_NS}}}settings"))
+            else:
+                iq["type"] = "set"
+                iq.append(build_transcription_settings_update(update))
+            result = await iq.send(timeout=TRANSCRIPTION_SETTINGS_TIMEOUT_SECONDS)
+            settings = parse_transcription_settings(result.xml)
+        except IqError as exc:
+            condition = str(exc.iq["error"]["condition"])
+            unsupported = condition in {"feature-not-implemented", "service-unavailable"}
+            self._emit(TranscriptionSettingsLoaded(
+                request_id,
+                error=(
+                    "Este puente no permite configurar la transcripción desde aquí. "
+                    "Usa los comandos /transcribe en un chat."
+                    if unsupported and update is None
+                    else transcription_error_text(condition, str(exc.iq["error"]["text"] or ""))
+                ),
+                unsupported=unsupported and update is None,
+            ))
+            return
+        except IqTimeout:
+            self._emit(TranscriptionSettingsLoaded(
+                request_id, error="El puente no respondió a tiempo.",
+            ))
+            return
+        except Exception:
+            self._emit(TranscriptionSettingsLoaded(
+                request_id, error="No se pudo leer la configuración de transcripción.",
+            ))
+            return
+        self._emit(TranscriptionSettingsLoaded(
+            request_id, settings=settings, saved=update is not None,
+        ))
+
+    async def transcribe_voice_message(
+        self,
+        component_jid: str,
+        chat_jid: str,
+        message_id: str,
+        media_url: str,
+        delivery: str,
+        own: bool,
+        request_id: str,
+    ) -> None:
+        try:
+            iq = self.Iq()
+            iq["type"] = "set"
+            iq["to"] = component_jid
+            iq.append(ET.Element(
+                f"{{{TRANSCRIPTION_NS}}}transcribe",
+                {
+                    "chat": chat_jid,
+                    "id": message_id,
+                    "url": media_url,
+                    "delivery": delivery,
+                    "own": "1" if own else "0",
+                },
+            ))
+            result = await iq.send(timeout=VOICE_TRANSCRIPTION_TIMEOUT_SECONDS)
+            node = result.xml.find(f".//{{{TRANSCRIPTION_NS}}}text")
+            text = (node.text or "").strip() if node is not None else ""
+        except IqError as exc:
+            condition = str(exc.iq["error"]["condition"])
+            self._emit(VoiceTranscriptionFinished(
+                request_id, chat_jid, message_id,
+                error=(
+                    "Este puente no permite transcribir audios bajo demanda."
+                    if condition in {"feature-not-implemented", "service-unavailable"}
+                    and not str(exc.iq["error"]["text"] or "")
+                    else transcription_error_text(condition, str(exc.iq["error"]["text"] or ""))
+                ),
+            ))
+            return
+        except IqTimeout:
+            self._emit(VoiceTranscriptionFinished(
+                request_id, chat_jid, message_id, error="La transcripción tardó demasiado.",
+            ))
+            return
+        except Exception:
+            self._emit(VoiceTranscriptionFinished(
+                request_id, chat_jid, message_id, error="No se pudo transcribir el audio.",
+            ))
+            return
+        self._emit(VoiceTranscriptionFinished(request_id, chat_jid, message_id, text=text))
+
     async def load_group_message_info(
         self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
     ) -> None:
@@ -6527,6 +6635,56 @@ class XmppService:
                 ))
 
         loop.call_soon_threadsafe(lambda: loop.create_task(configure()))
+
+    def request_transcription_settings(
+        self,
+        component_jid: str,
+        request_id: str,
+        update: TranscriptionSettingsUpdate | None = None,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(TranscriptionSettingsLoaded(
+                request_id, error="Conéctate para consultar la transcripción.",
+            ))
+            return
+
+        def run() -> None:
+            if self._client:
+                self._loop.create_task(
+                    self._client.transcription_settings_request(component_jid, request_id, update)
+                )
+            else:
+                self._emit(TranscriptionSettingsLoaded(request_id, error="La conexión se cerró."))
+
+        self._loop.call_soon_threadsafe(run)
+
+    def transcribe_voice_message(
+        self,
+        component_jid: str,
+        chat_jid: str,
+        message_id: str,
+        media_url: str,
+        delivery: str,
+        own: bool,
+        request_id: str,
+    ) -> None:
+        if not self._client or not self._loop:
+            self._emit(VoiceTranscriptionFinished(
+                request_id, chat_jid, message_id, error="No hay conexión con el puente.",
+            ))
+            return
+
+        def run() -> None:
+            if self._client:
+                self._loop.create_task(self._client.transcribe_voice_message(
+                    component_jid, chat_jid, message_id, media_url, delivery, own, request_id,
+                ))
+            else:
+                self._emit(VoiceTranscriptionFinished(
+                    request_id, chat_jid, message_id, error="La conexión se cerró.",
+                ))
+
+        self._loop.call_soon_threadsafe(run)
 
     def resolve_whatsapp_phone(self, component_jid: str, phone: str, request_id: str) -> None:
         if not self._client or not self._loop:

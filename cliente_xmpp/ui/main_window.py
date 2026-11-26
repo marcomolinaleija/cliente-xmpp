@@ -201,6 +201,8 @@ from cliente_xmpp.xmpp.events import (
     MessageReceived,
     RosterChanged,
     RosterLoaded,
+    TranscriptionSettingsLoaded,
+    VoiceTranscriptionFinished,
     WhatsAppBridgeStatus,
     WhatsAppLinkCancelResult,
     WhatsAppLinkSessionEnded,
@@ -375,6 +377,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.minimize_to_tray_on_alt_f4 = (
             self.settings_store.load_minimize_to_tray_on_alt_f4()
         )
+        self.emoticon_conversion_enabled = self.settings_store.load_emoticon_conversion()
         self.update_check_interval_minutes = (
             self.settings_store.load_update_check_interval_minutes()
         )
@@ -575,6 +578,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         )
         self.whatsapp_sync_menu_item.Enable(False)
         account_menu.AppendSubMenu(connection_menu, "&Conexión")
+        self.preferences_menu_item = account_menu.Append(
+            wx.ID_PREFERENCES,
+            "&Preferencias...\tCtrl+P",
+            "Abre las preferencias de WhatsApp CAN organizadas por categorías",
+        )
         account_menu.AppendSeparator()
         self.exit_menu_item = account_menu.Append(
             wx.ID_EXIT,
@@ -653,13 +661,18 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             on_assistant_suggestion=self._send_assistant_suggestion,
             on_assistant_approval=self._confirm_assistant_approval,
         )
-        self.settings_panel = SettingsPanel(self.content_panel)
+        # Preferences live in their own tabbed dialog, created once so background
+        # flows (update checks, local bridge) can keep its status current.
+        self.settings_panel = SettingsPanel(self)
+        self.settings_panel.apply_handler = self._apply_preferences
+        self.settings_panel.transcription_reload_handler = self._request_transcription_settings
         self.content_box.Add(self.chat_list, 1, wx.EXPAND)
         self.content_box.Add(self.conversation, 1, wx.EXPAND)
-        self.content_box.Add(self.settings_panel, 1, wx.EXPAND)
         self.content_panel.SetSizer(self.content_box)
         self.conversation.Hide()
-        self.settings_panel.Hide()
+        compose = getattr(self.conversation, "compose", None)
+        if compose is not None:
+            compose.convert_emoticons = getattr(self, "emoticon_conversion_enabled", True)
 
         workspace_box.Add(self.connection_header, 0, wx.EXPAND)
         workspace_box.Add(self.whatsapp_link_panel, 0, wx.EXPAND)
@@ -715,8 +728,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.sticker_button.Bind(wx.EVT_BUTTON, self._on_send_sticker)
         self.conversation.pause_recording_button.Bind(wx.EVT_BUTTON, self._on_pause_recording)
         self.conversation.cancel_recording_button.Bind(wx.EVT_BUTTON, self._on_cancel_recording)
-        self.settings_panel.back_button.Bind(wx.EVT_BUTTON, self._on_close_settings)
         self.Bind(wx.EVT_MENU, self._on_disconnect, self.disconnect_menu_item)
+        self.Bind(wx.EVT_MENU, self._on_open_settings, self.preferences_menu_item)
         self.Bind(wx.EVT_MENU, self._on_retry_whatsapp_sync, self.whatsapp_sync_menu_item)
         self.Bind(wx.EVT_MENU, self._on_exit_application, self.exit_menu_item)
         self.Bind(wx.EVT_MENU, self._on_open_statistics, self.statistics_menu_item)
@@ -732,14 +745,6 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.settings_panel.reset_incoming_sound_button.Bind(
             wx.EVT_BUTTON, self._on_reset_incoming_sound
         )
-        self.settings_panel.update_check_interval.Bind(
-            wx.EVT_COMBOBOX,
-            self._on_update_check_interval_changed,
-        )
-        self.settings_panel.connection_mode.Bind(
-            wx.EVT_CHOICE,
-            self._on_settings_connection_mode_changed,
-        )
         self.settings_panel.check_updates_button.Bind(
             wx.EVT_BUTTON,
             self._on_check_updates_now,
@@ -752,15 +757,6 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             wx.EVT_BUTTON,
             self._on_update_bridge_now,
         )
-        for checkbox in (
-            self.settings_panel.windows_notifications,
-            self.settings_panel.show_preview,
-            self.settings_panel.announce_with_nvda,
-            self.settings_panel.open_chat_sound,
-            self.settings_panel.sent_message_sound,
-            self.settings_panel.minimize_to_tray_on_alt_f4,
-        ):
-            checkbox.Bind(wx.EVT_CHECKBOX, self._on_settings_changed)
         self.conversation.compose.Bind(wx.EVT_TEXT, self._on_composer_text_changed)
         self.conversation.compose.Bind(wx.EVT_KEY_DOWN, self._on_composer_key_down)
         text_paste_event = getattr(wx, "EVT_TEXT_PASTE", None)
@@ -935,6 +931,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             sent_message_sound=self.sent_message_sound_enabled,
             incoming_sound_path=self.incoming_notification_sound_path,
             minimize_to_tray_on_alt_f4=self.minimize_to_tray_on_alt_f4,
+            emoticon_conversion=getattr(self, "emoticon_conversion_enabled", True),
             update_check_interval_minutes=self.update_check_interval_minutes,
             connection_mode=self.preferred_connection_mode,
             local_bridge_available=self.local_bridge_available,
@@ -1288,7 +1285,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if timer is not None:
             timer.Stop()
 
-    def _on_settings_changed(self, event: wx.CommandEvent) -> None:
+    def _apply_checkbox_preferences(self) -> None:
         self.windows_notifications_enabled = self.settings_panel.windows_notifications.GetValue()
         self.windows_notification_previews_enabled = self.settings_panel.show_preview.GetValue()
         self.windows_notification_nvda_announcements_enabled = (
@@ -1303,10 +1300,42 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self._save_desktop_notification_settings()
         self._save_notification_sound_settings()
         self._save_window_settings()
-        changed_control = event.GetEventObject()
-        announcement = self.settings_panel.checkbox_state_text(changed_control)
-        self.status_bar.SetStatusText(announcement)
-        self.speaker.speak(announcement)
+
+    def _apply_preferences(self) -> bool:
+        """Apply every tab of the preferences dialog; False keeps the dialog open."""
+        panel = self.settings_panel
+        try:
+            transcription_update = panel.transcription_update()
+        except ValueError as exc:
+            panel.set_transcription_status(str(exc))
+            panel.focus_transcription_key()
+            self._announce_status(str(exc))
+            return False
+
+        if panel.connection_mode_value() != self.preferred_connection_mode:
+            self._on_settings_connection_mode_changed(None)
+        if panel.update_check_interval_minutes() != self.update_check_interval_minutes:
+            self._on_update_check_interval_changed(None)
+        self._apply_checkbox_preferences()
+        emoticons = panel.emoticon_conversion.GetValue()
+        if emoticons != getattr(self, "emoticon_conversion_enabled", True):
+            self.emoticon_conversion_enabled = emoticons
+            self.conversation.compose.convert_emoticons = emoticons
+            try:
+                self.settings_store.save_emoticon_conversion(emoticons)
+            except OSError:
+                self._announce_status("No se pudo guardar la preferencia de emoticonos")
+        apply_atajos = getattr(self, "_apply_atajos_preference", None)
+        if callable(apply_atajos):
+            apply_atajos()
+        if transcription_update is not None:
+            self._save_transcription_settings(transcription_update)
+            self._announce_status(
+                "Preferencias aplicadas. Guardando la transcripción en el puente..."
+            )
+        else:
+            self._announce_status("Preferencias aplicadas")
+        return True
 
     def _on_test_windows_notification(self, _event: wx.CommandEvent) -> None:
         shown = self.windows_notification_service.show_message(
@@ -1332,7 +1361,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
     def _on_reset_incoming_sound(self, _event: wx.CommandEvent) -> None:
         self.incoming_notification_sound_path = ""
         self._save_incoming_notification_sound_path()
-        self._sync_settings_panel()
+        # Only the sound field: unsaved changes in other tabs stay untouched.
+        self.settings_panel.set_incoming_sound_path("")
         message = "Se restauró el sonido predeterminado de mensajes entrantes"
         self.status_bar.SetStatusText(message)
         self.speaker.speak(message)
@@ -1354,6 +1384,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self._set_chat_notification_sound_path(chat_jid, path)
             return
         self.incoming_notification_sound_path = path
+        self.settings_panel.set_incoming_sound_path(path)
         self._save_incoming_notification_sound_path()
         self._sync_settings_panel()
         play_sound_path(path, "cliente_xmpp_notification_preview")
@@ -3123,6 +3154,97 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.settings_store.save_new_chat_country(selected_region)
         self._start_new_chat_for_phone(normalized_phone)
 
+    # -- transcripción (estado propiedad del puente) -------------------------
+    def _request_transcription_settings(self) -> None:
+        panel = self.settings_panel
+        if not getattr(self, "whatsapp_component_jid", "") or not self.current_jid:
+            panel.set_transcription_unavailable(
+                "Conéctate a WhatsApp para configurar la transcripción."
+            )
+            return
+        request_id = uuid.uuid4().hex
+        self._transcription_request_id = request_id
+        panel.set_transcription_loading()
+        self.xmpp.request_transcription_settings(self.whatsapp_component_jid, request_id)
+
+    def _save_transcription_settings(self, update) -> None:
+        request_id = uuid.uuid4().hex
+        self._transcription_request_id = request_id
+        self.settings_panel.set_transcription_status("Guardando en el puente...")
+        self.xmpp.request_transcription_settings(
+            self.whatsapp_component_jid, request_id, update,
+        )
+
+    def _transcription_chat_choices(self) -> list[tuple[str, str]]:
+        chats = self._sort_chats_by_recency(list(self.searchable_chats_by_jid.values()))
+        choices: list[tuple[str, str]] = []
+        for chat in chats:
+            name = chat.custom_name or self.chat_names_by_jid.get(chat.jid) or chat.name
+            kind = "grupo" if chat.is_group else "chat"
+            choices.append((chat.jid, f"{name or chat.jid} ({kind})"))
+        return choices
+
+    def _handle_transcription_settings_loaded(self, event: TranscriptionSettingsLoaded) -> None:
+        if event.request_id != getattr(self, "_transcription_request_id", None):
+            return
+        panel = self.settings_panel
+        if event.settings is None:
+            if event.unsupported:
+                panel.set_transcription_unavailable(event.error)
+            else:
+                # A failed save keeps the user's edits so they can retry.
+                panel.set_transcription_status(event.error)
+            if event.error:
+                self._announce_status(event.error)
+            return
+        panel.set_transcription_settings(event.settings, self._transcription_chat_choices())
+        if event.saved:
+            self._announce_status("Configuración de transcripción guardada en el puente")
+
+    def _transcribe_voice_message(self, message: Message, delivery: str) -> None:
+        chat = self._chat_by_jid(message.chat_jid) or self.conversation.current_chat
+        if chat is None or not self._require_whatsapp_connection():
+            return
+        url = message.audio_url or message.media_url
+        reply_to_jid = self._reply_target_jid(chat, message, self.current_jid)
+        message_id = self._reply_target_id(chat, message, reply_to_jid)
+        if not url or not message_id:
+            self._announce_status("Esta nota de voz no se puede transcribir")
+            return
+        request_id = uuid.uuid4().hex
+        pending = getattr(self, "_pending_voice_transcriptions", None)
+        if pending is None:
+            pending = self._pending_voice_transcriptions = {}
+        pending[request_id] = delivery
+        self._announce_status("Transcribiendo la nota de voz...")
+        self.xmpp.transcribe_voice_message(
+            self.whatsapp_component_jid,
+            chat.jid,
+            message_id,
+            url,
+            delivery,
+            message.outgoing,
+            request_id,
+        )
+
+    def _handle_voice_transcription_finished(self, event: VoiceTranscriptionFinished) -> None:
+        pending = getattr(self, "_pending_voice_transcriptions", {})
+        delivery = pending.pop(event.request_id, None)
+        if delivery is None:
+            return
+        if event.error:
+            self.status_bar.SetStatusText(event.error)
+            wx.MessageBox(event.error, "Transcripción", wx.OK | wx.ICON_WARNING, self)
+            return
+        if not event.text:
+            self._announce_status("Deepgram no reconoció voz en este audio")
+            return
+        if delivery == "reply":
+            self._announce_status("Transcripción enviada al chat como respuesta")
+        else:
+            # The private copy also arrives in the chat; read it out right away.
+            self._announce_status(f"Transcripción: {event.text}")
+
     def _start_new_chat_for_phone(self, normalized_phone: NormalizedPhoneNumber) -> None:
         """Open a known chat at once; otherwise ask the bridge for the real JID."""
         component_jid = self.whatsapp_component_jid
@@ -3889,10 +4011,6 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         ):
             return
 
-        if key_code == wx.WXK_ESCAPE and self.settings_panel.IsShown():
-            self._close_settings()
-            return
-
         if (
             key_code == wx.WXK_ESCAPE
             and self.conversation.IsShown()
@@ -4614,38 +4732,32 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             wx.CallAfter(callback, None, "La aplicación se está cerrando.")
 
     def _show_settings(self) -> None:
-        self.settings_return_to_conversation = bool(
-            self.conversation.IsShown() and self.conversation.current_chat
-        )
+        panel = self.settings_panel
+        if panel.IsShown():
+            panel.Raise()
+            return
+        focused = wx.Window.FindFocus()
         self._sync_settings_panel()
-        self.chat_list.Hide()
-        self.conversation.Hide()
-        self.settings_panel.Show()
-        self.content_panel.Layout()
-        self.workspace_panel.Layout()
-        self.Layout()
-        self.settings_panel.focus()
-        self.status_bar.SetStatusText("Configuración")
+        apply_atajos_value = getattr(self, "_sync_atajos_preference_control", None)
+        if callable(apply_atajos_value):
+            apply_atajos_value()
+        self._request_transcription_settings()
         if self.connection_mode == CONNECTION_MODE_LOCAL and self.local_bridge_available:
             self._request_bridge_update_check(manual=False)
+        self.status_bar.SetStatusText("Preferencias")
+        panel.CentreOnParent()
+        panel.focus()
+        panel.ShowModal()
+        if focused and not focused.IsBeingDeleted() and focused.IsShownOnScreen():
+            focused.SetFocus()
+        elif self.conversation.IsShown():
+            self.conversation.focus_composer()
+        else:
+            self.chat_list.focus()
 
     def _close_settings(self) -> None:
-        if not self.settings_panel.IsShown():
-            return
-        self.settings_panel.Hide()
-        if self.settings_return_to_conversation and self.conversation.current_chat:
-            self.conversation.Show()
-            self.conversation.focus_composer()
-            self._refresh_current_chat_status_title()
-        else:
-            self.chat_list.Show()
-            self.chat_list.refresh_visible_if_stale()
-            self.chat_list.focus()
-            self.status_bar.SetStatusText("Lista de chats")
-        self.settings_return_to_conversation = False
-        self.content_panel.Layout()
-        self.workspace_panel.Layout()
-        self.Layout()
+        if self.settings_panel.IsShown() and self.settings_panel.IsModal():
+            self.settings_panel.EndModal(wx.ID_CANCEL)
 
     def _on_mark_all_chats_read(self, _event: wx.CommandEvent) -> None:
         if self.chat_list.IsShown():
@@ -4836,7 +4948,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if not chat or not body:
             return
 
-        body = convert_standalone_emoticon(body)
+        if getattr(self, "emoticon_conversion_enabled", True):
+            body = convert_standalone_emoticon(body)
         if self.edit_context is not None:
             self._send_message_correction(self.edit_context, body)
             return
@@ -6221,6 +6334,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         link_item: wx.MenuItem | None = None
         copy_file_item: wx.MenuItem | None = None
         describe_item: wx.MenuItem | None = None
+        transcribe_private_item: wx.MenuItem | None = None
+        transcribe_reply_item: wx.MenuItem | None = None
         save_album_item: wx.MenuItem | None = None
         create_sticker_item = (
             menu.Append(
@@ -6266,6 +6381,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 copy_file_item.Enable(local_media_path(message) is not None)
                 if can_describe_with_rayoai(message):
                     describe_item = menu.Append(wx.ID_ANY, "Describir con RayoAI")
+                if message.media_kind == "audio" or message.audio_url:
+                    transcribe_private_item = menu.Append(
+                        wx.ID_ANY, "Transcribir (sólo para mí)"
+                    )
+                    transcribe_reply_item = menu.Append(
+                        wx.ID_ANY, "Transcribir y responder en el chat"
+                    )
 
         reaction_menu = wx.Menu()
         reaction_items: list[tuple[wx.MenuItem, str]] = []
@@ -6356,6 +6478,18 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 wx.EVT_MENU,
                 lambda _event: self._describe_media_with_rayoai(message),
                 describe_item,
+            )
+        if transcribe_private_item:
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._transcribe_voice_message(message, "private"),
+                transcribe_private_item,
+            )
+        if transcribe_reply_item:
+            menu_owner.Bind(
+                wx.EVT_MENU,
+                lambda _event: self._transcribe_voice_message(message, "reply"),
+                transcribe_reply_item,
             )
         if save_album_item:
             menu_owner.Bind(
@@ -8020,6 +8154,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
             case WhatsAppPhoneResolved():
                 self._handle_whatsapp_phone_resolved(event)
+            case TranscriptionSettingsLoaded():
+                self._handle_transcription_settings_loaded(event)
+            case VoiceTranscriptionFinished():
+                self._handle_voice_transcription_finished(event)
             case GroupMessageInfoLoaded():
                 self._handle_group_message_info_loaded(event)
             case MessageDeliveryUpdated(
@@ -9661,7 +9799,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.Iconize(False)
         if not self.IsShown():
             self.Show()
-        self.settings_panel.Hide()
+        self._close_settings()
         self.conversation.Hide()
         self.chat_list.Show()
         if self._search_is_active():
@@ -10726,7 +10864,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.set_remote_actions_enabled(True)
         if request_remote_context:
             self._update_chat_summary(chat.jid, mark_read=True)
-        self.settings_panel.Hide()
+        self._close_settings()
         self.chat_list.Hide()
         self.conversation.Show()
         self.content_panel.Layout()
@@ -10762,7 +10900,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.conversation.clear_unread_marker()
         self._reset_window_title()
         self._mark_current_chat_displayed(selected_jid)
-        self.settings_panel.Hide()
+        self._close_settings()
         self.conversation.Hide()
         self.chat_list.Show()
         if self._search_is_active():

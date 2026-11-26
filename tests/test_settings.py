@@ -477,10 +477,8 @@ class AccessibleSettingStateTests(unittest.TestCase):
             "Mostrar notificaciones: desactivado",
         )
 
-    def test_changed_checkbox_is_announced_and_written_to_the_status_bar(self) -> None:
-        announcements: list[str] = []
-        status_messages: list[str] = []
-        changed_control = object()
+    def test_checkbox_values_apply_and_persist_only_when_applied(self) -> None:
+        saved: list[str] = []
 
         class CheckBox:
             def __init__(self, value: bool) -> None:
@@ -494,72 +492,21 @@ class AccessibleSettingStateTests(unittest.TestCase):
             show_preview=CheckBox(False),
             announce_with_nvda=CheckBox(False),
             open_chat_sound=CheckBox(True),
-            sent_message_sound=CheckBox(True),
-            minimize_to_tray_on_alt_f4=CheckBox(False),
+            sent_message_sound=CheckBox(False),
+            minimize_to_tray_on_alt_f4=CheckBox(True),
             apply_interactive_state=lambda: None,
-            checkbox_state_text=lambda control: (
-                "Mostrar el contenido del mensaje en la notificación: desactivado"
-                if control is changed_control
-                else "Configuración actualizada"
-            ),
         )
         window = SimpleNamespace(
             settings_panel=panel,
-            _save_desktop_notification_settings=lambda: None,
-            _save_notification_sound_settings=lambda: None,
-            _save_window_settings=lambda: None,
-            status_bar=SimpleNamespace(SetStatusText=status_messages.append),
-            speaker=SimpleNamespace(speak=announcements.append),
-        )
-        event = SimpleNamespace(GetEventObject=lambda: changed_control)
-
-        MainWindow._on_settings_changed(window, event)
-
-        expected = "Mostrar el contenido del mensaje en la notificación: desactivado"
-        self.assertEqual(status_messages, [expected])
-        self.assertEqual(announcements, [expected])
-
-    def test_tray_setting_is_read_and_announced_when_changed(self) -> None:
-        announcements: list[str] = []
-        status_messages: list[str] = []
-
-        class CheckBox:
-            def __init__(self, value: bool) -> None:
-                self.value = value
-
-            def GetValue(self) -> bool:
-                return self.value
-
-        changed_control = CheckBox(True)
-        panel = SimpleNamespace(
-            windows_notifications=CheckBox(True),
-            show_preview=CheckBox(True),
-            announce_with_nvda=CheckBox(False),
-            open_chat_sound=CheckBox(True),
-            sent_message_sound=CheckBox(True),
-            minimize_to_tray_on_alt_f4=changed_control,
-            apply_interactive_state=lambda: None,
-            checkbox_state_text=lambda control: (
-                "Minimizar a la bandeja al usar Alt+F4: activado"
-                if control is changed_control
-                else "ConfiguraciÃ³n actualizada"
-            ),
-        )
-        window = SimpleNamespace(
-            settings_panel=panel,
-            _save_desktop_notification_settings=lambda: None,
-            _save_notification_sound_settings=lambda: None,
-            _save_window_settings=lambda: None,
-            status_bar=SimpleNamespace(SetStatusText=status_messages.append),
-            speaker=SimpleNamespace(speak=announcements.append),
+            _save_desktop_notification_settings=lambda: saved.append("desktop"),
+            _save_notification_sound_settings=lambda: saved.append("sounds"),
+            _save_window_settings=lambda: saved.append("window"),
         )
 
-        MainWindow._on_settings_changed(
-            window,
-            SimpleNamespace(GetEventObject=lambda: changed_control),
-        )
+        MainWindow._apply_checkbox_preferences(window)
 
+        self.assertTrue(window.windows_notifications_enabled)
+        self.assertFalse(window.windows_notification_previews_enabled)
+        self.assertFalse(window.sent_message_sound_enabled)
         self.assertTrue(window.minimize_to_tray_on_alt_f4)
-        expected = "Minimizar a la bandeja al usar Alt+F4: activado"
-        self.assertEqual(status_messages, [expected])
-        self.assertEqual(announcements, [expected])
+        self.assertEqual(saved, ["desktop", "sounds", "window"])

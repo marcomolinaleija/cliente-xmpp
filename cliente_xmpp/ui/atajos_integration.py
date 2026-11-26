@@ -21,11 +21,24 @@ class AtajosIntegrationMixin:
         self.settings_panel.atajos_api_enabled.SetValue(
             self.settings_store.load_atajos_api_enabled()
         )
-        self.settings_panel.atajos_api_enabled.Bind(wx.EVT_CHECKBOX, self._on_atajos_toggle)
         if self.settings_panel.atajos_api_enabled.GetValue():
             self._start_atajos_api()
 
-    def _on_atajos_toggle(self, _event: wx.CommandEvent) -> None:
+    def _sync_atajos_preference_control(self) -> None:
+        """Show the stored value when the preferences dialog opens (Cancel discards)."""
+        try:
+            enabled = self.settings_store.load_atajos_api_enabled()
+        except OSError:
+            return
+        self.settings_panel.atajos_api_enabled.SetValue(enabled)
+
+    def _apply_atajos_preference(self) -> None:
+        enabled = self.settings_panel.atajos_api_enabled.GetValue()
+        if enabled == (self._atajos_api is not None):
+            return
+        self._on_atajos_toggle(None)
+
+    def _on_atajos_toggle(self, _event: wx.CommandEvent | None) -> None:
         enabled = self.settings_panel.atajos_api_enabled.GetValue()
         try:
             self.settings_store.save_atajos_api_enabled(enabled)

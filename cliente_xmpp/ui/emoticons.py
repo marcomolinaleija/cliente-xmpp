@@ -56,11 +56,14 @@ class EmoticonTextCtrl(wx.TextCtrl):
 
     def __init__(self, parent: wx.Window, **kwargs) -> None:
         super().__init__(parent, **kwargs)
+        # Preferencias > Mensajes can turn the conversion off at runtime.
+        self.convert_emoticons = True
         self.Bind(wx.EVT_CHAR, self._on_char)
 
     def _on_char(self, event: wx.KeyEvent) -> None:
         if (
-            event.GetUnicodeKey() != ord(" ")
+            not self.convert_emoticons
+            or event.GetUnicodeKey() != ord(" ")
             or event.ControlDown() or event.AltDown() or event.MetaDown()
             or not self.IsEditable()
         ):

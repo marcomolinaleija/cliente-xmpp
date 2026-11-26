@@ -75,6 +75,15 @@ class SettingsStore:
         }
         self._save_payload(payload)
 
+    def load_emoticon_conversion(self) -> bool:
+        """Typed emoticons such as :-) become emojis unless the user turned it off."""
+        return self._load_payload().get("emoticon_conversion") is not False
+
+    def save_emoticon_conversion(self, enabled: bool) -> None:
+        payload = self._load_payload()
+        payload["emoticon_conversion"] = bool(enabled)
+        self._save_payload(payload)
+
     def load_sticker_auto_describe(self) -> bool:
         return self._load_payload().get("sticker_auto_describe") is True
 

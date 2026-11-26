@@ -1,4 +1,14 @@
+"""Preferencias de WhatsApp CAN: un diálogo con pestañas y Guardar/Cancelar/Aplicar.
+
+Los controles conservan los nombres del antiguo panel incrustado para que la ventana
+principal y los flujos en segundo plano (actualizaciones, puente local) sigan
+actualizándolos. Nada se guarda al marcar una casilla: sólo Aplicar o Guardar
+confirman los cambios; Cancelar o Escape los descarta.
+"""
+
 from __future__ import annotations
+
+from collections.abc import Callable
 
 import wx
 
@@ -8,6 +18,17 @@ from cliente_xmpp.config.settings import (
     DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
     UPDATE_CHECK_INTERVAL_CHOICES,
 )
+from cliente_xmpp.models.transcription import (
+    AUTO_ALL,
+    AUTO_ALL_EXCEPT,
+    AUTO_OFF,
+    AUTO_SELECTED,
+    DELIVERY_PRIVATE,
+    DELIVERY_REPLY,
+    TranscriptionSettings,
+    TranscriptionSettingsUpdate,
+    validate_api_key,
+)
 
 WINDOWS_NOTIFICATIONS_LABEL = "Mostrar mensajes como notificaciones de Windows"
 SHOW_PREVIEW_LABEL = "Mostrar el contenido del mensaje en la notificación"
@@ -15,6 +36,7 @@ ANNOUNCE_WITH_NVDA_LABEL = "Anunciar también el mensaje directamente con NVDA"
 OPEN_CHAT_SOUND_LABEL = "Reproducir sonido para mensajes del chat abierto"
 SENT_MESSAGE_SOUND_LABEL = "Reproducir sonido al enviar un mensaje"
 MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL = "Minimizar a la bandeja al usar Alt+F4"
+EMOTICON_CONVERSION_LABEL = "Convertir emoticonos como :-) o xD en emojis al escribir"
 UPDATE_CHECK_INTERVAL_LABEL = "Buscar actualizaciones automáticamente"
 UPDATE_CHECK_INTERVAL_LABELS = {
     20: "Cada 20 minutos",
@@ -27,126 +49,261 @@ CONNECTION_MODE_LABELS = {
     CONNECTION_MODE_LOCAL: "Puente local (WSL2)",
     CONNECTION_MODE_REMOTE: "Servidor XMPP",
 }
+AUTO_MODE_LABELS = (
+    (AUTO_OFF, "Desactivadas"),
+    (AUTO_ALL, "En todos los chats y grupos"),
+    (AUTO_SELECTED, "Sólo en los chats seleccionados"),
+    (AUTO_ALL_EXCEPT, "En todos excepto los chats seleccionados"),
+)
+DELIVERY_LABELS = (
+    (DELIVERY_PRIVATE, "Privadas: sólo yo las veo en este cliente"),
+    (DELIVERY_REPLY, "Enviarlas al chat como respuesta a la nota de voz"),
+)
+PAGE_TITLES = ("General", "Notificaciones y sonidos", "Mensajes", "Transcripción", "Integraciones")
 
 
 def format_setting_state(label: str, enabled: bool) -> str:
     return f"{label}: {'activado' if enabled else 'desactivado'}"
 
 
-class SettingsPanel(wx.Panel):
+class PreferencesDialog(wx.Dialog):
     def __init__(self, parent: wx.Window) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            title="Preferencias",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
         self._update_check_runtime_available = False
         self._local_bridge_available = False
         self._bridge_update_in_progress = False
+        self.apply_handler: Callable[[], bool] | None = None
+        self.transcription_reload_handler: Callable[[], None] | None = None
+        self._transcription_settings: TranscriptionSettings | None = None
+        self._transcription_chats: list[tuple[str, str]] = []
+        self._transcription_checked: set[str] = set()
+        self._visible_chat_jids: list[str] = []
 
-        self.title = wx.StaticText(self, label="Configuración")
-        title_font = self.title.GetFont()
-        title_font.SetPointSize(title_font.GetPointSize() + 3)
-        title_font.SetWeight(wx.FONTWEIGHT_BOLD)
-        self.title.SetFont(title_font)
+        self.notebook = wx.Notebook(self)
+        self.notebook.SetName("Categorías de preferencias")
+        self._build_general_page()
+        self._build_notifications_page()
+        self._build_messages_page()
+        self._build_transcription_page()
+        self._build_integrations_page()
 
-        self.connection_mode = wx.Choice(
-            self,
-            choices=list(CONNECTION_MODE_LABELS.values()),
-        )
-        self.connection_mode.SetName("Tipo de conexión")
-        self.connection_mode.SetToolTip(
-            "Elige que perfil se usara la proxima vez que abras la aplicacion."
-        )
-        self.connection_mode_status = wx.StaticText(self, label="")
+        self.save_button = wx.Button(self, wx.ID_OK, "&Guardar")
+        self.cancel_button = wx.Button(self, wx.ID_CANCEL, "Cancelar")
+        self.apply_button = wx.Button(self, wx.ID_APPLY, "&Aplicar")
+        self.save_button.SetDefault()
+        self.SetEscapeId(wx.ID_CANCEL)
+        # Compatibilidad: algunos flujos aún enlazan "Volver".
+        self.back_button = self.cancel_button
 
-        self.windows_notifications = wx.CheckBox(
-            self,
-            label=WINDOWS_NOTIFICATIONS_LABEL,
-        )
-        self.windows_notifications.SetToolTip(
-            "Muestra una notificación nativa cuando llega un mensaje fuera del chat activo."
-        )
-        self.show_preview = wx.CheckBox(
-            self,
-            label=SHOW_PREVIEW_LABEL,
-        )
-        self.show_preview.SetToolTip(
-            "Desactívalo para mostrar solamente que llegó un mensaje nuevo."
-        )
-        self.announce_with_nvda = wx.CheckBox(
-            self,
-            label=ANNOUNCE_WITH_NVDA_LABEL,
-        )
-        self.announce_with_nvda.SetToolTip(
-            "Úsalo sólo si Windows o NVDA no anuncian la notificación nativa."
-        )
-        self.open_chat_sound = wx.CheckBox(
-            self,
-            label=OPEN_CHAT_SOUND_LABEL,
-        )
-        self.sent_message_sound = wx.CheckBox(
-            self,
-            label=SENT_MESSAGE_SOUND_LABEL,
-        )
-        self.incoming_sound_path = wx.TextCtrl(self, style=wx.TE_READONLY)
-        self.incoming_sound_path.SetName("Sonido para mensajes entrantes")
-        self.incoming_sound_path.SetToolTip(
-            "Archivo usado para mensajes entrantes. Puedes elegir un sonido de Windows "
-            "o uno personalizado."
-        )
-        self.choose_incoming_sound_button = wx.Button(self, label="Elegir sonido...")
-        self.reset_incoming_sound_button = wx.Button(self, label="Usar predeterminado")
+        buttons = wx.StdDialogButtonSizer()
+        buttons.AddButton(self.save_button)
+        buttons.AddButton(self.cancel_button)
+        buttons.AddButton(self.apply_button)
+        buttons.Realize()
+
+        box = wx.BoxSizer(wx.VERTICAL)
+        box.Add(self.notebook, 1, wx.ALL | wx.EXPAND, 10)
+        box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
+        self.SetSizer(box)
+        self.SetMinSize((640, 560))
+        self.Fit()
+
+        self.save_button.Bind(wx.EVT_BUTTON, self._on_save)
+        self.apply_button.Bind(wx.EVT_BUTTON, self._on_apply)
+        self.windows_notifications.Bind(wx.EVT_CHECKBOX, self._on_dependent_toggle)
+        self.transcription_service.Bind(wx.EVT_CHECKBOX, self._on_dependent_toggle)
+        self.transcription_auto_mode.Bind(wx.EVT_CHOICE, self._on_dependent_toggle)
+        self.clear_api_key.Bind(wx.EVT_CHECKBOX, self._on_dependent_toggle)
+        self.transcription_chat_filter.Bind(wx.EVT_TEXT, self._on_chat_filter)
+        self.transcription_chats.Bind(wx.EVT_CHECKLISTBOX, self._on_chat_checked)
+        self.transcription_reload_button.Bind(wx.EVT_BUTTON, self._on_transcription_reload)
+
+    # -- construcción ----------------------------------------------------------
+    def _page(self, title: str) -> tuple[wx.Panel, wx.BoxSizer]:
+        page = wx.Panel(self.notebook)
+        page.SetName(title)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        page.SetSizer(sizer)
+        self.notebook.AddPage(page, title)
+        return page, sizer
+
+    @staticmethod
+    def _labelled(page: wx.Window, sizer: wx.Sizer, label: str, control: wx.Window) -> None:
+        # The label precedes its control so NVDA reads them together.
+        text = wx.StaticText(page, label=label)
+        sizer.Add(text, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        sizer.Add(control, 0, wx.ALL | wx.EXPAND, 8)
+        control.SetName(label.rstrip(":"))
+
+    def _build_general_page(self) -> None:
+        page, sizer = self._page(PAGE_TITLES[0])
+        self.connection_mode = wx.Choice(page, choices=list(CONNECTION_MODE_LABELS.values()))
+        self._labelled(page, sizer, "Conexión al iniciar:", self.connection_mode)
+        self.connection_mode_status = wx.StaticText(page, label="")
+        sizer.Add(self.connection_mode_status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         self.minimize_to_tray_on_alt_f4 = wx.CheckBox(
-            self,
-            label=MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL,
+            page, label=MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL
         )
-        self.minimize_to_tray_on_alt_f4.SetToolTip(
-            "Oculta la ventana y la deja disponible desde el icono de la bandeja del sistema."
-        )
+        sizer.Add(self.minimize_to_tray_on_alt_f4, 0, wx.ALL, 8)
+
         self.update_check_interval = wx.ComboBox(
-            self,
-            choices=[UPDATE_CHECK_INTERVAL_LABELS[value] for value in UPDATE_CHECK_INTERVAL_CHOICES]
+            page,
+            choices=[UPDATE_CHECK_INTERVAL_LABELS[v] for v in UPDATE_CHECK_INTERVAL_CHOICES]
             + [UPDATE_CHECK_INTERVAL_LABELS[None]],
             style=wx.CB_READONLY,
         )
-        self.update_check_interval.SetName(UPDATE_CHECK_INTERVAL_LABEL)
-        self.update_check_interval.SetToolTip(
-            "Busca releases nuevas en segundo plano con la frecuencia elegida."
-        )
-        self.check_updates_button = wx.Button(self, label="Buscar actualizaciones ahora")
-        self.check_updates_button.SetToolTip(
-            "Busca una actualización ahora, sin bloquear la aplicación."
-        )
-        self.update_check_status = wx.StaticText(self, label="")
+        self._labelled(page, sizer, f"{UPDATE_CHECK_INTERVAL_LABEL}:", self.update_check_interval)
+        self.check_updates_button = wx.Button(page, label="Buscar actualizaciones ahora")
+        sizer.Add(self.check_updates_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.update_check_status = wx.StaticText(page, label="")
+        sizer.Add(self.update_check_status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
-        self.bridge_updates_panel = wx.Panel(self)
+        self.bridge_updates_panel = wx.Panel(page)
+        bridge_box = wx.StaticBoxSizer(
+            wx.VERTICAL, self.bridge_updates_panel, "Puente local de WhatsApp"
+        )
         self.bridge_version_status = wx.StaticText(self.bridge_updates_panel, label="")
         self.bridge_version_status.SetName("Estado de actualización del puente local")
         self.check_bridge_updates_button = wx.Button(
-            self.bridge_updates_panel,
-            label="Buscar actualización del puente",
-        )
-        self.check_bridge_updates_button.SetToolTip(
-            "Consulta la versión estable del puente local sin bloquear la aplicación."
+            self.bridge_updates_panel, label="Buscar actualización del puente"
         )
         self.update_bridge_button = wx.Button(
-            self.bridge_updates_panel,
-            label="Actualizar puente ahora",
-        )
-        self.update_bridge_button.SetToolTip(
-            "Actualiza el puente local conservando la sesión y comprobando el resultado."
+            self.bridge_updates_panel, label="Actualizar puente ahora"
         )
         self.update_bridge_button.Disable()
+        bridge_box.Add(self.bridge_version_status, 0, wx.ALL | wx.EXPAND, 8)
+        row = wx.BoxSizer(wx.HORIZONTAL)
+        row.Add(self.check_bridge_updates_button, 0, wx.RIGHT, 8)
+        row.Add(self.update_bridge_button, 0)
+        bridge_box.Add(row, 0, wx.ALL, 8)
+        self.bridge_updates_panel.SetSizer(bridge_box)
+        self.bridge_updates_panel.Hide()
+        sizer.Add(self.bridge_updates_panel, 0, wx.ALL | wx.EXPAND, 8)
 
-        self.test_notification_button = wx.Button(
-            self,
-            label="Probar notificación de Windows",
+    def _build_notifications_page(self) -> None:
+        page, sizer = self._page(PAGE_TITLES[1])
+        self.windows_notifications = wx.CheckBox(page, label=WINDOWS_NOTIFICATIONS_LABEL)
+        self.show_preview = wx.CheckBox(page, label=SHOW_PREVIEW_LABEL)
+        self.announce_with_nvda = wx.CheckBox(page, label=ANNOUNCE_WITH_NVDA_LABEL)
+        self.test_notification_button = wx.Button(page, label="Probar notificación de Windows")
+        self.open_chat_sound = wx.CheckBox(page, label=OPEN_CHAT_SOUND_LABEL)
+        self.sent_message_sound = wx.CheckBox(page, label=SENT_MESSAGE_SOUND_LABEL)
+        sizer.Add(self.windows_notifications, 0, wx.ALL, 8)
+        sizer.Add(self.show_preview, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
+        sizer.Add(self.announce_with_nvda, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
+        sizer.Add(self.test_notification_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
+        sizer.Add(self.open_chat_sound, 0, wx.ALL, 8)
+        sizer.Add(self.sent_message_sound, 0, wx.ALL, 8)
+        self.incoming_sound_path = wx.TextCtrl(page, style=wx.TE_READONLY)
+        self._labelled(page, sizer, "Sonido para mensajes entrantes:", self.incoming_sound_path)
+        row = wx.BoxSizer(wx.HORIZONTAL)
+        self.choose_incoming_sound_button = wx.Button(page, label="Elegir sonido...")
+        self.reset_incoming_sound_button = wx.Button(page, label="Usar predeterminado")
+        row.Add(self.choose_incoming_sound_button, 0, wx.RIGHT, 8)
+        row.Add(self.reset_incoming_sound_button, 0)
+        sizer.Add(row, 0, wx.ALL, 8)
+
+    def _build_messages_page(self) -> None:
+        page, sizer = self._page(PAGE_TITLES[2])
+        self.emoticon_conversion = wx.CheckBox(page, label=EMOTICON_CONVERSION_LABEL)
+        sizer.Add(self.emoticon_conversion, 0, wx.ALL, 8)
+        sizer.Add(
+            wx.StaticText(
+                page,
+                label=(
+                    "La conversión ocurre al pulsar Espacio después del emoticono, "
+                    "o al enviar un mensaje que sólo contiene uno."
+                ),
+            ),
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            8,
         )
-        self.back_button = wx.Button(self, label="&Volver")
 
-        self.atajos_api_enabled = wx.CheckBox(self, label="Permitir integración local con Atajos")
+    def _build_transcription_page(self) -> None:
+        page, sizer = self._page(PAGE_TITLES[3])
+        self.transcription_page = page
+        self.transcription_status = wx.StaticText(
+            page, label="Abre esta pestaña conectado al puente."
+        )
+        self.transcription_status.SetName("Estado de la transcripción")
+        sizer.Add(self.transcription_status, 0, wx.ALL | wx.EXPAND, 8)
+
+        self.transcription_service = wx.CheckBox(
+            page, label="Activar el servicio de transcripción de Deepgram"
+        )
+        sizer.Add(self.transcription_service, 0, wx.ALL, 8)
+
+        self.api_key = wx.TextCtrl(page, style=wx.TE_PASSWORD)
+        self._labelled(
+            page, sizer, "Nueva clave API de Deepgram (vacía conserva la actual):", self.api_key
+        )
+        self.clear_api_key = wx.CheckBox(page, label="Borrar la clave propia guardada en el puente")
+        sizer.Add(self.clear_api_key, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        self.transcription_auto_mode = wx.Choice(
+            page, choices=[label for _, label in AUTO_MODE_LABELS]
+        )
+        self._labelled(page, sizer, "Transcripciones automáticas:", self.transcription_auto_mode)
+
+        self.transcription_delivery = wx.RadioBox(
+            page,
+            label="Entrega de las transcripciones",
+            choices=[label for _, label in DELIVERY_LABELS],
+            majorDimension=1,
+            style=wx.RA_SPECIFY_COLS,
+        )
+        self.transcription_delivery.SetName("Entrega de las transcripciones")
+        sizer.Add(self.transcription_delivery, 0, wx.ALL | wx.EXPAND, 8)
+
+        self.transcription_chat_filter = wx.SearchCtrl(page)
+        self.transcription_chat_filter.SetDescriptiveText("Buscar chat")
+        self._labelled(page, sizer, "Filtrar chats:", self.transcription_chat_filter)
+        self.transcription_chats = wx.CheckListBox(page, size=(-1, 180))
+        self._labelled(page, sizer, "Chats seleccionados:", self.transcription_chats)
+        self.transcription_reload_button = wx.Button(page, label="Volver a cargar desde el puente")
+        sizer.Add(self.transcription_reload_button, 0, wx.ALL, 8)
+        self._set_transcription_controls_enabled(False)
+
+    def _build_integrations_page(self) -> None:
+        page, sizer = self._page(PAGE_TITLES[4])
+        self.atajos_api_enabled = wx.CheckBox(page, label="Permitir integración local con Atajos")
         self.atajos_api_enabled.SetName("Permitir integración local con Atajos")
-        self.atajos_api_status = wx.StaticText(self, label="Integración desactivada.")
+        sizer.Add(self.atajos_api_enabled, 0, wx.ALL, 8)
+        sizer.Add(
+            wx.StaticText(
+                page,
+                label=(
+                    "Permite buscar contactos y enviar o programar mensajes desde el asistente. "
+                    "Sólo escucha en este equipo. El contexto que solicites en Atajos se "
+                    "comparte con Gemini. Los programados esperan a que vuelva la conexión."
+                ),
+            ),
+            0,
+            wx.LEFT | wx.RIGHT | wx.BOTTOM,
+            8,
+        )
+        self.atajos_api_status = wx.StaticText(page, label="Integración desactivada.")
+        sizer.Add(self.atajos_api_status, 0, wx.ALL, 8)
 
-        self._layout()
+    # -- botones ---------------------------------------------------------------
+    def _run_apply(self) -> bool:
+        handler = self.apply_handler
+        return handler() if handler is not None else True
 
+    def _on_apply(self, _event: wx.CommandEvent) -> None:
+        self._run_apply()
+
+    def _on_save(self, _event: wx.CommandEvent) -> None:
+        if self._run_apply():
+            self.EndModal(wx.ID_OK)
+
+    # -- valores generales -----------------------------------------------------
     def set_values(
         self,
         *,
@@ -161,6 +318,7 @@ class SettingsPanel(wx.Panel):
         connection_mode: str = CONNECTION_MODE_REMOTE,
         local_bridge_available: bool = False,
         local_bridge_active: bool = False,
+        emoticon_conversion: bool = True,
     ) -> None:
         self._local_bridge_available = local_bridge_available
         self.set_connection_mode(connection_mode)
@@ -173,9 +331,13 @@ class SettingsPanel(wx.Panel):
             incoming_sound_path or "Sonido predeterminado de WhatsApp CAN"
         )
         self.minimize_to_tray_on_alt_f4.SetValue(minimize_to_tray_on_alt_f4)
+        self.emoticon_conversion.SetValue(emoticon_conversion)
         self.set_update_check_interval_minutes(update_check_interval_minutes)
         self.set_bridge_updates_visible(local_bridge_available and local_bridge_active)
         self.refresh_accessible_states()
+
+    def set_incoming_sound_path(self, path: str) -> None:
+        self.incoming_sound_path.SetValue(path or "Sonido predeterminado de WhatsApp CAN")
 
     def connection_mode_value(self) -> str:
         selected = self.connection_mode.GetStringSelection()
@@ -200,27 +362,22 @@ class SettingsPanel(wx.Panel):
         return DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES
 
     def set_update_check_interval_minutes(self, interval: int | None) -> None:
-        label = UPDATE_CHECK_INTERVAL_LABELS.get(
-            interval,
-            UPDATE_CHECK_INTERVAL_LABELS[DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES],
+        self.update_check_interval.SetValue(
+            UPDATE_CHECK_INTERVAL_LABELS.get(
+                interval, UPDATE_CHECK_INTERVAL_LABELS[DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES]
+            )
         )
-        self.update_check_interval.SetValue(label)
 
     def set_update_check_runtime_available(self, available: bool) -> None:
         self._update_check_runtime_available = available
         self.update_check_interval.Enable(available)
         self.check_updates_button.Enable(available)
-        if available:
-            self.update_check_status.SetLabel("")
-        else:
-            self.update_check_status.SetLabel(
-                "Disponible al ejecutar la aplicación instalada."
-            )
+        self.update_check_status.SetLabel(
+            "" if available else "Disponible al ejecutar la aplicación instalada."
+        )
 
     def set_update_check_in_progress(self, in_progress: bool) -> None:
-        self.check_updates_button.Enable(
-            self._update_check_runtime_available and not in_progress
-        )
+        self.check_updates_button.Enable(self._update_check_runtime_available and not in_progress)
         if in_progress:
             self.update_check_status.SetLabel("Buscando actualizaciones en segundo plano...")
 
@@ -239,9 +396,7 @@ class SettingsPanel(wx.Panel):
         self.check_bridge_updates_button.Enable(not in_progress)
         self.update_bridge_button.Enable(False)
         if in_progress:
-            self.bridge_version_status.SetLabel(
-                "Comprobando el puente local en segundo plano..."
-            )
+            self.bridge_version_status.SetLabel("Comprobando el puente local en segundo plano...")
         self.Layout()
 
     def set_bridge_update_status(self, status: str, *, can_update: bool = False) -> None:
@@ -251,58 +406,23 @@ class SettingsPanel(wx.Panel):
         self.Layout()
 
     def refresh_accessible_states(self) -> None:
-        self._apply_control_state()
+        self._sync_dependent_controls()
 
     def apply_interactive_state(self) -> None:
-        wx.CallAfter(self._apply_control_state)
+        wx.CallAfter(self._sync_dependent_controls)
 
     def checkbox_state_text(self, checkbox: object) -> str:
         for candidate, base_label in self._checkboxes_with_labels():
             if candidate is checkbox:
                 return format_setting_state(base_label, checkbox.GetValue())
-        return "Configuración actualizada"
+        return "Preferencias actualizadas"
 
     def focus(self) -> None:
-        self.connection_mode.SetFocus()
+        self.notebook.SetFocus()
 
-    def _sync_windows_controls(self) -> None:
-        enabled = self.windows_notifications.GetValue()
-        for control in (
-            self.show_preview,
-            self.announce_with_nvda,
-            self.test_notification_button,
-        ):
-            if control.IsEnabled() != enabled:
-                control.Enable(enabled)
-
-    def _apply_control_state(self) -> None:
-        self.Freeze()
-        try:
-            self._sync_windows_controls()
-            for checkbox, base_label in self._checkboxes_with_labels():
-                label = format_setting_state(base_label, checkbox.GetValue())
-                if checkbox.GetLabel() != label:
-                    checkbox.SetLabel(label)
-                if checkbox.GetName() != label:
-                    checkbox.SetName(label)
-            self.Layout()
-        finally:
-            self.Thaw()
-
-        for control in (
-            self.windows_notifications,
-            self.show_preview,
-            self.announce_with_nvda,
-            self.open_chat_sound,
-            self.sent_message_sound,
-            self.test_notification_button,
-        ):
-            control.Refresh()
-        self.Refresh()
-        parent = self.GetParent()
-        if parent is not None:
-            parent.Layout()
-            parent.Refresh()
+    def select_page(self, title: str) -> None:
+        if title in PAGE_TITLES:
+            self.notebook.SetSelection(PAGE_TITLES.index(title))
 
     def _checkboxes_with_labels(self) -> tuple[tuple[wx.CheckBox, str], ...]:
         return (
@@ -312,105 +432,160 @@ class SettingsPanel(wx.Panel):
             (self.open_chat_sound, OPEN_CHAT_SOUND_LABEL),
             (self.sent_message_sound, SENT_MESSAGE_SOUND_LABEL),
             (self.minimize_to_tray_on_alt_f4, MINIMIZE_TO_TRAY_ON_ALT_F4_LABEL),
+            (self.emoticon_conversion, EMOTICON_CONVERSION_LABEL),
         )
 
-    def _layout(self) -> None:
-        connection_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Conexión")
-        connection_box.Add(wx.StaticText(self, label="Usar al iniciar:"), 0, wx.ALL, 8)
-        connection_box.Add(
-            self.connection_mode,
-            0,
-            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
-            8,
-        )
-        connection_box.Add(
-            self.connection_mode_status,
-            0,
-            wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            8,
-        )
+    def _on_dependent_toggle(self, event: wx.CommandEvent) -> None:
+        self._sync_dependent_controls()
+        event.Skip()
 
-        notification_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Notificaciones")
-        notification_box.Add(self.windows_notifications, 0, wx.ALL, 8)
-        notification_box.Add(self.show_preview, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
-        notification_box.Add(self.announce_with_nvda, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 24)
-        notification_box.Add(self.open_chat_sound, 0, wx.ALL, 8)
-        notification_box.Add(self.sent_message_sound, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
-        notification_box.Add(
-            wx.StaticText(self, label="Sonido de mensajes entrantes:"),
-            0,
-            wx.LEFT | wx.RIGHT | wx.TOP,
-            8,
-        )
-        notification_box.Add(self.incoming_sound_path, 0, wx.ALL | wx.EXPAND, 8)
-        incoming_sound_buttons = wx.BoxSizer(wx.HORIZONTAL)
-        incoming_sound_buttons.Add(self.choose_incoming_sound_button, 0, wx.RIGHT, 8)
-        incoming_sound_buttons.Add(self.reset_incoming_sound_button, 0)
-        notification_box.Add(incoming_sound_buttons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+    def _sync_dependent_controls(self) -> None:
+        enabled = self.windows_notifications.GetValue()
+        for control in (self.show_preview, self.announce_with_nvda, self.test_notification_button):
+            if control.IsEnabled() != enabled:
+                control.Enable(enabled)
+        if self._transcription_settings is not None:
+            self._set_transcription_controls_enabled(True)
 
-        window_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Ventana")
-        window_box.Add(self.minimize_to_tray_on_alt_f4, 0, wx.ALL, 8)
+    # -- transcripción ---------------------------------------------------------
+    def _set_transcription_controls_enabled(self, loaded: bool) -> None:
+        service = loaded and self.transcription_service.GetValue()
+        mode = self.transcription_auto_mode_value()
+        self.transcription_service.Enable(loaded)
+        self.api_key.Enable(loaded and not self.clear_api_key.GetValue())
+        self.clear_api_key.Enable(
+            loaded
+            and self._transcription_settings is not None
+            and self._transcription_settings.key_source == "account"
+        )
+        self.transcription_auto_mode.Enable(service)
+        self.transcription_delivery.Enable(service)
+        selectable = service and mode in {AUTO_SELECTED, AUTO_ALL_EXCEPT}
+        self.transcription_chat_filter.Enable(selectable)
+        self.transcription_chats.Enable(selectable)
+        self.transcription_reload_button.Enable(True)
 
-        updates_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Actualizaciones")
-        updates_box.Add(wx.StaticText(self, label=UPDATE_CHECK_INTERVAL_LABEL), 0, wx.ALL, 8)
-        updates_box.Add(
-            self.update_check_interval,
-            0,
-            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
-            8,
-        )
-        updates_box.Add(self.check_updates_button, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
-        updates_box.Add(self.update_check_status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+    def transcription_auto_mode_value(self) -> str:
+        index = self.transcription_auto_mode.GetSelection()
+        if index == wx.NOT_FOUND:
+            return AUTO_ALL
+        return AUTO_MODE_LABELS[index][0]
 
-        bridge_updates_box = wx.StaticBoxSizer(
-            wx.VERTICAL,
-            self.bridge_updates_panel,
-            "Puente local de WhatsApp",
-        )
-        bridge_updates_box.Add(
-            self.bridge_version_status,
-            0,
-            wx.ALL | wx.EXPAND,
-            8,
-        )
-        bridge_update_buttons = wx.BoxSizer(wx.HORIZONTAL)
-        bridge_update_buttons.Add(self.check_bridge_updates_button, 0, wx.RIGHT, 8)
-        bridge_update_buttons.Add(self.update_bridge_button, 0)
-        bridge_updates_box.Add(
-            bridge_update_buttons,
-            0,
-            wx.LEFT | wx.RIGHT | wx.BOTTOM,
-            8,
-        )
-        self.bridge_updates_panel.SetSizer(bridge_updates_box)
-        self.bridge_updates_panel.Hide()
+    def set_transcription_status(self, message: str) -> None:
+        self.transcription_status.SetLabel(message)
+        self.transcription_status.SetName(f"Estado de la transcripción: {message}")
+        self.transcription_page.Layout()
 
-        buttons = wx.BoxSizer(wx.HORIZONTAL)
-        buttons.Add(self.test_notification_button, 0, wx.RIGHT, 8)
-        buttons.Add(self.back_button, 0)
+    def set_transcription_loading(self) -> None:
+        self._transcription_settings = None
+        self._set_transcription_controls_enabled(False)
+        self.set_transcription_status("Cargando la configuración desde el puente...")
 
-        box = wx.BoxSizer(wx.VERTICAL)
-        box.Add(self.title, 0, wx.ALL, 16)
-        box.Add(connection_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
-        box.Add(notification_box, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, 16)
-        box.Add(window_box, 0, wx.ALL | wx.EXPAND, 16)
-        integration_box = wx.StaticBoxSizer(wx.VERTICAL, self, "Asistente de Atajos")
-        integration_box.Add(self.atajos_api_enabled, 0, wx.ALL, 8)
-        integration_box.Add(wx.StaticText(self, label=(
-            "Permite buscar contactos y enviar/programar mensajes desde el asistente.\n"
-            "Solo escucha en este equipo. El contexto que solicites en Atajos "
-            "se comparte con Gemini.\n"
-            "Los programados esperan automáticamente a que vuelva la conexión."
-        )), 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
-        integration_box.Add(self.atajos_api_status, 0, wx.ALL, 8)
-        box.Add(integration_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
-        box.Add(updates_box, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 16)
-        box.Add(
-            self.bridge_updates_panel,
-            0,
-            wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND,
-            16,
+    def set_transcription_unavailable(self, message: str) -> None:
+        self._transcription_settings = None
+        self._set_transcription_controls_enabled(False)
+        self.set_transcription_status(message)
+
+    def set_transcription_settings(
+        self,
+        settings: TranscriptionSettings,
+        chats: list[tuple[str, str]],
+    ) -> None:
+        self._transcription_settings = settings
+        self.transcription_service.SetValue(settings.service_enabled)
+        self.api_key.SetValue("")
+        self.clear_api_key.SetValue(False)
+        mode = settings.auto_mode
+        self.transcription_auto_mode.SetSelection(
+            next(i for i, (value, _label) in enumerate(AUTO_MODE_LABELS) if value == mode)
         )
-        box.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 16)
-        box.AddStretchSpacer(1)
-        self.SetSizer(box)
+        self.transcription_delivery.SetSelection(
+            1 if settings.delivery == DELIVERY_REPLY else 0
+        )
+        known = {jid.casefold() for jid, _label in chats}
+        extra = [(jid, jid) for jid in sorted(settings.selected_chats) if jid not in known]
+        self._transcription_chats = [(jid.casefold(), label) for jid, label in chats] + extra
+        self._transcription_checked = set(settings.selected_chats)
+        self._fill_chat_list()
+        self._set_transcription_controls_enabled(True)
+        self.set_transcription_status(self._describe_key(settings))
+
+    @staticmethod
+    def _describe_key(settings: TranscriptionSettings) -> str:
+        if settings.key_source == "account":
+            key = f"Clave propia guardada en el puente (termina en {settings.key_hint})."
+        elif settings.key_source == "server":
+            key = "Se usa la clave configurada en el servidor."
+        else:
+            key = "No hay clave API: escribe una para usar el servicio."
+        state = "activo" if settings.available else "inactivo"
+        return f"Servicio {state}. {key}"
+
+    def _fill_chat_list(self) -> None:
+        query = self.transcription_chat_filter.GetValue().strip().casefold()
+        visible = [
+            (jid, label)
+            for jid, label in self._transcription_chats
+            if not query or query in label.casefold() or query in jid
+        ]
+        self.transcription_chats.Freeze()
+        try:
+            self.transcription_chats.Set([label for _jid, label in visible])
+            self._visible_chat_jids = [jid for jid, _label in visible]
+            for index, jid in enumerate(self._visible_chat_jids):
+                self.transcription_chats.Check(index, jid in self._transcription_checked)
+        finally:
+            self.transcription_chats.Thaw()
+
+    def _on_chat_filter(self, _event: wx.CommandEvent) -> None:
+        self._fill_chat_list()
+
+    def _on_chat_checked(self, event: wx.CommandEvent) -> None:
+        index = event.GetInt()
+        if 0 <= index < len(self._visible_chat_jids):
+            jid = self._visible_chat_jids[index]
+            if self.transcription_chats.IsChecked(index):
+                self._transcription_checked.add(jid)
+            else:
+                self._transcription_checked.discard(jid)
+
+    def _on_transcription_reload(self, _event: wx.CommandEvent) -> None:
+        if self.transcription_reload_handler is not None:
+            self.transcription_reload_handler()
+
+    def transcription_update(self) -> TranscriptionSettingsUpdate | None:
+        """The pending change, None when nothing differs; raises ValueError on bad input."""
+        settings = self._transcription_settings
+        if settings is None:
+            return None
+        typed_key = self.api_key.GetValue()
+        api_key = validate_api_key(typed_key) if typed_key.strip() else None
+        update = TranscriptionSettingsUpdate(
+            service_enabled=self.transcription_service.GetValue(),
+            auto_mode=self.transcription_auto_mode_value(),
+            delivery=DELIVERY_LABELS[max(0, self.transcription_delivery.GetSelection())][0],
+            chats=frozenset(self._transcription_checked),
+            api_key=api_key,
+            clear_api_key=self.clear_api_key.GetValue(),
+        )
+        unchanged = (
+            api_key is None
+            and not update.clear_api_key
+            and update.service_enabled == settings.service_enabled
+            and update.auto_enabled == settings.auto_enabled
+            and update.delivery == settings.delivery
+            and update.chat_overrides == {
+                jid: enabled
+                for jid, enabled in settings.chat_overrides.items()
+                if enabled is not settings.auto_enabled
+            }
+        )
+        return None if unchanged else update
+
+    def focus_transcription_key(self) -> None:
+        self.select_page("Transcripción")
+        self.api_key.SetFocus()
+
+
+# El nombre anterior sigue disponible para los módulos que lo importan.
+SettingsPanel = PreferencesDialog

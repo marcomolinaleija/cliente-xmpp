@@ -7,6 +7,7 @@ from cliente_xmpp.models.chat import Chat, Message
 from cliente_xmpp.models.mentions import GroupParticipant
 from cliente_xmpp.models.message_info import GroupMessageInfo
 from cliente_xmpp.models.reactions import ReactionUpdate
+from cliente_xmpp.models.transcription import TranscriptionSettings
 from cliente_xmpp.models.voice import VoiceAudioStats, VoiceDevice
 
 
@@ -265,6 +266,26 @@ class WhatsAppPhoneResolved:
 
 
 @dataclass(slots=True)
+class TranscriptionSettingsLoaded:
+    """Bridge transcription preferences after a get or a set."""
+
+    request_id: str
+    settings: TranscriptionSettings | None = None
+    error: str = ""
+    unsupported: bool = False
+    saved: bool = False
+
+
+@dataclass(slots=True)
+class VoiceTranscriptionFinished:
+    request_id: str
+    chat_jid: str
+    message_id: str
+    text: str = ""
+    error: str = ""
+
+
+@dataclass(slots=True)
 class FileBatchCompleted:
     chat_jid: str
     total: int
@@ -370,6 +391,8 @@ XmppEvent = (
     | MessageDeliveryUpdated
     | GroupMessageInfoLoaded
     | WhatsAppPhoneResolved
+    | TranscriptionSettingsLoaded
+    | VoiceTranscriptionFinished
     | FileBatchCompleted
     | FileTransferUpdated
     | ChatDisplayedSynced

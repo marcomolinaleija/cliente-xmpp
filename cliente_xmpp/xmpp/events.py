@@ -255,7 +255,8 @@ class WhatsAppPhoneResolved:
     """Answer of the bridge (XEP-0100) to "which JID does this number use?".
 
     ``status`` is ``found`` (``jid`` set), ``not_registered`` (no WhatsApp
-    account) or ``unavailable`` (bridge did not answer; open with the local JID).
+    account), ``own_number`` (the account's own number) or ``unavailable``
+    (the bridge could not confirm it; the chat is not opened).
     """
 
     request_id: str

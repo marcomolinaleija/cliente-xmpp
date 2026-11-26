@@ -298,14 +298,24 @@ class NewChatResolutionTests(unittest.TestCase):
         window._open_chat.assert_not_called()
         window._open_chat_for_phone.assert_not_called()
 
-    def test_unanswered_lookup_falls_back_to_the_local_jid(self) -> None:
-        window = self._window()
-        MainWindow._start_new_chat_for_phone(window, self.PHONE)
-        request_id = window._pending_phone_resolution[0]
-        MainWindow._handle_whatsapp_phone_resolved(
-            window, WhatsAppPhoneResolved(request_id, self.PHONE.e164, "unavailable")
-        )
-        window._open_chat_for_phone.assert_called_once_with(self.PHONE)
+    def test_unconfirmed_or_own_numbers_never_open_a_chat(self) -> None:
+        for status, detail, expected in (
+            ("unavailable", "timeout", "no respondió a tiempo"),
+            ("unavailable", "internal-server-error", "no pudo consultarlo"),
+            ("own_number", "", "tu propia cuenta"),
+        ):
+            with self.subTest(status=status, detail=detail):
+                window = self._window()
+                MainWindow._start_new_chat_for_phone(window, self.PHONE)
+                request_id = window._pending_phone_resolution[0]
+                with patch("cliente_xmpp.ui.main_window.wx.MessageBox") as message_box:
+                    MainWindow._handle_whatsapp_phone_resolved(
+                        window,
+                        WhatsAppPhoneResolved(request_id, self.PHONE.e164, status, detail=detail),
+                    )
+                self.assertIn(expected, message_box.call_args.args[0])
+                window._open_chat.assert_not_called()
+                window._open_chat_for_phone.assert_not_called()
 
     def test_known_chat_opens_immediately(self) -> None:
         window = self._window()

@@ -3273,11 +3273,19 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if component_jid != self.whatsapp_component_jid:
             return
 
-        if event.status == "not_registered":
-            message = (
-                f"El número {normalized_phone.international} no tiene una cuenta de "
-                "WhatsApp. Revisa el país y el número."
-            )
+        number = normalized_phone.international
+        problems = {
+            "not_registered": (
+                f"El número {number} no tiene una cuenta de WhatsApp. "
+                "Revisa el país y el número."
+            ),
+            "own_number": (
+                f"El número {number} es el de tu propia cuenta de WhatsApp. "
+                "Escribe el número de otra persona."
+            ),
+        }
+        if event.status in problems:
+            message = problems[event.status]
             self.status_bar.SetStatusText(message)
             wx.MessageBox(message, "Nuevo chat", wx.OK | wx.ICON_INFORMATION, self)
             return
@@ -3294,13 +3302,20 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             )
             return
 
-        # Older bridge or no answer in time: never block, open the local guess.
-        chat = self._open_chat_for_phone(normalized_phone)
-        if chat is not None:
-            self._announce_status(
-                f"Chat abierto con {normalized_phone.international}. "
-                "No se pudo confirmar el número con WhatsApp."
-            )
+        # Unconfirmed numbers are never opened: a guessed JID only fails later.
+        reason = (
+            "WhatsApp no respondió a tiempo"
+            if event.detail == "timeout"
+            else "no hay conexión con el puente"
+            if event.detail == "offline"
+            else "el puente no pudo consultarlo"
+        )
+        message = (
+            f"No se pudo confirmar el número {number} con WhatsApp: {reason}. "
+            "Inténtalo de nuevo en unos segundos."
+        )
+        self.status_bar.SetStatusText(message)
+        wx.MessageBox(message, "Nuevo chat", wx.OK | wx.ICON_WARNING, self)
 
     def _open_chat_for_phone(
         self,

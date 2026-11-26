@@ -3395,8 +3395,11 @@ class BridgeXmppClient(ClientXMPP):
                 raise ValueError("Respuesta inesperada del puente.")
         except IqError as exc:
             condition = str(exc.iq["error"]["condition"])
+            text = str(exc.iq["error"]["text"] or "")
             if condition == "item-not-found":
                 self._emit(WhatsAppPhoneResolved(request_id, phone, "not_registered"))
+            elif condition == "not-acceptable" and text == "own-number":
+                self._emit(WhatsAppPhoneResolved(request_id, phone, "own_number"))
             else:
                 self._emit(WhatsAppPhoneResolved(
                     request_id, phone, "unavailable", detail=condition,

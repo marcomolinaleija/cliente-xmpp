@@ -105,6 +105,8 @@ $cases = @(
     @(12, "El comando 'wsl.exe --install' terminó con código 1.", @('Error: 0x80370102 fixture')),
     @(13, 'Se requiere WSL 2.4.4.0 o posterior; está instalada la versión 2.0.9.0.', @()),
     @(18, 'La instalación no confirmó la versión y las capacidades requeridas, incluida voz.', @()),
+    @(19, 'La distribución Fixture está registrada pero su disco no existe: C:/x/ext4.vhdx', @()),
+    @(16, 'No se pudo leer la versión del appliance instalado; no se reemplazará.', @()),
     @(1, 'Algo inesperado del fixture.', @())
 )
 foreach ($case in $cases) {
@@ -116,6 +118,45 @@ foreach ($case in $cases) {
 """
         )
         self.assertIn("classified", output)
+
+    def test_only_a_registration_whose_disk_is_missing_is_orphaned(self):
+        output = self.run_ps(
+            r"""
+$present = Join-Path $env:CAN_FIXTURE 'present'
+$custom = Join-Path $env:CAN_FIXTURE 'custom'
+$missing = Join-Path $env:CAN_FIXTURE 'missing'
+New-Item -ItemType Directory -Force $present, $custom | Out-Null
+Set-Content (Join-Path $present 'ext4.vhdx') 'fixture'
+Set-Content (Join-Path $custom 'disk.vhdx') 'fixture'
+$entries = @(
+    [pscustomobject]@{ DistributionName = 'Other'; BasePath = $missing },
+    [pscustomobject]@{ DistributionName = 'Present'; BasePath = "\\?\$present" },
+    [pscustomobject]@{ DistributionName = 'Custom'; BasePath = $custom; VhdFileName = 'disk.vhdx' },
+    [pscustomobject]@{ DistributionName = 'Orphan'; BasePath = "\\?\$missing" }
+)
+function Find($name, $regs) {
+    Find-OrphanedDistributionDisk -Distribution $name -Registrations $regs
+}
+Assert ((Find 'Present' $entries) -eq '') 'present disk'
+Assert ((Find 'Custom' $entries) -eq '') 'custom disk'
+Assert ((Find 'Unknown' $entries) -eq '') 'unregistered'
+Assert ((Find 'Unknown' @()) -eq '') 'no registry'
+$orphan = Find-OrphanedDistributionDisk -Distribution 'Orphan' -Registrations $entries
+Assert ($orphan -eq (Join-Path $missing 'ext4.vhdx')) "orphan: $orphan"
+'orphan-checked'
+"""
+        )
+        self.assertIn("orphan-checked", output)
+
+    def test_orphan_removal_needs_the_confirmed_switch_and_is_rechecked(self):
+        script = (ROOT / "install-appliance.ps1").read_text(encoding="utf-8-sig")
+        setup = (ROOT.parents[1] / "installer" / "WhatsApp-CAN.iss").read_text(encoding="utf-8")
+        guard = script.index("if (-not $RemoveOrphanedDistribution) {")
+        unregister = script.index('Invoke-Native wsl.exe @("--unregister", $DistroName)')
+        self.assertLess(guard, unregister)
+        self.assertIn("(ResultCode = 19) and ConfirmOrphanedBridgeRemoval", setup)
+        self.assertIn("Result := (not WizardSilent) and (TaskDialogMsgBox(", setup)
+        self.assertIn("RunBridgeInstall(' -RemoveOrphanedDistribution', ResultCode)", setup)
 
     def test_installer_hints_cover_every_script_failure_code(self):
         script = (ROOT / "install-appliance.ps1").read_text(encoding="utf-8-sig")

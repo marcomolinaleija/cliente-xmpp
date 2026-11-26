@@ -10,7 +10,9 @@ param(
     [string]$ExpectedApplianceVersion = "",
     [switch]$Resume,
     [switch]$InstallOrResume,
-    [string]$LogPath = ""
+    [string]$LogPath = "",
+    # Only the Windows installer passes this, after the user confirmed it.
+    [switch]$RemoveOrphanedDistribution
 )
 
 Set-StrictMode -Version Latest
@@ -53,6 +55,9 @@ function Get-InstallFailure {
         @{ Code = 15; Source = $Message; Pattern = 'SHA-256|extensión \.wsl|versión del paquete'
            Cause = 'El paquete descargado del puente está incompleto o no es el esperado.'
            Action = 'Vuelve a ejecutar el instalador para descargarlo de nuevo.' },
+        @{ Code = 19; Source = $Message; Pattern = 'registrada pero su disco no existe'
+           Cause = 'WSL conserva el registro de un puente local anterior cuyo disco ya no existe.'
+           Action = 'Vuelve a ejecutar el instalador y acepta quitar ese registro; no contiene datos recuperables.' },
         @{ Code = 16; Source = $Message; Pattern = 'versión anterior|No se pudo leer la versión del appliance instalado|Ya existe una distribución llamada'
            Cause = 'Ya hay un puente local instalado que el instalador no puede reemplazar automáticamente.'
            Action = 'Usa el actualizador del puente local o comparte este registro para revisarlo; no se borró nada.' },
@@ -147,6 +152,42 @@ function Get-WslVersion {
         throw "WSL no está instalado o no expone una versión compatible."
     }
     return [Version]$Matches[1]
+}
+
+function Find-OrphanedDistributionDisk {
+    # A registration is orphaned when WSL still lists it but its virtual disk is gone:
+    # it cannot start and holds no recoverable data. Returns the missing disk path or "".
+    param(
+        [Parameter(Mandatory = $true)][string]$Distribution,
+        [object[]]$Registrations = @()
+    )
+
+    foreach ($entry in $Registrations) {
+        if ([string]$entry.DistributionName -ne $Distribution) {
+            continue
+        }
+        $basePath = ([string]$entry.BasePath) -replace '^\\\\\?\\', ''
+        if (-not $basePath) {
+            return ""
+        }
+        $diskName = if ($entry.PSObject.Properties['VhdFileName'] -and $entry.VhdFileName) { [string]$entry.VhdFileName } else { "ext4.vhdx" }
+        $disk = Join-Path $basePath $diskName
+        if (Test-Path -LiteralPath $disk -PathType Leaf) {
+            return ""
+        }
+        return $disk
+    }
+    return ""
+}
+
+function Get-WslRegistrations {
+    $root = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss"
+    if (-not (Test-Path -LiteralPath $root)) {
+        return @()
+    }
+    return @(Get-ChildItem -LiteralPath $root | ForEach-Object {
+        Get-ItemProperty -LiteralPath $_.PSPath
+    })
 }
 
 function Get-WslDistributionNames {
@@ -262,8 +303,19 @@ function Enter-ApplianceMigrationLock {
 
 function Get-InstalledApplianceVersion {
     param([Parameter(Mandatory = $true)][string]$Distribution)
-    $json = (& wsl.exe -d $Distribution -u root -- cat /opt/whatsapp-can-bridge/version.json | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $json) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = @(& wsl.exe -d $Distribution -u root -- cat /opt/whatsapp-can-bridge/version.json 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $json = (@($lines | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] }) | Out-String).Trim()
+    if ($exitCode -ne 0 -or -not $json) {
+        # WSL explains why it could not start the distribution; keep that in the log.
+        foreach ($line in $lines) { Write-NativeLine $line }
         throw "No se pudo leer la versión del appliance instalado; no se reemplazará."
     }
     return Convert-ApplianceVersion -Value ([string]($json | ConvertFrom-Json).appliance_version)
@@ -590,6 +642,22 @@ $recoveryParameters = @{
 Recover-InterruptedMigration @recoveryParameters
 
 $distroExists = (Get-WslDistributionNames) -contains $DistroName
+if ($distroExists) {
+    $orphanedDisk = Find-OrphanedDistributionDisk -Distribution $DistroName -Registrations (Get-WslRegistrations)
+    if ($orphanedDisk) {
+        if (-not $RemoveOrphanedDistribution) {
+            throw "La distribución $DistroName está registrada pero su disco no existe: $orphanedDisk"
+        }
+        # Checked again here, not trusted from the first run: the disk is still missing.
+        Write-Host "Quitando el registro de $DistroName, cuyo disco no existe ($orphanedDisk), con la confirmación del usuario..."
+        Invoke-Native wsl.exe @("--unregister", $DistroName)
+        $distroExists = (Get-WslDistributionNames) -contains $DistroName
+        if ($distroExists) {
+            throw "No se pudo quitar el registro de $DistroName."
+        }
+        Write-Host "Registro quitado; se continúa con una instalación nueva."
+    }
+}
 if ($distroExists -and -not $Resume -and -not $InstallOrResume) {
     throw "Ya existe una distribución llamada $DistroName. Usa -Resume sólo para completar esa instalación."
 }

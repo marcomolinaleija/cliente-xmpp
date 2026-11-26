@@ -233,10 +233,18 @@ identifica la causa; `Get-InstallFailure` y `GetBridgeFailureHint` deben mantene
 | 16 | Ya hay un puente instalado que no se reemplaza automáticamente |
 | 17 | Otra instalación o una migración sin terminar |
 | 18 | Instalado, pero los servicios no terminaron de configurarse |
+| 19 | WSL conserva el registro de `WhatsAppCAN-Bridge`, pero su `ext4.vhdx` no existe |
 | 1 | Causa no reconocida |
 
 Ningún caso borra datos: la carpeta sobrante (11) sólo se renombra a mano tras comprobar con
 `wsl -l -v` que no existe `WhatsAppCAN-Bridge`.
+
+El 19 es un registro huérfano: la distribución no arranca (`MountDisk/ERROR_PATH_NOT_FOUND`) y
+no hay disco con datos. El script lo detecta leyendo `BasePath` y `VhdFileName` del registro de
+WSL del usuario. Oculto no puede preguntar, así que termina con 19; el instalador pide
+confirmación y, sólo si se acepta, lo ejecuta de nuevo con `-RemoveOrphanedDistribution`. El
+script vuelve a comprobar que el disco falta, ejecuta `wsl --unregister` y continúa con una
+instalación nueva. En modo silencioso no se quita nada.
 
 ## Construir
 

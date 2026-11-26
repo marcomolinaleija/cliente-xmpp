@@ -175,7 +175,30 @@ begin
     ExpandConstant('{tmp}\') + ExtractFileName('{#WslInstallScript}') +
     '" -PackagePath "' + ExpandConstant('{tmp}\{#WslPackageName}') +
     '" -ExpectedPackageSha256 "{#WslPackageSha256}" -InstallOrResume' +
-    ' -LogPath "' + BridgeInstallLogPath + '"';
+    ' -LogPath "' + BridgeInstallLogPath + '"' + Param;
+end;
+
+function RunBridgeInstall(Param: String; var ResultCode: Integer): Boolean;
+begin
+  Result := Exec(
+    ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe'),
+    GetBridgeInstallParameters(Param),
+    ExpandConstant('{tmp}'),
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+// WSL still lists the bridge but its disk is gone: nothing to recover, but ask first.
+function ConfirmOrphanedBridgeRemoval: Boolean;
+begin
+  Result := (not WizardSilent) and (TaskDialogMsgBox(
+    'Se encontró un puente local anterior que ya no funciona.',
+    'WSL conserva el registro de WhatsAppCAN-Bridge, pero su disco ya no existe, así que no ' +
+    'puede arrancar y no contiene datos recuperables.'#13#13 +
+    '¿Quitar ese registro y continuar con una instalación nueva?',
+    mbConfirmation, MB_YESNO, ['Quitar y continuar', 'Cancelar'], 0) = IDYES);
 end;
 
 // Keep in step with Get-InstallFailure in install-appliance.ps1 (same exit codes).
@@ -196,6 +219,8 @@ begin
     17: Result := 'Hay otra instalación o una migración sin terminar. Espera o reinicia Windows y vuelve a intentarlo.';
     18: Result := 'El puente se instaló, pero sus servicios no terminaron de configurarse. Vuelve a intentarlo; ' +
       'se retoma sin borrar datos.';
+    19: Result := 'WSL conserva el registro de un puente local anterior cuyo disco ya no existe. ' +
+      'Vuelve a ejecutar el instalador y acepta quitar ese registro; no contiene datos recuperables.';
   else
     Result := 'No se reconoció la causa. Comparte el registro para revisarlo.';
   end;
@@ -288,19 +313,24 @@ begin
   BridgeInstallLogPath :=
     ExpandConstant('{localappdata}\WhatsAppCAN\logs\bridge-install-') +
     GetDateTimeString('yyyymmddhhnnss', #0, #0) + '.log';
-  if not Exec(
-    ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe'),
-    GetBridgeInstallParameters(''),
-    ExpandConstant('{tmp}'),
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  ) then
+  if not RunBridgeInstall('', ResultCode) then
   begin
     Result :=
       'No se pudo iniciar la configuración del puente local: ' +
       SysErrorMessage(ResultCode) + '.';
     Exit;
+  end;
+  if (ResultCode = 19) and ConfirmOrphanedBridgeRemoval then
+  begin
+    WizardForm.StatusLabel.Caption :=
+      'Quitando el registro anterior y configurando el puente local...';
+    if not RunBridgeInstall(' -RemoveOrphanedDistribution', ResultCode) then
+    begin
+      Result :=
+        'No se pudo iniciar la configuración del puente local: ' +
+        SysErrorMessage(ResultCode) + '.';
+      Exit;
+    end;
   end;
   if ResultCode <> 0 then
   begin

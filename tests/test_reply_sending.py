@@ -5,9 +5,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from xml.etree import ElementTree as ET
+
+from slixmpp import Message as SlixMessage
+from slixmpp.plugins.xep_0428 import stanza as fallback_stanza
+from slixmpp.plugins.xep_0461 import stanza as reply_stanza
 
 from cliente_xmpp.models.chat import Chat, Message
+from cliente_xmpp.models.mentions import MentionReference
 from cliente_xmpp.ui.main_window import MainWindow
+from cliente_xmpp.xmpp.client import XmppService
 
 
 class ReplySendingTests(unittest.TestCase):
@@ -513,6 +520,274 @@ class ReplySendingTests(unittest.TestCase):
         window.xmpp.send_reply.assert_not_called()
         window.xmpp.send_message.assert_not_called()
         window.conversation.clear_reply_quote.assert_called_once()
+
+
+_CLIENT_NS = "jabber:client"
+_REPLY_NS = "urn:xmpp:reply:0"
+_FALLBACK_NS = "urn:xmpp:fallback:0"
+_REFERENCE_NS = "urn:xmpp:reference:0"
+
+
+class _StanzaMessage:
+    """Minimal outgoing stanza whose XML a real slixmpp Message can re-read."""
+
+    def __init__(self, to_jid: str, body: str, message_type: str) -> None:
+        self.xml = ET.Element(
+            f"{{{_CLIENT_NS}}}message", {"to": to_jid, "type": message_type}
+        )
+        ET.SubElement(self.xml, f"{{{_CLIENT_NS}}}body").text = body
+        self.sent = False
+
+    def __getitem__(self, key: str) -> str:
+        if key == "body":
+            return self.xml.findtext(f"{{{_CLIENT_NS}}}body") or ""
+        raise KeyError(key)
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key == "id":
+            self.xml.set("id", str(value))
+        elif key == "body":
+            body = self.xml.find(f"{{{_CLIENT_NS}}}body")
+            assert body is not None
+            body.text = str(value)
+
+    def append(self, node: ET.Element) -> None:
+        self.xml.append(node)
+
+    def enable(self, plugin: str) -> None:
+        raise KeyError(plugin)
+
+    def send(self) -> None:
+        self.sent = True
+
+
+class _StanzaClient:
+    def __init__(self) -> None:
+        self.message: _StanzaMessage | None = None
+
+    def make_message(self, mto: str, mbody: str, mtype: str) -> _StanzaMessage:
+        self.message = _StanzaMessage(mto, mbody, mtype)
+        return self.message
+
+    @staticmethod
+    def track_transient_message_retry(*_args: object) -> None:
+        return None
+
+    @staticmethod
+    def _join_group_chat(_jid: str) -> None:
+        return None
+
+
+class _ImmediateLoop:
+    @staticmethod
+    def call_soon_threadsafe(callback: object) -> None:
+        callback()
+
+
+def _bridge_view(xml: ET.Element) -> tuple[str, str, str, str]:
+    """Read the stanza as the bridge does: reply id/to, quoted body and stripped text."""
+    fallback_stanza.register_plugins()
+    reply_stanza.register_plugins()
+    msg = SlixMessage(xml=ET.fromstring(ET.tostring(xml)))
+    assert "reply" in msg and "fallback" in msg
+    # Same normalisation as the bridge's strip_quote_prefix for ReplyBody.
+    quote = "\n".join(
+        line.lstrip(">").strip()
+        for line in msg["reply"].get_fallback_body().split("\n")
+    ).strip()
+    text = msg["fallback"].get_stripped_body(_REPLY_NS)
+    return msg["reply"]["id"], msg["reply"]["to"], quote, text
+
+
+class ReplyQuoteReachesBridgeTests(unittest.TestCase):
+    """WhatsApp builds the quote from the fallback body, not from the reply id alone."""
+
+    @staticmethod
+    def _window(chat: Chat, target: Message, body: str) -> tuple[MainWindow, list[Message]]:
+        window = MainWindow.__new__(MainWindow)
+        pending_messages: list[Message] = []
+        window.reply_context = target
+        window.edit_context = None
+        window.current_jid = "yo@example.test"
+        window.conversation = SimpleNamespace(
+            current_chat=chat,
+            has_reply_context=lambda: True,
+            consume_composed_message=lambda: body,
+            clear_reply_quote=Mock(),
+            focus_composer=Mock(),
+        )
+        window.status_bar = SimpleNamespace(SetStatusText=Mock())
+        window.xmpp = SimpleNamespace(send_reply=Mock(), send_message=Mock())
+        window._require_whatsapp_connection = lambda: True
+        window._mention_references_for_message = lambda _chat, _body: []
+        window._add_pending_outgoing_message = pending_messages.append
+        window._mark_current_chat_displayed = lambda _jid: None
+        return window, pending_messages
+
+    def test_direct_text_reply_passes_the_quoted_body_to_the_service(self) -> None:
+        chat = Chat(jid="+10000000001@whatsapp.example.test", name="Contacto ficticio")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="¿Quedamos mañana?",
+            message_id="3EB0FICTICIO0001",
+        )
+        window, pending = self._window(chat, target, "Sí, a las diez")
+
+        MainWindow._on_send_message(window, SimpleNamespace())
+
+        window.xmpp.send_reply.assert_called_once()
+        call = window.xmpp.send_reply.call_args
+        self.assertEqual(call.args[2:4], (chat.jid, "3EB0FICTICIO0001"))
+        self.assertEqual(call.kwargs["reply_quote"], "¿Quedamos mañana?")
+        self.assertEqual(pending[0].body, "Sí, a las diez")
+
+    def test_group_reply_to_own_echo_uses_the_room_stanza_id(self) -> None:
+        chat = Chat(jid="#grupo-ficticio@whatsapp.example.test", name="Grupo", is_group=True)
+        # The echo keeps the local origin id; only its stanza-id maps to WhatsApp.
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid="Yo",
+            body="Mensaje propio",
+            outgoing=True,
+            message_id="cliente-xmpp-origen-ficticio",
+            displayed_marker_id="3EB0FICTICIO0002",
+            chat_is_group=True,
+            delivery_state="sent",
+        )
+        window, pending = self._window(chat, target, "Respuesta en el grupo")
+
+        MainWindow._on_send_message(window, SimpleNamespace())
+
+        call = window.xmpp.send_reply.call_args
+        self.assertEqual(call.args[2:4], (f"{chat.jid}/yo", "3EB0FICTICIO0002"))
+        self.assertTrue(call.kwargs["is_group"])
+        self.assertEqual(call.kwargs["reply_quote"], "Mensaje propio")
+        self.assertEqual(pending[0].reply_to_id, "3EB0FICTICIO0002")
+
+    def test_group_reply_without_stanza_id_keeps_the_remote_message_id(self) -> None:
+        chat = Chat(jid="#grupo-ficticio@whatsapp.example.test", name="Grupo", is_group=True)
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=f"{chat.jid}/Participante",
+            sender_name="Participante",
+            body="Hola",
+            message_id="3EB0FICTICIO0003",
+            chat_is_group=True,
+        )
+
+        self.assertEqual(
+            MainWindow._reply_target_id(chat, target, f"{chat.jid}/Participante"),
+            "3EB0FICTICIO0003",
+        )
+
+    def test_private_reply_to_group_message_uses_the_group_stanza_id(self) -> None:
+        private_chat = Chat(jid="+10000000002@whatsapp.example.test", name="Participante")
+        reply_to_jid = "#grupo-ficticio@whatsapp.example.test/Participante"
+        target = Message(
+            chat_jid=private_chat.jid,
+            sender_jid=reply_to_jid,
+            body="Mensaje del grupo",
+            message_id="origen-ficticio",
+            displayed_marker_id="3EB0FICTICIO0004",
+        )
+
+        self.assertEqual(
+            MainWindow._reply_target_id(private_chat, target, reply_to_jid),
+            "3EB0FICTICIO0004",
+        )
+
+    def test_direct_reply_never_uses_a_marker_id(self) -> None:
+        chat = Chat(jid="+10000000001@whatsapp.example.test", name="Contacto")
+        target = Message(
+            chat_jid=chat.jid,
+            sender_jid=chat.jid,
+            body="Hola",
+            message_id="3EB0FICTICIO0005",
+            displayed_marker_id="no-debe-usarse",
+        )
+
+        self.assertEqual(
+            MainWindow._reply_target_id(chat, target, chat.jid), "3EB0FICTICIO0005"
+        )
+
+    def _send(
+        self,
+        *,
+        to_jid: str,
+        is_group: bool,
+        reply_to_jid: str,
+        mentions: list[MentionReference] | None = None,
+    ) -> _StanzaMessage:
+        service = XmppService(lambda _event: None)
+        client = _StanzaClient()
+        service._client = client
+        service._loop = _ImmediateLoop()
+        service.send_reply(
+            to_jid,
+            "Sí, a las diez",
+            reply_to_jid,
+            "3EB0FICTICIO0006",
+            is_group=is_group,
+            message_id="cliente-xmpp-respuesta-ficticia",
+            mentions=mentions,
+            reply_quote="¿Quedamos\nmañana?",
+        )
+        assert client.message is not None
+        self.assertTrue(client.message.sent)
+        return client.message
+
+    def test_direct_reply_stanza_carries_id_target_and_quote_for_the_bridge(self) -> None:
+        contact = "+10000000001@whatsapp.example.test"
+        message = self._send(to_jid=contact, is_group=False, reply_to_jid=contact)
+
+        reply_id, reply_to, quote, text = _bridge_view(message.xml)
+
+        self.assertEqual(reply_id, "3EB0FICTICIO0006")
+        self.assertEqual(reply_to, contact)
+        self.assertEqual(quote, "¿Quedamos\nmañana?")
+        self.assertEqual(text, "Sí, a las diez")
+        self.assertEqual(message["body"], "> ¿Quedamos\n> mañana?\nSí, a las diez")
+        self.assertEqual(len(message.xml.findall(f"{{{_FALLBACK_NS}}}fallback")), 1)
+
+    def test_group_reply_stanza_keeps_room_occupant_and_mention_offsets(self) -> None:
+        room = "#grupo-ficticio@whatsapp.example.test"
+        mention = MentionReference(
+            participant_jid="+10000000003@whatsapp.example.test", start=0, end=2
+        )
+        message = self._send(
+            to_jid=room,
+            is_group=True,
+            reply_to_jid=f"{room}/Participante",
+            mentions=[mention],
+        )
+
+        reply_id, reply_to, quote, text = _bridge_view(message.xml)
+
+        self.assertEqual(message.xml.attrib["type"], "groupchat")
+        self.assertEqual(reply_id, "3EB0FICTICIO0006")
+        self.assertEqual(reply_to, f"{room}/Participante")
+        self.assertEqual(quote, "¿Quedamos\nmañana?")
+        # The bridge reads mention offsets against the text without the quote.
+        reference = message.xml.find(f"{{{_REFERENCE_NS}}}reference")
+        assert reference is not None
+        begin, end = int(reference.attrib["begin"]), int(reference.attrib["end"])
+        self.assertEqual(text[begin:end], "Sí")
+
+    def test_reply_without_quote_still_sends_only_the_reply_reference(self) -> None:
+        service = XmppService(lambda _event: None)
+        client = _StanzaClient()
+        service._client = client
+        service._loop = _ImmediateLoop()
+
+        service.send_reply("contact@example.test", "ok", "contact@example.test", "id-1")
+
+        assert client.message is not None
+        reply = client.message.xml.find(f"{{{_REPLY_NS}}}reply")
+        assert reply is not None
+        self.assertEqual(reply.attrib["id"], "id-1")
+        self.assertIsNone(client.message.xml.find(f"{{{_FALLBACK_NS}}}fallback"))
+        self.assertEqual(client.message["body"], "ok")
 
 
 if __name__ == "__main__":

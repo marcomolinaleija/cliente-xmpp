@@ -54,6 +54,7 @@ from cliente_xmpp.media.downloads import (
     delete_local_media_file,
     download_media,
     has_media,
+    humanize_reply_quote,
     local_media_path,
     media_description,
     media_display_name,
@@ -206,6 +207,7 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppLinkSessionStarted,
     WhatsAppLinkState,
     WhatsAppPairingCodeReceived,
+    WhatsAppPhoneResolved,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
     WhatsAppSyncReady,
@@ -3119,7 +3121,64 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             dialog.Destroy()
 
         self.settings_store.save_new_chat_country(selected_region)
-        self._open_chat_for_phone(normalized_phone)
+        self._start_new_chat_for_phone(normalized_phone)
+
+    def _start_new_chat_for_phone(self, normalized_phone: NormalizedPhoneNumber) -> None:
+        """Open a known chat at once; otherwise ask the bridge for the real JID."""
+        component_jid = self.whatsapp_component_jid
+        try:
+            candidates = whatsapp_contact_jid_candidates(normalized_phone.e164, component_jid)
+        except ValueError as exc:
+            self._announce_status(str(exc))
+            return
+        if any(self._chat_by_jid(jid) is not None for jid in candidates):
+            self._open_chat_for_phone(normalized_phone)
+            return
+
+        request_id = uuid.uuid4().hex
+        self._pending_phone_resolution = (request_id, normalized_phone, component_jid)
+        self._announce_status(
+            f"Comprobando {normalized_phone.international} en WhatsApp..."
+        )
+        self.xmpp.resolve_whatsapp_phone(component_jid, normalized_phone.e164, request_id)
+
+    def _handle_whatsapp_phone_resolved(self, event: WhatsAppPhoneResolved) -> None:
+        pending = getattr(self, "_pending_phone_resolution", None)
+        if pending is None or pending[0] != event.request_id:
+            return
+        self._pending_phone_resolution = None
+        _request_id, normalized_phone, component_jid = pending
+        if component_jid != self.whatsapp_component_jid:
+            return
+
+        if event.status == "not_registered":
+            message = (
+                f"El número {normalized_phone.international} no tiene una cuenta de "
+                "WhatsApp. Revisa el país y el número."
+            )
+            self.status_bar.SetStatusText(message)
+            wx.MessageBox(message, "Nuevo chat", wx.OK | wx.ICON_INFORMATION, self)
+            return
+
+        if event.status == "found" and event.jid:
+            existing_chat = self._chat_by_jid(event.jid)
+            if existing_chat is not None:
+                self._open_chat(existing_chat)
+                return
+            # The bridge returns the JID WhatsApp really uses (e.g. +521… in Mexico).
+            self._open_chat(
+                Chat(jid=event.jid, name=normalized_phone.international),
+                request_remote_context=False,
+            )
+            return
+
+        # Older bridge or no answer in time: never block, open the local guess.
+        chat = self._open_chat_for_phone(normalized_phone)
+        if chat is not None:
+            self._announce_status(
+                f"Chat abierto con {normalized_phone.international}. "
+                "No se pudo confirmar el número con WhatsApp."
+            )
 
     def _open_chat_for_phone(
         self,
@@ -4762,9 +4821,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.conversation.focus_composer()
                 return
 
-        reply_to_id = reply_context.message_id if reply_context else ""
         reply_to_jid = (
             self._reply_target_jid(chat, reply_context, self.current_jid)
+            if chat and reply_context
+            else ""
+        )
+        reply_to_id = (
+            self._reply_target_id(chat, reply_context, reply_to_jid)
             if chat and reply_context
             else ""
         )
@@ -4819,6 +4882,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 is_group=chat.is_group,
                 message_id=message_id,
                 mentions=mentions,
+                reply_quote=reply_quote,
             )
             self._cancel_reply()
         else:
@@ -4908,6 +4972,23 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self._mark_current_chat_displayed(chat.jid)
         self.status_bar.SetStatusText("Enviando sugerencia...")
         self.xmpp.send_message(chat.jid, prompt, is_group=False, message_id=message_id)
+
+    @staticmethod
+    def _reply_target_id(chat: Chat, message: Message, reply_to_jid: str) -> str:
+        """Return the id the bridge maps to the quoted WhatsApp message.
+
+        Group messages are addressed by the room's stanza-id (XEP-0461): an own
+        group message keeps its local origin id, which the bridge cannot resolve.
+        """
+        target_bare = reply_to_jid.split("/", 1)[0].casefold()
+        private_group_reply = (
+            not chat.is_group
+            and "/" in reply_to_jid
+            and target_bare != chat.jid.split("/", 1)[0].casefold()
+        )
+        if (chat.is_group or private_group_reply) and message.displayed_marker_id:
+            return message.displayed_marker_id
+        return message.message_id
 
     @staticmethod
     def _reply_target_jid(chat: Chat, message: Message, current_jid: str) -> str:
@@ -5285,13 +5366,14 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 self.conversation.focus_composer()
                 return None
 
+        if reply_context is None:
+            return None, "", "", ""
+        reply_to_jid = self._reply_target_jid(chat, reply_context, self.current_jid)
         return (
             reply_context,
-            self._reply_target_jid(chat, reply_context, self.current_jid)
-            if reply_context is not None
-            else "",
-            reply_context.message_id if reply_context is not None else "",
-            self._message_body_for_display(reply_context) if reply_context is not None else "",
+            reply_to_jid,
+            self._reply_target_id(chat, reply_context, reply_to_jid),
+            self._message_body_for_display(reply_context),
         )
 
     def _set_clipboard_status(self, message: str) -> None:
@@ -5823,6 +5905,67 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         return key_code in (ord("L"), ord("l")) or unicode_key in (ord("L"), ord("l"))
 
     @staticmethod
+    def _message_list_shortcut(event: wx.KeyEvent) -> str | None:
+        """Ctrl+C copies and Ctrl+D downloads/describes the focused message.
+
+        Only the message list routes here, so edit fields keep native copy.
+        """
+        if not event.ControlDown() or event.AltDown() or event.ShiftDown():
+            return None
+        key_code = event.GetKeyCode()
+        if key_code in (ord("C"), ord("c")):
+            return "copy"
+        if key_code in (ord("D"), ord("d")):
+            return "download"
+        return None
+
+    def _run_message_list_shortcut(self, shortcut: str) -> None:
+        if shortcut == "copy" and len(self._selected_messages_in_order()) > 1:
+            self._copy_selected_messages()
+            return
+        message = self.conversation.selected_message()
+        if message is None:
+            self.status_bar.SetStatusText("No hay un mensaje seleccionado")
+            return
+        if message.upload_id:
+            self._announce_status("Este archivo todavía no se ha enviado")
+            return
+        attachment = has_media(message) and not is_link_preview(message) and not message.retracted
+        if shortcut == "copy":
+            if not attachment:
+                if self._copy_message_text(message):
+                    self.speaker.speak(
+                        "Enlace copiado" if is_link_preview(message) else "Texto copiado"
+                    )
+            elif local_media_path(message) is not None:
+                self._copy_media_file(message)
+            elif message.download_state == "downloading":
+                self._announce_status("El archivo se está descargando")
+            else:
+                # Habitual download flow (progress, .part, persistence), then copy.
+                self._download_media(message, copy_after_download=True)
+            return
+
+        if not attachment:
+            self._announce_status("Este mensaje no tiene un archivo para descargar")
+            return
+        if message.download_state == "downloading":
+            self._announce_status("El archivo se está descargando")
+            return
+        if message.media_kind == "image" and can_describe_with_rayoai(message):
+            self._describe_media_with_rayoai(message)
+            return
+        path = local_media_path(message)
+        if path is not None:
+            self._announce_status(f"El archivo ya está descargado: {path.name}")
+            return
+        self._download_media(message)
+
+    def _announce_status(self, message: str) -> None:
+        self.status_bar.SetStatusText(message)
+        self.speaker.speak(message)
+
+    @staticmethod
     def _is_space_key(event: wx.KeyEvent) -> bool:
         unicode_key = getattr(event, "GetUnicodeKey", lambda: 0)()
         return event.GetKeyCode() == wx.WXK_SPACE or unicode_key == ord(" ")
@@ -5933,6 +6076,11 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if key_code == wx.WXK_DELETE and self._delete_selected_message():
             return
 
+        message_shortcut = MainWindow._message_list_shortcut(event)
+        if message_shortcut is not None:
+            self._run_message_list_shortcut(message_shortcut)
+            return
+
         if (
             (
                 MainWindow._is_space_key(event)
@@ -5962,6 +6110,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 return
 
         if event.GetKeyCode() in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            # A voice note has no text worth reading: Enter plays or pauses it,
+            # like Space, instead of opening the read-only message reader.
+            if (
+                not event.AltDown()
+                and not event.ControlDown()
+                and not event.ShiftDown()
+                and self.conversation.play_selected_audio()
+            ):
+                return
             if self.conversation.open_selected_message_reader():
                 return
 
@@ -6717,9 +6874,10 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         message.reply_quote = ""
         return deleted_path, deletion_error
 
-    def _copy_message_text(self, message: Message, *, copy_local_path: bool = False) -> None:
+    def _copy_message_text(self, message: Message, *, copy_local_path: bool = False) -> bool:
         if not wx.TheClipboard.Open():
-            return
+            self.status_bar.SetStatusText("No se pudo abrir el portapapeles")
+            return False
 
         local_path = local_media_path(message) if copy_local_path else None
         copied_text = str(local_path) if local_path is not None else copyable_message_text(message)
@@ -6735,6 +6893,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if is_link_preview(message)
             else "Texto copiado"
         )
+        return True
 
     def _forward_message(self, source: Message) -> None:
         self._forward_messages([source])
@@ -6909,6 +7068,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         send_to_rayoai: bool = False,
         silent: bool = False,
         open_after_download: bool = False,
+        copy_after_download: bool = False,
     ) -> None:
         if getattr(self, "_storage_reset_in_progress", False):
             return
@@ -6990,6 +7150,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 lottie_sticker_path is not None,
                 lottie_description,
                 open_after_download,
+                copy_after_download,
             )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -7066,6 +7227,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         normalized_lottie_sticker: bool = False,
         lottie_description: str = "",
         open_after_download: bool = False,
+        copy_after_download: bool = False,
     ) -> None:
         message.download_state = ""
         message.download_percent = 0
@@ -7096,6 +7258,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.speaker.speak(f"Archivo descargado: {downloaded.filename or downloaded.path.name}")
         if open_after_download:
             self._open_media_path(downloaded.path)
+        if copy_after_download:
+            self._copy_media_file(message)
         if send_to_rayoai:
             self._send_media_to_rayoai(message)
 
@@ -7232,14 +7396,15 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         stable_id = message.message_id or message.audio_url or message.media_url
         return message.chat_jid, stable_id
 
-    def _copy_media_file(self, message: Message) -> None:
+    def _copy_media_file(self, message: Message) -> bool:
         path = local_media_path(message)
         if path is None:
             self.status_bar.SetStatusText("Descarga el archivo antes de copiarlo")
-            return
+            return False
 
         if not wx.TheClipboard.Open():
-            return
+            self._announce_status("No se pudo abrir el portapapeles")
+            return False
 
         try:
             data = wx.FileDataObject()
@@ -7248,6 +7413,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             self.status_bar.SetStatusText(f"Archivo copiado: {path.name}")
         finally:
             wx.TheClipboard.Close()
+        self.speaker.speak("Archivo copiado")
+        return True
 
     def _describe_media_with_rayoai(self, message: Message) -> None:
         if local_media_path(message) is None:
@@ -7851,6 +8018,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                     if message.retracted or message.edited:
                         self._observe_atajos_message(message, live=False, added=False)
                 self._handle_message_history_loaded(chat_jid, messages, older, complete, background)
+            case WhatsAppPhoneResolved():
+                self._handle_whatsapp_phone_resolved(event)
             case GroupMessageInfoLoaded():
                 self._handle_group_message_info_loaded(event)
             case MessageDeliveryUpdated(
@@ -8217,7 +8386,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             if referenced is None or referenced.retracted:
                 continue
 
-            quote = referenced.body.strip()
+            # A captionless photo body is the technical "Foto: <hash>.jpg" label;
+            # quote a readable reference instead of the generated file name.
+            quote = humanize_reply_quote(referenced.body.strip())
             if not quote and has_media(referenced):
                 quote = media_description(referenced).strip()
             if not quote:
@@ -9015,6 +9186,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             ]
             pending.append(update)
             self._record_reaction_activity(update, None)
+            # The target may only live in SQLite (chat not opened this session):
+            # persist there too, so the reaction survives without a reopen.
+            self._persist_reaction_for_stored_message(update)
             return
 
         self._persist_messages([target])
@@ -9054,15 +9228,40 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         if target is None:
             return None
 
+        MainWindow._apply_reaction_states(target, update)
+        return target
+
+    def _persist_reaction_for_stored_message(self, update: ReactionUpdate) -> None:
+        account_jid = self.current_jid
+        if not account_jid or getattr(self, "_storage_reset_in_progress", False):
+            return
+        store = self.message_store
+
+        def worker() -> None:
+            try:
+                target = store.load_message_by_id(account_jid, update.chat_jid, update.target_id)
+                if target is None:
+                    return
+                MainWindow._apply_reaction_states(target, update)
+                store.upsert_messages(account_jid, [target])
+            except Exception:
+                return
+
+        # The storage executor is serial: later updates for the same target are
+        # applied in arrival order.
+        self._queue_storage_write(worker)
+
+    @staticmethod
+    def _apply_reaction_states(target: Message, update: ReactionUpdate) -> None:
         states = list(target.reaction_states)
         if not states and target.reactions:
             states.append(ReactionState(sender_id="__legacy__", reactions=target.reactions))
         states = [state for state in states if state.sender_id != update.sender_id]
-        if update.reactions:
-            states.append(ReactionState(sender_id=update.sender_id, reactions=update.reactions))
+        # A removal keeps an empty state: storage can then tell "this sender
+        # withdrew" apart from a history copy that simply carries no reactions.
+        states.append(ReactionState(sender_id=update.sender_id, reactions=update.reactions))
         target.reaction_states = tuple(states)
         target.reactions = flattened_reactions(target.reaction_states)
-        return target
 
     def _flush_pending_reaction_updates(self, chat_jid: str) -> None:
         pending = self.pending_reaction_updates_by_chat.get(chat_jid, [])

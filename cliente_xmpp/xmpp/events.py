@@ -250,6 +250,21 @@ class GroupMessageInfoLoaded:
 
 
 @dataclass(slots=True)
+class WhatsAppPhoneResolved:
+    """Answer of the bridge (XEP-0100) to "which JID does this number use?".
+
+    ``status`` is ``found`` (``jid`` set), ``not_registered`` (no WhatsApp
+    account) or ``unavailable`` (bridge did not answer; open with the local JID).
+    """
+
+    request_id: str
+    phone: str
+    status: str
+    jid: str = ""
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class FileBatchCompleted:
     chat_jid: str
     total: int
@@ -354,6 +369,7 @@ XmppEvent = (
     | MessageHistoryLoaded
     | MessageDeliveryUpdated
     | GroupMessageInfoLoaded
+    | WhatsAppPhoneResolved
     | FileBatchCompleted
     | FileTransferUpdated
     | ChatDisplayedSynced

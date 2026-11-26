@@ -91,6 +91,7 @@ class ReactionMergeTests(unittest.TestCase):
             _datetime_timestamp=MainWindow._datetime_timestamp,
             chat_list=SimpleNamespace(IsShown=lambda: False),
             conversation=SimpleNamespace(current_chat=None),
+            _persist_reaction_for_stored_message=Mock(),
         )
         for name in ("_handle_reaction_update", "_record_reaction_activity", "_reaction_preview",
                      "_apply_reaction_update", "_flush_pending_reaction_updates"):
@@ -103,6 +104,8 @@ class ReactionMergeTests(unittest.TestCase):
             self.assertEqual(chat.last_message_preview, f"Ari reaccionó a un mensaje con {emoji}")
             self.assertEqual(len(window.pending_reaction_updates_by_chat[chat.jid]), 1)
         window._persist_messages.assert_not_called()
+        # The target is not loaded: each update also goes to the stored copy.
+        self.assertEqual(window._persist_reaction_for_stored_message.call_count, 2)
         target = Message(chat_jid=chat.jid, sender_jid="author@example.invalid",
                          message_id="bridge-id", displayed_marker_id="room-stanza",
                          body="Texto original", chat_is_group=True)

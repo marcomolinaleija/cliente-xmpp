@@ -2796,8 +2796,21 @@ class MessageStore:
                     WHEN excluded.starred = 1 OR messages.starred = 1 THEN 1
                     ELSE 0
                 END,
-                reactions_json = excluded.reactions_json,
-                reaction_states_json = excluded.reaction_states_json,
+                -- Reactions arrive as separate stanzas: a MAM/inbox copy of the
+                -- target has none and must not erase the stored ones. Explicit
+                -- removals keep an empty per-sender state, so they still apply.
+                reactions_json = CASE
+                    WHEN excluded.reaction_states_json != '[]'
+                        OR excluded.reactions_json != '[]'
+                    THEN excluded.reactions_json
+                    ELSE messages.reactions_json
+                END,
+                reaction_states_json = CASE
+                    WHEN excluded.reaction_states_json != '[]'
+                        OR excluded.reactions_json != '[]'
+                    THEN excluded.reaction_states_json
+                    ELSE messages.reaction_states_json
+                END,
                 reply_quote = CASE
                     WHEN excluded.retracted = 1 THEN ''
                     ELSE COALESCE(NULLIF(excluded.reply_quote, ''), messages.reply_quote)

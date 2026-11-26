@@ -84,6 +84,7 @@ from cliente_xmpp.xmpp.events import (
     WhatsAppLinkSessionStarted,
     WhatsAppLinkState,
     WhatsAppPairingCodeReceived,
+    WhatsAppPhoneResolved,
     WhatsAppQrImageDataReceived,
     WhatsAppQrImageReceived,
     WhatsAppSyncReady,
@@ -160,6 +161,8 @@ DATA_FORMS_NS = "jabber:x:data"
 DIRECT_INVITE_NS = "jabber:x:conference"
 OOB_NS = "jabber:x:oob"
 REACTIONS_NS = "urn:xmpp:reactions:0"
+GATEWAY_NS = "jabber:iq:gateway"
+PHONE_RESOLUTION_TIMEOUT_SECONDS = 8
 REPLY_NS = "urn:xmpp:reply:0"
 FALLBACK_NS = "urn:xmpp:fallback:0"
 MESSAGE_RETRACT_NS = "urn:xmpp:message-retract:1"
@@ -307,6 +310,14 @@ class BridgeXmppClient(ClientXMPP):
             "CAN WhatsApp linking hint",
             MatchXPath(f"{{jabber:client}}message/{{{LINKING_NS}}}state"),
             self._on_whatsapp_linking_hint,
+        ))
+        # XEP-0444 reactions are bodyless, so neither "message" nor the MUC
+        # "groupchat_message" event fires for them: without this matcher a live
+        # reaction only appeared after a restart, through MAM, if at all.
+        self.register_handler(Callback(
+            "CAN bodyless reaction",
+            MatchXPath(f"{{jabber:client}}message/{{{REACTIONS_NS}}}reactions"),
+            self._on_bodyless_reaction,
         ))
         # The bridge adds contacts after linking: names must not wait for a reconnect.
         self.add_event_handler("roster_update", self._on_roster_update)
@@ -572,6 +583,20 @@ class BridgeXmppClient(ClientXMPP):
     def _on_failed_auth(self, _event: object) -> None:
         self._stop_after_failed_auth()
         self._emit(XmppError("No se pudo autenticar con el servidor XMPP."))
+
+    def _on_bodyless_reaction(self, msg: object) -> None:
+        xml = getattr(msg, "xml", None)
+        # A reaction with a fallback body already reaches the regular handlers.
+        if xml is None or xml.find("{jabber:client}body") is not None:
+            return
+        try:
+            message_type = msg["type"]
+        except Exception:
+            return
+        if message_type == "groupchat":
+            self._on_groupchat_message(msg)
+        elif message_type in ("chat", "normal"):
+            self._on_message(msg)
 
     def _on_message(self, msg: object) -> None:
         try:
@@ -3331,6 +3356,49 @@ class BridgeXmppClient(ClientXMPP):
                 session_id,
             ))
 
+    async def resolve_whatsapp_phone(
+        self, component_jid: str, phone: str, request_id: str,
+    ) -> None:
+        """Ask the bridge which JID a phone number really uses (XEP-0100).
+
+        WhatsApp may register a Mexican mobile as +52… or +521…, and a number may
+        have no account at all; guessing the JID locally made the first send fail.
+        """
+        try:
+            iq = self.Iq()
+            iq["type"] = "set"
+            iq["to"] = component_jid
+            query = ET.Element(f"{{{GATEWAY_NS}}}query")
+            ET.SubElement(query, f"{{{GATEWAY_NS}}}prompt").text = phone
+            iq.append(query)
+            result = await iq.send(timeout=PHONE_RESOLUTION_TIMEOUT_SECONDS)
+            jid_node = result.xml.find(f".//{{{GATEWAY_NS}}}jid")
+            jid = (jid_node.text or "").strip() if jid_node is not None else ""
+            bare = jid.split("/", 1)[0]
+            local, separator, domain = bare.partition("@")
+            if (
+                separator != "@"
+                or not local.startswith("+")
+                or domain.casefold() != component_jid.split("/", 1)[0].casefold()
+            ):
+                raise ValueError("Respuesta inesperada del puente.")
+        except IqError as exc:
+            condition = str(exc.iq["error"]["condition"])
+            if condition == "item-not-found":
+                self._emit(WhatsAppPhoneResolved(request_id, phone, "not_registered"))
+            else:
+                self._emit(WhatsAppPhoneResolved(
+                    request_id, phone, "unavailable", detail=condition,
+                ))
+            return
+        except IqTimeout:
+            self._emit(WhatsAppPhoneResolved(request_id, phone, "unavailable", detail="timeout"))
+            return
+        except Exception:
+            self._emit(WhatsAppPhoneResolved(request_id, phone, "unavailable", detail="invalid"))
+            return
+        self._emit(WhatsAppPhoneResolved(request_id, phone, "found", jid=bare))
+
     async def load_group_message_info(
         self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",
     ) -> None:
@@ -5766,6 +5834,7 @@ class XmppService:
         is_group: bool = False,
         message_id: str = "",
         mentions: list[MentionReference] | None = None,
+        reply_quote: str = "",
     ) -> None:
         if not self._client or not self._loop:
             if message_id:
@@ -5793,7 +5862,16 @@ class XmppService:
                     msg["id"] = message_id
                 self._append_mentions(msg, mentions or [])
                 self._request_delivery_updates(msg, message_type)
-                if reply_to_id:
+                if reply_quote.strip():
+                    # WhatsApp renders the quote from its body; without this
+                    # fallback the bridge sends an empty quoted message.
+                    BridgeXmppClient._append_reply_metadata(
+                        msg,
+                        reply_to_jid=reply_to_jid,
+                        reply_to_id=reply_to_id,
+                        reply_quote=reply_quote,
+                    )
+                elif reply_to_id:
                     msg.append(
                         ET.Element(
                             f"{{{REPLY_NS}}}reply",
@@ -5803,7 +5881,7 @@ class XmppService:
                             },
                         )
                     )
-                if fallback_end > 0:
+                if fallback_end > 0 and not reply_quote.strip():
                     fallback = ET.Element(
                         f"{{{FALLBACK_NS}}}fallback",
                         {"for": REPLY_NS},
@@ -6449,6 +6527,21 @@ class XmppService:
                 ))
 
         loop.call_soon_threadsafe(lambda: loop.create_task(configure()))
+
+    def resolve_whatsapp_phone(self, component_jid: str, phone: str, request_id: str) -> None:
+        if not self._client or not self._loop:
+            self._emit(WhatsAppPhoneResolved(request_id, phone, "unavailable", detail="offline"))
+            return
+
+        def resolve() -> None:
+            if self._client:
+                self._loop.create_task(
+                    self._client.resolve_whatsapp_phone(component_jid, phone, request_id)
+                )
+            else:
+                self._emit(WhatsAppPhoneResolved(request_id, phone, "unavailable"))
+
+        self._loop.call_soon_threadsafe(resolve)
 
     def load_group_message_info(
         self, chat_jid: str, message_id: str, request_id: str, reference_id: str = "",

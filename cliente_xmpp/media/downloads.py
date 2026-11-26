@@ -127,6 +127,38 @@ def is_opaque_media_filename(filename: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", path.stem, flags=re.IGNORECASE))
 
 
+_TECHNICAL_MEDIA_STEM = re.compile(
+    r"(?:sticker-)?(?:[0-9a-f]{16,}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})",
+    flags=re.IGNORECASE,
+)
+_LEGACY_MEDIA_QUOTE = re.compile(
+    r"^(?P<label>Foto|Imagen|Video|Archivo|Sticker):\s*(?P<name>[^,]+?)"
+    r"(?:,\s*(?P<size>\d+(?:[.,]\d+)?\s*(?:B|KB|MB|GB)))?$",
+    flags=re.IGNORECASE,
+)
+
+
+def is_technical_media_filename(filename: str) -> bool:
+    """Reconoce nombres generados (hash, UUID o ID de WhatsApp) sin valor para leer."""
+    stem = Path(filename.strip()).stem
+    return bool(stem) and bool(_TECHNICAL_MEDIA_STEM.fullmatch(stem))
+
+
+def humanize_reply_quote(quote: str) -> str:
+    """Convierte la cita de un adjunto con nombre técnico en una referencia legible.
+
+    Las fotos de WhatsApp llegan con nombres hash. Al citarlas, el cuerpo técnico
+    «Foto: 3eb0…jpg, 80 KB» se leía como un identificador interno.
+    """
+    match = _LEGACY_MEDIA_QUOTE.fullmatch(quote.strip())
+    if match is None or not is_technical_media_filename(match["name"]):
+        return quote
+    label = match["label"].casefold()
+    label = {"imagen": "foto", "archivo": "archivo"}.get(label, label)
+    size = match["size"]
+    return f"{label}, {size}" if size else label
+
+
 def media_size_label(size: int) -> str:
     if size <= 0:
         return "peso desconocido"

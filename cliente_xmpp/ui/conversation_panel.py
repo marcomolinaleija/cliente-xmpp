@@ -13,6 +13,7 @@ from cliente_xmpp.media.downloads import (
     audio_description,
     format_duration,
     has_media,
+    humanize_reply_quote,
     local_media_path,
     media_description,
 )
@@ -1990,7 +1991,7 @@ class ConversationPanel(wx.Panel):
         return f"{metadata}\n\n{body}"
 
     def _format_reply_summary(self, message: Message) -> str:
-        quote = message.reply_quote.strip()
+        quote = humanize_reply_quote(message.reply_quote.strip())
         if not quote and message.reply_to_id:
             quote = "mensaje citado"
         if not quote:

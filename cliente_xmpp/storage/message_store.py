@@ -1259,6 +1259,41 @@ class MessageStore:
         with self._connect() as conn:
             self._upsert_chat(conn, account_jid, chat)
 
+    def supersede_chat_summary(
+        self,
+        account_jid: str,
+        chat_jid: str,
+        expected_at: datetime,
+        preview: str,
+        last_message_at: datetime,
+    ) -> bool:
+        """Replace a summary even with an earlier time, only if it is still *expected_at*.
+
+        Summaries otherwise only move forward; this compare-and-swap lets a
+        message replace a reaction stamped with local arrival time without
+        overwriting any newer summary written meanwhile.
+        """
+        expected = _datetime_to_db(expected_at)
+        if not expected or not preview:
+            return False
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE chats
+                SET last_message_preview = ?, last_message_at = ?, updated_at = ?
+                WHERE account_jid = ? AND jid = ? AND last_message_at = ?
+                """,
+                (
+                    preview,
+                    _datetime_to_db(last_message_at),
+                    _datetime_to_db(datetime.now()),
+                    account_jid,
+                    chat_jid,
+                    expected,
+                ),
+            )
+            return cursor.rowcount > 0
+
     def upsert_chats(self, account_jid: str, chats: list[Chat]) -> None:
         with self._connect() as conn:
             for chat in chats:

@@ -418,6 +418,9 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.xmpp = XmppService(self._post_xmpp_event)
         self.messages_by_chat: dict[str, list[Message]] = {}
         self.pending_reaction_updates_by_chat: dict[str, list[ReactionUpdate]] = {}
+        # Chat summaries currently showing a reaction stamped with local arrival
+        # time, mapped to the newest summary time known before that reaction.
+        self.undated_reaction_summary_floor_by_chat: dict[str, float | None] = {}
         self.delivery_states_by_message: dict[tuple[str, str], str] = {}
         self.displayed_marker_ids_by_chat: dict[str, str] = {}
         self.synced_displayed_marker_ids_by_chat: dict[str, str] = {}
@@ -9366,7 +9369,13 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         update: ReactionUpdate,
         target: Message | None,
     ) -> None:
-        sent_at = update.sent_at or datetime.now().astimezone()
+        sent_at = update.sent_at
+        if sent_at is None:
+            # The bridge sends live reactions without a timestamp, while messages
+            # carry WhatsApp's clock. Arrival time is usually a little later
+            # than the next messages' timestamps, so remember what preceded it.
+            sent_at = datetime.now().astimezone()
+            self._remember_undated_reaction_floor(update.chat_jid)
         self._update_chat_activity(update.chat_jid, self._datetime_timestamp(sent_at))
         self._update_chat_summary(
             update.chat_jid,
@@ -9435,6 +9444,40 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         self.pending_reaction_updates_by_chat.pop(chat_jid, None)
         for update in pending:
             self._handle_reaction_update(update)
+
+    def _remember_undated_reaction_floor(self, chat_jid: str) -> None:
+        floors = getattr(self, "undated_reaction_summary_floor_by_chat", None)
+        if floors is None or chat_jid in floors:
+            # Consecutive reactions keep the floor of the first one.
+            return
+        chat = self._visible_chat_by_jid(chat_jid) or self.searchable_chats_by_jid.get(chat_jid)
+        floors[chat_jid] = self._datetime_timestamp(chat.last_message_at) if chat else None
+
+    def _undated_reaction_summary_to_supersede(self, message: Message) -> datetime | None:
+        """Return the reaction summary time a later-arriving message replaces.
+
+        Only a message newer than everything summarized before the reaction
+        qualifies, so history pages and updates of older messages keep it.
+        """
+        floors = getattr(self, "undated_reaction_summary_floor_by_chat", None)
+        if not floors or message.chat_jid not in floors:
+            return None
+        timestamp = self._datetime_timestamp(message.sent_at)
+        floor = floors[message.chat_jid]
+        if timestamp is None or (floor is not None and timestamp <= floor):
+            return None
+        floors.pop(message.chat_jid, None)
+        chat = (
+            self._visible_chat_by_jid(message.chat_jid)
+            or self.searchable_chats_by_jid.get(message.chat_jid)
+        )
+        if chat is None or chat.last_message_at is None or self._summary_preview_can_update(
+            chat.last_message_at,
+            message.sent_at,
+            allow_equal=True,
+        ):
+            return None
+        return chat.last_message_at
 
     def _reaction_preview(self, update: ReactionUpdate, target: Message | None) -> str:
         actor = "Tú" if update.sender_is_me else (
@@ -10502,6 +10545,17 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
 
     def _update_chat_from_message(self, message: Message, mark_unread: bool = False) -> None:
         preview = self._chat_preview_for_message(message)
+        superseded_at = self._undated_reaction_summary_to_supersede(message)
+        if superseded_at is not None and self.current_jid:
+            # Storage keeps summaries monotonic; replace only this exact row.
+            self._queue_storage_write(
+                self.message_store.supersede_chat_summary,
+                self.current_jid,
+                message.chat_jid,
+                superseded_at,
+                preview,
+                message.sent_at,
+            )
         self._update_chat_summary(
             message.chat_jid,
             preview=preview,
@@ -10509,6 +10563,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
             unread_delta=1 if mark_unread else 0,
             force_preview=True,
             is_group=message.chat_is_group,
+            supersede_preview=superseded_at is not None,
         )
         self._apply_synced_chat_displayed(message.chat_jid)
 
@@ -10555,6 +10610,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         mark_read: bool = False,
         force_preview: bool = False,
         is_group: bool = False,
+        supersede_preview: bool = False,
     ) -> None:
         visible_chat = self._visible_chat_by_jid(chat_jid)
         chat = visible_chat or self.searchable_chats_by_jid.get(chat_jid)
@@ -10568,6 +10624,7 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 mark_read=mark_read,
                 force_preview=force_preview,
                 is_group=is_group,
+                supersede_preview=supersede_preview,
             )
             self._upsert_searchable_chat(updated_chat)
             if visible_chat is not None or preview or sent_at is not None:
@@ -10613,7 +10670,24 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
         mark_read: bool = False,
         force_preview: bool = False,
         is_group: bool = False,
+        supersede_preview: bool = False,
     ) -> Chat:
+        if supersede_preview and preview and sent_at is not None:
+            # A reaction stamped on arrival yields to a message that came after
+            # it, even when WhatsApp's clock puts that message a bit earlier.
+            next_preview, next_at = preview, sent_at
+        else:
+            next_preview = self._next_chat_preview(
+                chat,
+                preview,
+                sent_at,
+                force_preview=force_preview,
+            )
+            next_at = self._next_chat_timestamp(
+                chat,
+                sent_at,
+                force_preview=force_preview,
+            )
         return Chat(
             jid=chat.jid,
             name=chat.name,
@@ -10629,17 +10703,8 @@ class MainWindow(ScheduledMessagesMixin, AtajosIntegrationMixin, VoiceIntegratio
                 unread_count=unread_count,
                 mark_read=mark_read,
             ),
-            last_message_preview=self._next_chat_preview(
-                chat,
-                preview,
-                sent_at,
-                force_preview=force_preview,
-            ),
-            last_message_at=self._next_chat_timestamp(
-                chat,
-                sent_at,
-                force_preview=force_preview,
-            ),
+            last_message_preview=next_preview,
+            last_message_at=next_at,
         )
 
     @classmethod

@@ -210,6 +210,109 @@ class ReactionMergeTests(unittest.TestCase):
         self.assertEqual(preview, "Ari reaccionó a «Nos vemos mañana» con ❤️")
 
 
+class ReactionSummaryOrderTests(unittest.TestCase):
+    ACCOUNT = "me@example.invalid"
+    JID = "#fixture@whatsapp.example.invalid"
+
+    def _window(self, store: MessageStore, chat: Chat) -> SimpleNamespace:
+        chats = {chat.jid: chat}
+        store.upsert_chat(self.ACCOUNT, chat)
+        window = SimpleNamespace(
+            current_jid=self.ACCOUNT, message_store=store, messages_by_chat={},
+            pending_reaction_updates_by_chat={}, undated_reaction_summary_floor_by_chat={},
+            searchable_chats_by_jid=chats, _visible_chat_by_jid=chats.get,
+            _upsert_searchable_chat=lambda updated: chats.__setitem__(updated.jid, updated),
+            chat_list=SimpleNamespace(IsShown=lambda: False, upsert_chat=Mock()),
+            conversation=SimpleNamespace(current_chat=None),
+            _display_name_for_jid=lambda _: "Ari", _update_chat_activity=Mock(),
+            _refresh_chat_order=Mock(), _apply_synced_chat_displayed=Mock(),
+            _persist_reaction_for_stored_message=Mock(), _persist_messages=Mock(),
+        )
+        for name in ("_handle_reaction_update", "_record_reaction_activity", "_reaction_preview",
+                     "_apply_reaction_update", "_remember_undated_reaction_floor",
+                     "_undated_reaction_summary_to_supersede", "_update_chat_from_message",
+                     "_update_chat_summary", "_updated_chat_summary", "_persist_chat",
+                     "_queue_storage_write"):
+            setattr(window, name, MethodType(getattr(MainWindow, name), window))
+        for name in ("_chat_preview_for_message", "_next_chat_preview", "_next_chat_timestamp",
+                     "_summary_preview_can_update", "_datetime_timestamp", "_next_unread_count",
+                     "_run_storage_write"):
+            setattr(window, name, getattr(MainWindow, name))
+        return window
+
+    def _message(self, body: str, sent_at: datetime) -> Message:
+        return Message(chat_jid=self.JID, sender_jid="author@example.invalid", body=body,
+                       message_id=f"id-{body}", sent_at=sent_at, chat_is_group=True)
+
+    def test_message_arriving_after_an_undated_reaction_replaces_its_summary(self) -> None:
+        before = datetime.now(UTC) - timedelta(minutes=10)
+        for case, message_offset, expected in (
+            # WhatsApp's clock puts the next message before the reaction's arrival.
+            ("arrived_later", None, "Mensaje posterior"),
+            # History older than what preceded the reaction never replaces it.
+            ("older_history", timedelta(minutes=-5), "Tú reaccionó a un mensaje con 🙏"),
+            # Same time as the previous summary: an update of that message.
+            ("previous_message_update", timedelta(0), "Tú reaccionó a un mensaje con 🙏"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp_dir:
+                store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+                chat = Chat(jid=self.JID, name="Fixture group", is_group=True,
+                            last_message_preview="Anterior", last_message_at=before)
+                window = self._window(store, chat)
+                window._handle_reaction_update(ReactionUpdate(
+                    chat_jid=self.JID, target_id="not-loaded", sender_id=self.ACCOUNT,
+                    reactions=("🙏",), sender_is_me=True, is_group=True,
+                ))
+                reaction_at = window.searchable_chats_by_jid[self.JID].last_message_at
+                self.assertGreater(reaction_at, before)
+                sent_at = (reaction_at - timedelta(seconds=2) if message_offset is None
+                           else before + message_offset)
+                window._update_chat_from_message(self._message("Mensaje posterior", sent_at))
+
+                current = window.searchable_chats_by_jid[self.JID]
+                stored = store.load_chats(self.ACCOUNT)[0]
+                self.assertEqual(current.last_message_preview, expected)
+                self.assertEqual(stored.last_message_preview, expected)
+                if message_offset is None:
+                    self.assertEqual(current.last_message_at, sent_at)
+                    self.assertEqual(stored.last_message_at, sent_at)
+                    self.assertNotIn(self.JID, window.undated_reaction_summary_floor_by_chat)
+                else:
+                    self.assertEqual(stored.last_message_at, reaction_at)
+
+    def test_dated_reaction_still_outranks_an_older_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            before = datetime(2026, 1, 1, 12, tzinfo=UTC)
+            window = self._window(store, Chat(jid=self.JID, name="Fixture group", is_group=True,
+                                              last_message_preview="Anterior",
+                                              last_message_at=before))
+            window._handle_reaction_update(ReactionUpdate(
+                chat_jid=self.JID, target_id="not-loaded", sender_id=self.ACCOUNT,
+                reactions=("🙏",), sender_is_me=True, is_group=True,
+                sent_at=before + timedelta(minutes=5),
+            ))
+            window._update_chat_from_message(
+                self._message("Historial", before + timedelta(minutes=1))
+            )
+            self.assertEqual(window.searchable_chats_by_jid[self.JID].last_message_preview,
+                             "Tú reaccionó a un mensaje con 🙏")
+            self.assertEqual(window.undated_reaction_summary_floor_by_chat, {})
+
+    def test_storage_supersede_never_overwrites_a_newer_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MessageStore(Path(temp_dir) / "messages.sqlite3")
+            at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+            store.upsert_chat(self.ACCOUNT, Chat(jid=self.JID, name="Fixture group",
+                                                 last_message_preview="Más nuevo",
+                                                 last_message_at=at + timedelta(minutes=1)))
+            self.assertFalse(store.supersede_chat_summary(
+                self.ACCOUNT, self.JID, at, "Sustituto", at - timedelta(seconds=2)))
+            stored = store.load_chats(self.ACCOUNT)[0]
+            self.assertEqual(stored.last_message_preview, "Más nuevo")
+            self.assertEqual(stored.last_message_at, at + timedelta(minutes=1))
+
+
 class ReactionStorageTests(unittest.TestCase):
     def test_cached_recursive_summary_is_compacted_without_changing_real_messages(self) -> None:
         recursive = "Texto anterior"
